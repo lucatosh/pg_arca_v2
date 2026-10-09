@@ -44,17 +44,18 @@ const withAgent = process.env.NO_AGENT !== '1';
     let hbaManaged: any[] = []; const hbaRev = () => createHash('sha1').update(JSON.stringify(hbaManaged)).digest('hex').slice(0, 16);
     const snap = () => ({
       postgres: { alive: true, is_in_recovery: false, role: 'primary', version: '16.4', current_lsn: '0/5000000', timeline: 1, xact_total: (xact += 400), connections: { used: 12, max: 100 },
-        databases: [{ oid: 16384, name: 'appdb', size: 4e9 }, { oid: 16385, name: 'billing', size: 1e9 }], settings: { archive_mode: process.env.ARCHIVE_OFF ? 'off' : 'on' },
+        databases: [{ oid: 16384, name: 'appdb', size: 4e9 }, { oid: 16385, name: 'billing', size: 1e9 }], settings: { archive_mode: process.env.ARCHIVE_OFF ? 'off' : 'on', max_connections: '100', shared_buffers: '16384', work_mem: '4096' },
         archiver: { archived_count: 120, failed_count: 0, last_archived_time: new Date().toISOString() } },
       wal: { continuous: true, total_segments: 64, gaps: [] },
       backup: { configured: true, sets: sets.filter(s => s.status === 'COMPLETE').length, failed_sets: 0, last_backup: sets[sets.length - 1], last_backup_age_hours: (Date.now() - Date.parse(sets[sets.length - 1].stop_time)) / 3.6e6, stored_bytes: 2.1e9, dedup_ratio: 5.6, recent_sets: sets.slice(-60) },
-      system: { load_avg_1m: 0.4, cpu_count: 4, memory_used_percent: 38 }, patroni: { accessible: false },
+      system: { load_avg_1m: 0.4, cpu_count: 4, memory_used_percent: 38, memory_total_bytes: 16 * 1024 ** 3 }, patroni: { accessible: false },
     });
     const report = (id: string, body: any) => app.call('POST', `/api/agent/ops/${id}/report`, { body, headers: agent.h });
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
     const handle = async (op: any) => {
       const p = op.params;
       await report(op.id, { status: 'running', progress: { phase: 'starting' } });
+      if (op.type === 'pg_set_param') { await sleep(300); return report(op.id, { status: 'succeeded', result: { name: p.name, value: p.value, applied: true } }); }
       if (op.type === 'restore_promote') { await sleep(500); return report(op.id, { status: 'succeeded', result: { object: p.object, mode: p.mode, promoted_as: 'public.orders_pitr_20260101000000', old_kept_as: 'public.orders', rows: 1234, stage_dropped: !!p.drop_stage } }); }
       if (op.type === 'hba_read') {
         const eff = [{ line_number: 90, type: 'local', database: ['all'], user_name: ['postgres'], address: null, netmask: null, auth_method: 'peer', options: null, error: null },

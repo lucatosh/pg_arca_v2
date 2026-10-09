@@ -9,18 +9,18 @@ import { BackupTab } from './Backup';
 import { RestoreTab } from './Restore';
 import { LogsTab } from './Logs';
 import { HbaTab } from './Hba';
+import { TuningTab } from './Tuning';
 import { ProtectionRibbon } from './Ribbon';
 
 export const TAB_ITEMS: { id: string; label: string; icon?: string; preview?: boolean; agent?: boolean }[] = [
   { id: 'overview', label: 'Panoramica', icon: 'layers' }, { id: 'nodes', label: 'Nodi', icon: 'server' }, { id: 'ha', label: 'Alta affidabilità', icon: 'swap' },
   { id: 'params', label: 'Parametri', icon: 'settings' }, { id: 'backup', label: 'Backup', icon: 'shield' }, { id: 'restore', label: 'Ripristino', icon: 'restore' },
   { id: 'operations', label: 'Operazioni', icon: 'list' }, { id: 'logs', label: 'Log', icon: 'logs' },
-  { id: 'hba', label: 'Accessi (HBA)', icon: 'lock' }, { id: 'ldap', label: 'LDAP / AD', preview: true }, { id: 'rbac', label: 'Ruoli (RBAC)', preview: true }, { id: 'tuning', label: 'Tuning', preview: true }, { id: 'templates', label: 'Modelli', preview: true },
+  { id: 'hba', label: 'Accessi (HBA)', icon: 'lock' }, { id: 'ldap', label: 'LDAP / AD', preview: true }, { id: 'rbac', label: 'Ruoli (RBAC)', preview: true }, { id: 'tuning', label: 'Tuning', icon: 'zap' }, { id: 'templates', label: 'Modelli', preview: true },
 ];
 const PREVIEW_TEXT: Record<string, string> = {
   ldap: 'Sincronizzazione di utenti e gruppi da LDAP / Active Directory verso i ruoli PostgreSQL. Non ancora disponibile.',
   rbac: 'Ruoli e permessi della console. Oggi esiste un solo amministratore.',
-  tuning: 'Consigli di dimensionamento dei parametri in base alla macchina. Non ancora disponibile.',
   templates: 'Politiche e modelli applicabili a più cluster. Non ancora disponibili.',
 };
 
@@ -53,6 +53,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
     {cur === 'restore' && <RestoreTab c={c} />}
     {cur === 'operations' && <Operations c={c} />}
     {cur === 'logs' && <LogsTab c={c} />}
+    {cur === 'tuning' && <TuningTab c={c} />}
     {cur === 'hba' && <HbaTab c={c} />}
     {PREVIEW_TEXT[cur] ? <Preview title={TAB_ITEMS.find(t => t.id === cur)!.label}>{PREVIEW_TEXT[cur]}</Preview> : null}
     {detach ? <Confirm danger title={`Scollegare ${c.name}?`} confirmLabel="Scollega" requireText={c.isSandbox ? undefined : c.name} busy={busy} onClose={() => setDetach(false)} onConfirm={doDetach}>

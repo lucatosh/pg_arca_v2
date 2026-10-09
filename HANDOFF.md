@@ -26,7 +26,7 @@ Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggi
 1. Provare dal vivo (con `npm install`): `direct.ts`, `/ws/logs`, `/api/network/*`, avvio di `server.ts`.
 2. HA e parametri su un cluster Patroni reale.
 4. Benchmark vs pgBackRest (nessun claim finché non misurato).
-5. Anteprime: LDAP/AD, RBAC, tuning.
+5. Anteprime: LDAP/AD, RBAC.
 6. Integrare i design v1.0–v1.2 (non nel repo).
 7. UI: tema scuro rivisto a vista, grafici di tendenza.
 

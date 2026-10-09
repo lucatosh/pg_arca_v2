@@ -42,6 +42,9 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('role=tab[name=/Operazioni/]'); await p.waitForSelector('text=Registro operazioni'); await shot('13-ops');
   await p.click('role=tab[name=/Log/]'); await p.waitForSelector('text=Log in tempo reale');
   await p.click('role=tab[name=/Accessi/]'); await p.waitForSelector('text=Regole gestite dalla console'); await p.waitForSelector('text=Repliche attive senza'); await shot('14-hba');
+  await p.click('role=tab[name=/Tuning/]'); await p.waitForSelector('text=16.0 GB di RAM'); await p.waitForSelector('tr:has-text("shared_buffers") >> text=4GB'); await shot('14e-tuning');
+  await p.click('tr:has-text("work_mem") button:has-text("Applica")'); await p.click('.modal button:has-text("Applica")'); await p.waitForSelector('text=Completata', { timeout: 10000 });
+  await p.click('role=tab[name=/Accessi/]'); await p.waitForSelector('text=Regole gestite dalla console');
   // HBA assistant: suggestion, duplicate refusal, shadow warning, plan, apply
   await p.click('.banner.warn button:has-text("Aggiungi")'); await p.waitForSelector('text=Replica da 10.0.2.7');
   await p.click('button:has-text("Aggiungi una regola")');

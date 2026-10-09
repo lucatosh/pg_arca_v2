@@ -27,7 +27,7 @@ export function publicCluster(c: any, st: { nodes: Record<string, any>; directCo
   return {
     ...rest,
     connection: dc ? { host: dc.host, port: dc.port, database: dc.database, user: dc.user, sslmode: dc.sslmode, patroniUrl: dc.patroniUrl, lastOk: dc.lastOk, lastError: dc.lastError } : undefined,
-    agentNodes: Object.values(st.nodes).filter((n: any) => n.clusterId === c.id).map((n: any) => ({ id: n.id, name: n.name, lastSeen: n.lastSeen, agentVersion: n.agentVersion })),
+    agentNodes: Object.values(st.nodes).filter((n: any) => n.clusterId === c.id).map((n: any) => ({ id: n.id, name: n.name, lastSeen: n.lastSeen, agentVersion: n.agentVersion, role: n.snapshot?.postgres?.role, sys: n.snapshot?.system ? { cpu: n.snapshot.system.cpu_count, mem: n.snapshot.system.memory_total_bytes } : undefined, settings: n.snapshot?.postgres?.settings, pendingRestart: n.snapshot?.postgres?.pending_restart })),
     capabilities: c.isSandbox ? { demo: true } : capabilitiesOf(c, st),
   };
 }
