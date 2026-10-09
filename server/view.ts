@@ -30,7 +30,7 @@ export function deriveNodes(nodes: NodeRecord[], now = Date.now()): DerivedNode[
   const primaryLsn = lsnToBig(primarySnap?.postgres?.current_lsn);
   const patroniMembers: any[] = withSnap.flatMap(n => n.snapshot?.patroni?.members || []);
 
-  return nodes.map(n => {
+  const agentNodes = nodes.map(n => {
     const s = n.snapshot || {};
     const pg = s.postgres || {};
     const pt = s.patroni || {};
@@ -64,6 +64,18 @@ export function deriveNodes(nodes: NodeRecord[], now = Date.now()): DerivedNode[
       online, nodeId: n.id, source: 'agent',
     };
   });
+  // Cluster members that Patroni reports but that have no agent enrolled yet: show them (read-only, from Patroni's own view) so the cluster looks complete.
+  const seen = new Set(nodes.map(n => n.name)); const extra: DerivedNode[] = [];
+  for (const m of patroniMembers) {
+    if (!m?.name || seen.has(m.name)) continue; seen.add(m.name);
+    const pr = String(m.role || ''); const st = String(m.state || '');
+    const role: DerivedNode['role'] = ['leader', 'primary', 'master'].includes(pr) ? 'primary' : pr === 'standby_leader' ? 'standby_leader' : pr === 'sync_standby' || pr === 'quorum_standby' ? 'sync_standby' : 'replica';
+    const lag = num(m.lag, 0);
+    extra.push({ name: m.name, role, state: st || 'unknown', host: m.host || '', port: num(m.port, 5432), timeline: num(m.timeline, 0), lsn: '',
+      replicationLagBytes: lag, replicationLagMs: 0, dcsLeader: role === 'primary', cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 0,
+      online: ['running', 'streaming'].includes(st), source: 'patroni' });
+  }
+  return agentNodes.concat(extra);
 }
 
 export function deriveCluster(opts: {

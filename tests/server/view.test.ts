@@ -19,4 +19,10 @@ assert.strictEqual(deriveCluster({ id: 'c', name: 'x', environment: 'prod', node
 assert.strictEqual(computeTps({ total: 100, at: 0 }, 300, 2000), 100);
 assert.strictEqual(computeTps({ total: 100, at: 0 }, 50, 2000), undefined);
 assert.strictEqual(lsnToBig('1/0'), 4294967296n);
+// Patroni members without an agent still appear (source=patroni), the enrolled node keeps source=agent
+const p1 = mk('n1', 'n1', false, '0/2000000'); p1.snapshot.patroni = { scope: 'lab', members: [
+  { name: 'n1', role: 'leader', state: 'running', host: 'n1', port: 5432 }, { name: 'n2', role: 'replica', state: 'streaming', host: 'n2', port: 5432, lag: 0 }, { name: 'n3', role: 'replica', state: 'stopped', host: 'n3', port: 5432 }] };
+const pc = deriveCluster({ id: 'c', name: 'x', environment: 'prod', nodes: [p1], now });
+assert.deepStrictEqual(pc.haState.nodes.map((n: any) => [n.name, n.source, n.online]), [['n1', 'agent', true], ['n2', 'patroni', true], ['n3', 'patroni', false]]);
+assert.strictEqual(pc.haState.nodes[1].role, 'replica'); assert.strictEqual(pc.haState.nodes[1].nodeId, undefined);
 console.log('ALL VIEW TESTS PASSED');

@@ -7,3 +7,4 @@
 | 3 | 10/10 | Smoke: "0 repliche streaming" lanciato troppo presto | Corretto (attesa fino a ~3 min) |
 | 4 | 10/10 | "Approva e collega" non chiude la finestra: passava alla richiesta successiva (stale `all`), ricliccando si approvava un altro server | Corretto: la finestra si chiude dopo l'approvazione |
 | 5 | 10/10 | "PostgreSQL non rilevato" sui nodi → nessun cluster_key → ogni nodo crea un cluster separato "arca-lab" | Corretto: l'agent rifà discovery mentre non trova PG (agent parte prima di Patroni). Per i nodi già approvati: `./lab.sh agent-reset`, cancella i cluster nella console, riapprova |
+| 6 | 10/10 | Il cluster mostra solo il nodo con agent (pg2); i 3 nodi Patroni dovrebbero comparire insieme | Corretto: i membri Patroni senza agent compaiono in "Nodi" con badge "senza agent" + banner; i nodi con agent si uniscono al cluster per `patroni:<scope>`. Test view aggiunto. UI non provata nel browser |
