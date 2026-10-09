@@ -2,6 +2,7 @@
 import type { Request, Response } from 'express';
 import { Store } from './store';
 import * as ops from './ops';
+import { requiresApproval, requestApproval } from './approvals';
 
 export interface HbaTemplate {
   id: string; name: string; description: string; envs: string[];
@@ -49,22 +50,36 @@ export function mountHbaRoutes(app: any, store: Store) {
     if (c.source === 'direct') return res.status(409).json({ error: 'agent_required', message: 'Modificare pg_hba richiede l’agent sul nodo.' });
     const key = String(req.headers['idempotency-key'] || '');
     if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
-    const { rules, baseRevs = {}, force = false } = req.body || {};
+    const { rules, baseRevs = {}, force = false, adopt = false } = req.body || {};
     if (!Array.isArray(rules) || rules.length > 200) return res.status(400).json({ error: 'invalid_rules' });
-    const online = Object.values(st.nodes).filter(n => n.clusterId === c.id && n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000);
-    if (!online.length) return res.status(409).json({ error: 'no_suitable_node', message: 'Nessun nodo online.' });
-    const patroni = !!c.haState?.managedByPatroni;
-    const targets = patroni ? [online.find(n => n.snapshot?.patroni?.accessible) || online[0]] : online;
-    const out: any[] = [];
-    try {
-      for (const n of targets) {
-        const r = await ops.submit(store, { type: 'hba_apply', clusterId: c.id, nodeId: n.id, params: { rules, force: !!force, base_rev: baseRevs[n.id] || undefined }, idempotencyKey: `${key}:${n.id}`, createdBy: (req as any).actor || 'admin', ttlSeconds: 600 });
-        out.push({ nodeId: n.id, nodeName: n.name, operation: r.op, replayed: !r.created });
-      }
-    } catch (e: any) {
-      if (e.code === 'IDEMPOTENCY_CONFLICT') return res.status(422).json({ error: 'idempotency_conflict', message: e.message });
-      throw e;
+    const bodyOut = { rules, baseRevs, force: !!force, adopt: !!adopt };
+    if (requiresApproval(st, c, 'hba_cluster_apply', {})) {
+      const rec = await requestApproval(store, ops.audit, { cluster: c, type: 'hba_cluster_apply', params: bodyOut, key, actor: (req as any).actor || 'admin' });
+      return res.status(202).json({ approval: rec, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
     }
-    res.status(202).json({ mode: patroni ? 'patroni' : 'per-node', operations: out });
+    const r = await hbaFanout(store, c, bodyOut, key, (req as any).actor || 'admin');
+    res.status(r.code).json(r.body);
   });
+}
+
+/** Submit one hba_apply per target node (or one for the whole Patroni cluster) and remember temporary-rule expiries for the scheduler. */
+export async function hbaFanout(store: Store, c: any, body: any, key: string, actor: string): Promise<{ code: number; body: any }> {
+  const st = store.peek(); const { rules, baseRevs = {}, force = false, adopt = false } = body;
+  const online = Object.values(st.nodes).filter(n => n.clusterId === c.id && n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000);
+  if (!online.length) return { code: 409, body: { error: 'no_suitable_node', message: 'Nessun nodo online.' } };
+  const patroni = !!c.haState?.managedByPatroni;
+  const targets = patroni ? [online.find(n => n.snapshot?.patroni?.accessible) || online[0]] : online;
+  const out: any[] = [];
+  try {
+    for (const n of targets) {
+      const r = await ops.submit(store, { type: 'hba_apply', clusterId: c.id, nodeId: n.id, params: { rules, force: !!force, adopt: !!adopt, base_rev: baseRevs[n.id] || undefined }, idempotencyKey: `${key}:${n.id}`, createdBy: actor, ttlSeconds: 600 });
+      out.push({ nodeId: n.id, nodeName: n.name, operation: r.op, replayed: !r.created });
+    }
+  } catch (e: any) {
+    if (e.code === 'IDEMPOTENCY_CONFLICT') return { code: 422, body: { error: 'idempotency_conflict', message: e.message } };
+    throw e;
+  }
+  const untils = (rules as any[]).map(r => /\[until=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})Z\]/.exec(String(r?.comment || ''))?.[1]).filter(Boolean).map(x => Date.parse(x + ':00Z')).filter(x => Number.isFinite(x));
+  await store.mutate(d => { const m = (d.settings.hbaExpiry ||= {}); if (untils.length) m[c.id] = untils; else delete m[c.id]; });
+  return { code: 202, body: { mode: patroni ? 'patroni' : 'per-node', operations: out } };
 }

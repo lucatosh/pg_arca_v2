@@ -210,6 +210,46 @@ def extract_block(text):
     return out
 
 
+UNTIL_RE = re.compile(r"\[until=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})Z\]")
+
+
+def until_of(rule):
+    """Expiry (UTC epoch seconds) encoded in a rule comment as [until=YYYY-MM-DDTHH:MMZ], or None."""
+    m = UNTIL_RE.search((rule or {}).get("comment", "") or "")
+    if not m:
+        return None
+    import calendar
+    import time as _t
+    return calendar.timegm(_t.strptime(m.group(1), "%Y-%m-%dT%H:%M"))
+
+
+def split_expired(rules, now):
+    keep, gone = [], []
+    for r in rules:
+        u = until_of(r)
+        (gone if u is not None and u <= now else keep).append(r)
+    return keep, gone
+
+
+def strip_unmanaged(text):
+    """Remove every rule line that is NOT inside the managed block (comments and blank lines stay). Used by 'adopt': the removed
+    rules must be re-added to the block by the caller, which sits above them, so the effective order does not change."""
+    out, inblock = [], False
+    for raw in text.split("\n"):
+        s = raw.strip()
+        if s == BEGIN:
+            inblock = True
+        elif s == END:
+            inblock = False
+            out.append(raw)
+            continue
+        if not inblock and s and not s.startswith("#") and not s.startswith("include") and parse_rule_line(s):
+            out.append("# (adottata nel blocco gestito) " + s)
+            continue
+        out.append(raw)
+    return "\n".join(out)
+
+
 def apply_block(text, rules):
     """Return the file text with the managed block replaced / inserted at the top of the rules / removed (empty list)."""
     lines = text.split("\n")

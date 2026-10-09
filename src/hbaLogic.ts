@@ -129,3 +129,10 @@ export function fromEffective(row: any): Rule {
 export function fill(tpl: { rules: Rule[] }, vars: Record<string, string>): Rule[] {
   return tpl.rules.map(r => { const f = (s: string) => s.replace(/\{\{(\w+)\}\}/g, (_m, k) => vars[k] ?? ''); return { ...r, database: f(r.database), user: f(r.user), address: f(r.address), comment: f(r.comment || '') }; });
 }
+
+// ---- temporary rules: the expiry travels in the comment as [until=YYYY-MM-DDTHH:MMZ] (the agent removes the rule after that instant)
+const UNTIL = /\s*\[until=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})Z\]/;
+export const untilOf = (comment?: string): number | null => { const m = UNTIL.exec(comment || ''); return m ? Date.parse(m[1] + ':00Z') : null; };
+export const stripUntil = (comment?: string) => (comment || '').replace(UNTIL, '').trim();
+export const withUntil = (comment: string | undefined, ms: number | null) => { const base = stripUntil(comment); return ms == null ? base : `${base} [until=${new Date(ms).toISOString().slice(0, 16)}Z]`.trim(); };
+export const untilLabel = (ms: number, now = Date.now()) => { const d = ms - now; if (d <= 0) return 'scaduta'; const m = Math.round(d / 60000); return m < 60 ? `scade tra ${m} min` : m < 2880 ? `scade tra ${Math.round(m / 60)} h` : `scade tra ${Math.round(m / 1440)} giorni`; };

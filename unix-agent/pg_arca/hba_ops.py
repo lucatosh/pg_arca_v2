@@ -123,7 +123,17 @@ def _prepare(ex, p, err):
     if errors:
         raise err("invalid rules: " + "; ".join("#%d: %s" % (e["index"] + 1, e["message"]) for e in errors))
     old = src.text()
-    new = hba.apply_block(old, clean)
+    base_text = old
+    if p.get("adopt"):
+        if src.patroni:
+            raise err("adopting existing rules is only available on clusters whose pg_hba is a file (not Patroni DCS)")
+        have = set(hba.render_rule(dict(r["rule"], comment="")) for r in hba.parse_file(old)[0] if not r["in_block"])
+        want = set(hba.render_rule(dict(r, comment="")) for r in clean)
+        lost = sorted(have - want)
+        if lost:
+            raise err("adopt would drop %d existing rule(s) not present in the new list, e.g. %s" % (len(lost), lost[0].replace("  ", " ")))
+        base_text = hba.strip_unmanaged(old)
+    new = hba.apply_block(base_text, clean)
     return src, clean, warnings, old, new
 
 
@@ -135,8 +145,7 @@ def plan(ex, p, err):
     src = _Src(ex, err)
     if errors:
         return {"valid": False, "errors": errors, "warnings": warnings}
-    old = src.text()
-    new = hba.apply_block(old, clean)
+    _, _, _, old, new = _prepare(ex, p, err)
     rows, lock = _simulate(old, new, _live_probes(ex, err) + _extra_probes(p, err))
     if not _ssl_on(ex) and any(r["type"] in ("hostssl", "hostgssenc") for r in clean):
         warnings.append({"index": -1, "message": "PostgreSQL has ssl=off on this node: hostssl rules will NOT match until TLS is enabled"})
@@ -230,6 +239,21 @@ def _apply_patroni(ex, src, clean, new_text, cur_rev, err):
             pass
         time.sleep(2)
     raise err("the DCS was updated but this node did not pick the change up within 45 s; Patroni will still propagate it (check the Patroni log)")
+
+
+def expire(ex, p, err):
+    """Remove managed rules whose [until=...] has passed. File mode only (a Patroni DCS list has no per-rule comments)."""
+    src = _Src(ex, err)
+    if src.patroni:
+        raise err("temporary rules are not supported on Patroni-managed pg_hba: remove the rule from the list")
+    managed = hba.extract_block(src.file_text()) or []
+    keep, gone = hba.split_expired(managed, time.time())
+    if not gone:
+        return {"changed": False, "removed": 0}
+    res = apply(ex, {"rules": keep}, err)
+    res["removed"] = len(gone)
+    res["removed_rules"] = [hba.render_rule(dict(r, comment="")).replace("  ", " ") for r in gone]
+    return res
 
 
 def rollback(ex, p, err):

@@ -3,6 +3,7 @@ import { MiniApp } from './mini-express';
 import { Store } from '../../server/store';
 import { mountHbaRoutes, HBA_TEMPLATES, HBA_SUGGESTED } from '../../server/hba';
 import { validateOp } from '../../server/optypes';
+import { hbaExpiryTick } from '../../server/scheduler';
 (async () => {
   const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'hba-'))); const app = new MiniApp(); mountHbaRoutes(app, store);
   const now = new Date().toISOString();
@@ -28,5 +29,20 @@ import { validateOp } from '../../server/optypes';
   assert.strictEqual((await call('POST', '/api/clusters/dir/hba/apply', { rules }, k)).status, 409);
   assert.strictEqual((await call('POST', '/api/clusters/nope/hba/apply', { rules }, k)).status, 404);
   assert.strictEqual(validateOp('hba_apply', { rules: 'x' }) !== null, true); assert.strictEqual(validateOp('hba_apply', { rules: [], base_rev: 'zz' }) !== null, true); assert.strictEqual(validateOp('hba_plan', { rules: [] }), null);
+  // adopt flag travels to the agent; temporary rules are remembered and expired by the scheduler on every online file-mode node
+  const ad = await call('POST', '/api/clusters/k1/hba/apply', { rules, adopt: true }, { 'idempotency-key': 'h3' }); assert.strictEqual(ad.body.operations[0].operation.params.adopt, true);
+  const soon = new Date(Date.now() + 120_000).toISOString().slice(0, 16);
+  const tmp = [...rules, { type: 'hostssl', database: 'all', user: 'ext', address: '10.9.0.0/24', method: 'scram-sha-256', comment: `Consulente [until=${soon}Z]` }];
+  await call('POST', '/api/clusters/k1/hba/apply', { rules: tmp }, { 'idempotency-key': 'h4' });
+  assert.strictEqual(store.peek().settings.hbaExpiry.k1.length, 1);
+  assert.deepStrictEqual(await hbaExpiryTick(store, Date.now()), [], 'not due yet');
+  const later = Date.now() + 5 * 60_000; await store.mutate(d => { for (const n of Object.values(d.nodes)) (n as any).lastSeen = new Date(later).toISOString(); });
+  const sub = await hbaExpiryTick(store, later); assert.strictEqual(sub.length, 2, JSON.stringify(sub));
+  assert.deepStrictEqual(await hbaExpiryTick(store, later), [], 'same bucket: idempotent');
+  assert.strictEqual(store.peek().operations.filter(o => o.type === 'hba_expire').length, 2);
+  // both nodes confirm -> the entry is pruned
+  for (const o of store.peek().operations.filter(o => o.type === 'hba_expire')) await store.mutate(d => { const x = d.operations.find(y => y.id === o.id)!; x.status = 'succeeded'; x.createdAt = new Date(later + 1000).toISOString(); });
+  await store.mutate(d => { for (const n of Object.values(d.nodes)) (n as any).lastSeen = new Date(later + 1000).toISOString(); });
+  await hbaExpiryTick(store, later + 1000); assert.strictEqual(store.peek().settings.hbaExpiry?.k1, undefined);
   console.log('ALL HBA TESTS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

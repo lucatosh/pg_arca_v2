@@ -12,7 +12,8 @@ import type { Request, Response } from 'express';
 import { Store, NodeRecord, sha256, newSecret, newId, nowIso } from './store';
 import * as ops from './ops';
 import { OP_SPECS, validateOp } from './optypes';
-import { requiresApproval, describeOp, APPROVAL_TTL_MS } from './approvals';
+import { requiresApproval, requestApproval } from './approvals';
+import { hbaFanout } from './hba';
 import { deriveCluster, computeTps } from './view';
 
 export interface Deps {
@@ -221,12 +222,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
     const spec = OP_SPECS[type];
     if (requiresApproval(st, cluster, type, params)) {
-      const actor = actorOf(req);
-      const id = 'apr_' + crypto.randomBytes(5).toString('hex');
-      const dup = (st.settings.approvalRequests || []).find((r: any) => r.status === 'pending' && r.idempotencyKey === key);
-      const reqRec = dup || { id, status: 'pending', clusterId: cluster.id, clusterName: cluster.name, environment: cluster.environment, type, params, nodeId, ttlSeconds, idempotencyKey: key, requestedBy: actor, createdAt: nowIso(), expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), summary: describeOp(type, params) };
-      if (!dup) await store.mutate(d => { (d.settings.approvalRequests ||= []).push(reqRec); if (d.settings.approvalRequests.length > 200) d.settings.approvalRequests.splice(0, d.settings.approvalRequests.length - 200);
-        ops.audit(d, { clusterId: cluster.id, actor, action: 'approval.requested', status: 'OK', details: { id, type, summary: reqRec.summary } }); });
+      const reqRec = await requestApproval(store, ops.audit, { cluster, type, params, nodeId, ttlSeconds, key, actor: actorOf(req) });
       return res.status(202).json({ approval: reqRec, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
     }
     const r = await execute(cluster, type, params, nodeId, ttlSeconds, key, actorOf(req));
@@ -284,10 +280,10 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (how !== 'approve') { await done(how === 'reject' ? 'rejected' : 'cancelled'); return res.json({ ok: true }); }
     const cluster = store.peek().clusters.find((c: any) => c.id === rec.clusterId);
     if (!cluster) return res.status(404).json({ error: 'cluster_not_found' });
-    const r = await execute(cluster, rec.type, rec.params, rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
+    const r = rec.type === 'hba_cluster_apply' ? await hbaFanout(store, cluster, rec.params, 'appr:' + id, rec.requestedBy) : await execute(cluster, rec.type, rec.params, rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
     if (r.code >= 400) return res.status(r.code).json(r.body);                    // not consumed: the approver can retry when the node is back
     await done('approved');
-    res.json({ ok: true, operation: r.body.operation });
+    res.json({ ok: true, operation: r.body.operation, operations: r.body.operations });
   };
   app.post('/api/approvals/:id/approve', (req: Request, res: Response) => decide(req, res, 'approve'));
   app.post('/api/approvals/:id/reject', (req: Request, res: Response) => decide(req, res, 'reject'));

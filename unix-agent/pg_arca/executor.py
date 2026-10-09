@@ -74,6 +74,7 @@ class OperationExecutor:
         r("restore_database", self.h_restore_database, False)
         r("restore_object", self.h_restore_object, False)
         r("restore_promote", self.h_restore_promote, False)
+        r("hba_expire", self.h_hba_expire, False)
         r("restore_diff", self.h_restore_diff, False)
         r("restore_apply_rows", self.h_restore_apply_rows, False)
         r("wal_forensics", self.h_forensics, True)
@@ -464,6 +465,10 @@ class OperationExecutor:
     def h_hba_apply(self, p):
         from pg_arca import hba_ops
         return hba_ops.apply(self, p, OpError)
+
+    def h_hba_expire(self, p):
+        from pg_arca import hba_ops
+        return hba_ops.expire(self, p, OpError)
 
     def h_hba_rollback(self, p):
         from pg_arca import hba_ops

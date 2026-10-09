@@ -71,8 +71,32 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
   return submitted;
 }
 
+/** Temporary pg_hba rules ([until=...] in the comment): once the earliest expiry has passed, ask every online file-mode node to drop the elapsed ones.
+ *  Retried every 10 minutes until an hba_expire operation succeeds after the expiry; Patroni clusters are not handled (the UI does not offer expiry there). */
+export async function hbaExpiryTick(store: Store, now = Date.now()): Promise<string[]> {
+  const submitted: string[] = [];
+  const st = store.peek();
+  for (const [cid, list] of Object.entries((st.settings.hbaExpiry || {}) as Record<string, number[]>)) {
+    const due = list.filter(t => t <= now); if (!due.length) continue;
+    const c = (st.clusters as any[]).find(x => x.id === cid);
+    if (!c || c.haState?.managedByPatroni) continue;
+    const latestDue = Math.max(...due);
+    const nodes = Object.values(st.nodes).filter(n => n.clusterId === cid && online(n, now));
+    const mine = st.operations.filter(o => o.clusterId === cid && o.type === 'hba_expire');
+    const okAfter = (n: NodeRecord) => mine.some(o => o.nodeId === n.id && o.status === 'succeeded' && ts(o.createdAt) >= latestDue);
+    const pending = nodes.filter(n => !okAfter(n));
+    if (!pending.length && nodes.length) { await store.mutate(d => { const m = d.settings.hbaExpiry; m[cid] = (m[cid] || []).filter((t: number) => t > now); if (!m[cid].length) delete m[cid]; }); continue; }
+    for (const n of pending) {
+      const bucket = Math.floor(now / 600_000);
+      const r = await ops.submit(store, { type: 'hba_expire', clusterId: cid, nodeId: n.id, params: {}, idempotencyKey: `sched:${cid}:hbaexp:${n.id}:${bucket}`, createdBy: 'scheduler', ttlSeconds: 600 });
+      if (r.created) submitted.push(`${cid}:${n.id}`);
+    }
+  }
+  return submitted;
+}
+
 export function startScheduler(store: Store, everyMs = 30_000) {
-  const t = setInterval(() => { schedulerTick(store).catch(e => console.error('[scheduler]', e.message)); }, everyMs);
+  const t = setInterval(() => { schedulerTick(store).catch(e => console.error('[scheduler]', e.message)); hbaExpiryTick(store).catch(e => console.error('[hba-expiry]', e.message)); }, everyMs);
   t.unref?.();
   return () => clearInterval(t);
 }

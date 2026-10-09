@@ -105,6 +105,36 @@ class HbaPg(unittest.TestCase):
         with self.assertRaises(OpError): ex.h_hba_rollback({})
         ex.h_hba_apply({"rules": []}); self.assertFalse(any(hba.BEGIN in l for l in pt.cfg["postgresql"]["pg_hba"]))
 
+    def test_5_adopt_existing_rules_and_temporary_rules(self):
+        with open(self.hba, "w") as f:
+            f.write("# my file\nlocal all postgres trust\nlocal all all trust\nhost replication repl 10.0.2.0/24 scram-sha-256\nhost all all 0.0.0.0/0 scram-sha-256\n")
+        self.db.run_psql("SELECT pg_reload_conf();")
+        ex = self.ex()
+        before = ex.h_hba_read({})
+        existing = [hba.validate_rule(r["rule"])[0] for r in hba.parse_file(before["raw"])[0]]
+        # adopting while dropping one of them is refused: the effective policy must not change silently
+        with self.assertRaises(OpError) as c: ex.h_hba_apply({"rules": existing[:-1], "adopt": True})
+        self.assertIn("adopt would drop", str(c.exception))
+        res = ex.h_hba_apply({"rules": existing, "adopt": True}); self.assertTrue(res["changed"])
+        after = ex.h_hba_read({})
+        self.assertEqual(after["errors"], []); self.assertEqual(len(after["managed"]["rules"]), 4)
+        self.assertEqual([(e["type"], e["database"], e["user_name"], e["auth_method"]) for e in after["effective"]],
+                         [(e["type"], e["database"], e["user_name"], e["auth_method"]) for e in before["effective"]], "same effective rules in the same order")
+        self.assertEqual(len([l for l in after["raw"].split("\n") if l.strip() and not l.startswith("#") and "pgarca" not in l]), 4, "no duplicate rule lines left outside the block")
+        self.assertIn("# my file", after["raw"], "operator comments kept")
+        self.assertFalse(ex.h_hba_apply({"rules": existing, "adopt": True})["changed"], "idempotent")
+        # temporary rules: [until=...] in the comment; expire removes only the elapsed ones
+        past, future = "2020-01-01T00:00", "2999-01-01T00:00"
+        rules = existing + [R(comment="Consulente [until=%sZ]" % past, address="10.9.9.0/24"), R(comment="Audit [until=%sZ]" % future, address="10.8.8.0/24")]
+        ex.h_hba_apply({"rules": rules})
+        ex_res = ex.h_hba_expire({}); self.assertTrue(ex_res["changed"]); self.assertEqual(ex_res["removed"], 1)
+        left = ex.h_hba_read({})["managed"]["rules"]
+        self.assertEqual(len(left), 5); self.assertTrue(all("2020" not in r["comment"] for r in left)); self.assertEqual(ex.h_hba_read({})["errors"], [])
+        self.assertFalse(ex.h_hba_expire({})["changed"], "nothing else expired: no-op")
+        self.assertEqual(hba.until_of({"comment": "x [until=2999-01-01T00:00Z]"}), 32472144000)
+        pt = FakePatroni(self.hba, ["local all all trust"])
+        with self.assertRaises(OpError): self.ex(pt).h_hba_expire({})
+
 
 if __name__ == "__main__":
     unittest.main()

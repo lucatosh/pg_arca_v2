@@ -7,12 +7,13 @@ import { mountClusterRoutes, seedDemoOnFirstRun } from '../../server/clusters';
 import { mountAuthRoutes, requireAdmin, requiredRole } from '../../server/auth';
 import { mountAdvancedRoutes, isRisky } from '../../server/approvals';
 import { audit } from '../../server/ops';
+import { mountHbaRoutes } from '../../server/hba';
 
 (async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apr-')); const store = new Store(dir), app = new MiniApp(); const direct = new DirectDriver(store, loadSecretKey(dir));
   const demo = () => ({ id: 'cluster-demo', name: 'DEMO', environment: 'dev', isSandbox: true, databases: [], haState: { nodes: [] } });
   app.use(requireAdmin(store));
-  mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec }); mountClusterRoutes(app, store, direct, demo); mountAdvancedRoutes(app, store, audit);
+  mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec }); mountClusterRoutes(app, store, direct, demo); mountAdvancedRoutes(app, store, audit); mountHbaRoutes(app, store);
   await seedDemoOnFirstRun(store, demo);
   const call = (m: string, u: string, body?: any, cookie?: string, key?: string) => app.call(m, u, { body, headers: { ...(cookie ? { cookie } : {}), ...(key ? { 'idempotency-key': key } : {}) } });
   const PW = 'correct-horse-battery';
@@ -53,6 +54,11 @@ import { audit } from '../../server/ops';
   await store.mutate(d => { d.settings.approvalRequests.find((x: any) => x.id === id3).expiresAt = new Date(Date.now() - 1000).toISOString(); });
   r = await call('POST', `/api/approvals/${id3}/approve`, {}, A); assert.equal(r.status, 409); assert.equal(r.body.error, 'expired');
   assert.equal((await call('GET', '/api/approvals', undefined, O)).body.approvals.find((x: any) => x.id === id3).status, 'expired');
+  // the cluster-wide pg_hba apply is gated too, and approving it fans out to the nodes
+  const hr = await call('POST', '/api/clusters/prod1/hba/apply', { rules: [{ type: 'hostssl', database: 'all', user: 'app', address: '10.0.0.0/24', method: 'scram-sha-256' }] }, O, 'k7');
+  assert.equal(hr.status, 202); assert(hr.body.approval && !hr.body.operations, JSON.stringify(hr.body)); assert.equal(store.peek().operations.filter((o: any) => o.type === 'hba_apply').length, 0);
+  const hok = await call('POST', `/api/approvals/${hr.body.approval.id}/approve`, {}, A); assert.equal(hok.status, 200, JSON.stringify(hok.body)); assert.equal(hok.body.operations.length, 1);
+  assert.equal(store.peek().operations.filter((o: any) => o.type === 'hba_apply')[0].createdBy, 'ops');
   // switched off -> immediate again
   await call('PUT', '/api/advanced', { approvals: {} }, A);
   assert.equal((await call('POST', '/api/clusters/prod1/operations', setp, O, 'k6')).body.operation.type, 'pg_set_param');

@@ -63,6 +63,13 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata');
   await p.click('button:has-text("Applica"):not([disabled]) >> nth=0'); await p.click('.modal button:has-text("Applica")');
   await p.waitForSelector('text=applicato e verificato', { timeout: 15000 }); await shot('14d-hba-applied');
+  await p.waitForTimeout(2000);
+  // temporary rule + adopt existing rules
+  await p.click('button:has-text("Aggiungi una regola")'); await p.fill('input[list=hba-users]', 'ext'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.9.9.0/24');
+  await p.selectOption('select[aria-label="Validità della regola"]', '8'); await p.click('button:has-text("Aggiungi alla lista")'); await p.waitForSelector('text=Temporanea · scade tra 8 h');
+  await p.click('button:has-text("Adotta nel blocco gestito")'); await p.waitForSelector('td:has-text("amministra")', { timeout: 3000 }).catch(() => {});
+  await shot('14e0-adopt'); assert.equal(await p.locator('button:has-text("Adotta nel blocco gestito")').count(), 0, 'adopted');
+  await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata'); await shot('14f-hba-adopt');
   // palette
   await p.keyboard.press('Control+k'); await p.waitForSelector('[role=dialog][aria-label="Ricerca rapida"]'); await p.keyboard.type('registro'); await p.keyboard.press('Enter');
   await p.waitForSelector('text=Registro attività'); await shot('15-audit');

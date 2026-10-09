@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago } from '../ui';
 import { isTerminal, Op, toast, useQuery } from '../hooks';
-import { Issue, Rule, analyze, covers, describe, fill, fromEffective, key, sortRules, tag, validCidr } from '../hbaLogic';
+import { Issue, Rule, analyze, covers, describe, fill, fromEffective, key, sortRules, stripUntil, tag, untilLabel, untilOf, validCidr, withUntil } from '../hbaLogic';
 
 type Row = Rule & { _id: string };
 type Tpl = { id: string; name: string; description: string; envs: string[]; vars: { key: string; label: string; def: string; hint?: string }[]; rules: Rule[] };
@@ -95,6 +95,12 @@ function HbaInner({ c }: { c: any }) {
     const mk = new Set(shown.map(r => key(r)));
     return ((first?.effective || []) as any[]).filter(r => !r.error).map(fromEffective).filter(r => !mk.has(key(r)));
   }, [first, shown]);
+  // rules that live in the file outside the managed block, as the server sees them now; adopting = pulling every one of them into the block
+  const serverUnmanaged: Rule[] = useMemo(() => {
+    const mk = new Set((first?.managed?.rules || []).map((r: any) => key({ type: r.type, database: r.database, user: r.user, address: r.address || '', method: r.method, options: r.options } as Rule)));
+    return ((first?.effective || []) as any[]).filter(r => !r.error).map(fromEffective).filter(r => !mk.has(key(r)));
+  }, [first]);
+  const adopt = !patroni && serverUnmanaged.length > 0 && serverUnmanaged.every(u => shown.some(s => key(s) === key(u)));
   // Evaluation order = managed block first (top of the rules), then everything that was already in the file.
   const all: Rule[] = useMemo(() => [...shown, ...existing], [shown, existing]);
   const issues = useMemo(() => analyze(all), [all]);
@@ -126,7 +132,7 @@ function HbaInner({ c }: { c: any }) {
     setPlanning(true); setApplyRes(null);
     try {
       const rules = shown.map(clean);
-      const out = await Promise.all(okReads.map(async n => { try { const op = await runOp(c.id, 'hba_plan', { rules }, n.nodeId); return { node: n.nodeName, res: op.result }; } catch (e: any) { return { node: n.nodeName, error: e.message }; } }));
+      const out = await Promise.all(okReads.map(async n => { try { const op = await runOp(c.id, 'hba_plan', { rules, adopt }, n.nodeId); return { node: n.nodeName, res: op.result }; } catch (e: any) { return { node: n.nodeName, error: e.message }; } }));
       setPlanned({ sig: curSig, reads: out });
     } finally { setPlanning(false); }
   };
@@ -137,10 +143,11 @@ function HbaInner({ c }: { c: any }) {
   const doApply = async () => {
     setConfirmApply(false); setApplying(true); setApplyRes(null);
     try {
-      if (!keyRef.current || keyRef.current.sig !== curSig + force) keyRef.current = { sig: curSig + force, key: uid('hba') };
+      if (!keyRef.current || keyRef.current.sig !== curSig + force + adopt) keyRef.current = { sig: curSig + force + adopt, key: uid('hba') };
       const baseRevs: Record<string, string> = {}; okReads.forEach(n => { baseRevs[n.nodeId] = n.data.rev; });
-      const r = await api<{ mode: string; operations: { nodeId: string; nodeName: string; operation: Op }[] }>('POST', `/api/clusters/${encodeURIComponent(c.id)}/hba/apply`, { rules: shown.map(clean), baseRevs, force }, { key: keyRef.current.key });
-      const done = await Promise.all(r.operations.map(async o => { try { const op = await waitOp(o.operation); return { node: o.nodeName, ok: true, text: op.result?.changed === false ? 'già aggiornato' : op.result?.note || 'applicato e verificato' }; } catch (e: any) { return { node: o.nodeName, ok: false, text: e.message }; } }));
+      const r: any = await api<{ mode: string; approval?: any; operations: { nodeId: string; nodeName: string; operation: Op }[] }>('POST', `/api/clusters/${encodeURIComponent(c.id)}/hba/apply`, { rules: shown.map(clean), baseRevs, force, adopt }, { key: keyRef.current.key });
+      if (r.approval) { toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); keyRef.current = null; return; }
+      const done = await Promise.all((r.operations as any[]).map(async o => { try { const op = await waitOp(o.operation); return { node: o.nodeName, ok: true, text: op.result?.changed === false ? 'già aggiornato' : op.result?.note || 'applicato e verificato' }; } catch (e: any) { return { node: o.nodeName, ok: false, text: e.message }; } }));
       setApplyRes(done); keyRef.current = null;
       if (done.every(d => d.ok)) toast('Regole applicate e verificate', 'ok'); else toast('Alcuni nodi non hanno applicato le regole', 'bad');
       await st.load();
@@ -194,7 +201,7 @@ function HbaInner({ c }: { c: any }) {
 
     <Templates tpls={tpls.data?.templates || []} sugg={sugg} env={c.environment} all={all} hosts={hosts} onAdd={rs => add(rs)} />
 
-    {existing.length ? <Card title={`Regole già presenti nel file (${existing.length})`} pad={false} actions={<span className="small muted">Valgono dopo il blocco gestito · sola lettura</span>}>
+    {existing.length ? <Card title={`Regole già presenti nel file (${existing.length})`} pad={false} actions={!patroni && !adopt ? <Button sm onClick={() => add(serverUnmanaged)} title="Le sposta nel blocco gestito mantenendo lo stesso ordine di valutazione: potrai modificarle e riordinarle.">Adotta nel blocco gestito</Button> : <span className="small muted">Valgono dopo il blocco gestito · sola lettura</span>}>
       <div className="tablewrap"><table className="t hba"><tbody>{existing.map((r, i) => {
         const gi = shown.length + i; const is = issues.filter(x => x.index === gi);
         return <tr key={i}><td className="num muted" style={{ width: 28 }}>{gi + 1}</td><td><div>{describe(r)}</div>{is.map((x, k) => <div key={k} className={`small ${x.level === 'error' ? 'hba-err' : 'muted'}`}>{x.message}</div>)}</td>
@@ -225,8 +232,8 @@ function RuleLine({ r, n, issues, manual, onMove, onRemove }: { r: Row; n: numbe
   const t = tag(r);
   return <tr>
     <td className="num muted">{n}</td>
-    <td><div className="row wrap gap-s"><Badge kind={t.kind}>{t.label}</Badge><span>{describe(r)}</span></div>
-      {r.comment ? <div className="small muted">{r.comment}</div> : null}
+    <td><div className="row wrap gap-s"><Badge kind={t.kind}>{t.label}</Badge>{untilOf(r.comment) != null ? <Badge kind="warn" title={new Date(untilOf(r.comment)!).toLocaleString('it-CH')}>Temporanea · {untilLabel(untilOf(r.comment)!)}</Badge> : null}<span>{describe(r)}</span></div>
+      {stripUntil(r.comment) ? <div className="small muted">{stripUntil(r.comment)}</div> : null}
       {issues.map((x, k) => <div key={k} className={`small ${x.level === 'error' ? 'hba-err' : x.level === 'warn' ? 'hba-warn' : 'muted'}`}><Icon n={x.level === 'info' ? 'info' : 'alert'} s={13} /> {x.message}</div>)}</td>
     <td className="mono small muted">{r.type} {r.database} {r.user} {r.address || ''} {r.method}</td>
     <td className="num"><div className="row gap-s" style={{ justifyContent: 'flex-end' }}>
@@ -248,7 +255,7 @@ function Suggestions({ rows, existing, first, add, c }: { rows: Rule[]; existing
 }
 
 function AddRule({ rows, existing, first, hosts, order, onAdd }: { rows: Row[]; existing: Rule[]; first: any; hosts: string[]; order: Order; onAdd: (r: Rule) => void }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(false); const [valid, setValid] = useState('0'); const canTemp = first.mode !== 'patroni';
   const blank: Rule = { type: 'hostssl', database: 'all', user: '', address: '', method: 'scram-sha-256', comment: '' };
   const [r, setR] = useState<Rule>(blank);
   const set = (p: Partial<Rule>) => setR(x => {
@@ -260,7 +267,7 @@ function AddRule({ rows, existing, first, hosts, order, onAdd }: { rows: Row[]; 
   const dbs: string[] = ['all', 'replication', ...(first.suggest?.databases || [])]; const users: string[] = ['all', ...(first.suggest?.roles || [])];
   const addrErr = r.type === 'local' ? null : !r.address ? 'Indica un indirizzo o una rete.' : r.address === 'all' || validCidr(r.address) || ['samehost', 'samenet'].includes(r.address) ? null : 'Usa il formato CIDR, ad esempio 10.0.20.0/24 (un solo host: 10.0.20.5/32).';
   const ready = !!r.user.trim() && !!r.database.trim() && !addrErr;
-  const cand: Rule = { ...r, user: r.user.trim() || 'all', database: r.database.trim() || 'all' };
+  const cand: Rule = { ...r, user: r.user.trim() || 'all', database: r.database.trim() || 'all', comment: withUntil(r.comment, valid === '0' || !canTemp ? null : Date.now() + Number(valid) * 3600_000) };
   // what would happen to this rule if it were added now
   const preview = useMemo(() => {
     if (!ready) return { issues: [] as Issue[] };
@@ -282,11 +289,13 @@ function AddRule({ rows, existing, first, hosts, order, onAdd }: { rows: Row[]; 
           {nets.length ? <div className="row wrap gap-s" style={{ marginTop: 4 }}>{nets.map(n => <button key={n} type="button" className="chip" onClick={() => set({ address: n })}>{n}</button>)}</div> : null}</Field> : null}
         <Field label="Autenticazione"><select className="input" value={r.method} onChange={e => set({ method: e.target.value })}>{METHODS.filter(([m]) => r.type === 'local' || m !== 'peer').map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
         <Field label="Nota (solo per te)"><input className="input" value={r.comment || ''} onChange={e => set({ comment: e.target.value })} placeholder="A cosa serve" maxLength={120} /></Field>
+        {canTemp ? <Field label="Validità" hint="Una regola temporanea viene rimossa da sola alla scadenza (accesso per un consulente, un intervento).">
+          <select className="input" value={valid} onChange={e => setValid(e.target.value)} aria-label="Validità della regola"><option value="0">Permanente</option><option value="1">1 ora</option><option value="8">8 ore</option><option value="24">24 ore</option><option value="168">7 giorni</option><option value="720">30 giorni</option></select></Field> : null}
       </div>
       {ready ? <div className="hba-preview"><Icon n="eye" /> {describe(cand)}</div> : null}
       {adv.map((a, i) => <div key={i} className={a.kind === 'bad' ? 'hba-err' : a.kind === 'warn' ? 'hba-warn' : 'muted small'}><Icon n={a.kind === 'info' ? 'info' : 'alert'} s={14} /> {a.text}</div>)}
       {preview.issues.map((x, i) => <div key={i} className={x.level === 'error' ? 'hba-err' : x.level === 'warn' ? 'hba-warn' : 'muted small'}><Icon n="alert" s={14} /> {x.message}</div>)}
-      <div className="row"><Button kind="primary" icon="plus" disabled={!ready || dup || advice(cand).some(a => a.kind === 'bad')} onClick={() => { onAdd(cand); setR(blank); }}>Aggiungi alla lista</Button>
+      <div className="row"><Button kind="primary" icon="plus" disabled={!ready || dup || advice(cand).some(a => a.kind === 'bad')} onClick={() => { onAdd(cand); setR(blank); setValid('0'); }}>Aggiungi alla lista</Button>
         <span className="small muted">Non viene scritto nulla finché non verifichi e applichi.</span></div>
     </div></Card>;
 }

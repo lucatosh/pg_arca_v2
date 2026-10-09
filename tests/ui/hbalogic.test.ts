@@ -48,4 +48,10 @@ assert.equal(e.address, '10.0.0.0/24'); assert.equal(e.database, 'all');
 assert.equal(fromEffective({ type: 'host', database: ['a','b'], user_name: ['u'], address: '10.0.0.9', netmask: null, auth_method: 'md5' }).address, '10.0.0.9/32');
 // fill
 assert.equal(fill({ rules: [R('hostssl', '{{db}}', '{{u}}', '{{net}}')] }, { db: 'app', u: 'bob', net: '10.0.0.0/24' })[0].address, '10.0.0.0/24');
+// temporary rules
+import { withUntil, untilOf, stripUntil, untilLabel } from '../../src/hbaLogic';
+const t0 = Date.UTC(2030, 0, 1, 12, 0);
+assert.equal(withUntil('Consulente', t0), 'Consulente [until=2030-01-01T12:00Z]'); assert.equal(untilOf('x [until=2030-01-01T12:00Z]'), t0);
+assert.equal(stripUntil('Consulente [until=2030-01-01T12:00Z]'), 'Consulente'); assert.equal(withUntil('A [until=2030-01-01T12:00Z]', null), 'A'); assert.equal(untilOf('no'), null);
+assert.equal(untilLabel(t0, t0 - 30 * 60000), 'scade tra 30 min'); assert.equal(untilLabel(t0, t0 + 1), 'scaduta'); assert.equal(untilLabel(t0, t0 - 5 * 86400000), 'scade tra 5 giorni');
 console.log('hbalogic ok');

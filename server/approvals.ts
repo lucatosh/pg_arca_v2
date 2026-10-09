@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 /**
  * Four-eyes approval for risky operations, configurable per environment (settings.advanced.approvals = { prod: true, ... }).
  * A risky operation requested on a protected environment is NOT executed: it becomes a pending request that a DIFFERENT admin must approve
@@ -8,7 +9,7 @@ export const APPROVABLE_ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 
 /** What counts as risky: it changes live access, live parameters, the HA topology or overwrites/deletes live data. */
 export function isRisky(type: string, params: any = {}): boolean {
-  if (['hba_apply', 'hba_rollback', 'pg_set_param', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'patroni_config_patch', 'patroni_pause'].includes(type)) return true;
+  if (['hba_cluster_apply', 'hba_apply', 'hba_rollback', 'pg_set_param', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'patroni_config_patch', 'patroni_pause'].includes(type)) return true;
   if (type === 'restore_promote') return params.mode === 'replace';
   if (type === 'restore_apply_rows') return (params.delete_keys || []).length > 0 || (params.restore_keys || []).length > 0;
   return false;
@@ -17,7 +18,7 @@ export const advanced = (st: any) => ({ approvals: {} as Record<string, boolean>
 export const requiresApproval = (st: any, cluster: any, type: string, params: any) => !!advanced(st).approvals[cluster.environment] && isRisky(type, params);
 
 export function describeOp(type: string, params: any = {}): string {
-  const m: Record<string, string> = { hba_apply: 'Modifica delle regole di accesso (pg_hba)', hba_rollback: 'Ripristino delle regole di accesso precedenti', pg_set_param: `Cambio del parametro ${params.name ?? ''} = ${params.value ?? ''}`,
+  const m: Record<string, string> = { hba_cluster_apply: 'Modifica delle regole di accesso (pg_hba) su tutto il cluster', hba_apply: 'Modifica delle regole di accesso (pg_hba)', hba_rollback: 'Ripristino delle regole di accesso precedenti', pg_set_param: `Cambio del parametro ${params.name ?? ''} = ${params.value ?? ''}`,
     patroni_switchover: 'Switchover pianificato', patroni_failover: 'Failover forzato', patroni_restart: 'Riavvio via Patroni', patroni_config_patch: 'Modifica della configurazione Patroni', patroni_pause: 'Manutenzione Patroni',
     restore_promote: 'Sostituzione di una tabella con quella ripristinata', restore_apply_rows: `Recupero righe in ${params.object ?? ''}` };
   return m[type] || type;
@@ -41,4 +42,16 @@ export function mountAdvancedRoutes(app: any, store: any, audit: (d: any, e: any
     await store.mutate((d: any) => { d.settings.advanced = { ...(d.settings.advanced || {}), approvals: next }; audit(d, { actor: req.actor || 'admin', action: 'settings.approvals', status: 'OK', details: { environments: Object.keys(next) } }); });
     res.json(view(store.peek()));
   });
+}
+
+/** Create (or return the existing) pending request for the same user action (same Idempotency-Key). */
+export async function requestApproval(store: any, audit: (d: any, e: any) => void, a: { cluster: any; type: string; params: any; nodeId?: string; ttlSeconds?: number; key: string; actor: string }) {
+  const st = store.peek();
+  const dup = (st.settings.approvalRequests || []).find((r: any) => r.status === 'pending' && r.idempotencyKey === a.key);
+  if (dup) return dup;
+  const rec = { id: 'apr_' + crypto.randomBytes(5).toString('hex'), status: 'pending', clusterId: a.cluster.id, clusterName: a.cluster.name, environment: a.cluster.environment, type: a.type, params: a.params,
+    nodeId: a.nodeId, ttlSeconds: a.ttlSeconds, idempotencyKey: a.key, requestedBy: a.actor, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), summary: describeOp(a.type, a.params) };
+  await store.mutate((d: any) => { const l = (d.settings.approvalRequests ||= []); l.push(rec); if (l.length > 200) l.splice(0, l.length - 200);
+    audit(d, { clusterId: a.cluster.id, actor: a.actor, action: 'approval.requested', status: 'OK', details: { id: rec.id, type: a.type, summary: rec.summary } }); });
+  return rec;
 }
