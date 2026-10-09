@@ -21,7 +21,7 @@ export interface Deps {
 const safeEq = (a: string, b: string) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const REENROLL_WINDOW_MS = 10 * 60 * 1000;
 
-function authNode(store: Store, req: Request): NodeRecord | null {
+export function authNode(store: Store, req: Request): NodeRecord | null {
   const id = String(req.headers['x-arca-node'] || '');
   const auth = String(req.headers['authorization'] || '');
   if (!id || !auth.startsWith('Bearer ')) return null;
@@ -40,7 +40,11 @@ function refreshCluster(draft: any, clusterId: string) {
   draft.clusters[idx] = { ...view, clusterKey: prior.clusterKey };
 }
 
-export function mountAgentRoutes(app: any, store: Store) {
+export interface AgentHooks {
+  onLogs?: (node: NodeRecord, clusterName: string, logs: any[]) => void;
+}
+
+export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {}) {
   // ---- enrollment ---------------------------------------------------------
   app.post('/api/agent/enroll', async (req: Request, res: Response) => {
     const b = req.body || {};
@@ -115,12 +119,26 @@ export function mountAgentRoutes(app: any, store: Store) {
     res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, ops: todo.map(o => ({ id: o.id, type: o.type, params: o.params, attempt: o.attempts, cluster_id: o.clusterId })) });
   });
 
+  // ---- log ingest (authenticated, size-bounded) -----------------------------
+  app.post('/api/agent/logs', (req: Request, res: Response) => {
+    const node = authNode(store, req);
+    if (!node) return res.status(401).json({ error: 'unauthorized' });
+    const logs = Array.isArray(req.body?.logs) ? req.body.logs.slice(0, 500) : null;
+    if (!logs) return res.status(400).json({ error: 'logs_array_required' });
+    const cl = store.peek().clusters.find((c: any) => c.id === node.clusterId);
+    hooks.onLogs?.(node, cl?.name || '', logs);
+    res.json({ ok: true, ingested: logs.length });
+  });
+
   app.post('/api/agent/ops/:id/report', async (req: Request, res: Response) => {
     const node = authNode(store, req);
     if (!node) return res.status(401).json({ error: 'unauthorized' });
     const { status, result, error } = req.body || {};
     if (!['running', 'succeeded', 'failed'].includes(status)) return res.status(400).json({ error: 'invalid_status' });
     const r = await ops.report(store, node.id, req.params.id, status, result, error ? String(error).slice(0, 4000) : undefined);
+    if (r.ok && status === 'succeeded' && r.op?.type === 'discovery_scan' && result && typeof result === 'object') {
+      await store.mutate(d => { if (d.nodes[node.id]) { d.nodes[node.id].discovery = result; refreshCluster(d, d.nodes[node.id].clusterId || ''); } });
+    }
     res.status(r.ok ? 200 : 409).json({ ok: r.ok, reason: r.reason, status: r.op?.status });
   });
 }

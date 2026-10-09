@@ -10,14 +10,15 @@ Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggi
 - Ambiente di lavoro: niente PostgreSQL, niente `npm install` (registry irraggiungibile) => verifiche solo sintattiche
   (`python3 -m py_compile`, `tsc` solo errori TS1xxx). **Mai dichiarare "testato" ciò che non è stato eseguito.**
 
-## FATTO
+## FATTO (aggiornato)
 - [x] `unix-agent/pg_arca/discovery.py` riscritto: discovery reale (/proc, PGDATA, pg_control, postmaster.pid, Patroni REST, etcd, pgbouncer, pgBackRest). Testato su PGDATA sintetico.
-- [x] `server.ts`: 3 cluster finti -> 1 solo `buildDemoCluster()` (in corso: persistenza + rotte).
+- [x] `server/` nuovi moduli (testati con `tests/server/*.test.ts`, 3 suite passano): `store.ts` (stato atomico tmp+fsync+rename, serializzato, .bak), `ops.ts` (journal operazioni: idempotency-key, lease/redelivery, 1 op/cluster, TTL, transizioni monotone), `view.ts` (vista cluster da telemetria reale), `optypes.ts` (whitelist+validazione), `agents.ts` (enroll one-time token, heartbeat, report, log ingest, API token/nodi/operazioni), `auth.ts` (setup admin al primo avvio, scrypt, sessioni cookie, throttling), `direct.ts` (attach SENZA agente via `pg` + Patroni REST opzionale, segreti AES-256-GCM), `clusters.ts` (inventario, demo unico eliminabile/ripristinabile, detach atomico idempotente), `platform.ts` (audit reale, discovery aggregata), `selftest.ts` (selftest reale).
+- [x] `server.ts`: rimossi 3 cluster finti, generatore log finti, hub discovery finto (file di config inventati!), audit/PITR seed di audit, CORS aperto, endpoint agent non autenticati, `/api/tests/run` e selftest finti. Montato il nuovo motore. Rotte legacy simulate bloccate (501) per cluster reali (`legacyDemoOnly`).
+- NB: `pg`/`express` non installabili qui => `direct.ts` NON è mai stato eseguito contro un PostgreSQL reale. Test con stub. Va provato dal cliente: `npm install && npm test` poi attach-direct verso un PG vero.
 
 ## IN CORSO / DA FARE (ordine consigliato)
-1. server.ts: caricare/salvare inventario su `DATA_DIR/inventory.json` (flag `demoDeleted`), rimuovere rotte duplicate (clear-sandbox/seed-sandbox/DELETE x2), svuotare seed: `casStore`, `storageBackends`, `systemAuditEntries`, `pitrMilestones`, `pitrWeeklyHistory`, `latestDiscoveryScan`, `backupPolicies`, `clusterParametersStore`, `registeredAgentNodes`.
-2. server: gateway agenti autenticato (enrollment token, heartbeat con token, proxy per nodeId — NO host arbitrario/SSRF, niente fallback "simulato").
-3. server: attach diretto senza agente (modulo `pg`, aggiungere a package.json), introspezione ruolo/versione/DB/replica.
+1. (FATTO lato server, vedi sopra). Restano da sostituire con versioni reali le rotte legacy: `/api/ha/*`, `/api/hba/*`, `/api/auth/ldap*`, `/api/clusters/:id/parameters*`, `reload-conf`, `rolling-restart`, `/api/pitr/*`, `/api/stanzas/*`, `/api/backup-policies*`, `/api/storage/*` (oggi: solo demo).
+2. Agent esecutore operazioni (poll heartbeat -> journal su disco -> dispatch -> report), snapshot reale (`db_client.get_snapshot`), enroll/credenziali su disco 0600, log shipping reale, install script che scarica da `/agent/`.
 4. Agent: config senza default pericolosi (token vuoto => rifiuta l'avvio; CORS `*` rimosso; listen 127.0.0.1), `handle_create_backup` finto -> motore reale.
 5. Agent: motore backup/restore reale portato da `pgarca.py` (CAS con verifica hash in lettura, walk_pgdata con tablespace, incrementali via pd_lsn, sparse restore, istanza effimera isolata). `granular_restore.py` oggi è simulato (sleep, numeri fissi).
 6. UI (`src/App.tsx`): wizard "Collega cluster" (agente / diretto), stato vuoto, fluidità.

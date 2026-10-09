@@ -1,5 +1,4 @@
 import express, { Request, Response } from 'express';
-import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import http from 'http';
@@ -14,8 +13,30 @@ const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const server = http.createServer(app);
 
-app.use(cors());
-app.use(express.json());
+// ---- persistence, auth, real cluster/agent engine -------------------------------------------
+import { Store, loadSecretKey, newId } from './server/store';
+import { DirectDriver } from './server/direct';
+import { mountAgentRoutes, mountOperatorRoutes } from './server/agents';
+import { mountClusterRoutes, seedDemoOnFirstRun } from './server/clusters';
+import { mountPlatformRoutes } from './server/platform';
+import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv, sessionUser } from './server/auth';
+import { runSelfTest } from './server/selftest';
+import { spawn } from 'child_process';
+
+const DATA_DIR = process.env.PG_ARCA_DATA_DIR || path.join(process.cwd(), 'data');
+const store = new Store(DATA_DIR);
+const direct = new DirectDriver(store, loadSecretKey(DATA_DIR));
+
+// Same-origin console: no open CORS. Basic hardening headers.
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+app.use(express.json({ limit: '4mb' }));
+app.use(requireAdmin(store));
 
 // ==============================================================================
 // WebSocket Live Log Streaming & Tail Engine
@@ -103,7 +124,8 @@ export function broadcastLiveLog(entryData: Omit<LiveLogEntry, 'id'>) {
   }
 }
 
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, req: any) => {
+  if (!sessionUser(req)) { ws.close(4401, 'unauthenticated'); return; }
   const sub: WsSubscription = {
     ws,
     clusterId: 'all',
@@ -453,10 +475,19 @@ function buildDemoCluster(): ManagedCluster {
     lastSync: '2026-10-08T12:00:00Z',
     managedRolesCount: 48,
     managedGrantsCount: 162
+  }
   };
 }
 
-let clusters: ManagedCluster[] = [];
+// Legacy routes still read `clusters`; it is a live view over the persisted inventory.
+// (Writes made in place by legacy handlers are NOT durable: those handlers are being replaced
+//  by the operation journal, and are blocked for real clusters by `legacyDemoOnly` below.)
+const clusters: ManagedCluster[] = new Proxy([] as ManagedCluster[], {
+  get: (_t, p) => { const arr: any = store.peek().clusters; const v = arr[p]; return typeof v === 'function' ? v.bind(arr) : v; },
+  has: (_t, p) => p in (store.peek().clusters as any),
+  ownKeys: () => Reflect.ownKeys(store.peek().clusters as any),
+  getOwnPropertyDescriptor: (_t, p) => Reflect.getOwnPropertyDescriptor(store.peek().clusters as any, p),
+});
 
 
 // HBA Preset Templates Library
@@ -894,168 +925,11 @@ function evaluateClusterDiagnostics(cluster: ManagedCluster, dcs: ClusterDCSPara
 // REST Endpoints
 // ==============================================================================
 
-// Multi-Cluster Management
-app.get('/api/clusters', (req: Request, res: Response) => {
-  const { env } = req.query;
-  if (env && typeof env === 'string') {
-    return res.json({ clusters: clusters.filter(c => c.environment === env) });
-  }
-  res.json({ clusters });
-});
 
-app.get('/api/clusters/:id', (req: Request, res: Response) => {
-  const cluster = clusters.find(c => c.id === req.params.id);
-  if (!cluster) return res.status(404).json({ error: 'Cluster not found' });
-  res.json({ cluster });
-});
 
-app.post('/api/clusters', (req: Request, res: Response) => {
-  const { name, environment = 'prod', pgVersion = '16.4', host = '127.0.0.1', port = 5432, dcsType = 'etcd', dcsEndpoint, nodes } = req.body;
-  if (!name || !name.trim()) {
-    return res.status(400).json({ error: 'Nome del cluster obbligatorio' });
-  }
 
-  const primaryHost = host || '127.0.0.1';
-  const primaryPort = parseInt(port, 10) || 5432;
-  const clusterNodes: ClusterNode[] = nodes && nodes.length > 0 ? nodes : [
-    {
-      name: `${name}-node-01`,
-      role: 'primary',
-      state: 'running',
-      host: primaryHost,
-      port: primaryPort,
-      timeline: 1,
-      lsn: '0/01000000',
-      replicationLagBytes: 0,
-      replicationLagMs: 0,
-      dcsLeader: true,
-      cpuPercent: 4,
-      memoryPercent: 20,
-      connections: 5,
-      maxConnections: 200
-    }
-  ];
 
-  const newCluster: ManagedCluster = {
-    id: `cluster-${Date.now()}`,
-    name,
-    environment,
-    pgVersion,
-    status: 'healthy',
-    tps: 0,
-    totalSizeBytes: 0,
-    activeTimeline: 1,
-    currentLSN: '0/01000000',
-    features: { ...globalFeatureFlags },
-    databases: [],
-    isSandbox: false,
-    haState: {
-      clusterName: name,
-      dcsType: (dcsType as any) || 'etcd',
-      dcsEndpoint: dcsEndpoint || `http://${primaryHost}:2379`,
-      failoverMode: 'auto',
-      maintenanceMode: false,
-      activeTimeline: 1,
-      nodes: clusterNodes
-    },
-    hbaRules: [
-      { id: 'r1', order: 1, type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Local socket admin' },
-      { id: 'r2', order: 2, type: 'hostssl', database: 'all', user: 'all', address: `${primaryHost}/32`, method: 'scram-sha-256', comment: 'Host access' }
-    ],
-    ldapConfig: {
-      enabled: false,
-      serverUrl: '',
-      bindDN: '',
-      baseDN: '',
-      userFilter: '',
-      groupFilter: '',
-      sslVerify: true,
-      syncIntervalMinutes: 0,
-      lastSync: '',
-      managedRolesCount: 0,
-      managedGrantsCount: 0
-    }
-  };
-  clusters.push(newCluster);
-  res.status(201).json({ cluster: newCluster });
-});
 
-// Delete Cluster
-app.delete('/api/clusters/:id', (req: Request, res: Response) => {
-  const index = clusters.findIndex(c => c.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Cluster non trovato' });
-  }
-  const removed = clusters.splice(index, 1)[0];
-  res.json({
-    success: true,
-    message: `Cluster '${removed.name}' rimosso con successo dall'inventario.`,
-    removedId: removed.id
-  });
-});
-
-// Clear all Sandbox / Demo Clusters
-app.post('/api/clusters/clear-sandbox', (req: Request, res: Response) => {
-  const beforeCount = clusters.length;
-  clusters = clusters.filter(c => !c.isSandbox);
-  res.json({
-    success: true,
-    message: `Rimossi ${beforeCount - clusters.length} cluster demo sandbox. Inventario pronto per cluster reali.`,
-    remainingCount: clusters.length,
-    clusters
-  });
-});
-
-// Seed Demo Clusters
-app.post('/api/clusters/seed-sandbox', (req: Request, res: Response) => {
-  const sandboxIds = ['cluster-prod-01', 'cluster-prep-01', 'cluster-dev-01'];
-  let restored = 0;
-  for (const sId of sandboxIds) {
-    if (!clusters.some(c => c.id === sId)) {
-      if (sId === 'cluster-prod-01') {
-        clusters.push({
-          id: 'cluster-prod-01',
-          name: 'pg-prod-primary-eu',
-          environment: 'prod',
-          pgVersion: '16.4',
-          status: 'healthy',
-          tps: 4280,
-          totalSizeBytes: 4350000000,
-          activeTimeline: 3,
-          currentLSN: '0/1F8A9B20',
-          features: { ...globalFeatureFlags },
-          databases: defaultDatabases,
-          isSandbox: true,
-          haState: {
-            clusterName: 'pg-patroni-ha-prod',
-            dcsType: 'etcd',
-            dcsEndpoint: 'http://10.0.1.10:2379,http://10.0.1.11:2379,http://10.0.1.12:2379',
-            failoverMode: 'auto',
-            maintenanceMode: false,
-            activeTimeline: 3,
-            nodes: [
-              { name: 'pg-node-01', role: 'primary', state: 'running', host: '10.0.2.11', port: 5432, timeline: 3, lsn: '0/1F8A9B20', replicationLagBytes: 0, replicationLagMs: 0, dcsLeader: true, cpuPercent: 24, memoryPercent: 62, connections: 184, maxConnections: 500 },
-              { name: 'pg-node-02', role: 'sync_standby', state: 'streaming', host: '10.0.2.12', port: 5432, timeline: 3, lsn: '0/1F8A99F0', replicationLagBytes: 304, replicationLagMs: 2, dcsLeader: false, cpuPercent: 18, memoryPercent: 59, connections: 62, maxConnections: 500 },
-              { name: 'pg-node-03', role: 'replica', state: 'streaming', host: '10.0.2.13', port: 5432, timeline: 3, lsn: '0/1F8A9820', replicationLagBytes: 768, replicationLagMs: 14, dcsLeader: false, cpuPercent: 12, memoryPercent: 54, connections: 45, maxConnections: 500 }
-            ]
-          },
-          hbaRules: [
-            { id: 'r1', order: 1, type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Superuser local socket access' },
-            { id: 'r2', order: 2, type: 'hostssl', database: 'replication', user: 'replicator', address: '10.0.2.0/24', method: 'scram-sha-256', comment: 'Patroni & physical standby streaming replication' },
-            { id: 'r3', order: 3, type: 'hostssl', database: 'all', user: '+dba_team', address: '10.0.10.0/24', method: 'scram-sha-256', comment: 'DBA management subnet via LDAP2PG' }
-          ],
-          ldapConfig: { enabled: true, serverUrl: 'ldaps://ad-corp.domain.internal:636', bindDN: 'cn=pg_sync_svc,ou=ServiceAccounts,dc=domain,dc=internal', baseDN: 'ou=DatabaseUsers,dc=domain,dc=internal', userFilter: '(&(objectClass=user)(memberOf=cn=PostgresUsers,ou=Groups,dc=domain,dc=internal))', groupFilter: '(&(objectClass=group)(cn=pg_*))', sslVerify: true, syncIntervalMinutes: 30, lastSync: '2026-10-08T12:00:00Z', managedRolesCount: 48, managedGrantsCount: 162 }
-        });
-        restored++;
-      }
-    }
-  }
-  res.json({
-    success: true,
-    message: `Ripristinati cluster demo sandbox (${restored} aggiunti).`,
-    clusters
-  });
-});
 
 // Admin Feature Flags (Global and Per-Cluster)
 app.get('/api/admin/features', (req: Request, res: Response) => {
@@ -1634,99 +1508,10 @@ app.post('/api/clusters/:id/rolling-restart', (req: Request, res: Response) => {
 // ==============================================================================
 
 // In-memory registry of agent nodes connected via Outbound Push / Phone-Home
-const registeredAgentNodes: Record<string, any> = {};
 
-app.post('/api/agent/register-heartbeat', (req: Request, res: Response) => {
-  const payload = req.body;
-  const nodeKey = payload.node_name || req.ip || `node-${Date.now()}`;
-  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
-  registeredAgentNodes[nodeKey] = {
-    ...payload,
-    remoteIp: clientIp,
-    lastHeartbeat: new Date().toISOString(),
-    status: 'online'
-  };
 
-  res.json({
-    success: true,
-    registered: true,
-    node: nodeKey,
-    serverTime: new Date().toISOString(),
-    message: `Heartbeat acknowledged for ${nodeKey}`
-  });
-});
 
-app.get('/api/agent/nodes', (req: Request, res: Response) => {
-  const nodesList = Object.values(registeredAgentNodes);
-  res.json({
-    totalNodes: nodesList.length,
-    nodes: nodesList
-  });
-});
-
-app.get('/api/agent/node/:host/status', async (req: Request, res: Response) => {
-  const { host } = req.params;
-  const agentPort = process.env.PG_ARCA_AGENT_PORT || '9898';
-  const agentUrl = `http://${host}:${agentPort}/api/status`;
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(agentUrl, { signal: controller.signal });
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const data = await response.json();
-      return res.json({ connected: true, live: true, data });
-    }
-  } catch (err: any) {
-    // If real node is unreachable, return helpful status
-  }
-
-  // Graceful fallback showing node is expected
-  res.json({
-    connected: false,
-    live: false,
-    host,
-    port: agentPort,
-    message: `Node Agent at http://${host}:${agentPort} non raggiungibile o in standby. In ascolto su socket locale.`
-  });
-});
-
-app.post('/api/agent/node/:host/action', async (req: Request, res: Response) => {
-  const { host } = req.params;
-  const { action, payload } = req.body;
-  const agentPort = process.env.PG_ARCA_AGENT_PORT || '9898';
-  const targetPath = action === 'reload' ? '/api/pg/reload' : action === 'switchover' ? '/api/patroni/switchover' : '/api/wal/trigger-archive';
-  const agentUrl = `http://${host}:${agentPort}${targetPath}`;
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    const response = await fetch(agentUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload || {}),
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const data = await response.json();
-      return res.json({ executedOnLiveNode: true, host, result: data });
-    }
-  } catch (err: any) {
-    // Fallback
-  }
-
-  res.json({
-    executedOnLiveNode: false,
-    host,
-    action,
-    message: `Azione '${action}' simulata in locale: nodo fisico ${host}:${agentPort} offline.`
-  });
-});
 
 // ==============================================================================
 // High-Performance Real Network Scanner & Prober Engine
@@ -2220,118 +2005,6 @@ app.post('/api/network/probe-node', async (req: Request, res: Response) => {
   res.json(result);
 });
 
-// POST Import Discovered Cluster into Inventory
-app.post('/api/network/import-discovered', (req: Request, res: Response) => {
-  const { clusterName, environment = 'prod', nodes = [], dcsType = 'etcd', dcsEndpoint, pgVersion = '16.4' } = req.body;
-
-  if (!clusterName || !clusterName.trim()) {
-    return res.status(400).json({ error: 'Nome del cluster obbligatorio' });
-  }
-
-  const existingIdx = clusters.findIndex(c => c.name === clusterName);
-  if (existingIdx !== -1) {
-    const existing = clusters[existingIdx];
-    existing.environment = environment;
-    return res.json({
-      success: true,
-      action: 'updated',
-      message: `Cluster '${clusterName}' già presente: configurazione e nodi aggiornati.`,
-      cluster: existing
-    });
-  }
-
-  const clusterNodes: ClusterNode[] = (nodes.length > 0 ? nodes : [{ name: `${clusterName}-01`, host: '127.0.0.1', port: 5432, role: 'primary' }]).map((n: any, idx: number) => ({
-    name: n.name || `${clusterName}-0${idx + 1}`,
-    role: n.role || (idx === 0 ? 'primary' : 'sync_standby'),
-    state: 'running',
-    host: n.host || '127.0.0.1',
-    port: n.port || 5432,
-    timeline: 1,
-    lsn: '0/01000000',
-    replicationLagBytes: 0,
-    replicationLagMs: 0,
-    dcsLeader: n.role === 'primary' || idx === 0,
-    cpuPercent: 8,
-    memoryPercent: 35,
-    connections: 12,
-    maxConnections: 200
-  }));
-
-  const primaryHost = clusterNodes[0]?.host || '127.0.0.1';
-  const subnetMask = primaryHost.includes('.') ? `${primaryHost.substring(0, primaryHost.lastIndexOf('.'))}.0/24` : '127.0.0.1/32';
-
-  const newCluster: ManagedCluster = {
-    id: `cluster-net-${Date.now()}`,
-    name: clusterName,
-    environment,
-    pgVersion,
-    status: 'healthy',
-    tps: 0,
-    totalSizeBytes: 0,
-    activeTimeline: 1,
-    currentLSN: '0/01000000',
-    isSandbox: false,
-    databases: [],
-    features: { ...globalFeatureFlags },
-    haState: {
-      clusterName,
-      dcsType,
-      dcsEndpoint: dcsEndpoint || `http://${primaryHost}:2379`,
-      failoverMode: 'auto',
-      maintenanceMode: false,
-      activeTimeline: 1,
-      nodes: clusterNodes
-    },
-    hbaRules: [
-      { id: 'hba-1', order: 1, type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Local unix socket' },
-      { id: 'hba-2', order: 2, type: 'hostssl', database: 'all', user: 'all', address: subnetMask, method: 'scram-sha-256', comment: 'Cluster network CIDR' }
-    ],
-    ldapConfig: {
-      enabled: false,
-      serverUrl: '',
-      bindDN: '',
-      baseDN: '',
-      userFilter: '',
-      groupFilter: '',
-      sslVerify: true,
-      syncIntervalMinutes: 60,
-      lastSync: '',
-      managedRolesCount: 0,
-      managedGrantsCount: 0
-    }
-  };
-
-  clusters.push(newCluster);
-
-  logSystemAudit({
-    category: 'discovery',
-    action: `Importazione Cluster di Rete: ${clusterName}`,
-    status: 'SUCCESS',
-    user: 'admin/network_scanner',
-    details: `Importato con successo cluster reale '${clusterName}' con ${clusterNodes.length} nodi fisici e DCS ${dcsType}.`,
-    clusterId: newCluster.id,
-    clusterName: newCluster.name
-  });
-
-  broadcastLiveLog({
-    timestamp: new Date().toISOString(),
-    clusterId: newCluster.id,
-    clusterName: newCluster.name,
-    nodeName: clusterNodes[0]?.name || 'node-01',
-    nodeHost: primaryHost,
-    service: 'patroni',
-    level: 'INFO',
-    message: `Cluster '${clusterName}' importato nell'inventario globale. Monitoraggio Patroni & WAL attivo.`,
-    raw: `[INVENTORY] Cluster '${clusterName}' added with ${clusterNodes.length} nodes.`
-  });
-
-  res.status(201).json({
-    success: true,
-    action: 'created',
-    message: `Cluster reale '${clusterName}' registrato con successo nell'inventario con ${clusterNodes.length} nodi!`,
-    cluster: newCluster
-  });
-});
 
 // GET Live Logs History (REST endpoint)
 app.get('/api/logs/history', (req: Request, res: Response) => {
@@ -2362,981 +2035,9 @@ app.get('/api/logs/history', (req: Request, res: Response) => {
   });
 });
 
-// POST External Agent Logs Ingest
-app.post('/api/agent/logs', (req: Request, res: Response) => {
-  const { logs } = req.body;
-  if (Array.isArray(logs)) {
-    for (const log of logs) {
-      broadcastLiveLog(log);
-    }
-    return res.json({ success: true, ingested: logs.length });
-  }
-  res.status(400).json({ error: 'Array di log richiesto' });
-});
 
-// POST Clear Sandbox Demo Clusters
-app.post('/api/clusters/clear-sandbox', (req: Request, res: Response) => {
-  const prevCount = clusters.length;
-  clusters = clusters.filter(c => !c.isSandbox);
-  res.json({
-    success: true,
-    clearedCount: prevCount - clusters.length,
-    remainingClusters: clusters.length,
-    message: 'Tutti i cluster dimostrativi di sandbox sono stati rimossi. Ora è visibile solo l\'infrastruttura reale.'
-  });
-});
 
-// POST Seed Sandbox Demo Clusters
-app.post('/api/clusters/seed-sandbox', (req: Request, res: Response) => {
-  // If not already present, re-add standard sandbox clusters
-  if (!clusters.some(c => c.id === 'cluster-prod-01')) {
-    clusters.push({
-      id: 'cluster-prod-01',
-      name: 'pg-prod-primary-eu',
-      environment: 'prod',
-      pgVersion: '16.4',
-      status: 'healthy',
-      tps: 4280,
-      totalSizeBytes: 4350000000,
-      activeTimeline: 3,
-      currentLSN: '0/1F8A9B20',
-      isSandbox: true,
-      features: { ...globalFeatureFlags },
-      databases: defaultDatabases,
-      haState: {
-        clusterName: 'pg-patroni-ha-prod',
-        dcsType: 'etcd',
-        dcsEndpoint: 'http://10.0.1.10:2379,http://10.0.1.11:2379',
-        failoverMode: 'auto',
-        maintenanceMode: false,
-        activeTimeline: 3,
-        nodes: [
-          { name: 'pg-node-01', role: 'primary', state: 'running', host: '10.0.2.11', port: 5432, timeline: 3, lsn: '0/1F8A9B20', replicationLagBytes: 0, replicationLagMs: 0, dcsLeader: true, cpuPercent: 24, memoryPercent: 62, connections: 184, maxConnections: 500 },
-          { name: 'pg-node-02', role: 'sync_standby', state: 'streaming', host: '10.0.2.12', port: 5432, timeline: 3, lsn: '0/1F8A99F0', replicationLagBytes: 304, replicationLagMs: 2, dcsLeader: false, cpuPercent: 18, memoryPercent: 59, connections: 62, maxConnections: 500 }
-        ]
-      },
-      hbaRules: [
-        { id: 'r1', order: 1, type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Superuser local socket access' }
-      ],
-      ldapConfig: {
-        enabled: true,
-        serverUrl: 'ldaps://ad-corp.domain.internal:636',
-        bindDN: 'cn=pg_sync_svc,ou=ServiceAccounts,dc=domain,dc=internal',
-        baseDN: 'ou=DatabaseUsers,dc=domain,dc=internal',
-        userFilter: '(&(objectClass=user)(memberOf=cn=PostgresUsers,ou=Groups,dc=domain,dc=internal))',
-        groupFilter: '(&(objectClass=group)(cn=pg_*))',
-        sslVerify: true,
-        syncIntervalMinutes: 30,
-        lastSync: '2026-10-08T12:00:00Z',
-        managedRolesCount: 48,
-        managedGrantsCount: 162
-      }
-    });
-  }
 
-  res.json({
-    success: true,
-    clustersCount: clusters.length,
-    message: 'Cluster sandbox dimostrativo caricato per test di tutte le funzionalità.'
-  });
-});
-
-// DELETE Cluster by ID
-app.delete('/api/clusters/:id', (req: Request, res: Response) => {
-  const idx = clusters.findIndex(c => c.id === req.params.id);
-  if (idx !== -1) {
-    const removed = clusters.splice(idx, 1)[0];
-    return res.json({
-      success: true,
-      message: `Cluster '${removed.name}' eliminato dall'inventario.`,
-      cluster: removed
-    });
-  }
-  res.status(404).json({ error: 'Cluster non trovato' });
-});
-
-// Periodic operational engine log generator
-setInterval(() => {
-  if (clusters.length === 0) return;
-  const cluster = clusters[Math.floor(Math.random() * clusters.length)];
-  const nodes = cluster.haState?.nodes || [];
-  if (nodes.length === 0) return;
-  const node = nodes[Math.floor(Math.random() * nodes.length)];
-
-  const sampleMessages = [
-    { service: 'patroni' as const, level: 'INFO' as const, msg: `patroni.ha: leader key '/service/${cluster.haState.clusterName}/leader' TTL 30s renewed successfully (loop_wait=10s)` },
-    { service: 'patroni' as const, level: 'INFO' as const, msg: `patroni.dcs: consensus member health check PASSED on etcd3 (quorum: 3/3 members)` },
-    { service: 'postgres' as const, level: 'INFO' as const, msg: `checkpoint complete: wrote 84 buffers (0.4%); 0 WAL file(s) added, 0 removed, 1 recycled; write=0.182 s, sync=0.012 s, total=0.210 s` },
-    { service: 'postgres' as const, level: 'DEBUG' as const, msg: `autovacuum: processing database (tuples: 4200 modified, table=invoices, vacuumed=0, analyzed=1)` },
-    { service: 'wal_archiver' as const, level: 'INFO' as const, msg: `pg_arca archive-push: WAL segment 0000000${cluster.activeTimeline}000000000000002F compressed 16MB -> 3.4MB (zstd level 3) in 42ms; SHA-256 block hash verified; 0-gap verified` },
-    { service: 'agent' as const, level: 'INFO' as const, msg: `pg-arca-agent: heartbeat sent to control plane (status: healthy, memory_used: 34%, load: 0.12, 0.08, 0.05)` },
-    { service: 'etcd' as const, level: 'DEBUG' as const, msg: `etcdserver: raft consensus round-trip latency: 1.4ms; leader lease intact` }
-  ];
-
-  const chosen = sampleMessages[Math.floor(Math.random() * sampleMessages.length)];
-  broadcastLiveLog({
-    timestamp: new Date().toISOString(),
-    clusterId: cluster.id,
-    clusterName: cluster.name,
-    nodeName: node.name,
-    nodeHost: node.host,
-    service: chosen.service,
-    level: chosen.level,
-    message: chosen.msg,
-    raw: `[${new Date().toISOString()}] [${chosen.level}] [${chosen.service}] [${node.name}] ${chosen.msg}`
-  });
-}, 2400);
-
-// ==============================================================================
-// Global Admin Discovery Hub & Dynamic Configuration Loading Engine
-// ==============================================================================
-
-export interface SearchDirectoryConfig {
-  id: string;
-  path: string;
-  tag: 'patroni' | 'postgres' | 'dcs' | 'pooler' | 'archive' | 'custom';
-  description: string;
-  enabled: boolean;
-  recursive: boolean;
-  pattern: string;
-  exists?: boolean;
-}
-
-let discoverySearchPaths: SearchDirectoryConfig[] = [
-  { id: 'dir-1', path: '/etc/patroni', tag: 'patroni', description: 'Patroni Configuration Directory (patroni.yml)', enabled: true, recursive: true, pattern: '*.yml,*.yaml' },
-  { id: 'dir-2', path: '/etc/postgresql', tag: 'postgres', description: 'Debian/Ubuntu PostgreSQL Configurations (postgresql.conf, pg_hba.conf)', enabled: true, recursive: true, pattern: 'postgresql.conf,pg_hba.conf,*.conf' },
-  { id: 'dir-3', path: '/var/lib/postgresql', tag: 'postgres', description: 'PostgreSQL Data Directory & Clusters ($PGDATA)', enabled: true, recursive: true, pattern: 'global,base,PG_VERSION' },
-  { id: 'dir-4', path: '/var/lib/pgsql', tag: 'postgres', description: 'RHEL/Rocky Linux PostgreSQL Data Directory', enabled: true, recursive: true, pattern: 'postgresql.conf,*.conf' },
-  { id: 'dir-5', path: '/etc/etcd', tag: 'dcs', description: 'ETCD Distributed Consensus Store Configuration', enabled: true, recursive: false, pattern: '*.conf,*.yml,*.yaml' },
-  { id: 'dir-6', path: '/etc/pgbouncer', tag: 'pooler', description: 'PgBouncer Connection Pooler Configurations', enabled: true, recursive: false, pattern: '*.ini' },
-  { id: 'dir-7', path: '/etc/haproxy', tag: 'pooler', description: 'HAProxy Load Balancer Configurations', enabled: true, recursive: false, pattern: '*.cfg' },
-  { id: 'dir-8', path: '/etc/pgbackrest', tag: 'archive', description: 'pgBackRest Stanzas & Repository Configurations', enabled: true, recursive: false, pattern: '*.conf' },
-  { id: 'dir-9', path: '/etc/pg-arca', tag: 'archive', description: 'pg_arca Enterprise Agent & Archiver Configs', enabled: true, recursive: false, pattern: '*.conf' },
-  { id: 'dir-10', path: '/var/lib/pgarca', tag: 'archive', description: 'pg_arca CAS Repository & Safety Snapshots Vault', enabled: true, recursive: true, pattern: 'chunks,manifests' }
-];
-
-let discoveryVariables: Record<string, string> = {
-  '$PGDATA': '/var/lib/postgresql/16/main',
-  '$PGVERSION': '16',
-  '$CLUSTER_NAME': 'cluster-prod-01',
-  '$ENVIRONMENT': 'prod',
-  '$HOSTNAME': 'ubuntu-db-01',
-  '$PATRONI_CONFIG_DIR': '/etc/patroni',
-  '$ETCD_DATA_DIR': '/var/lib/etcd'
-};
-
-const discoveryPresets: Record<string, { name: string; description: string; paths: SearchDirectoryConfig[]; variables: Record<string, string> }> = {
-  ubuntu_debian: {
-    name: 'Ubuntu / Debian Patroni Cluster (Standard)',
-    description: 'Struttura predefinita per installazioni Debian/Ubuntu con pacchetti PGDG e Patroni.',
-    paths: [
-      { id: 'p1', path: '/etc/patroni', tag: 'patroni', description: 'Patroni YAML configs', enabled: true, recursive: true, pattern: '*.yml,*.yaml' },
-      { id: 'p2', path: '/etc/postgresql/$PGVERSION/main', tag: 'postgres', description: 'Postgres conf & hba', enabled: true, recursive: true, pattern: '*.conf' },
-      { id: 'p3', path: '/var/lib/postgresql/$PGVERSION/main', tag: 'postgres', description: 'Postgres data directory', enabled: true, recursive: true, pattern: 'global,base' },
-      { id: 'p4', path: '/etc/etcd', tag: 'dcs', description: 'ETCD cluster config', enabled: true, recursive: false, pattern: '*.conf,*.yml' },
-      { id: 'p5', path: '/etc/pgbouncer', tag: 'pooler', description: 'PgBouncer connection pooler', enabled: true, recursive: false, pattern: '*.ini' },
-      { id: 'p6', path: '/etc/pg-arca', tag: 'archive', description: 'pg_arca agent configuration', enabled: true, recursive: false, pattern: '*.conf' }
-    ],
-    variables: {
-      '$PGDATA': '/var/lib/postgresql/16/main',
-      '$PGVERSION': '16',
-      '$CLUSTER_NAME': 'cluster-prod-01',
-      '$ENVIRONMENT': 'prod',
-      '$HOSTNAME': 'ubuntu-db-01'
-    }
-  },
-  rhel_rocky: {
-    name: 'RHEL / Rocky / AlmaLinux Enterprise (RPM Layout)',
-    description: 'Struttura per distribuzioni Enterprise Linux basate su RPM e systemd.',
-    paths: [
-      { id: 'r1', path: '/etc/patroni', tag: 'patroni', description: 'Patroni YAML configs', enabled: true, recursive: true, pattern: '*.yml,*.yaml' },
-      { id: 'r2', path: '/var/lib/pgsql/$PGVERSION/data', tag: 'postgres', description: 'RHEL Postgres PGDATA and configs', enabled: true, recursive: true, pattern: '*.conf' },
-      { id: 'r3', path: '/etc/etcd', tag: 'dcs', description: 'ETCD cluster config', enabled: true, recursive: false, pattern: '*.conf,*.yml' },
-      { id: 'r4', path: '/etc/pg-arca', tag: 'archive', description: 'pg_arca agent configuration', enabled: true, recursive: false, pattern: '*.conf' }
-    ],
-    variables: {
-      '$PGDATA': '/var/lib/pgsql/16/data',
-      '$PGVERSION': '16',
-      '$CLUSTER_NAME': 'cluster-prod-01',
-      '$ENVIRONMENT': 'prod',
-      '$HOSTNAME': 'rhel-node-01'
-    }
-  },
-  custom_enterprise: {
-    name: 'Multi-Tenant Custom Enterprise Mounts',
-    description: 'Layout per SAN/NAS dedicati, volumi NVMe separati e percorsi custom per banca/telecom.',
-    paths: [
-      { id: 'c1', path: '/opt/patroni/conf', tag: 'patroni', description: 'Centralized Patroni Mount', enabled: true, recursive: true, pattern: '*.yml' },
-      { id: 'c2', path: '/data/db/clusters/$CLUSTER_NAME', tag: 'postgres', description: 'Enterprise Data Mount', enabled: true, recursive: true, pattern: '*.conf' },
-      { id: 'c3', path: '/etc/etcd', tag: 'dcs', description: 'ETCD DCS cluster', enabled: true, recursive: false, pattern: '*.yml' },
-      { id: 'c4', path: '/etc/pg-arca', tag: 'archive', description: 'pg_arca agent configuration', enabled: true, recursive: false, pattern: '*.conf' }
-    ],
-    variables: {
-      '$PGDATA': '/data/db/clusters/cluster-prod-01',
-      '$PGVERSION': '16',
-      '$CLUSTER_NAME': 'cluster-prod-01',
-      '$ENVIRONMENT': 'prod',
-      '$HOSTNAME': 'ent-db-01'
-    }
-  }
-};
-
-let latestDiscoveryScan: any = {
-  lastScannedAt: new Date().toISOString(),
-  totalDirectoriesScanned: 10,
-  patroniClustersFound: 1,
-  postgresInstancesFound: 1,
-  etcdClustersFound: 1,
-  pgbouncerInstancesFound: 1,
-  configFilesFound: 8,
-  patroniClusters: [
-    {
-      id: 'disc-cluster-prod-01',
-      name: 'pg-patroni-ha-prod',
-      environment: 'prod',
-      detectedFrom: '/etc/patroni/patroni.yml',
-      dcsType: 'etcd',
-      dcsEndpoint: 'http://10.0.1.10:2379,http://10.0.1.11:2379,http://10.0.1.12:2379',
-      restapiEndpoint: 'http://127.0.0.1:8008',
-      pgDataDir: '/var/lib/postgresql/16/main',
-      pgVersion: '16.4',
-      activeNodesCount: 3,
-      leaderNode: 'pg-node-01',
-      status: 'ready_to_import',
-      walArchiveEnabled: true,
-      parameters: {
-        max_connections: 200,
-        shared_buffers: '16GB',
-        wal_level: 'replica',
-        archive_mode: 'on',
-        archive_command: '/opt/pg-arca/pg-arca-wal-archive.sh %p %f',
-        checkpoint_completion_target: '0.9',
-        synchronous_commit: 'on'
-      },
-      discoveredFiles: [
-        { path: '/etc/patroni/patroni.yml', type: 'patroni_yaml', sizeBytes: 2420 },
-        { path: '/etc/postgresql/16/main/postgresql.conf', type: 'postgresql_conf', sizeBytes: 28400 },
-        { path: '/etc/postgresql/16/main/pg_hba.conf', type: 'pg_hba_conf', sizeBytes: 4620 },
-        { path: '/etc/etcd/etcd.conf.yml', type: 'etcd_conf', sizeBytes: 1850 }
-      ]
-    }
-  ],
-  postgresInstances: [
-    {
-      version: '16.4 (Ubuntu 16.4-1.pgdg22.04+1)',
-      dataDirectory: '/var/lib/postgresql/16/main',
-      configFile: '/etc/postgresql/16/main/postgresql.conf',
-      hbaFile: '/etc/postgresql/16/main/pg_hba.conf',
-      port: 5432,
-      socketDirectory: '/var/run/postgresql',
-      isManagedByPatroni: true,
-      archiveMode: 'on',
-      walLevel: 'replica',
-      activeConnections: 184,
-      maxConnections: 200
-    }
-  ],
-  etcdClusters: [
-    {
-      clusterToken: 'etcd-patroni-prod-cluster',
-      clientUrls: ['http://10.0.1.10:2379', 'http://10.0.1.11:2379', 'http://10.0.1.12:2379'],
-      peerUrls: ['http://10.0.1.10:2380', 'http://10.0.1.11:2380', 'http://10.0.1.12:2380'],
-      configPath: '/etc/etcd/etcd.conf.yml',
-      dataDir: '/var/lib/etcd/default.etcd',
-      members: ['etcd-01 (10.0.1.10)', 'etcd-02 (10.0.1.11)', 'etcd-03 (10.0.1.12)']
-    }
-  ],
-  pgbouncerInstances: [
-    {
-      configPath: '/etc/pgbouncer/pgbouncer.ini',
-      port: 6432,
-      poolMode: 'transaction',
-      maxClientConn: 1000,
-      defaultPoolSize: 50,
-      authType: 'scram-sha-256',
-      status: 'active'
-    }
-  ],
-  discoveredConfigFiles: [
-    {
-      path: '/etc/patroni/patroni.yml',
-      name: 'patroni.yml',
-      type: 'patroni_yaml',
-      sizeBytes: 2420,
-      scope: 'pg-patroni-ha-prod',
-      node: 'pg-node-01',
-      highlights: { dcs: 'etcd', port: 8008, data_dir: '/var/lib/postgresql/16/main' }
-    },
-    {
-      path: '/etc/postgresql/16/main/postgresql.conf',
-      name: 'postgresql.conf',
-      type: 'postgresql_conf',
-      sizeBytes: 28400,
-      highlights: { shared_buffers: '16GB', max_connections: '200', wal_level: 'replica', archive_mode: 'on' }
-    },
-    {
-      path: '/etc/postgresql/16/main/pg_hba.conf',
-      name: 'pg_hba.conf',
-      type: 'pg_hba_conf',
-      sizeBytes: 4620,
-      highlights: { rule_count: 8, auth_method: 'scram-sha-256' }
-    },
-    {
-      path: '/etc/etcd/etcd.conf.yml',
-      name: 'etcd.conf.yml',
-      type: 'etcd_conf',
-      sizeBytes: 1850,
-      highlights: { client_port: 2379, peer_port: 2380 }
-    },
-    {
-      path: '/etc/pgbouncer/pgbouncer.ini',
-      name: 'pgbouncer.ini',
-      type: 'pgbouncer_ini',
-      sizeBytes: 1320,
-      highlights: { listen_port: 6432, pool_mode: 'transaction' }
-    },
-    {
-      path: '/etc/pg-arca/agent.conf',
-      name: 'agent.conf',
-      type: 'pg_arca_conf',
-      sizeBytes: 1450,
-      highlights: { auth_mode: 'token', listen_port: 9898, compression: 'zstd' }
-    }
-  ],
-  systemdServices: [
-    { unit: 'patroni.service', active: true, description: 'Patroni High-Availability Cluster Orchestrator' },
-    { unit: 'postgresql@16-main.service', active: true, description: 'PostgreSQL 16 Database Cluster (managed by Patroni)' },
-    { unit: 'etcd.service', active: true, description: 'ETCD Distributed Consensus Store' },
-    { unit: 'pgbouncer.service', active: true, description: 'PgBouncer Connection Pooler' },
-    { unit: 'pg-arca-agent.service', active: true, description: 'pg_arca Enterprise Archiver & Restore Agent' }
-  ],
-  runningProcesses: [
-    { pid: 1420, name: 'patroni', cmdline: '/usr/bin/python3 /usr/bin/patroni /etc/patroni/patroni.yml', user: 'postgres' },
-    { pid: 1488, name: 'postgres', cmdline: '/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main --config-file=/etc/postgresql/16/main/postgresql.conf', user: 'postgres' },
-    { pid: 890, name: 'etcd', cmdline: '/usr/bin/etcd --config-file /etc/etcd/etcd.conf.yml', user: 'etcd' },
-    { pid: 2105, name: 'pgbouncer', cmdline: '/usr/sbin/pgbouncer -d /etc/pgbouncer/pgbouncer.ini', user: 'postgres' },
-    { pid: 3120, name: 'pg-arca-agent', cmdline: '/usr/bin/python3 /opt/pg-arca/pg-arca-agent.py', user: 'postgres' }
-  ],
-  listeningPorts: [
-    { port: 5432, service: 'PostgreSQL', status: 'LISTEN', open: true },
-    { port: 8008, service: 'Patroni REST API', status: 'LISTEN', open: true },
-    { port: 2379, service: 'ETCD Client API', status: 'LISTEN', open: true },
-    { port: 2380, service: 'ETCD Peer Comm', status: 'LISTEN', open: true },
-    { port: 6432, service: 'PgBouncer Pooler', status: 'LISTEN', open: true },
-    { port: 9898, service: 'pg_arca Agent Daemon', status: 'LISTEN', open: true }
-  ]
-};
-
-// GET Discovery Settings
-app.get('/api/discovery/settings', (req: Request, res: Response) => {
-  res.json({
-    searchPaths: discoverySearchPaths,
-    variables: discoveryVariables,
-    presets: discoveryPresets
-  });
-});
-
-// POST Discovery Settings Update
-app.post('/api/discovery/settings', (req: Request, res: Response) => {
-  const { searchPaths, variables } = req.body;
-  if (Array.isArray(searchPaths)) {
-    discoverySearchPaths = searchPaths;
-  }
-  if (variables && typeof variables === 'object') {
-    discoveryVariables = { ...discoveryVariables, ...variables };
-  }
-  res.json({
-    success: true,
-    message: 'Directory di ricerca e variabili globali aggiornate con successo.',
-    searchPaths: discoverySearchPaths,
-    variables: discoveryVariables
-  });
-});
-
-// POST Run Discovery Scan
-app.post('/api/discovery/scan', async (req: Request, res: Response) => {
-  const { targetNode = 'all' } = req.body;
-  
-  // Update last scanned timestamp
-  latestDiscoveryScan = {
-    ...latestDiscoveryScan,
-    lastScannedAt: new Date().toISOString(),
-    totalDirectoriesScanned: discoverySearchPaths.filter(p => p.enabled).length
-  };
-
-  res.json({
-    success: true,
-    message: `Scansione di auto-rilevamento completata su ${discoverySearchPaths.filter(p => p.enabled).length} directory configurate.`,
-    scan: latestDiscoveryScan
-  });
-});
-
-// GET Discovery Results
-app.get('/api/discovery/results', (req: Request, res: Response) => {
-  res.json(latestDiscoveryScan);
-});
-
-// POST Import Discovered Cluster into Inventory
-app.post('/api/discovery/import-cluster', (req: Request, res: Response) => {
-  const { clusterId, customName, environment = 'prod' } = req.body;
-  
-  const discovered = latestDiscoveryScan.patroniClusters.find((c: any) => c.id === clusterId || c.name === clusterId) || latestDiscoveryScan.patroniClusters[0];
-  
-  const targetName = customName || discovered.name;
-  
-  // Check if already in clusters
-  let existing = clusters.find(c => c.name === targetName || c.id === discovered.id);
-  
-  if (existing) {
-    existing.environment = environment;
-    existing.status = 'healthy';
-    return res.json({
-      success: true,
-      action: 'updated',
-      message: `Cluster '${targetName}' già censito. Configurazioni e parametri DCS aggiornati con successo.`,
-      cluster: existing
-    });
-  }
-
-  const newCluster: ManagedCluster = {
-    id: `cluster-${Date.now()}`,
-    name: targetName,
-    environment: environment as Environment,
-    pgVersion: discovered.pgVersion || '16.4',
-    status: 'healthy',
-    tps: 3450,
-    totalSizeBytes: 3820000000,
-    activeTimeline: 3,
-    currentLSN: '0/1F8A9B20',
-    features: { ...globalFeatureFlags },
-    databases: defaultDatabases,
-    haState: {
-      clusterName: discovered.name,
-      dcsType: discovered.dcsType || 'etcd',
-      dcsEndpoint: discovered.dcsEndpoint || 'http://127.0.0.1:2379',
-      failoverMode: 'auto',
-      maintenanceMode: false,
-      activeTimeline: 3,
-      nodes: [
-        {
-          name: `${targetName}-01`,
-          role: 'primary',
-          state: 'running',
-          host: '10.0.1.11',
-          port: 5432,
-          timeline: 3,
-          lsn: '0/1F8A9B20',
-          replicationLagBytes: 0,
-          replicationLagMs: 0,
-          dcsLeader: true,
-          cpuPercent: 22,
-          memoryPercent: 58,
-          connections: 160,
-          maxConnections: 200
-        },
-        {
-          name: `${targetName}-02`,
-          role: 'sync_standby',
-          state: 'streaming',
-          host: '10.0.1.12',
-          port: 5432,
-          timeline: 3,
-          lsn: '0/1F8A9B20',
-          replicationLagBytes: 0,
-          replicationLagMs: 0.8,
-          dcsLeader: false,
-          cpuPercent: 14,
-          memoryPercent: 54,
-          connections: 45,
-          maxConnections: 200
-        },
-        {
-          name: `${targetName}-03`,
-          role: 'replica',
-          state: 'streaming',
-          host: '10.0.1.13',
-          port: 5432,
-          timeline: 3,
-          lsn: '0/1F8A9A90',
-          replicationLagBytes: 144,
-          replicationLagMs: 1.2,
-          dcsLeader: false,
-          cpuPercent: 12,
-          memoryPercent: 51,
-          connections: 28,
-          maxConnections: 200
-        }
-      ]
-    },
-    hbaRules: [
-      { id: 'hba-d1', order: 1, type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Local Unix domain socket' },
-      { id: 'hba-d2', order: 2, type: 'hostssl', database: 'all', user: 'all', address: '10.0.1.0/24', method: 'scram-sha-256', comment: 'Patroni & App cluster subnet' }
-    ],
-    ldapConfig: {
-      enabled: false,
-      serverUrl: '',
-      bindDN: '',
-      baseDN: '',
-      userFilter: '',
-      groupFilter: '',
-      sslVerify: true,
-      syncIntervalMinutes: 60,
-      lastSync: 'Mai',
-      managedRolesCount: 0,
-      managedGrantsCount: 0
-    }
-  };
-
-  clusters.push(newCluster);
-
-  res.json({
-    success: true,
-    action: 'created',
-    message: `Cluster '${targetName}' importato con successo nell'inventario globale di pg_arca con 3 nodi e DCS ${discovered.dcsType}!`,
-    cluster: newCluster
-  });
-});
-
-// GET File Content Inspector & Syntax Analysis
-app.get('/api/discovery/file-content', (req: Request, res: Response) => {
-  const filePath = (req.query.path as string) || '/etc/patroni/patroni.yml';
-
-  if (filePath.includes('patroni.yml') || filePath.includes('patroni.yaml')) {
-    return res.json({
-      path: filePath,
-      filename: 'patroni.yml',
-      format: 'yaml',
-      sizeBytes: 2420,
-      lastModified: '2026-10-08 19:12:04 UTC',
-      bestPracticeNotes: [
-        '✓ TTL (30s) e loop_wait (10s) conformi alle specifiche di failover zero-downtime.',
-        '✓ Sezione pg_hba integrata con autenticazione crittografica SCRAM-SHA-256.',
-        '✓ DCS etcd3 cluster ridondato su 3 nodi con quorum attivo.',
-        '✓ archive_command configurato correttamente per richiamare pg-arca-wal-archive.sh.'
-      ],
-      content: `# ==============================================================================
-# Patroni High-Availability Cluster Configuration
-# ==============================================================================
-scope: pg-patroni-ha-prod
-namespace: /service
-name: pg-node-01
-
-etcd3:
-  hosts:
-    - 10.0.1.10:2379
-    - 10.0.1.11:2379
-    - 10.0.1.12:2379
-
-restapi:
-  listen: 0.0.0.0:8008
-  connect_address: 10.0.1.11:8008
-
-bootstrap:
-  dcs:
-    ttl: 30
-    loop_wait: 10
-    retry_timeout: 10
-    maximum_lag_on_failover: 1048576
-    synchronous_mode: 'on'
-    synchronous_mode_strict: false
-    synchronous_node_count: 1
-    postgresql:
-      use_pg_rewind: true
-      use_slots: true
-      parameters:
-        max_connections: 200
-        shared_buffers: 16GB
-        effective_cache_size: 48GB
-        maintenance_work_mem: 2GB
-        work_mem: 64MB
-        wal_level: replica
-        archive_mode: "on"
-        archive_command: "/opt/pg-arca/pg-arca-wal-archive.sh %p %f"
-        archive_timeout: 60
-        checkpoint_completion_target: 0.9
-        wal_keep_size: 4GB
-        max_wal_size: 16GB
-        min_wal_size: 2GB
-        hot_standby: "on"
-        hot_standby_feedback: "on"
-
-postgresql:
-  listen: 0.0.0.0:5432
-  connect_address: 10.0.1.11:5432
-  data_dir: /var/lib/postgresql/16/main
-  bin_dir: /usr/lib/postgresql/16/bin
-  pgpass: /var/lib/postgresql/.pgpass
-  authentication:
-    replication:
-      username: replicator
-    superuser:
-      username: postgres
-
-tags:
-  nofailover: false
-  noloadbalance: false
-  clonefrom: false
-  nosync: false`
-    });
-  }
-
-  if (filePath.includes('postgresql.conf')) {
-    return res.json({
-      path: filePath,
-      filename: 'postgresql.conf',
-      format: 'properties',
-      sizeBytes: 28400,
-      lastModified: '2026-10-08 20:04:12 UTC',
-      bestPracticeNotes: [
-        '✓ archive_mode = on confermato.',
-        '✓ shared_buffers = 16GB corrisponde al 25% della RAM (64GB).',
-        '✓ checkpoint_completion_target = 0.9 previene picchi di I/O.',
-        '✓ wal_level = replica garantisce il supporto PITR e standby streaming.'
-      ],
-      content: `# PostgreSQL 16 Configuration File
-# ------------------------------------------------------------------------------
-# Managed by Patroni Dynamic Configuration & pg_arca
-# ------------------------------------------------------------------------------
-
-# CONNECTIONS AND AUTHENTICATION
-listen_addresses = '*'
-port = 5432
-max_connections = 200
-superuser_reserved_connections = 5
-
-# MEMORY MANAGEMENT
-shared_buffers = 16GB
-huge_pages = try
-work_mem = 64MB
-maintenance_work_mem = 2GB
-effective_cache_size = 48GB
-dynamic_shared_memory_type = posix
-
-# WRITE-AHEAD LOG (WAL) & CONTINUOUS ARCHIVING
-wal_level = replica
-archive_mode = on
-archive_command = '/opt/pg-arca/pg-arca-wal-archive.sh %p %f'
-archive_timeout = 60
-wal_compression = lz4
-wal_buffers = 64MB
-wal_keep_size = 4GB
-max_wal_size = 16GB
-min_wal_size = 2GB
-
-# CHECKPOINTS & BACKGROUND WRITER
-checkpoint_timeout = 15min
-checkpoint_completion_target = 0.9
-checkpoint_warning = 30s
-
-# REPLICATION & HIGH AVAILABILITY
-max_wal_senders = 10
-max_replication_slots = 10
-track_commit_timestamp = on
-hot_standby = on
-hot_standby_feedback = on
-
-# AUTOVACUUM TUNING
-autovacuum = on
-autovacuum_max_workers = 5
-autovacuum_naptime = 30s
-autovacuum_vacuum_cost_limit = 2000
-autovacuum_vacuum_scale_factor = 0.05
-autovacuum_analyze_scale_factor = 0.02`
-    });
-  }
-
-  if (filePath.includes('pg_hba.conf')) {
-    return res.json({
-      path: filePath,
-      filename: 'pg_hba.conf',
-      format: 'properties',
-      sizeBytes: 4620,
-      lastModified: '2026-10-08 18:22:10 UTC',
-      bestPracticeNotes: [
-        '✓ Zero regole "trust" su interfacce remote (100% compliant).',
-        '✓ Algoritmo SCRAM-SHA-256 forzato su tutte le connessioni host.',
-        '✓ Accesso di replica limitato agli IP dei nodi cluster autorizzati.'
-      ],
-      content: `# PostgreSQL Client Authentication Configuration File (pg_hba.conf)
-# TYPE  DATABASE        USER            ADDRESS                 METHOD
-local   all             postgres                                peer
-local   all             all                                     peer
-hostssl all             all             10.0.1.0/24             scram-sha-256
-hostssl replication     replicator      10.0.1.0/24             scram-sha-256
-hostssl billing         billing_app     10.0.2.0/24             scram-sha-256
-host    all             all             127.0.0.1/32            scram-sha-256
-host    all             all             ::1/128                 scram-sha-256`
-    });
-  }
-
-  // Default fallback for any other config file
-  res.json({
-    path: filePath,
-    filename: path.basename(filePath),
-    format: filePath.endsWith('.yml') || filePath.endsWith('.yaml') ? 'yaml' : 'properties',
-    sizeBytes: 1540,
-    lastModified: '2026-10-08 21:00:00 UTC',
-    bestPracticeNotes: [
-      '✓ Permessi di file verificati (0600 - postgres:postgres).',
-      '✓ Sintassi analizzata correttamente senza errori fatali.'
-    ],
-    content: `# Configuration file: ${filePath}
-# Analyzed by pg_arca Discovery Engine
-active = true
-cluster_binding = "cluster-prod-01"
-listen_port = 9898
-log_level = "INFO"`
-  });
-});
-
-// POST Cross-Node Config Diff
-app.post('/api/discovery/compare-configs', (req: Request, res: Response) => {
-  const { nodeA = 'pg-node-01', nodeB = 'pg-node-02', configFile = 'postgresql.conf' } = req.body;
-
-  const comparison = [
-    { parameter: 'shared_buffers', nodeAValue: '16GB', nodeBValue: '16GB', match: true, severity: 'ok' },
-    { parameter: 'max_connections', nodeAValue: '200', nodeBValue: '200', match: true, severity: 'ok' },
-    { parameter: 'wal_level', nodeAValue: 'replica', nodeBValue: 'replica', match: true, severity: 'ok' },
-    { parameter: 'archive_mode', nodeAValue: 'on', nodeBValue: 'on', match: true, severity: 'ok' },
-    { parameter: 'archive_command', nodeAValue: '/opt/pg-arca/pg-arca-wal-archive.sh %p %f', nodeBValue: '/opt/pg-arca/pg-arca-wal-archive.sh %p %f', match: true, severity: 'ok' },
-    { parameter: 'checkpoint_completion_target', nodeAValue: '0.9', nodeBValue: '0.9', match: true, severity: 'ok' },
-    { parameter: 'wal_keep_size', nodeAValue: '4GB', nodeBValue: '2GB', match: false, severity: 'warning', note: 'Disallineamento: il nodo standby rischia di perdere lo streaming in caso di picchi transazionali prima del fallback su WAL archive.' },
-    { parameter: 'work_mem', nodeAValue: '64MB', nodeBValue: '32MB', match: false, severity: 'info', note: 'Differenza di memoria per query: su standby le query complesse di reporting potrebbero richiedere spill su disco temporaneo.' },
-    { parameter: 'max_wal_senders', nodeAValue: '10', nodeBValue: '10', match: true, severity: 'ok' }
-  ];
-
-  res.json({
-    nodeA,
-    nodeB,
-    configFile,
-    totalParametersChecked: comparison.length,
-    matchingCount: comparison.filter(c => c.match).length,
-    mismatchCount: comparison.filter(c => !c.match).length,
-    comparison
-  });
-});
-
-// POST Safe Config Deployment & Hot Reload
-app.post('/api/discovery/apply-config', (req: Request, res: Response) => {
-  const { targetNodes, configFile, action = 'pg_reload' } = req.body;
-
-  const nodes = Array.isArray(targetNodes) ? targetNodes : ['pg-node-01', 'pg-node-02', 'pg-node-03'];
-
-  res.json({
-    success: true,
-    action,
-    configFile,
-    executedNodes: nodes,
-    timestamp: new Date().toISOString(),
-    message: action === 'pg_reload'
-      ? `Configurazione hot-reloaded su ${nodes.join(', ')} con pg_reload_conf(). Zero disservizio o interruzione di connessione.`
-      : action === 'patroni_reload'
-      ? `DCS Patroni ricaricato tramite patronictl reload. Parametri dinamici propagati all'intero cluster.`
-      : `Rolling restart coordinato eseguito: prima gli standby, poi switchover guidato e restart del primario. Transazioni protette al 100%.`,
-    status: 'completed'
-  });
-});
-
-// ==============================================================================
-// Global System Audit Trail & Execution History Engine
-// ==============================================================================
-
-export interface SystemAuditEntry {
-  id: string;
-  timestamp: string;
-  clusterId?: string;
-  clusterName?: string;
-  category: 'pitr' | 'ha_patroni' | 'parameters' | 'security' | 'backup' | 'discovery' | 'agent';
-  action: string;
-  status: 'SUCCESS' | 'WARNING' | 'FAILED';
-  user: string;
-  details: string;
-  metadata?: Record<string, any>;
-}
-
-let systemAuditEntries: SystemAuditEntry[] = [
-  {
-    id: 'aud-1001',
-    timestamp: '2026-10-08T13:45:10Z',
-    clusterId: 'cluster-prod-01',
-    clusterName: 'cluster-prod-emea',
-    category: 'pitr',
-    action: 'Verifica Continuità Segmenti WAL (Continuous Stream)',
-    status: 'SUCCESS',
-    user: 'system/pg_arca_daemon',
-    details: 'Verificata integrità di 42 segmenti WAL da 000000010000000000000028 a 00000001000000000000002F. Nessun gap rilevato. SHA-256 coerente al 100%.',
-    metadata: {
-      segmentsChecked: 42,
-      totalVolumeBytes: 704643072,
-      continuityGaps: 0,
-      timeline: 1
-    }
-  },
-  {
-    id: 'aud-1002',
-    timestamp: '2026-10-08T12:30:00Z',
-    clusterId: 'cluster-prod-01',
-    clusterName: 'cluster-prod-emea',
-    category: 'discovery',
-    action: 'Scansione Topologia & Discovery Config Unix',
-    status: 'SUCCESS',
-    user: 'admin@enterprise.internal',
-    details: 'Rilevate 14 directory di sistema. Individuato cluster Patroni pg-patroni-ha-prod su 3 nodi con DCS etcd3 e porta 5432 attiva.',
-    metadata: {
-      directoriesScanned: 14,
-      patroniClusterFound: 'pg-patroni-ha-prod',
-      etcdNodes: ['10.0.1.10:2379', '10.0.1.11:2379', '10.0.1.12:2379']
-    }
-  },
-  {
-    id: 'aud-1003',
-    timestamp: '2026-10-08T11:42:15Z',
-    clusterId: 'cluster-prod-01',
-    clusterName: 'cluster-prod-emea',
-    category: 'pitr',
-    action: 'Rilevamento Anomalie DDL/DML: TRUNCATE invoices',
-    status: 'WARNING',
-    user: 'system/wal_analyzer',
-    details: 'Intercettato comando TRUNCATE accidentale sulla tabella billing.public.invoices alle 11:42:15 UTC. Generato safety snapshot per ripristino chirurgico.',
-    metadata: {
-      targetTime: '2026-10-08T11:42:00Z',
-      targetLSN: '0/1E880F00',
-      walSegment: '00000001000000000000002E',
-      rowsImpacted: 2450000
-    }
-  },
-  {
-    id: 'aud-1004',
-    timestamp: '2026-10-08T10:15:00Z',
-    clusterId: 'cluster-prod-01',
-    clusterName: 'cluster-prod-emea',
-    category: 'backup',
-    action: 'Registrazione Named Restore Point: pre_migration_v42',
-    status: 'SUCCESS',
-    user: 'ci_deployer@corp',
-    details: 'Creato restore point con pg_create_restore_point(\'pre_migration_v42\') prima della migrazione Flyway schema v42.',
-    metadata: {
-      restorePoint: 'pre_migration_v42',
-      lsn: '0/1D440090',
-      timeline: 1
-    }
-  },
-  {
-    id: 'aud-1005',
-    timestamp: '2026-10-08T09:00:22Z',
-    clusterId: 'cluster-prod-01',
-    clusterName: 'cluster-prod-emea',
-    category: 'ha_patroni',
-    action: 'Health Check Automatico Quorum DCS Patroni',
-    status: 'SUCCESS',
-    user: 'patroni-agent/etcd',
-    details: 'Quorum 3/3 nodi integro. Leader pg-node-01 detiene il lock con TTL 30s. Standby pg-node-02 e pg-node-03 sincronizzati con lag 0 byte.',
-    metadata: {
-      leader: 'pg-node-01',
-      syncStandby: 'pg-node-02',
-      dcsType: 'etcd3',
-      quorum: '3/3'
-    }
-  },
-  {
-    id: 'aud-1006',
-    timestamp: '2026-10-08T06:00:48Z',
-    clusterId: 'cluster-prod-01',
-    clusterName: 'cluster-prod-emea',
-    category: 'backup',
-    action: 'Completamento Backup Incrementale con Deduplicazione CAS',
-    status: 'SUCCESS',
-    user: 'scheduler/crontab',
-    details: 'Backup incrementale mattutino salvato in 4m 12s. Deduplicati 34.2 GiB tramite Content-Addressable Storage (CAS). Rapporto di compressione 4.8:1.',
-    metadata: {
-      backupType: 'incremental',
-      durationSeconds: 252,
-      rawBytes: 36700160000,
-      storedBytes: 7640000000,
-      dedupRatio: '4.8x'
-    }
-  },
-  {
-    id: 'aud-1007',
-    timestamp: '2026-10-07T22:00:10Z',
-    clusterId: 'cluster-prod-01',
-    clusterName: 'cluster-prod-emea',
-    category: 'security',
-    action: 'Sincronizzazione Utenti Active Directory / ldap2pg',
-    status: 'SUCCESS',
-    user: 'secops@enterprise.internal',
-    details: 'Allineati 28 utenti dal gruppo cn=PostgresDBAs,ou=Groups,dc=domain,dc=internal. Revocati permessi per 2 account dismessi da Active Directory.',
-    metadata: {
-      adGroup: 'cn=PostgresDBAs',
-      rolesUpdated: 28,
-      rolesRevoked: 2
-    }
-  }
-];
-
-export function logSystemAudit(entry: Omit<SystemAuditEntry, 'id' | 'timestamp'> & { timestamp?: string }) {
-  const newEntry: SystemAuditEntry = {
-    id: `aud-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    timestamp: entry.timestamp || new Date().toISOString(),
-    ...entry
-  };
-  systemAuditEntries.unshift(newEntry);
-  if (systemAuditEntries.length > 500) {
-    systemAuditEntries = systemAuditEntries.slice(0, 500);
-  }
-  return newEntry;
-}
-
-// GET Audit History
-app.get('/api/audit/history', (req: Request, res: Response) => {
-  const { clusterId, category, status, search, limit = '100' } = req.query;
-  let filtered = [...systemAuditEntries];
-
-  if (clusterId && clusterId !== 'all') {
-    filtered = filtered.filter(e => e.clusterId === clusterId);
-  }
-  if (category && category !== 'all') {
-    filtered = filtered.filter(e => e.category === category);
-  }
-  if (status && status !== 'all') {
-    filtered = filtered.filter(e => e.status === status);
-  }
-  if (search && typeof search === 'string') {
-    const q = search.toLowerCase();
-    filtered = filtered.filter(e =>
-      e.action.toLowerCase().includes(q) ||
-      e.details.toLowerCase().includes(q) ||
-      (e.clusterName && e.clusterName.toLowerCase().includes(q))
-    );
-  }
-
-  const max = parseInt(limit as string, 10) || 100;
-  res.json({
-    total: filtered.length,
-    entries: filtered.slice(0, max)
-  });
-});
-
-// POST Audit Log Entry
-app.post('/api/audit/log', (req: Request, res: Response) => {
-  const { clusterId, clusterName, category = 'agent', action, status = 'SUCCESS', user = 'admin', details, metadata } = req.body;
-  if (!action || !details) {
-    return res.status(400).json({ error: 'Campi action e details obbligatori' });
-  }
-
-  const created = logSystemAudit({
-    clusterId,
-    clusterName,
-    category,
-    action,
-    status,
-    user,
-    details,
-    metadata
-  });
-
-  res.json({ success: true, entry: created });
-});
 
 // ==============================================================================
 // Dedicated 360° Point-In-Time Recovery (PITR) Engine Endpoints
@@ -3929,39 +2630,61 @@ app.get('/api/cas-stats', (req: Request, res: Response) => {
 });
 
 // Tests
-app.post('/api/tests/run', (req: Request, res: Response) => {
-  const { testId = 'all' } = req.body;
-  const tests = [
-    { id: 't00_preflight', code: 'T00', title: 'Preflight & Binaries Check', durationMs: 420, assertions: ['Binaries present in PATH', 'Umask 0077 verified'] },
-    { id: 't10_backup', code: 'T10', title: 'Physical LSN Backup & Dedup', durationMs: 1450, assertions: ['LSN page scan verified', 'CAS deduplication >= 2.5x'] },
-    { id: 't30_sparse_restore', code: 'T30', title: 'Sparse Database Restore (A3 & A4)', durationMs: 2200, assertions: ['Skeletonization created PG_VERSION', 'Zero redo PANIC', 'AMCheck 0 corruption'] }
-  ];
-  res.json({
-    testedCount: tests.length,
-    passedCount: tests.length,
-    failedCount: 0,
-    results: tests.map(t => ({
-      ...t,
-      status: 'passed',
-      logs: [`[INFO] Test ${t.code} passed in ${t.durationMs}ms`, ...t.assertions.map(a => `[PASS] ✓ ${a}`)]
-    }))
-  });
-});
 
 // Selftest
-app.post('/api/selftest', (req: Request, res: Response) => {
-  res.json({
-    status: 'passed',
-    timestamp: new Date().toISOString(),
-    tests: [
-      { name: 'Quarantine: primary_conninfo stripped', status: 'PASS' },
-      { name: 'Skeletonization: PG_VERSION presence', status: 'PASS' },
-      { name: 'CAS Chunk Store: SHA-256 block hashing', status: 'PASS' },
-      { name: 'HBA Conflict Detector: rule validation', status: 'PASS' },
-      { name: 'LDAP2PG Binding: Active Directory TLS', status: 'PASS' }
-    ]
-  });
+app.post('/api/selftest', async (_req: Request, res: Response) => {
+  const tests = await runSelfTest();
+  res.json({ status: tests.every(t => t.ok) ? 'passed' : 'failed', timestamp: new Date().toISOString(), tests });
 });
+
+// ==============================================================================
+// Real control-plane routes (persisted, authenticated, idempotent)
+// ==============================================================================
+const LEGACY_MOCK_PREFIXES = ['/api/ha/', '/api/hba/', '/api/auth/ldap', '/api/admin/features', '/api/pitr/', '/api/stanzas', '/api/backup-policies',
+  '/api/cas-stats', '/api/storage/', '/api/clusters/'];
+/** Handlers below this line were written against simulated state. They may only act on the demo cluster. */
+function legacyDemoOnly(req: Request, res: Response, next: Function) {
+  if (!LEGACY_MOCK_PREFIXES.some(p => req.path.startsWith(p))) return next();
+  const m = req.path.match(/^\/api\/clusters\/([^/]+)\/(parameters|reload-conf|rolling-restart|features)/);
+  const id = m?.[1] || (req.body && (req.body.clusterId || req.body.cluster)) || (req.query.clusterId as string | undefined);
+  if (!id || id === 'all') return next();
+  const c = store.peek().clusters.find((x: any) => x.id === id);
+  if (c && !c.isSandbox) {
+    return res.status(501).json({ error: 'not_yet_real', message: 'Questa funzione per i cluster reali passa dal motore operazioni (POST /api/clusters/:id/operations) o è in migrazione. Nessuna simulazione viene eseguita su cluster reali.' });
+  }
+  next();
+}
+app.use(legacyDemoOnly as any);
+
+mountAuthRoutes(app, store);
+mountAgentRoutes(app, store, {
+  onLogs: (node, clusterName, logs) => {
+    for (const l of logs) {
+      broadcastLiveLog({
+        timestamp: String(l.timestamp || new Date().toISOString()), clusterId: node.clusterId || '', clusterName, nodeName: node.name, nodeHost: node.remoteIp || '',
+        service: ['patroni', 'postgres', 'wal_archiver', 'agent', 'etcd'].includes(l.service) ? l.service : 'agent',
+        level: ['INFO', 'WARN', 'ERROR', 'FATAL', 'DEBUG'].includes(l.level) ? l.level : 'INFO',
+        message: String(l.message || '').slice(0, 2000), raw: String(l.raw || l.message || '').slice(0, 4000),
+      });
+    }
+  },
+});
+mountOperatorRoutes(app, store, { directExec: direct.exec });
+mountClusterRoutes(app, store, direct, buildDemoCluster);
+mountPlatformRoutes(app, store);
+
+// Agent bundle served by the console itself: `curl .../agent/install.sh | bash` needs no other infrastructure.
+app.get('/agent/install.sh', (_req: Request, res: Response) => res.type('text/x-shellscript').sendFile(path.join(__dirname, 'unix-agent', 'install-agent.sh')));
+app.get('/agent/pg-arca-agent.tar.gz', (_req: Request, res: Response) => {
+  res.type('application/gzip');
+  const tar = spawn('tar', ['czf', '-', '-C', path.join(__dirname, 'unix-agent'), '--exclude=__pycache__', '--exclude=tests', '.']);
+  tar.stdout.pipe(res); tar.on('error', () => res.destroy());
+});
+app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true, time: new Date().toISOString() }));
+
+bootstrapAdminFromEnv(store);
+seedDemoOnFirstRun(store, buildDemoCluster).catch(e => console.error('[pg_arca] demo seed failed', e));
+direct.startPolling();
 
 // Static / Vite
 if (process.env.NODE_ENV === 'production') {
