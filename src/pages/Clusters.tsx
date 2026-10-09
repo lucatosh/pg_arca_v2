@@ -1,15 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, CopyBlock, Dot, Empty, Field, Icon, Modal, Skeleton, bytes, num } from '../ui';
-import { revalidate, toast } from '../hooks';
+import { revalidate, toast, useQuery } from '../hooks';
+import { summarize } from './Strategy';
 import { go } from '../router';
 import { statusKind } from '../App';
 
 const ENVS = [['prod', 'Produzione'], ['prep', 'Pre-produzione'], ['int', 'Integrazione'], ['dev', 'Sviluppo'], ['test', 'Test']];
+const stratOf = (c: any, pol: any) => {
+  if (c.isSandbox || c.source === 'direct') return <span className="muted">—</span>;
+  const e = pol?.clusters?.find((x: any) => x.id === c.id)?.effective; if (!pol) return <span className="muted">…</span>;
+  return e?.policy ? <Badge kind="ok" title={summarize(e.policy)}>{e.source.templateName || 'Personalizzata'}</Badge> : <a href="#/strategy" onClick={ev => ev.stopPropagation()}><Badge kind="warn">Nessuno</Badge></a>;
+};
 const modeOf = (c: any) => c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Solo connessione</Badge> : <Badge kind="accent">Agent</Badge>;
 
 export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]; loading: boolean; demoAvailable: boolean }) {
-  const [wiz, setWiz] = useState(false);
+  const [wiz, setWiz] = useState(false); const pol = useQuery<any>('/api/policies', { interval: 20000 }).data;
   const real = clusters.filter(c => !c.isSandbox);
   const down = clusters.filter(c => c.status !== 'healthy').length;
   const restoreDemo = async () => { try { await api('POST', '/api/clusters/demo'); revalidate('/api/clusters'); } catch (e: any) { toast(e.message, 'bad'); } };
@@ -27,12 +33,12 @@ export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]
         !clusters.length ? <Empty icon="db" title="Nessun cluster collegato" action={<div className="row" style={{ justifyContent: 'center' }}><Button kind="primary" icon="plus" onClick={() => setWiz(true)}>Collega cluster</Button>{demoAvailable ? <Button onClick={restoreDemo}>Ripristina il cluster demo</Button> : null}</div>}>
           Collega un cluster installando l’agent su un nodo (backup, ripristino e alta affidabilità completi) oppure con la sola connessione PostgreSQL (monitoraggio, senza backup).</Empty> :
         <div className="tablewrap"><table className="t">
-          <thead><tr><th>Cluster</th><th>Ambiente</th><th>Stato</th><th>Modalità</th><th>PostgreSQL</th><th className="num">Nodi</th><th className="num">Dimensione</th><th className="num">TPS</th></tr></thead>
+          <thead><tr><th>Cluster</th><th>Ambiente</th><th>Stato</th><th>Modalità</th><th>Backup</th><th>PostgreSQL</th><th className="num">Nodi</th><th className="num">Dimensione</th><th className="num">TPS</th></tr></thead>
           <tbody>{clusters.map(c => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>
             <td><a href={`#/c/${encodeURIComponent(c.id)}`} onClick={e => e.stopPropagation()}><strong>{c.name}</strong></a></td>
             <td>{ENVS.find(e => e[0] === c.environment)?.[1] || c.environment}</td>
             <td><span className="row gap-s"><Dot kind={statusKind(c.status)} />{c.status === 'healthy' ? 'In salute' : c.status === 'degraded' ? 'Degradato' : c.status}</span></td>
-            <td>{modeOf(c)}</td><td>{c.pgVersion || '—'}</td>
+            <td>{modeOf(c)}</td><td>{stratOf(c, pol)}</td><td>{c.pgVersion || '—'}</td>
             <td className="num">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num">{bytes(c.totalSizeBytes)}</td><td className="num">{num(c.tps)}</td></tr>)}</tbody>
         </table></div>}
     </Card>
