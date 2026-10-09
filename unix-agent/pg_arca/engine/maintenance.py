@@ -176,7 +176,7 @@ def _gc_cas(repo):
             if not os.path.exists(mp):
                 continue
             try:
-                man = read_json(mp, compressed=True)
+                man = repo.read_zjson(mp, sid + "/manifest")
             except Exception:
                 raise EngineError("PGA-REPO-050", "cannot read manifest %s: refusing to garbage-collect (would risk deleting live chunks)" % mp)
             for e in man["files"].values():

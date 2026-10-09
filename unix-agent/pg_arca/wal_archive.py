@@ -29,7 +29,22 @@ def main(argv):
         sys.stderr.write("usage: wal_archive archive <%p> <%f> | get <%f> <%p>\n")
         return 2
     d, comp, lvl, seg = _settings()
-    wm = WalManager(d, comp, lvl, seg)
+    crypto = None
+    kf = os.environ.get("PG_ARCA_KEY_FILE")
+    if not kf:
+        try:
+            with open(os.environ.get("PG_ARCA_CONF", "/etc/pg-arca/agent.conf"), "r", encoding="utf-8") as f:
+                kf = json.load(f).get("encryption_key_file")
+        except Exception:
+            kf = None
+    if kf:
+        try:
+            from pg_arca.engine.crypt import from_settings
+            crypto = from_settings(kf)
+        except Exception as e:
+            sys.stderr.write("pg_arca %s FAILED: %s\n" % (argv[1], e))
+            return 1
+    wm = WalManager(d, comp, lvl, seg, crypto=crypto)
     if argv[1] == "archive":
         try:
             ok, dest, sha, msg = wm.archive_segment(argv[2], argv[3])

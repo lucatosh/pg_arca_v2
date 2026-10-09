@@ -65,6 +65,10 @@ def setUpModule():
     F.sock = os.path.join(base, "sock")
     os.makedirs(F.sock)
     F.wal = os.path.join(base, "wal")
+    F.key = None
+    if os.environ.get("PG_ARCA_TEST_ENCRYPT"):                       # whole suite against an encrypted repository + encrypted WAL archive
+        from pg_arca.engine import crypt
+        F.key = crypt.generate_key(os.path.join(base, "repo.key"))
     F.repo = os.path.join(base, "repo")
     F.scratch = os.path.join(base, "scratch")
     F.port = 55000 + (os.getpid() % 900)
@@ -73,13 +77,13 @@ def setUpModule():
     walbin = os.path.join(HERE, "pg-arca-wal")
     with open(os.path.join(F.src, "postgresql.conf"), "a") as f:
         f.write("\nport=%d\nunix_socket_directories='%s'\nlisten_addresses=''\nwal_level=replica\narchive_mode=on\nwal_log_hints=on\n" % (F.port, F.sock))
-        f.write("archive_command='env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent %s archive %%p %%f'\narchive_timeout=5\n" % (F.wal, HERE, walbin))
+        f.write("archive_command='env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent%s %s archive %%p %%f'\narchive_timeout=5\n" % (F.wal, HERE, (" PG_ARCA_KEY_FILE=" + F.key) if F.key else "", walbin))
         f.write("shared_buffers=32MB\nmax_connections=30\n")
     r = sh(os.path.join(BIN, "pg_ctl"), "-D", F.src, "-l", os.path.join(base, "src.log"), "-w", "start")
     assert r.returncode == 0, r.stderr + open(os.path.join(base, "src.log")).read()
     F.conn = PgConn(host=F.sock, port=F.port, user="postgres", bindir=BIN)
     F.ctx = Ctx(F.conn, F.src, F.repo, "main", F.wal, F.scratch, process_max=4, compression="zlib", level=3, start_fast=True,
-                log=lambda lv, m: sys.stderr.write("[%s] %s\n" % (lv, m)) if os.environ.get("V") else None, agent_path=walbin)
+                log=lambda lv, m: sys.stderr.write("[%s] %s\n" % (lv, m)) if os.environ.get("V") else None, agent_path=walbin, key_file=F.key or None)
 
 
 def tearDownModule():
@@ -236,6 +240,17 @@ class EngineTests(unittest.TestCase):
         with self.assertRaises(EngineError):
             promote_object(F.ctx, "somedb", "app.public.customers")               # only pg_arca quarantine databases
         q("app", "DROP TABLE customers; DROP TABLE %s; DROP TABLE %s" % (r2["old_kept_as"], r["promoted_as"]))
+
+    def test_06z_encryption_really_active(self):
+        if not F.key:
+            self.skipTest("run with PG_ARCA_TEST_ENCRYPT=1")
+        import json
+        self.assertEqual(json.load(open(os.path.join(F.repo, "repo.json")))["encryption"]["alg"], "aes-256-gcm")
+        chunks = [os.path.join(dp, f) for dp, _, fs in os.walk(os.path.join(F.repo, "cas")) for f in fs if ".tmp." not in f]
+        self.assertTrue(chunks)
+        self.assertTrue(all(open(c, "rb").read(1) == b"E" for c in chunks[:200]))
+        metas = [f for f in os.listdir(F.wal) if f.endswith(".meta") and len(f) == 29]
+        self.assertTrue(metas and all(json.load(open(os.path.join(F.wal, m))).get("enc")  for m in metas))
 
     def test_07_failed_restore_leaves_nothing_behind(self):
         with self.assertRaises(EngineError):

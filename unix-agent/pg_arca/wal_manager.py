@@ -65,7 +65,8 @@ def _sha256_file(path, bufsize=1 << 20):
 
 
 class WalManager:
-    def __init__(self, wal_dir="/var/lib/pgarca/wal", compression="zstd", level=3, segment_size=16 * 1024 * 1024):
+    def __init__(self, wal_dir="/var/lib/pgarca/wal", compression="zstd", level=3, segment_size=16 * 1024 * 1024, crypto=None):
+        self.crypto = crypto
         self.wal_dir = wal_dir
         self.compression = compression
         self.level = int(level)
@@ -170,10 +171,18 @@ class WalManager:
             codec_used = "" if is_history else self._compress(src_path, tmp)     # history files are tiny: keep readable
             if is_history:
                 shutil.copyfile(src_path, tmp)
+            if self.crypto and not is_history:                                   # compress first, then encrypt; bound to the segment name
+                with open(tmp, "rb") as f:
+                    plain = f.read()
+                with open(tmp, "wb") as f:
+                    f.write(self.crypto.seal(plain, "wal:" + name))
             with open(tmp, "rb") as f:
                 os.fsync(f.fileno())
             final = os.path.join(self.wal_dir, name + ("." + codec_used if codec_used else ""))
             meta = {"sha256": raw_sha, "size": size, "codec": codec_used or "none", "archived_at": time.time()}
+            if self.crypto and not is_history:
+                meta["enc"] = "aes-256-gcm"
+                meta["key_id"] = self.crypto.key_id
             mtmp = os.path.join(self.wal_dir, ".%s.meta.tmp.%d" % (name, os.getpid()))
             with open(mtmp, "w", encoding="utf-8") as f:
                 json.dump(meta, f)
@@ -206,8 +215,25 @@ class WalManager:
         os.makedirs(d, exist_ok=True)
         tmp = "%s.arca.%d" % (dest_path, os.getpid())
         try:
-            self._decompress(path, tmp, codec)
             meta = self._read_meta(name)
+            src = path
+            if meta and meta.get("enc"):
+                if not self.crypto:
+                    return EXIT_CORRUPT, "PGA-ENC-005 segment %s is encrypted and no key is configured (encryption_key_file / PG_ARCA_KEY_FILE)" % name
+                if meta.get("key_id") != self.crypto.key_id:
+                    return EXIT_CORRUPT, "PGA-ENC-007 segment %s was encrypted with another key (%s)" % (name, meta.get("key_id"))
+                src = tmp + ".dec"
+                with open(path, "rb") as f:
+                    plain = self.crypto.open(f.read(), "wal:" + name)
+                with open(src, "wb") as f:
+                    f.write(plain)
+            elif self.crypto and not name.endswith(".history") and not BACKUP_LABEL_RE.match(name):
+                return EXIT_CORRUPT, "PGA-ENC-006 segment %s is not encrypted but an encryption key is configured" % name
+            try:
+                self._decompress(src, tmp, codec)
+            finally:
+                if src != path and os.path.exists(src):
+                    os.unlink(src)
             if meta and _sha256_file(tmp) != meta.get("sha256"):
                 os.unlink(tmp)
                 return EXIT_CORRUPT, "PGA-WAL-050 checksum mismatch for %s: archive object is corrupt" % name

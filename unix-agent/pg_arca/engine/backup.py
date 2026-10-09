@@ -297,8 +297,8 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note):
 
         repo.sync()                                                    # one global sync: chunks are durable before the set can be COMPLETE
         write_file_atomic(os.path.join(sdir, "backup_label"), labelfile.encode("utf-8"), 0o640)
-        write_json(os.path.join(sdir, "manifest.json.z"), manifest, compressed=True)
-        write_json(os.path.join(sdir, "catalog.json.z"), cat, compressed=True)
+        repo.write_zjson(os.path.join(sdir, "manifest.json.z"), manifest, set_id + "/manifest")
+        repo.write_zjson(os.path.join(sdir, "catalog.json.z"), cat, set_id + "/catalog")
         meta.update({"status": "PENDING_WAL", "stop_time": iso(), "duration_sec": round(time.time() - t_start, 1), "stats": totals,
                      "tablespaces": tbs, "hostname": socket.gethostname()})
         repo.write_meta(meta)

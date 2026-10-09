@@ -57,6 +57,7 @@ DEFAULT_CONFIG = {
     "state_dir": "/var/lib/pgarca/state",     # operation journal lives here
     "compression": "zstd",
     "compression_level": 3,
+    "encryption_key_file": "",   # path of a 0600 key file -> AES-256-GCM repository + WAL archive (python3 -m pg_arca.engine.crypt keygen <path>)
     "chunk_size_bytes": 65536,
 
     # guardrails

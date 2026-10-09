@@ -78,7 +78,7 @@ def _write_one(repo, dest, rel, info, delta):
             if exists:
                 f.seek(off)
                 cur = f.read(ln)
-                if len(cur) == ln and chunk_hash(cur) == h:
+                if len(cur) == ln and repo.hash(cur) == h:
                     continue                                              # delta: identical range, skip the write
             data = repo.get_chunk(h)
             if off + len(data) > size:

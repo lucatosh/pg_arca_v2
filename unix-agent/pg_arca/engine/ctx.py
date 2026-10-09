@@ -10,7 +10,7 @@ from pg_arca.wal_manager import WalManager
 class Ctx(object):
     def __init__(self, conn, pgdata, repo_path, stanza, wal_dir, scratch_dir, process_max=4, compression="zstd", level=3,
                  start_fast=False, retention_full=2, retention_days=0, seg_size=16 * 1024 * 1024, log=None, agent_path=None,
-                 protected_extra=None):
+                 protected_extra=None, key_file=None):
         self.conn = conn
         self.pgdata = os.path.realpath(pgdata) if pgdata else ""
         self.stanza = stanza
@@ -21,9 +21,12 @@ class Ctx(object):
         self.retention_days = int(retention_days or 0)
         self.seg_size = seg_size
         self.wal_dir = wal_dir
-        self.wal = WalManager(wal_dir, compression, level, seg_size)
+        from pg_arca.engine.crypt import from_settings
+        self.key_file = key_file or ""
+        self.crypto = from_settings(key_file)
+        self.wal = WalManager(wal_dir, compression, level, seg_size, crypto=self.crypto)
         algo = "zstd" if compression == "zstd" else ("none" if compression == "none" else "zlib")
-        self.repo = Repo(repo_path, stanza, self.wal, algo=algo, level=level)
+        self.repo = Repo(repo_path, stanza, self.wal, algo=algo, level=level, crypto=self.crypto)
         self._log = log
         self.agent_path = agent_path or os.environ.get("PG_ARCA_WAL_BIN", "/usr/local/bin/pg-arca-wal")
         self.protected_extra = protected_extra or []
@@ -36,7 +39,8 @@ class Ctx(object):
     def restore_command(self):
         """restore_command for ephemeral / restored instances (quoted for postgresql.conf by the caller)."""
         home = os.path.dirname(os.path.realpath(self.agent_path))
-        return "env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent %s get %%f %%p" % (_shq(self.wal_dir), _shq(home), _shq(self.agent_path))
+        kf = " PG_ARCA_KEY_FILE=%s" % _shq(self.key_file) if self.key_file else ""
+        return "env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent%s %s get %%f %%p" % (_shq(self.wal_dir), _shq(home), kf, _shq(self.agent_path))
 
     @classmethod
     def from_config(cls, config, runtime=None, log=None):
@@ -51,7 +55,7 @@ class Ctx(object):
         return cls(conn, config.get("pg_data") or inst.get("data_directory") or "", config["repo_path"], stanza, config["wal_archive_dir"],
                    config.get("scratch_dir", "/var/tmp/pg_arca_scratch"), config.get("process_max", 4), config.get("compression", "zstd"),
                    config.get("compression_level", 3), bool(config.get("start_fast", False)), config.get("retention_full", 2),
-                   config.get("retention_days", 0), seg, log, wal_bin)
+                   config.get("retention_days", 0), seg, log, wal_bin, key_file=config.get("encryption_key_file") or os.environ.get("PG_ARCA_KEY_FILE") or None)
 
 
 def _shq(s):
