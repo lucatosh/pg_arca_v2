@@ -8,6 +8,7 @@ import type { Request, Response } from 'express';
 import { Store, nowIso } from './store';
 import { audit } from './ops';
 import { DirectDriver, validateConnInput } from './direct';
+import { normFolder, validFolder } from './policies';
 
 export const DEMO_ID = 'cluster-demo';
 
@@ -82,7 +83,8 @@ export function mountClusterRoutes(app: any, store: Store, direct: DirectDriver,
   });
 
   app.patch('/api/clusters/:id', async (req: Request, res: Response) => {
-    const { name, environment } = req.body || {};
+    const { name, environment, folder } = req.body || {};
+    if (folder !== undefined && (typeof folder !== 'string' || (normFolder(folder) && !validFolder(normFolder(folder))))) return res.status(400).json({ error: 'invalid_folder' });
     if (name !== undefined && (typeof name !== 'string' || !name.trim() || name.length > 80)) return res.status(400).json({ error: 'invalid_name' });
     if (environment !== undefined && !['prod', 'prep', 'int', 'dev', 'test'].includes(environment)) return res.status(400).json({ error: 'invalid_environment' });
     const ok = await store.mutate(d => {
@@ -90,7 +92,8 @@ export function mountClusterRoutes(app: any, store: Store, direct: DirectDriver,
       if (!c) return false;
       if (name) c.name = name.trim();
       if (environment) c.environment = environment;
-      audit(d, { clusterId: c.id, actor: actor(req), action: 'cluster.update', status: 'OK', details: { name, environment } });
+      if (folder !== undefined) c.folder = normFolder(folder);
+      audit(d, { clusterId: c.id, actor: actor(req), action: 'cluster.update', status: 'OK', details: { name, environment, folder } });
       return true;
     });
     ok ? res.json({ ok: true }) : res.status(404).json({ error: 'cluster_not_found' });

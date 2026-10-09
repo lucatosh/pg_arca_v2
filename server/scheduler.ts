@@ -9,34 +9,8 @@ import { Store, NodeRecord, nowIso } from './store';
 import * as ops from './ops';
 import { isTerminal } from './ops';
 
-export interface BackupPolicy {
-  enabled: boolean;
-  fullEveryHours: number;      // 24..720
-  incrEveryHours: number;      // 1..168 (0 = only fulls)
-  retentionFull: number;       // 1..365
-  verifyEveryHours: number;    // 0 = off
-  verifyDeep: boolean;
-  retryAfterMinutes: number;
-}
-export const DEFAULT_POLICY: BackupPolicy = { enabled: false, fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168, verifyDeep: false, retryAfterMinutes: 30 };
-
-export function validatePolicy(p: any): { ok: true; policy: BackupPolicy } | { ok: false; error: string } {
-  if (!p || typeof p !== 'object') return { ok: false, error: 'policy object required' };
-  const n = (v: any, lo: number, hi: number, name: string) => { const x = Number(v); if (!Number.isFinite(x) || x < lo || x > hi) throw new Error(`${name} must be ${lo}..${hi}`); return Math.floor(x); };
-  try {
-    const out: BackupPolicy = {
-      enabled: !!p.enabled,
-      fullEveryHours: n(p.fullEveryHours ?? DEFAULT_POLICY.fullEveryHours, 6, 720, 'fullEveryHours'),
-      incrEveryHours: n(p.incrEveryHours ?? DEFAULT_POLICY.incrEveryHours, 0, 168, 'incrEveryHours'),
-      retentionFull: n(p.retentionFull ?? DEFAULT_POLICY.retentionFull, 1, 365, 'retentionFull'),
-      verifyEveryHours: n(p.verifyEveryHours ?? DEFAULT_POLICY.verifyEveryHours, 0, 720, 'verifyEveryHours'),
-      verifyDeep: !!p.verifyDeep,
-      retryAfterMinutes: n(p.retryAfterMinutes ?? DEFAULT_POLICY.retryAfterMinutes, 5, 1440, 'retryAfterMinutes'),
-    };
-    if (out.incrEveryHours && out.incrEveryHours >= out.fullEveryHours) return { ok: false, error: 'incrEveryHours must be smaller than fullEveryHours' };
-    return { ok: true, policy: out };
-  } catch (e: any) { return { ok: false, error: e.message }; }
-}
+import { type BackupPolicy, DEFAULT_POLICY, validatePolicy, resolvePolicy } from './policies';
+export { type BackupPolicy, DEFAULT_POLICY, validatePolicy };
 
 const online = (n: NodeRecord, now: number) => !!n.lastSeen && now - Date.parse(n.lastSeen) < 45_000;
 const ts = (s?: string) => (s ? Date.parse(s) : NaN);
@@ -46,7 +20,7 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
   const submitted: string[] = [];
   const st = store.peek();
   for (const c of st.clusters as any[]) {
-    const pol: BackupPolicy | undefined = c.backupPolicy;
+    const pol: BackupPolicy | undefined = resolvePolicy(st, c).policy || undefined;
     if (!pol?.enabled || c.isSandbox || c.source === 'direct') continue;
     const nodes = Object.values(st.nodes).filter(n => n.clusterId === c.id && online(n, now));
     // prefer the primary: archive_mode=on is only guaranteed there; standbys need archive_mode=always

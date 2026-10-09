@@ -10,6 +10,7 @@ import { mountAgentRoutes, mountOperatorRoutes } from './server/agents';
 import { mountClusterRoutes, seedDemoOnFirstRun } from './server/clusters';
 import { startScheduler } from './server/scheduler';
 import { mountPlatformRoutes } from './server/platform';
+import { mountPolicyRoutes } from './server/policies';
 import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv } from './server/auth';
 import { runSelfTest } from './server/selftest';
 import { attachLogSocket, broadcastLiveLog, mountLogRoutes } from './server/logs';
@@ -54,6 +55,7 @@ mountAgentRoutes(app, store, {
 mountOperatorRoutes(app, store, { directExec: direct.exec });
 mountClusterRoutes(app, store, direct, buildDemoCluster);
 mountPlatformRoutes(app, store);
+mountPolicyRoutes(app, store);
 mountLogRoutes(app);
 mountNetscanRoutes(app);
 

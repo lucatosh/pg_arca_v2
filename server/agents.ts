@@ -6,7 +6,7 @@
  *   agent --HTTPS POST--> /api/agent/ops/:id/report
  * Identity: one-time enrollment token -> per-node secret (only its sha256 is stored).
  */
-import { validatePolicy, DEFAULT_POLICY } from './scheduler';
+import { validatePolicy, DEFAULT_POLICY, resolvePolicy } from './policies';
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { Store, NodeRecord, sha256, newSecret, newId, nowIso } from './store';
@@ -266,7 +266,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       agent: nodes.length > 0, node: src ? { id: src.id, name: src.name, lastSeen: src.lastSeen } : null,
       backup: src?.snapshot?.backup || null, wal: src?.snapshot?.wal || null,
       archiver: src?.snapshot?.postgres?.archiver || null, archiveMode: src?.snapshot?.postgres?.settings?.archive_mode || null,
-      policy: cluster.backupPolicy || { ...DEFAULT_POLICY }, running,
+      policy: resolvePolicy(st, cluster).policy || { ...DEFAULT_POLICY }, policySource: resolvePolicy(st, cluster).source, running,
     });
   });
 
@@ -277,7 +277,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       const c = d.clusters.find((x: any) => x.id === req.params.id);
       if (!c) return false;
       if (c.isSandbox || c.source === 'direct') throw Object.assign(new Error('agent_required'), { code: 'AGENT_REQUIRED' });
-      c.backupPolicy = v.policy;
+      (d.settings.policyAssignments ||= {})['cluster:' + c.id] = { policy: v.policy }; delete c.backupPolicy;
       ops.audit(d, { clusterId: c.id, actor: actorOf(req), action: 'backup.policy', status: 'OK', details: v.policy });
       return true;
     }).catch((e: any) => (e.code === 'AGENT_REQUIRED' ? 'agent' : Promise.reject(e)));
