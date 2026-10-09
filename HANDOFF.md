@@ -17,17 +17,21 @@ Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggi
 - [x] Motore backup/restore (`unix-agent/pg_arca/engine/`): CAS blake2b/zstd, full/diff/incr con LSN di pagina, deduplica, restore istanza/DB sparso/oggetto con PITR, istanza effimera isolata, verify/restore-test/expire/forensics. 15 test su PG16 reale.
 - [x] UI modulare (`src/`): auth, shell + palette Ctrl+K, elenco cluster, wizard di collegamento (agent / diretto), vista cluster (panoramica, nodi, HA, parametri, backup, ripristino con timeline, operazioni, log), registro attività, rilevamento. Sezioni senza backend marcate "Anteprima". Provata in Chromium (`tests/ui`).
 
+- [x] Strategie di backup (`server/policies.ts`, `src/pages/Strategy.tsx`): modelli predefiniti + personalizzati, assegnazione a globale/ambiente/cartella/cluster, risoluzione a ogni tick (cluster > cartella più lunga > ambiente > globale).
+- [x] HBA: agent (`hba.py`, `hba_ops.py`, provato su PG16), API di propagazione (`server/hba.ts`), assistente UI (`src/pages/Hba.tsx` + `src/hbaLogic.ts`, test `tests/ui/hbalogic.test.ts`). Ordine predefinito "specifico prima" (pg_hba usa la prima regola che corrisponde); modalità "rete più ampia in alto" segnala le regole rese irraggiungibili.
+- [x] Rilevamento: `advise()` sull'agent + differenze tra nodi sul server (UI non ancora aggiornata). Promozione tabella (`engine/granular.py::promote_object`, UI mancante).
+
 ## DA FARE (ordine consigliato)
+0. UI: rilevamento (consigli/differenze per nodo), "promuovi tabella" nel ripristino, restyling grafico, regole HBA importabili dal file nel blocco gestito.
 1. Provare dal vivo (con `npm install`): `direct.ts`, `/ws/logs`, `/api/network/*`, avvio di `server.ts`.
 2. HA e parametri su un cluster Patroni reale.
-3. Operazione "promuovi tabella" (quarantena -> database di produzione).
 4. Benchmark vs pgBackRest (nessun claim finché non misurato).
-5. Anteprime: HBA, LDAP/AD, RBAC, tuning, modelli globali.
+5. Anteprime: LDAP/AD, RBAC, tuning.
 6. Integrare i design v1.0–v1.2 (non nel repo).
 7. UI: tema scuro rivisto a vista, grafici di tendenza.
 
 ## Come testare
-- Server: `tsx tests/server/{ops,view,api,scheduler}.test.ts`
+- Server: `tsx tests/server/{ops,view,api,scheduler,policies,hba,discovery}.test.ts e tsx tests/ui/hbalogic.test.ts`
 - Agent: `cd unix-agent && python3 -m unittest discover -s tests -t .`
 - Motore su PG16: NON come root. `chown -R postgres /home/claude/pgtest; su postgres -s /bin/bash -c 'cd /home/claude/pg_arca_v2/unix-agent && PG_ARCA_TEST_DIR=/home/claude/pgtest/e2e python3 -m unittest tests.test_engine_pg'` (`V=1` per i log del motore). Non usare `pkill -f` con pattern larghi: uccide la propria shell.
 - UI: bundle `esbuild src/main.tsx --bundle --outfile=/tmp/claude-0/ui/app.js --loader:.css=css --jsx=automatic`; server di test `tsx tests/ui/devserver.ts 5188 /tmp/claude-0/ui`; `NODE_PATH=/opt/npm-tools/node_modules node tests/ui/e2e.cjs`. Dopo un login sbagliato il server impone 1 s di attesa (throttling).

@@ -19,7 +19,12 @@ Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguit
 | Agent: rilevamento, esecutore, Patroni, WAL, CLI | `unix-agent/pg_arca/*` | Reale | `unix-agent/tests` |
 | Motore backup/ripristino | `unix-agent/pg_arca/engine/*` | Reale | 15 test su PostgreSQL 16 |
 | Interfaccia web modulare | `src/*` | Reale, provata nel browser | `tests/ui/e2e.cjs` (agent simulato) |
-| HBA, LDAP/AD, RBAC, tuning, modelli globali | — | **Anteprima** (marcati in UI) | — |
+| Strategie di backup per cartella / ambiente / cluster (modelli suggeriti e personalizzati, ereditarietà) | Reale |: risolte a ogni tick dello scheduler, nessuna copia | `tests/server/policies.test.ts`, `tests/ui/e2e.cjs` |
+| Gestione pg_hba (Patroni DCS o file, simulazione anti lock-out, verifica con `pg_hba_file_rules`, rollback) | Agent provato su PostgreSQL 16 reale; **DCS Patroni mai provato su un cluster reale** | `unix-agent/tests/test_hba*.py`, `tests/server/hba.test.ts`, `tests/ui/hbalogic.test.ts` |
+| Assistente HBA nella UI (duplicati, regole oscurate, ordine, descrizioni, modelli) | Reale | nel browser con agent simulato | `tests/ui/e2e.cjs` |
+| Rilevamento: consigli dell'agent e differenze tra nodi | Reale | | `tests/server/discovery.test.ts`, `unix-agent/tests/test_discovery_advisor.py` |
+| Riporta una tabella ripristinata nel database (`as_new` / `replace`, non distruttivo) | Agent provato su PG16; **non ancora esposto nella UI** | `test_engine_pg.py` |
+| LDAP/AD, RBAC, tuning | — | **Anteprima** (marcati in UI) | — |
 
 ## Cosa coprono i test del motore (PostgreSQL 16)
 backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’istanza; ripristino sparso di un database; ripristino di un oggetto; ripristino fallito che non lascia nulla; `target_time` senza fuso rifiutato; percorsi protetti; verifica e info; prova di ripristino; rilevamento di blocchi corrotti; ricerca DROP/TRUNCATE; sicurezza dopo un backup interrotto; pulizia.
@@ -34,7 +39,7 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 ## Da fare
 1. Provare `direct.ts`, `logs.ts` e `netscan.ts` con `npm install` su una macchina con rete.
 2. Provare HA e parametri su un cluster Patroni reale.
-3. Operazione "promuovi" per spostare una tabella dalla quarantena al database di produzione.
+3. Esporre "promuovi tabella" nella UI di ripristino (l'agent è pronto e provato).
 4. Benchmark contro pgBackRest prima di qualsiasi affermazione di velocità.
-5. HBA, LDAP/AD, RBAC, tuning, modelli globali: oggi anteprima.
+5. LDAP/AD, RBAC, tuning: oggi anteprima. Poi: UI rilevamento (consigli/differenze), restyling grafico.
 6. Integrare i documenti di progetto v1.0–v1.2 (non presenti nel repository).

@@ -24,7 +24,12 @@ Console e agent per **backup, ripristino a un istante preciso (PITR) e gestione 
 | Alta affidabilità: switchover, failover, riavvio membro, manutenzione (Patroni) | Scritto con precondizioni e verifica dell’effetto; **mai provato su un cluster Patroni reale** | Test con Patroni simulato |
 | Parametri (`ALTER SYSTEM` + reload) | Scritto; provato con psql simulato | `unix-agent/tests` |
 | Interfaccia web | Funziona nel browser (Chromium) con agent simulato | `tests/ui/e2e.cjs` |
-| HBA, LDAP/AD, RBAC, tuning, modelli/politiche globali | **Anteprima**: visibili e marcate, senza funzione dietro | — |
+| Strategie di backup per cartella / ambiente / cluster (modelli suggeriti e personalizzati, ereditarietà) | Funziona: risolte a ogni tick dello scheduler, nessuna copia | `tests/server/policies.test.ts`, `tests/ui/e2e.cjs` |
+| Gestione pg_hba (Patroni DCS o file, simulazione anti lock-out, verifica con `pg_hba_file_rules`, rollback) | Agent provato su PostgreSQL 16 reale; **DCS Patroni mai provato su un cluster reale** | `unix-agent/tests/test_hba*.py`, `tests/server/hba.test.ts`, `tests/ui/hbalogic.test.ts` |
+| Assistente HBA nella UI (duplicati, regole oscurate, ordine, descrizioni, modelli) | Funziona nel browser con agent simulato | `tests/ui/e2e.cjs` |
+| Rilevamento: consigli dell'agent e differenze tra nodi | Funziona | `tests/server/discovery.test.ts`, `unix-agent/tests/test_discovery_advisor.py` |
+| Riporta una tabella ripristinata nel database (`as_new` / `replace`, non distruttivo) | Agent provato su PG16; **non ancora esposto nella UI** | `test_engine_pg.py` |
+| LDAP/AD, RBAC, tuning | **Anteprima**: visibili e marcate, senza funzione dietro | — |
 | Promozione di una tabella ripristinata nel database di produzione | **Non c’è**: la tabella resta in quarantena, il comando di spostamento è mostrato | — |
 | Velocità rispetto a pgBackRest | **Mai misurata**: nessuna affermazione | — |
 
