@@ -109,6 +109,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       {(exec.op || exec.error) ? <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
         {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' ? <>Cartella pronta in <code>{exec.op!.result.destination}</code>. {exec.op!.result.start_hint}</> : <>Dati disponibili nel database <code>{exec.op!.result.result_database}</code>.{exec.op!.result.inspect ? <> Per controllare: <code>{exec.op!.result.inspect}</code></> : null}</>}</Banner> : null}
         {doneOk && scope === 'object' && exec.op!.result.result_database ? <Promote stage={exec.op!.result.result_database} obj={obj} mode={pmode} setMode={setPmode} drop={pdrop} setDrop={setPdrop} runner={prom} ask={() => setAskPromote(true)} /> : null}
+        {doneOk && scope === 'object' && exec.op!.result.result_database ? <RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /> : null}
         <Result op={exec.op} />
         {(exec.op && !running) ? <div><Button onClick={() => { exec.reset(); plan.reset(); setStep(0); }}>Nuovo ripristino</Button></div> : null}</div></Card> : null}
     </div>}
@@ -155,4 +156,34 @@ function Promote({ stage, obj, mode, setMode, drop, setDrop, runner, ask }: { st
     {(runner.op || runner.error) && !done ? <OpPanel op={runner.op} error={runner.error} label="Promozione della tabella" /> : null}
     {done ? <Banner kind="ok" title="Tabella riportata">{r?.mode === 'replace' ? <>La tabella ripristinata è ora <code>{r.promoted_as}</code>; l’originale è conservata come <code>{r.old_kept_as}</code>.</> : <>Creata <code>{r?.promoted_as}</code> accanto all’originale.</>}{r?.rows != null ? ` ${num(r.rows)} righe.` : ''}{r?.warning ? <span className="hba-warn"> {r.warning}</span> : null}</Banner> : null}
     {done ? <Result op={runner.op} /> : null}</div>;
+}
+
+const keyStr = (k: any[]) => JSON.stringify(k);
+const brief = (o: any) => { const t = JSON.stringify(o); return t.length > 140 ? t.slice(0, 140) + '…' : t; };
+function RowRecovery({ clusterId, stage, obj }: { clusterId: string; stage: string; obj: string }) {
+  const diff = useOpRunner(clusterId); const apply = useOpRunner(clusterId);
+  const [pick, setPick] = useState<Record<string, boolean>>({}); const [del, setDel] = useState<Record<string, boolean>>({}); const [ask, setAsk] = useState(false);
+  const d = diff.op?.status === 'succeeded' ? diff.op.result : null;
+  const rest = Object.keys(pick).filter(k => pick[k]); const dels = Object.keys(del).filter(k => del[k]);
+  const done = apply.op?.status === 'succeeded'; const r = apply.op?.result;
+  const all = (rows: any[], on: boolean, set: (f: (x: Record<string, boolean>) => Record<string, boolean>) => void) => set(x => { const n = { ...x }; rows.forEach(w => { n[keyStr(w.key)] = on; }); return n; });
+  const list = (title: string, hint: string, rows: any[], state: Record<string, boolean>, set: (f: (x: Record<string, boolean>) => Record<string, boolean>) => void, show: (w: any) => string, total: number) => rows.length || total ? <div className="stack">
+    <div className="row"><strong>{title}</strong><Badge>{num(total)}</Badge><div className="grow" />{rows.length ? <><Button onClick={() => all(rows, true, set)}>Seleziona tutte</Button><Button onClick={() => all(rows, false, set)}>Nessuna</Button></> : null}</div>
+    <p className="small muted">{hint}{total > rows.length ? ` Mostrate le prime ${rows.length} di ${num(total)}.` : ''}</p>
+    {rows.map(w => <label key={keyStr(w.key)} className="check"><input type="checkbox" checked={!!state[keyStr(w.key)]} onChange={e => set(x => ({ ...x, [keyStr(w.key)]: e.target.checked }))} /><span><code>{keyStr(w.key)}</code> <span className="small muted">{show(w)}</span></span></label>)}</div> : null;
+  return <div className="stack"><div className="hr" /><strong>Recupera solo alcune righe</strong>
+    <p className="small muted">Confronta la tabella ripristinata (<code>{stage}</code>) con quella attuale e riporta solo le righe che scegli. Prima di toccare qualcosa le versioni attuali vengono copiate in una tabella di sicurezza; tutto avviene in un’unica transazione.</p>
+    {!d && !done ? <div><Button icon="search" busy={diff.busy} disabled={diff.busy} onClick={() => diff.run('restore_diff', { stage_db: stage, object: obj, limit: 200 })}>Confronta riga per riga</Button></div> : null}
+    {(diff.op || diff.error) && !d ? <OpPanel op={diff.op} error={diff.error} label="Confronto delle righe" /> : null}
+    {d && !done ? <>
+      <Banner kind={d.counts.missing_now + d.counts.changed + d.counts.added_since ? 'info' : 'ok'} title={d.counts.missing_now + d.counts.changed + d.counts.added_since ? 'Differenze trovate' : 'Le tabelle coincidono'}>
+        Chiave primaria <code>{d.primary_key.join(', ')}</code>: {num(d.restored_rows)} righe nel ripristino, {num(d.live_rows)} oggi. {d.columns_only_in_one_side.length ? <span className="hba-warn">Colonne presenti solo da un lato (ignorate nel confronto): {d.columns_only_in_one_side.join(', ')}.</span> : null}</Banner>
+      {list('Cancellate dopo quel momento', 'Esistevano nel ripristino e oggi non ci sono più: selezionale per reinserirle.', d.missing_now, pick, setPick, (w: any) => brief(w.restored), d.counts.missing_now)}
+      {list('Modificate', 'Il valore ripristinato sovrascrive quello attuale (che resta nella tabella di sicurezza).', d.changed, pick, setPick, (w: any) => `ora ${brief(w.live)} → ripristino ${brief(w.restored)}`, d.counts.changed)}
+      {list('Aggiunte dopo quel momento', 'Non esistevano nel ripristino. Selezionale solo se vuoi eliminarle.', d.added_since, del, setDel, (w: any) => brief(w.live), d.counts.added_since)}
+      <div className="row"><div className="grow" /><Button kind="primary" icon="restore" disabled={!rest.length && !dels.length} onClick={() => setAsk(true)}>Applica {rest.length + dels.length ? `(${rest.length + dels.length})` : ''}</Button></div></> : null}
+    {(apply.op || apply.error) && !done ? <OpPanel op={apply.op} error={apply.error} label="Applicazione delle righe" /> : null}
+    {done ? <Banner kind="ok" title="Righe recuperate">Reinserite {num(r?.inserted ?? 0)}, ripristinate {num(r?.updated ?? 0)}, eliminate {num(r?.deleted ?? 0)}.{r?.safety_copy ? <> Versione precedente conservata in <code>{r.safety_copy}</code>.</> : null}</Banner> : null}
+    {ask ? <Confirm title="Applicare le righe selezionate?" danger={dels.length > 0} confirmLabel="Applica" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); apply.run('restore_apply_rows', { stage_db: stage, object: obj, restore_keys: rest, delete_keys: dels }); }}>
+      <p>{rest.length} righe verranno reinserite o sovrascritte con la versione ripristinata{dels.length ? <>, {dels.length} righe aggiunte dopo verranno eliminate</> : null}. La versione attuale di ogni riga toccata viene copiata prima in una tabella <code>pgarca_rowsafe_…</code>; se qualcosa fallisce non cambia nulla.</p></Confirm> : null}</div>;
 }

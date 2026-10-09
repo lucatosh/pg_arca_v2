@@ -56,6 +56,9 @@ const withAgent = process.env.NO_AGENT !== '1';
       const p = op.params;
       await report(op.id, { status: 'running', progress: { phase: 'starting' } });
       if (op.type === 'pg_set_param') { await sleep(300); return report(op.id, { status: 'succeeded', result: { name: p.name, value: p.value, applied: true } }); }
+      if (op.type === 'restore_diff') { await sleep(300); return report(op.id, { status: 'succeeded', result: { object: p.object, primary_key: ['id'], restored_rows: 500, live_rows: 6, columns_only_in_one_side: [], counts: { missing_now: 2, added_since: 1, changed: 1 }, limit: 200,
+        missing_now: [{ key: [200], restored: { id: 200, name: 'c200' } }, { key: [201], restored: { id: 201, name: 'c201' } }], added_since: [{ key: [900], live: { id: 900, name: 'new' } }], changed: [{ key: [1], restored: { id: 1, name: 'old' }, live: { id: 1, name: 'live1' } }] } }); }
+      if (op.type === 'restore_apply_rows') { await sleep(300); return report(op.id, { status: 'succeeded', result: { object: p.object, inserted: (p.restore_keys || []).length, updated: 0, deleted: (p.delete_keys || []).length, safety_copy: 'public.pgarca_rowsafe_20260101_orders' } }); }
       if (op.type === 'restore_promote') { await sleep(500); return report(op.id, { status: 'succeeded', result: { object: p.object, mode: p.mode, promoted_as: 'public.orders_pitr_20260101000000', old_kept_as: 'public.orders', rows: 1234, stage_dropped: !!p.drop_stage } }); }
       if (op.type === 'hba_read') {
         const eff = [{ line_number: 90, type: 'local', database: ['all'], user_name: ['postgres'], address: null, netmask: null, auth_method: 'peer', options: null, error: null },
