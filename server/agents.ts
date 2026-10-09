@@ -12,6 +12,7 @@ import type { Request, Response } from 'express';
 import { Store, NodeRecord, sha256, newSecret, newId, nowIso } from './store';
 import * as ops from './ops';
 import { OP_SPECS, validateOp } from './optypes';
+import { requiresApproval, describeOp, APPROVAL_TTL_MS } from './approvals';
 import { deriveCluster, computeTps } from './view';
 
 export interface Deps {
@@ -219,38 +220,78 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     const bad = validateOp(String(type), params);
     if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
     const spec = OP_SPECS[type];
+    if (requiresApproval(st, cluster, type, params)) {
+      const actor = actorOf(req);
+      const id = 'apr_' + crypto.randomBytes(5).toString('hex');
+      const dup = (st.settings.approvalRequests || []).find((r: any) => r.status === 'pending' && r.idempotencyKey === key);
+      const reqRec = dup || { id, status: 'pending', clusterId: cluster.id, clusterName: cluster.name, environment: cluster.environment, type, params, nodeId, ttlSeconds, idempotencyKey: key, requestedBy: actor, createdAt: nowIso(), expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), summary: describeOp(type, params) };
+      if (!dup) await store.mutate(d => { (d.settings.approvalRequests ||= []).push(reqRec); if (d.settings.approvalRequests.length > 200) d.settings.approvalRequests.splice(0, d.settings.approvalRequests.length - 200);
+        ops.audit(d, { clusterId: cluster.id, actor, action: 'approval.requested', status: 'OK', details: { id, type, summary: reqRec.summary } }); });
+      return res.status(202).json({ approval: reqRec, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
+    }
+    const r = await execute(cluster, type, params, nodeId, ttlSeconds, key, actorOf(req));
+    res.status(r.code).json(r.body);
+  });
 
+  async function execute(cluster: any, type: string, params: any, nodeId: string | undefined, ttlSeconds: number | undefined, key: string, actor: string): Promise<{ code: number; body: any }> {
+    const spec = OP_SPECS[type];
+    const st = store.peek();
     try {
       if (cluster.source === 'direct') {
-        if (spec.lane === 'data') return res.status(409).json({ error: 'agent_required', message: 'Backup, restore and PITR run on the database host: install the agent on a node of this cluster (agentless attach cannot read the data directory).' });
-        if (!deps.directExec) return res.status(501).json({ error: 'direct_not_available' });
-        const { op, created } = await ops.runLocal(store, { type, clusterId: cluster.id, params, idempotencyKey: key, createdBy: actorOf(req) },
-                                                    () => deps.directExec!(cluster, type, params));
-        return res.status(created ? 202 : 200).json({ operation: op, replayed: !created });
+        if (spec.lane === 'data') return { code: 409, body: { error: 'agent_required', message: 'Backup, restore and PITR run on the database host: install the agent on a node of this cluster (agentless attach cannot read the data directory).' } };
+        if (!deps.directExec) return { code: 501, body: { error: 'direct_not_available' } };
+        const { op, created } = await ops.runLocal(store, { type, clusterId: cluster.id, params, idempotencyKey: key, createdBy: actor }, () => deps.directExec!(cluster, type, params));
+        return { code: created ? 202 : 200, body: { operation: op, replayed: !created } };
       }
-
       // agent-backed: choose the executing node
       const nodes = Object.values(st.nodes).filter(n => n.clusterId === cluster.id);
       const online = (n: NodeRecord) => !!n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000;
       let target: NodeRecord | undefined = nodeId ? nodes.find(n => n.id === nodeId) : undefined;
-      if (nodeId && !target) return res.status(404).json({ error: 'node_not_found' });
+      if (nodeId && !target) return { code: 404, body: { error: 'node_not_found' } };
       if (!target) {
         const pick = (pred: (n: NodeRecord) => boolean) => nodes.find(n => online(n) && pred(n));
         if (spec.target === 'primary') target = pick(n => n.snapshot?.postgres?.is_in_recovery === false);
         else if (spec.target === 'patroni_node') target = pick(n => !!n.snapshot?.patroni?.accessible);
         else target = pick(() => true);
       }
-      if (!target) return res.status(409).json({ error: 'no_suitable_node', message: 'No online node can execute this operation right now.' });
-      if (!online(target)) return res.status(409).json({ error: 'node_offline', message: `Node ${target.name} is offline.` });
-      if (spec.needsPatroni && !target.snapshot?.patroni?.accessible) return res.status(409).json({ error: 'patroni_unavailable', message: 'Patroni REST API is not reachable from this node.' });
-
-      const { op, created } = await ops.submit(store, { type, clusterId: cluster.id, nodeId: target.id, params, idempotencyKey: key, createdBy: actorOf(req), ttlSeconds });
-      res.status(created ? 202 : 200).json({ operation: op, replayed: !created });
+      if (!target) return { code: 409, body: { error: 'no_suitable_node', message: 'No online node can execute this operation right now.' } };
+      if (!online(target)) return { code: 409, body: { error: 'node_offline', message: `Node ${target.name} is offline.` } };
+      if (spec.needsPatroni && !target.snapshot?.patroni?.accessible) return { code: 409, body: { error: 'patroni_unavailable', message: 'Patroni REST API is not reachable from this node.' } };
+      const { op, created } = await ops.submit(store, { type, clusterId: cluster.id, nodeId: target.id, params, idempotencyKey: key, createdBy: actor, ttlSeconds });
+      return { code: created ? 202 : 200, body: { operation: op, replayed: !created } };
     } catch (e: any) {
-      if (e.code === 'IDEMPOTENCY_CONFLICT') return res.status(422).json({ error: 'idempotency_conflict', message: e.message });
+      if (e.code === 'IDEMPOTENCY_CONFLICT') return { code: 422, body: { error: 'idempotency_conflict', message: e.message } };
       throw e;
     }
-  });
+  }
+
+  // ---- four-eyes approvals --------------------------------------------------
+  const pendingView = () => {
+    const now = Date.now(); const list = (store.peek().settings.approvalRequests || []) as any[];
+    return list.map(r => (r.status === 'pending' && Date.parse(r.expiresAt) < now ? { ...r, status: 'expired' } : r)).slice(-50).reverse();
+  };
+  app.get('/api/approvals', (_req: Request, res: Response) => res.json({ approvals: pendingView() }));
+  const decide = async (req: Request, res: Response, how: 'approve' | 'reject' | 'cancel') => {
+    const actor = actorOf(req); const id = req.params.id;
+    const rec = (store.peek().settings.approvalRequests || []).find((r: any) => r.id === id);
+    if (!rec) return res.status(404).json({ error: 'not_found' });
+    if (rec.status !== 'pending') return res.status(409).json({ error: 'not_pending', message: 'La richiesta è già stata gestita.' });
+    if (Date.parse(rec.expiresAt) < Date.now()) { await store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); if (r) r.status = 'expired'; }); return res.status(409).json({ error: 'expired', message: 'La richiesta è scaduta: va rifatta.' }); }
+    if (how === 'cancel' && rec.requestedBy !== actor && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Solo chi ha chiesto l’operazione (o un amministratore) può annullarla.' });
+    if (how === 'approve' && rec.requestedBy === actor) return res.status(403).json({ error: 'self_approval', message: 'Non puoi approvare una tua richiesta: serve un altro amministratore.' });
+    const done = (status: string) => store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); r.status = status; r.decidedBy = actor; r.decidedAt = nowIso();
+      ops.audit(d, { clusterId: rec.clusterId, actor, action: 'approval.' + how, status: 'OK', details: { id, type: rec.type, requestedBy: rec.requestedBy } }); });
+    if (how !== 'approve') { await done(how === 'reject' ? 'rejected' : 'cancelled'); return res.json({ ok: true }); }
+    const cluster = store.peek().clusters.find((c: any) => c.id === rec.clusterId);
+    if (!cluster) return res.status(404).json({ error: 'cluster_not_found' });
+    const r = await execute(cluster, rec.type, rec.params, rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
+    if (r.code >= 400) return res.status(r.code).json(r.body);                    // not consumed: the approver can retry when the node is back
+    await done('approved');
+    res.json({ ok: true, operation: r.body.operation });
+  };
+  app.post('/api/approvals/:id/approve', (req: Request, res: Response) => decide(req, res, 'approve'));
+  app.post('/api/approvals/:id/reject', (req: Request, res: Response) => decide(req, res, 'reject'));
+  app.post('/api/approvals/:id/cancel', (req: Request, res: Response) => decide(req, res, 'cancel'));
 
   // ---- backups (read model from agent telemetry; no round-trip needed) and policy ----------------------------
   app.get('/api/clusters/:id/backups', (req: Request, res: Response) => {

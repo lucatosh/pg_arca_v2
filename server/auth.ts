@@ -43,6 +43,7 @@ const RULES: { m: RegExp; p: RegExp; min: Role }[] = [
   { m: /^POST$/, p: /^\/api\/clusters\/[^/]+\/hba\/apply$/, min: 'operator' },
   { m: /^PUT$/, p: /^\/api\/clusters\/[^/]+\/backup-policy$/, min: 'operator' },
   { m: /^POST$/, p: /^\/api\/discovery\/scan$/, min: 'operator' },
+  { m: /^POST$/, p: /^\/api\/approvals\/[^/]+\/cancel$/, min: 'operator' },
 ];
 export function requiredRole(method: string, path: string): Role {
   for (const r of RULES) if (r.m.test(method) && r.p.test(path)) return r.min;
