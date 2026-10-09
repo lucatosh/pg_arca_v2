@@ -89,10 +89,14 @@ def validate_rule(r):
 def validate_rules(rules):
     if not isinstance(rules, list) or len(rules) > 200:
         raise HbaError("rules must be a list of at most 200 entries")
-    clean, errors, warnings = [], [], []
+    clean, errors, warnings, seen = [], [], [], {}
     for i, r in enumerate(rules):
         try:
             c, w = validate_rule(r)
+            k = tuple(c[x] for x in ("type", "database", "user", "address", "method", "options"))
+            if k in seen:
+                raise HbaError("duplicate of rule #%d" % (seen[k] + 1))
+            seen[k] = i
             clean.append(c)
             warnings += [{"index": i, "message": x} for x in w]
         except HbaError as e:

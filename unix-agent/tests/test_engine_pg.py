@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pg_arca.engine.backup import run_backup
 from pg_arca.engine.ctx import Ctx
-from pg_arca.engine.granular import restore_database, restore_object, restore_test
+from pg_arca.engine.granular import promote_object, restore_database, restore_object, restore_test
 from pg_arca.engine.maintenance import expire, forensics, repo_info, verify
 from pg_arca.engine.pgsession import PgConn, PgSession
 from pg_arca.engine.restore import restore_instance
@@ -181,6 +181,24 @@ class EngineTests(unittest.TestCase):
         plan = restore_object(F.ctx, "app.public.customers", target_time=F.t1, stage_db="stage_customers")
         self.assertEqual(plan["rows_restored"], 500)
         self.assertEqual(int(q("stage_customers", "SELECT count(*) FROM public.customers")[0][0]), 500)
+
+    def test_06b_promote_table_back(self):
+        r = promote_object(F.ctx, "stage_customers", "app.public.customers", mode="as_new", drop_stage=False)
+        self.assertTrue(r["promoted_as"].startswith("public.customers_pitr_")); self.assertIsNone(r["old_kept_as"])
+        self.assertEqual(int(q("app", "SELECT count(*) FROM %s" % r["promoted_as"])[0][0]), 500)
+        self.assertEqual([x[0] for x in q("app", "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'pgarca_pr_%'")], [], "work schema removed")
+        # the recovered table keeps a usable primary key under a suffixed name (no collision)
+        self.assertTrue(q("app", "SELECT 1 FROM pg_indexes WHERE tablename LIKE 'customers_pitr_%' AND indexname LIKE '%pitr%'"))
+        # replace: a live table exists now -> it is renamed, never dropped
+        q("app", "CREATE TABLE customers(id int primary key, name text); INSERT INTO customers VALUES (1,'live')")
+        r2 = promote_object(F.ctx, "stage_customers", "app.public.customers", mode="replace", drop_stage=True)
+        self.assertTrue(r2["old_kept_as"].startswith("public.customers_old_"))
+        self.assertEqual(int(q("app", "SELECT count(*) FROM customers")[0][0]), 500)
+        self.assertEqual(q("app", "SELECT name FROM %s" % r2["old_kept_as"])[0][0], "live", "previous data kept")
+        self.assertNotIn("stage_customers", [x[0] for x in q("postgres", "SELECT datname FROM pg_database")])
+        with self.assertRaises(EngineError):
+            promote_object(F.ctx, "somedb", "app.public.customers")               # only pg_arca quarantine databases
+        q("app", "DROP TABLE customers; DROP TABLE %s; DROP TABLE %s" % (r2["old_kept_as"], r["promoted_as"]))
 
     def test_07_failed_restore_leaves_nothing_behind(self):
         with self.assertRaises(EngineError):

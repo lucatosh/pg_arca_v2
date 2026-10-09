@@ -94,6 +94,7 @@ Object.assign(OP_SPECS, {
   hba_plan:     { mutating: false, target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) },
   hba_apply:    { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) || (p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
   hba_rollback: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.backup && !/^[\w.\-]{1,100}$/.test(String(p.backup)) ? 'invalid backup name' : null) },
+  restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^(pgarca_)?stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : (p.mode && !['as_new', 'replace'].includes(p.mode) ? 'mode must be as_new|replace' : intoErr(p))) },
   wal_forensics:    { ...dataOp, mutating: false, validate: () => null },
 } as Record<string, OpSpec>);
 

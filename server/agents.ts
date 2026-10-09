@@ -261,7 +261,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     const withBackup = nodes.filter(n => n.snapshot?.backup?.configured).sort((a, b) => (b.snapshot.backup.sets || 0) - (a.snapshot.backup.sets || 0));
     const primary = nodes.find(n => n.snapshot?.postgres?.is_in_recovery === false);
     const src = withBackup[0] || primary || nodes[0];
-    const running = st.operations.filter(o => o.clusterId === cluster.id && ['backup_run', 'backup_verify', 'backup_expire', 'restore_instance', 'restore_database', 'restore_object'].includes(o.type) && !isTerminalStatus(o.status));
+    const running = st.operations.filter(o => o.clusterId === cluster.id && ['backup_run', 'backup_verify', 'backup_expire', 'restore_instance', 'restore_database', 'restore_object', 'restore_promote'].includes(o.type) && !isTerminalStatus(o.status));
     res.json({
       agent: nodes.length > 0, node: src ? { id: src.id, name: src.name, lastSeen: src.lastSeen } : null,
       backup: src?.snapshot?.backup || null, wal: src?.snapshot?.wal || null,

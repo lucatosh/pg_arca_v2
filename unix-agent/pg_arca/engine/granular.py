@@ -256,3 +256,127 @@ def restore_test(ctx, set_spec=None, progress=None, cancel=None):
         eph.cleanup()
     info["set"] = target["id"]
     return info
+
+
+def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None):
+    """
+    Move a table recovered into a quarantine database back into the real database. Never destructive:
+      as_new  : the recovered table appears next to the original as <name>_pitr_<ts>
+      replace : the original is renamed <name>_old_<ts> (data kept), the recovered table takes its name
+    Indexes and owned sequences of the table that gets the suffix are renamed too, so nothing collides. Foreign keys, views and
+    functions that referenced the original keep pointing at it (we report how many), they are not rewired.
+    """
+    if mode not in ("as_new", "replace"):
+        raise EngineError("PGA-GEN-080", "mode must be as_new or replace")
+    if not stage_db or not stage_db.startswith("pgarca_stage_") and not stage_db.startswith("stage_"):
+        raise EngineError("PGA-GEN-081", "only quarantine databases created by pg_arca can be promoted from (name starts with pgarca_stage_)")
+    parts = spec.split(".")
+    if len(parts) != 3:
+        raise EngineError("PGA-GEN-082", "object must be database.schema.name")
+    dbname, schema, name = parts
+    _check_name(stage_db, "quarantine database")
+    admin = _dest_conn(ctx, into)
+    ts = now_utc().strftime("%Y%m%d%H%M%S")
+    work = "pgarca_pr_" + ts
+    fq = "%s.%s" % (quote_ident(schema), quote_ident(name))
+    tmp = tempfile.mkdtemp(prefix="pgarca-promote-")
+    created_schema = False
+    result = {"object": spec, "mode": mode}
+    try:
+        st = PgSession(admin.with_db(stage_db))
+        try:
+            if st.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit(fq)) != "t":
+                raise EngineError("PGA-GEN-083", "table %s not found in %s" % (fq, stage_db))
+            rows = int(st.scalar("SELECT count(*) FROM %s" % fq))
+            st.query("ALTER SCHEMA %s RENAME TO %s" % (quote_ident(schema), quote_ident(work)))      # the dump now carries the work schema
+        finally:
+            st.close()
+        dump = os.path.join(tmp, "p.dump")
+        try:
+            rc, out, err = run_tool(admin, "pg_dump", admin.args() + ["-Fc", "-Z", "3", "-t", "%s.%s" % (quote_ident(work), quote_ident(name)), "-f", dump, "-d", stage_db], timeout=None)
+        finally:
+            st = PgSession(admin.with_db(stage_db))             # leave the quarantine database exactly as we found it (it can be promoted again)
+            try:
+                st.query("ALTER SCHEMA %s RENAME TO %s" % (quote_ident(work), quote_ident(schema)))
+            finally:
+                st.close()
+        if rc != 0:
+            raise EngineError("PGA-GEN-084", "pg_dump failed: %s" % err.strip()[:500])
+        tg = PgSession(admin.with_db(dbname))
+        try:
+            tg.query("CREATE SCHEMA %s" % quote_ident(work))
+            created_schema = True
+            _pg_restore(admin, dbname, dump, 1, extra=("-1",))
+            got = int(tg.scalar("SELECT count(*) FROM %s.%s" % (quote_ident(work), quote_ident(name))))
+            if got != rows:
+                raise EngineError("PGA-VRF-040", "verification failed: %d rows in quarantine, %d copied" % (rows, got))
+
+            def dependents(sch, tbl):
+                idx = [r[0] for r in tg.query("SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE i.indrelid=%s::regclass" % sql_lit("%s.%s" % (quote_ident(sch), quote_ident(tbl))))]
+                seq = [r[0] for r in tg.query("SELECT s.relname FROM pg_depend d JOIN pg_class s ON s.oid=d.objid AND s.relkind='S' WHERE d.refobjid=%s::regclass AND d.deptype IN ('a','i')" % sql_lit("%s.%s" % (quote_ident(sch), quote_ident(tbl))))]
+                return idx, seq
+
+            def short(base, suffix):
+                return (base[:63 - len(suffix)] + suffix)
+
+            existing = tg.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit(fq)) == "t"
+            if mode == "replace" and existing:
+                nrefs = int(tg.scalar("SELECT count(*) FROM pg_constraint WHERE confrelid=%s::regclass" % sql_lit(fq)))
+                sfx = "_old_" + ts
+                keep_as = short(name, sfx)
+                idx, seq = dependents(schema, name)
+                tg.query("BEGIN")
+                try:
+                    tg.query("ALTER TABLE %s RENAME TO %s" % (fq, quote_ident(keep_as)))
+                    for i in idx:
+                        tg.query("ALTER INDEX %s.%s RENAME TO %s" % (quote_ident(schema), quote_ident(i), quote_ident(short(i, sfx))))
+                    for s_ in seq:
+                        tg.query("ALTER SEQUENCE %s.%s RENAME TO %s" % (quote_ident(schema), quote_ident(s_), quote_ident(short(s_, sfx))))
+                    tg.query("ALTER TABLE %s.%s SET SCHEMA %s" % (quote_ident(work), quote_ident(name), quote_ident(schema)))
+                    tg.query("COMMIT")
+                except BaseException:
+                    try:
+                        tg.query("ROLLBACK")
+                    except EngineError:
+                        pass
+                    raise
+                result.update(promoted_as="%s.%s" % (schema, name), old_kept_as="%s.%s" % (schema, keep_as), referencing_foreign_keys=nrefs)
+                if nrefs:
+                    result["warning"] = "%d foreign key(s) still reference the previous table (now %s): they were not rewired" % (nrefs, keep_as)
+            else:
+                new_name = short(name, "_pitr_" + ts)
+                sfx = "_pitr_" + ts
+                idx, seq = dependents(work, name)
+                tg.query("BEGIN")
+                try:
+                    for i in idx:
+                        tg.query("ALTER INDEX %s.%s RENAME TO %s" % (quote_ident(work), quote_ident(i), quote_ident(short(i, sfx))))
+                    for s_ in seq:
+                        tg.query("ALTER SEQUENCE %s.%s RENAME TO %s" % (quote_ident(work), quote_ident(s_), quote_ident(short(s_, sfx))))
+                    tg.query("ALTER TABLE %s.%s RENAME TO %s" % (quote_ident(work), quote_ident(name), quote_ident(new_name)))
+                    tg.query("CREATE SCHEMA IF NOT EXISTS %s" % quote_ident(schema))
+                    tg.query("ALTER TABLE %s.%s SET SCHEMA %s" % (quote_ident(work), quote_ident(new_name), quote_ident(schema)))
+                    tg.query("COMMIT")
+                except BaseException:
+                    try:
+                        tg.query("ROLLBACK")
+                    except EngineError:
+                        pass
+                    raise
+                result.update(promoted_as="%s.%s" % (schema, new_name), old_kept_as=("%s.%s" % (schema, name)) if existing else None)
+            tg.query("DROP SCHEMA %s" % quote_ident(work))              # empty by now (RESTRICT): anything left means something unexpected
+            created_schema = False
+            result["rows"] = rows
+        finally:
+            if created_schema:
+                try:
+                    tg.query("DROP SCHEMA IF EXISTS %s CASCADE" % quote_ident(work))
+                except EngineError:
+                    pass
+            tg.close()
+        if drop_stage:
+            _drop_db(admin, stage_db)
+            result["stage_dropped"] = True
+        return result
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

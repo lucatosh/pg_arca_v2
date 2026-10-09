@@ -21,6 +21,7 @@ class HbaTests(unittest.TestCase):
         _, w = hba.validate_rule(R(address="0.0.0.0/0")); self.assertTrue(any("internet" in x for x in w))
         hba.validate_rule(dict(type="local", database="all", user="postgres", address="", method="peer"))
         hba.validate_rule(R(type="host", address="127.0.0.1/32", method="trust"))          # loopback trust allowed
+        _, errs, _ = hba.validate_rules([R(), R(comment="same rule again")]); self.assertIn("duplicate", errs[0]["message"])
         c, errs, _ = hba.validate_rules([R(), R(type="x")]); self.assertEqual(len(c), 1); self.assertEqual(errs[0]["index"], 1)
 
     def test_block_roundtrip_and_idempotence(self):

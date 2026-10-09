@@ -73,6 +73,7 @@ class OperationExecutor:
         r("restore_instance", self.h_restore_instance, False)
         r("restore_database", self.h_restore_database, False)
         r("restore_object", self.h_restore_object, False)
+        r("restore_promote", self.h_restore_promote, False)
         r("wal_forensics", self.h_forensics, True)
         # pg_hba.conf
         r("hba_read", self.h_hba_read, True)
@@ -429,6 +430,11 @@ class OperationExecutor:
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
         return granular.restore_object(ctx, str(p.get("object")), p.get("set"), into=p.get("into"), stage_db=p.get("stage_db"),
                                        data_only=bool(p.get("data_only")), progress=self._progress, cancel=self._cancelled, **self._targets(p))
+
+    def h_restore_promote(self, p):
+        from pg_arca.engine import granular
+        ctx = self._ctx() if not p.get("into") else self._ctx_ro()
+        return granular.promote_object(ctx, str(p.get("stage_db")), str(p.get("object")), mode=p.get("mode", "as_new"), drop_stage=bool(p.get("drop_stage", True)), into=p.get("into"))
 
     def h_forensics(self, p):
         from pg_arca.engine.maintenance import forensics
