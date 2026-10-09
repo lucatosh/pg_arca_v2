@@ -281,7 +281,8 @@ class ClusterDiscoveryEngine:
             joined = " ".join(argv)
             name = None
             for t in interesting:
-                if exe_name == t or exe_name.startswith(t) or (t in ("patroni", "pg_arca") and t in joined):
+                script = os.path.basename(argv[1]) if (exe_name.startswith("python") and len(argv) > 1) else ""
+                if exe_name == t or exe_name.startswith(t) or script.startswith(t) or script.startswith(t.replace("_", "-")):
                     name = "postgres" if t == "postmaster" else t
                     break
             if name is None:

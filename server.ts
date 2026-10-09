@@ -356,227 +356,108 @@ const defaultDatabases = [
 ];
 
 // Multi-Cluster Initial Dataset
-let clusters: ManagedCluster[] = [
-  {
-    id: 'cluster-prod-01',
-    name: 'pg-prod-primary-eu',
-    environment: 'prod',
-    pgVersion: '16.4',
-    status: 'healthy',
-    tps: 4280,
-    totalSizeBytes: 4350000000,
+// ----------------------------------------------------------------------------
+// Inventory. Starts EMPTY except for ONE clearly-labelled demo cluster (isSandbox)
+// that the user can delete. Everything else is attached by the customer and
+// persisted in DATA_DIR/inventory.json. No other fictitious data exists.
+// ----------------------------------------------------------------------------
+const DEMO_CLUSTER_ID = 'cluster-demo';
+function buildDemoCluster(): ManagedCluster {
+  return {
+  id: DEMO_CLUSTER_ID,
+  name: 'DEMO · pg-demo-cluster',
+  environment: 'dev',
+  isSandbox: true,
+  pgVersion: '16.4',
+  status: 'healthy',
+  tps: 4280,
+  totalSizeBytes: 4350000000,
+  activeTimeline: 3,
+  currentLSN: '0/1F8A9B20',
+  features: { ...globalFeatureFlags },
+  databases: defaultDatabases,
+  haState: {
+    clusterName: 'pg-demo-ha',
+    dcsType: 'etcd',
+    dcsEndpoint: 'http://10.0.1.10:2379,http://10.0.1.11:2379,http://10.0.1.12:2379',
+    failoverMode: 'auto',
+    maintenanceMode: false,
     activeTimeline: 3,
-    currentLSN: '0/1F8A9B20',
-    features: { ...globalFeatureFlags },
-    databases: defaultDatabases,
-    haState: {
-      clusterName: 'pg-patroni-ha-prod',
-      dcsType: 'etcd',
-      dcsEndpoint: 'http://10.0.1.10:2379,http://10.0.1.11:2379,http://10.0.1.12:2379',
-      failoverMode: 'auto',
-      maintenanceMode: false,
-      activeTimeline: 3,
-      nodes: [
-        {
-          name: 'pg-node-01',
-          role: 'primary',
-          state: 'running',
-          host: '10.0.2.11',
-          port: 5432,
-          timeline: 3,
-          lsn: '0/1F8A9B20',
-          replicationLagBytes: 0,
-          replicationLagMs: 0,
-          dcsLeader: true,
-          cpuPercent: 24,
-          memoryPercent: 62,
-          connections: 184,
-          maxConnections: 500
-        },
-        {
-          name: 'pg-node-02',
-          role: 'sync_standby',
-          state: 'streaming',
-          host: '10.0.2.12',
-          port: 5432,
-          timeline: 3,
-          lsn: '0/1F8A99F0',
-          replicationLagBytes: 304,
-          replicationLagMs: 2,
-          dcsLeader: false,
-          cpuPercent: 18,
-          memoryPercent: 59,
-          connections: 62,
-          maxConnections: 500
-        },
-        {
-          name: 'pg-node-03',
-          role: 'replica',
-          state: 'streaming',
-          host: '10.0.2.13',
-          port: 5432,
-          timeline: 3,
-          lsn: '0/1F8A9820',
-          replicationLagBytes: 768,
-          replicationLagMs: 14,
-          dcsLeader: false,
-          cpuPercent: 12,
-          memoryPercent: 54,
-          connections: 45,
-          maxConnections: 500
-        }
-      ]
-    },
-    hbaRules: [
-      { id: 'r1', order: 1, type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Superuser local socket access' },
-      { id: 'r2', order: 2, type: 'hostssl', database: 'replication', user: 'replicator', address: '10.0.2.0/24', method: 'scram-sha-256', comment: 'Patroni & physical standby streaming replication' },
-      { id: 'r3', order: 3, type: 'hostssl', database: 'all', user: '+dba_team', address: '10.0.10.0/24', method: 'scram-sha-256', comment: 'DBA management subnet via LDAP2PG' },
-      { id: 'r4', order: 4, type: 'hostssl', database: 'billing,crm', user: 'app_backend', address: '10.0.20.0/24', method: 'scram-sha-256', comment: 'Application service network' },
-      { id: 'r5', order: 5, type: 'host', database: 'all', user: 'all', address: '0.0.0.0/0', method: 'reject', comment: 'Explicit drop rule for zero-trust' }
-    ],
-    ldapConfig: {
-      enabled: true,
-      serverUrl: 'ldaps://ad-corp.domain.internal:636',
-      bindDN: 'cn=pg_sync_svc,ou=ServiceAccounts,dc=domain,dc=internal',
-      baseDN: 'ou=DatabaseUsers,dc=domain,dc=internal',
-      userFilter: '(&(objectClass=user)(memberOf=cn=PostgresUsers,ou=Groups,dc=domain,dc=internal))',
-      groupFilter: '(&(objectClass=group)(cn=pg_*))',
-      sslVerify: true,
-      syncIntervalMinutes: 30,
-      lastSync: '2026-10-08T12:00:00Z',
-      managedRolesCount: 48,
-      managedGrantsCount: 162
-    }
+    nodes: [
+      {
+        name: 'pg-node-01',
+        role: 'primary',
+        state: 'running',
+        host: '10.0.2.11',
+        port: 5432,
+        timeline: 3,
+        lsn: '0/1F8A9B20',
+        replicationLagBytes: 0,
+        replicationLagMs: 0,
+        dcsLeader: true,
+        cpuPercent: 24,
+        memoryPercent: 62,
+        connections: 184,
+        maxConnections: 500
+      },
+      {
+        name: 'pg-node-02',
+        role: 'sync_standby',
+        state: 'streaming',
+        host: '10.0.2.12',
+        port: 5432,
+        timeline: 3,
+        lsn: '0/1F8A99F0',
+        replicationLagBytes: 304,
+        replicationLagMs: 2,
+        dcsLeader: false,
+        cpuPercent: 18,
+        memoryPercent: 59,
+        connections: 62,
+        maxConnections: 500
+      },
+      {
+        name: 'pg-node-03',
+        role: 'replica',
+        state: 'streaming',
+        host: '10.0.2.13',
+        port: 5432,
+        timeline: 3,
+        lsn: '0/1F8A9820',
+        replicationLagBytes: 768,
+        replicationLagMs: 14,
+        dcsLeader: false,
+        cpuPercent: 12,
+        memoryPercent: 54,
+        connections: 45,
+        maxConnections: 500
+      }
+    ]
   },
-  {
-    id: 'cluster-prep-01',
-    name: 'pg-prep-staging-eu',
-    environment: 'prep',
-    pgVersion: '16.4',
-    status: 'healthy',
-    tps: 840,
-    totalSizeBytes: 3100000000,
-    activeTimeline: 1,
-    currentLSN: '0/0C4A2110',
-    features: { ...globalFeatureFlags, aggressiveAutovacuum: false },
-    databases: defaultDatabases,
-    haState: {
-      clusterName: 'pg-patroni-ha-prep',
-      dcsType: 'etcd',
-      dcsEndpoint: 'http://10.0.1.20:2379',
-      failoverMode: 'auto',
-      maintenanceMode: false,
-      activeTimeline: 1,
-      nodes: [
-        {
-          name: 'pg-prep-node-01',
-          role: 'primary',
-          state: 'running',
-          host: '10.0.3.11',
-          port: 5432,
-          timeline: 1,
-          lsn: '0/0C4A2110',
-          replicationLagBytes: 0,
-          replicationLagMs: 0,
-          dcsLeader: true,
-          cpuPercent: 8,
-          memoryPercent: 35,
-          connections: 32,
-          maxConnections: 300
-        },
-        {
-          name: 'pg-prep-node-02',
-          role: 'replica',
-          state: 'streaming',
-          host: '10.0.3.12',
-          port: 5432,
-          timeline: 1,
-          lsn: '0/0C4A20E0',
-          replicationLagBytes: 48,
-          replicationLagMs: 1,
-          dcsLeader: false,
-          cpuPercent: 5,
-          memoryPercent: 32,
-          connections: 12,
-          maxConnections: 300
-        }
-      ]
-    },
-    hbaRules: [
-      { id: 'r1', order: 1, type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Superuser local socket access' },
-      { id: 'r2', order: 2, type: 'hostssl', database: 'all', user: 'all', address: '10.0.3.0/24', method: 'scram-sha-256', comment: 'Pre-production internal subnet' }
-    ],
-    ldapConfig: {
-      enabled: true,
-      serverUrl: 'ldaps://ad-corp.domain.internal:636',
-      bindDN: 'cn=pg_sync_svc,ou=ServiceAccounts,dc=domain,dc=internal',
-      baseDN: 'ou=DatabaseUsers,dc=domain,dc=internal',
-      userFilter: '(&(objectClass=user)(memberOf=cn=PostgresUsers,ou=Groups,dc=domain,dc=internal))',
-      groupFilter: '(&(objectClass=group)(cn=pg_*))',
-      sslVerify: true,
-      syncIntervalMinutes: 60,
-      lastSync: '2026-10-08T11:00:00Z',
-      managedRolesCount: 24,
-      managedGrantsCount: 78
-    }
-  },
-  {
-    id: 'cluster-dev-01',
-    name: 'pg-dev-sandbox-01',
-    environment: 'dev',
-    pgVersion: '16.4',
-    status: 'healthy',
-    tps: 310,
-    totalSizeBytes: 1250000000,
-    activeTimeline: 1,
-    currentLSN: '0/051B8000',
-    features: { ...globalFeatureFlags, patroniFailover: false, aggressiveAutovacuum: false },
-    databases: [defaultDatabases[0]],
-    haState: {
-      clusterName: 'pg-standalone-dev',
-      dcsType: 'etcd',
-      dcsEndpoint: 'http://127.0.0.1:2379',
-      failoverMode: 'paused',
-      maintenanceMode: false,
-      activeTimeline: 1,
-      nodes: [
-        {
-          name: 'pg-dev-node-01',
-          role: 'primary',
-          state: 'running',
-          host: '10.0.4.5',
-          port: 5432,
-          timeline: 1,
-          lsn: '0/051B8000',
-          replicationLagBytes: 0,
-          replicationLagMs: 0,
-          dcsLeader: true,
-          cpuPercent: 4,
-          memoryPercent: 22,
-          connections: 18,
-          maxConnections: 200
-        }
-      ]
-    },
-    hbaRules: [
-      { id: 'r1', order: 1, type: 'local', database: 'all', user: 'all', address: '', method: 'trust', comment: 'Dev local convenience' },
-      { id: 'r2', order: 2, type: 'host', database: 'all', user: 'all', address: '10.0.4.0/24', method: 'scram-sha-256', comment: 'Dev VPN network' }
-    ],
-    ldapConfig: {
-      enabled: false,
-      serverUrl: 'ldaps://ad-corp.domain.internal:636',
-      bindDN: '',
-      baseDN: '',
-      userFilter: '',
-      groupFilter: '',
-      sslVerify: true,
-      syncIntervalMinutes: 0,
-      lastSync: '',
-      managedRolesCount: 6,
-      managedGrantsCount: 14
-    }
-  }
-];
+  hbaRules: [
+    { id: 'r1', order: 1, type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Superuser local socket access' },
+    { id: 'r2', order: 2, type: 'hostssl', database: 'replication', user: 'replicator', address: '10.0.2.0/24', method: 'scram-sha-256', comment: 'Patroni & physical standby streaming replication' },
+    { id: 'r3', order: 3, type: 'hostssl', database: 'all', user: '+dba_team', address: '10.0.10.0/24', method: 'scram-sha-256', comment: 'DBA management subnet via LDAP2PG' },
+    { id: 'r4', order: 4, type: 'hostssl', database: 'billing,crm', user: 'app_backend', address: '10.0.20.0/24', method: 'scram-sha-256', comment: 'Application service network' },
+    { id: 'r5', order: 5, type: 'host', database: 'all', user: 'all', address: '0.0.0.0/0', method: 'reject', comment: 'Explicit drop rule for zero-trust' }
+  ],
+  ldapConfig: {
+    enabled: true,
+    serverUrl: 'ldaps://ad-corp.domain.internal:636',
+    bindDN: 'cn=pg_sync_svc,ou=ServiceAccounts,dc=domain,dc=internal',
+    baseDN: 'ou=DatabaseUsers,dc=domain,dc=internal',
+    userFilter: '(&(objectClass=user)(memberOf=cn=PostgresUsers,ou=Groups,dc=domain,dc=internal))',
+    groupFilter: '(&(objectClass=group)(cn=pg_*))',
+    sslVerify: true,
+    syncIntervalMinutes: 30,
+    lastSync: '2026-10-08T12:00:00Z',
+    managedRolesCount: 48,
+    managedGrantsCount: 162
+  };
+}
+
+let clusters: ManagedCluster[] = [];
+
 
 // HBA Preset Templates Library
 const hbaTemplates: HBATemplate[] = [
