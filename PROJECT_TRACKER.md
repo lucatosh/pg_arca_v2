@@ -50,3 +50,5 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 4. Benchmark contro pgBackRest prima di qualsiasi affermazione di velocità.
 5. LDAP/AD, RBAC: oggi anteprima. Poi: restyling grafico.
 6. Integrare i documenti di progetto v1.0–v1.2 (non presenti nel repository).
+
+- [ ] Lab Patroni Docker (tools/lab): scritto, NON testato su Docker reale — primo run da fare su CentOS, poi bench.sh.

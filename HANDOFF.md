@@ -53,3 +53,6 @@ Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggi
 - t20: l'argomento `--pg1-path` non era accettato dal sottocomando restore (API CLI incoerente).
 - Processi di test residui possibili: /home/claude/pgtest/pgdata e /home/claude/pgtest/lab/src (non usare `pkill -f` largo).
 - WAL archive: fallback .gz in wal_manager.py.
+
+## Lab Patroni 3 nodi (tools/lab)
+Script pronti (setup-host.sh, lab.sh, docker-compose, Dockerfile, haproxy) per CentOS: etcd×3 + Patroni/PG16×3 + agent installato dal vero install-agent.sh (nuovo `PG_ARCA_NO_SERVICE` / auto-skip senza systemd) + HAProxy. **Mai eseguiti**: il sandbox non ha il daemon Docker; verificati solo sintassi bash, YAML e il ramo no-systemd dell'installer. Vedi tools/lab/README.md.

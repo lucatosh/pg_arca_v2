@@ -75,6 +75,12 @@ if [[ ! -f "$CONF_DIR/credentials.json" && ! -f "$CONF_DIR/enroll.env" ]]; then
 fi
 
 # --- service -------------------------------------------------------------------------
+# No systemd (container) or PG_ARCA_NO_SERVICE=1: files are installed, the caller starts the agent:
+#   su postgres -c 'PYTHONPATH=/opt/pg-arca PG_ARCA_CONF_FILE=/etc/pg-arca/agent.conf python3 /opt/pg-arca/pg-arca-agent.py'
+if [[ -n "${PG_ARCA_NO_SERVICE:-}" || ! -d /run/systemd/system ]]; then
+  echo "pg_arca agent installed WITHOUT a systemd service (no systemd here, or PG_ARCA_NO_SERVICE set). Start it yourself, see the comment in install-agent.sh."
+  exit 0
+fi
 cat > /etc/systemd/system/pg-arca-agent.service <<UNIT
 [Unit]
 Description=pg_arca node agent

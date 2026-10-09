@@ -1,0 +1,130 @@
+# pg_arca lab: 3x etcd, 3x Patroni/PostgreSQL 16 (+ pg_arca agent), HAProxy. Driven by lab.sh.
+name: arca-lab
+services:
+  etcd1:
+    image: quay.io/coreos/etcd:v3.5.17
+    hostname: etcd1
+    command: >
+      etcd --name etcd1 --data-dir /data
+      --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://etcd1:2379
+      --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://etcd1:2380
+      --initial-cluster etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      --initial-cluster-token arca-lab --initial-cluster-state new
+    volumes: ["etcd1:/data"]
+    networks: [lab]
+    restart: unless-stopped
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.17
+    hostname: etcd2
+    command: >
+      etcd --name etcd2 --data-dir /data
+      --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://etcd2:2379
+      --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://etcd2:2380
+      --initial-cluster etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      --initial-cluster-token arca-lab --initial-cluster-state new
+    volumes: ["etcd2:/data"]
+    networks: [lab]
+    restart: unless-stopped
+  etcd3:
+    image: quay.io/coreos/etcd:v3.5.17
+    hostname: etcd3
+    command: >
+      etcd --name etcd3 --data-dir /data
+      --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://etcd3:2379
+      --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://etcd3:2380
+      --initial-cluster etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      --initial-cluster-token arca-lab --initial-cluster-state new
+    volumes: ["etcd3:/data"]
+    networks: [lab]
+    restart: unless-stopped
+  pg1:
+    build: ./docker
+    image: pg-arca-lab-node:16
+    hostname: pg1
+    container_name: pg1
+    init: true
+    environment:
+      NODE: pg1
+      PG_SUPER_PASSWORD: ${PG_SUPER_PASSWORD}
+      PG_REPL_PASSWORD: ${PG_REPL_PASSWORD}
+      ARCA_URL: ${ARCA_URL:-}
+      ARCA_ENROLL_TOKEN: ${ARCA_ENROLL_TOKEN:-}
+    volumes:
+      - pgdata1:/var/lib/postgresql/data
+      - agentcfg1:/etc/pg-arca            # credentials survive restarts
+      - arca-repo:/var/lib/pgarca/repo      # shared lab backup repo: any node can restore what another backed up
+      - arca-wal:/var/lib/pgarca/wal        # shared WAL archive (PITR across switchover)
+      - ../..:/work:ro,z
+      - ${HOME}/.gitconfig:/root/.gitconfig:ro,z
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on: [etcd1, etcd2, etcd3]
+    networks: [lab]
+    restart: unless-stopped
+  pg2:
+    build: ./docker
+    image: pg-arca-lab-node:16
+    hostname: pg2
+    container_name: pg2
+    init: true
+    environment:
+      NODE: pg2
+      PG_SUPER_PASSWORD: ${PG_SUPER_PASSWORD}
+      PG_REPL_PASSWORD: ${PG_REPL_PASSWORD}
+      ARCA_URL: ${ARCA_URL:-}
+      ARCA_ENROLL_TOKEN: ${ARCA_ENROLL_TOKEN:-}
+    volumes:
+      - pgdata2:/var/lib/postgresql/data
+      - agentcfg2:/etc/pg-arca            # credentials survive restarts
+      - arca-repo:/var/lib/pgarca/repo      # shared lab backup repo: any node can restore what another backed up
+      - arca-wal:/var/lib/pgarca/wal        # shared WAL archive (PITR across switchover)
+      - ../..:/work:ro,z
+      - ${HOME}/.gitconfig:/root/.gitconfig:ro,z
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on: [etcd1, etcd2, etcd3]
+    networks: [lab]
+    restart: unless-stopped
+  pg3:
+    build: ./docker
+    image: pg-arca-lab-node:16
+    hostname: pg3
+    container_name: pg3
+    init: true
+    environment:
+      NODE: pg3
+      PG_SUPER_PASSWORD: ${PG_SUPER_PASSWORD}
+      PG_REPL_PASSWORD: ${PG_REPL_PASSWORD}
+      ARCA_URL: ${ARCA_URL:-}
+      ARCA_ENROLL_TOKEN: ${ARCA_ENROLL_TOKEN:-}
+    volumes:
+      - pgdata3:/var/lib/postgresql/data
+      - agentcfg3:/etc/pg-arca            # credentials survive restarts
+      - arca-repo:/var/lib/pgarca/repo      # shared lab backup repo: any node can restore what another backed up
+      - arca-wal:/var/lib/pgarca/wal        # shared WAL archive (PITR across switchover)
+      - ../..:/work:ro,z
+      - ${HOME}/.gitconfig:/root/.gitconfig:ro,z
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on: [etcd1, etcd2, etcd3]
+    networks: [lab]
+    restart: unless-stopped
+  haproxy:
+    image: haproxy:2.9-alpine
+    volumes: ["./docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro,z"]
+    ports: ["5000:5000", "5001:5001", "7000:7000"]
+    depends_on: [pg1, pg2, pg3]
+    networks: [lab]
+    restart: unless-stopped
+networks:
+  lab:
+    ipam: {config: [{subnet: 172.28.0.0/16}]}
+volumes:
+  etcd1:
+  pgdata1:
+  agentcfg1:
+  etcd2:
+  pgdata2:
+  agentcfg2:
+  etcd3:
+  pgdata3:
+  agentcfg3:
+  arca-repo:
+  arca-wal:

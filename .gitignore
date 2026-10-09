@@ -20,3 +20,4 @@ lerna-debug.log*
 __pycache__/
 *.pyc
 *.pyo
+tools/lab/.env
