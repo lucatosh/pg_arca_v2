@@ -7,8 +7,9 @@ Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggi
 - Nessuna simulazione presentata come reale: o funziona davvero o risponde 501/"non supportato".
 - Cluster collegabili da UI con agente (enrollment token) **e senza agente** (connessione diretta PostgreSQL).
 - Python agent: solo stdlib, compatibile Python 3.6+ (RHEL 8).
-- Ambiente di lavoro: niente PostgreSQL, niente `npm install` (registry irraggiungibile) => verifiche solo sintattiche
-  (`python3 -m py_compile`, `tsc` solo errori TS1xxx). **Mai dichiarare "testato" ciò che non è stato eseguito.**
+- Ambiente di lavoro: **PostgreSQL 16 è installato** (test reali possibili sul lato agent/engine; cluster di prova in /home/claude/pgtest, porta 54320).
+  `npm install` del pacchetto `pg` NON è possibile (stub in node_modules, gitignored) => `server/direct.ts` mai eseguito contro PG reale.
+  **Mai dichiarare "testato" ciò che non è stato eseguito.**
 
 ## FATTO (aggiornato)
 - [x] `unix-agent/pg_arca/discovery.py` riscritto: discovery reale (/proc, PGDATA, pg_control, postmaster.pid, Patroni REST, etcd, pgbouncer, pgBackRest). Testato su PGDATA sintetico.
@@ -32,3 +33,13 @@ Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggi
 ## Note
 - `pgarca.py` corretto (3 bugfix) è andato perso nel reset del container; in /mnt/user-data/outputs c'è la versione pre-fix + tar del lab. Bug da riapplicare: backup_label sempre dal full base (`redo_source_set(chain)=chain[0]`), tablespace inclusi nel walk, `--config` errato non va ignorato in silenzio.
 - Push: funziona dopo l'installazione della GitHub App di Claude.
+
+## Esiti test del vecchio prototipo su PG16 reale (lab)
+- t10 (backup full) OK.
+- `cmd_verify` crasha sui nomi WAL `.backup` (parse nome segmento) -> da gestire nel nuovo engine (ignorare .backup/.partial/.meta).
+- Sparse restore (t30) si blocca: `could not open file "base/5/pg_filenode.map"`. Causa: il readiness-probe si connette al DB `postgres` (oid 5)
+  che lo scheletro non conteneva. FIX da applicare nell'engine: estrarre SEMPRE oid 1 (template1) e 5 (postgres) + DB target;
+  per ogni DB scheletro serve `pg_filenode.map` + `PG_VERSION`.
+- t20: l'argomento `--pg1-path` non era accettato dal sottocomando restore (API CLI incoerente).
+- Processi di test residui possibili: /home/claude/pgtest/pgdata e /home/claude/pgtest/lab/src (non usare `pkill -f` largo).
+- WAL archive: fallback .gz in wal_manager.py.

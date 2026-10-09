@@ -19,6 +19,7 @@ Layout:   <wal_dir>/<segment>[.zst|.lz4]      + <segment>.meta (json: sha256 of 
           <wal_dir>/conflicts/                quarantined divergent copies
 """
 
+import gzip
 import hashlib
 import json
 import logging
@@ -86,6 +87,10 @@ class WalManager:
         if self.compression == "lz4" and shutil.which("lz4"):
             subprocess.run(["lz4", "-q", "-f", src, dst], check=True)
             return "lz4"
+        if self.compression != "none":            # stdlib fallback: never store 16 MB plain when a codec is requested
+            with open(src, "rb") as fi, gzip.GzipFile(dst, "wb", compresslevel=min(max(self.level, 1), 6)) as fo:
+                shutil.copyfileobj(fi, fo, 1 << 20)
+            return "gz"
         shutil.copyfile(src, dst)
         return ""
 
@@ -100,6 +105,9 @@ class WalManager:
                 subprocess.run(["zstd", "-d", "-q", "-f", src, "-o", dst], check=True)
             else:
                 raise WalArchiveError("PGA-WAL-040", "segment is zstd-compressed but neither python-zstandard nor the zstd binary is available")
+        elif codec == "gz":
+            with gzip.open(src, "rb") as fi, open(dst, "wb") as fo:
+                shutil.copyfileobj(fi, fo, 1 << 20)
         elif codec == "lz4":
             if not shutil.which("lz4"):
                 raise WalArchiveError("PGA-WAL-040", "segment is lz4-compressed but the lz4 binary is missing")
@@ -110,7 +118,7 @@ class WalManager:
     # ------------------------------------------------------------------ lookup
     def _find(self, name):
         """Returns (path, codec) of the stored object for `name` or (None, None)."""
-        for codec in ("", ".zst", ".lz4"):
+        for codec in ("", ".zst", ".lz4", ".gz"):
             p = os.path.join(self.wal_dir, name + codec)
             if os.path.isfile(p):
                 return p, codec.lstrip(".")
@@ -240,10 +248,10 @@ class WalManager:
             if n.endswith(".history"):
                 histories.append(n)
                 continue
-            if n.endswith((".meta", ".tmp")) or n.startswith(".") or n.count(".") > 1 and not n.endswith((".zst", ".lz4")):
+            if n.endswith((".meta", ".tmp")) or n.startswith(".") or n.count(".") > 1 and not n.endswith((".zst", ".lz4", ".gz")):
                 continue                      # .backup / .partial / temp files are not segments
             m = SEG_RE.match(base)
-            if m and (n == base or n.endswith((".zst", ".lz4"))):
+            if m and (n == base or n.endswith((".zst", ".lz4", ".gz"))):
                 tli, log, seg = (int(x, 16) for x in m.groups())
                 timelines.setdefault(tli, []).append(log * per_id + seg)
                 names.append(base)
