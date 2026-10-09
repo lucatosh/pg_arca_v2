@@ -24,7 +24,13 @@ Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguit
 | Assistente HBA nella UI (duplicati, regole oscurate, ordine, descrizioni, modelli) | Reale | nel browser con agent simulato | `tests/ui/e2e.cjs` |
 | Rilevamento: consigli dell'agent e differenze tra nodi | Reale | | `tests/server/discovery.test.ts`, `unix-agent/tests/test_discovery_advisor.py` |
 | Riporta una tabella ripristinata nel database (`as_new` / `replace`, non distruttivo) | Agent provato su PG16; | `test_engine_pg.py` |
-| LDAP/AD, RBAC | — | **Anteprima** (marcati in UI) | — |
+| Utenti e ruoli | `server/auth.ts`, `src/pages/Users.tsx` | Reale | `rbac.test.ts` |
+| Cifratura repository | `unix-agent/pg_arca/engine/crypt.py`, `repo.py`, `wal_manager.py` | Reale (opzionale, richiede `cryptography`) | `test_crypto.py` + suite PG16 cifrata |
+| Recupero righe, prova di disaster recovery | `engine/granular.py` | Reale | `test_engine_pg.py` (PG16) |
+| Salute, briefing, notifiche | `server/health.ts`, `server/notify.ts`, `src/pages/Today.tsx` | Reale; webhook non provati contro servizi reali | `health.test.ts` |
+| Approvazioni a due persone, impostazioni avanzate | `server/approvals.ts`, `src/pages/Settings.tsx` | Reale | `approvals.test.ts` |
+| HBA: adozione e regole temporanee | `hba.py`, `hba_ops.py`, `server/scheduler.ts::hbaExpiryTick` | Reale (non su Patroni) | `test_hba_pg.py`, `hba.test.ts` |
+| LDAP/AD | — | **Anteprima** (marcato in UI) | — |
 
 ## Cosa coprono i test del motore (PostgreSQL 16)
 backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’istanza; ripristino sparso di un database; ripristino di un oggetto; ripristino fallito che non lascia nulla; `target_time` senza fuso rifiutato; percorsi protetti; verifica e info; prova di ripristino; rilevamento di blocchi corrotti; ricerca DROP/TRUNCATE; sicurezza dopo un backup interrotto; pulizia.
@@ -37,6 +43,7 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 - `server.ts` ridotto da ~2700 a ~90 righe: le rotte simulate (HA, HBA, LDAP, RBAC, PITR, stanze, politiche, parametri, tuning) sono state eliminate; HA e parametri passano dal motore operazioni.
 
 ## Da fare
+0. Ancora da progettare/misurare (richiedono il lab): interfaccia di storage e S3/GCS/Azure, pack file per ridurre i file piccoli, archiviazione WAL asincrona, riassunti WAL di PG17, benchmark contro pgBackRest (`tools/lab/bench.sh`, mai eseguito).
 1. Provare `direct.ts`, `logs.ts` e `netscan.ts` con `npm install` su una macchina con rete.
 2. Provare HA e parametri su un cluster Patroni reale.
 3. Provare "promuovi tabella" dalla UI contro un agent reale (l'agent è provato su PG16).

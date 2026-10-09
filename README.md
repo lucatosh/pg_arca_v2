@@ -30,8 +30,15 @@ Console e agent per **backup, ripristino a un istante preciso (PITR) e gestione 
 | Rilevamento: consigli dell'agent e differenze tra nodi | Funziona | `tests/server/discovery.test.ts`, `unix-agent/tests/test_discovery_advisor.py` |
 | Riporta una tabella ripristinata nel database (`as_new` / `replace`, non distruttivo) | Agent provato su PG16; | `test_engine_pg.py` |
 | Tuning guidato (RAM/core dell'agent + carico → parametri, applicati con `pg_set_param`) | Funziona; regole generali di dimensionamento, non misure | `tests/ui/tuning.test.ts` |
-| LDAP/AD, RBAC | **Anteprima**: visibili e marcate, senza funzione dietro | — |
-| Promozione di una tabella ripristinata nel database di produzione | **Non c’è**: la tabella resta in quarantena, il comando di spostamento è mostrato | — |
+| Utenti e ruoli (amministratore / operatore / sola lettura), sessioni revocate al cambio ruolo | Funziona; negazione per default su ogni rotta che modifica | `tests/server/rbac.test.ts` |
+| Cifratura del repository (AES-256-GCM su blocchi, manifest, cataloghi e archivio WAL; identificativi dei blocchi con chiave; chiave fuori dal repository) | Funziona; provata con l'intera suite su PG16 con repository cifrato (`PG_ARCA_TEST_ENCRYPT=1`). Un repository esistente non si cifra sul posto: ne serve uno nuovo. Richiede il pacchetto Python `cryptography`. File `.history`/label dei WAL restano in chiaro | `unix-agent/tests/test_crypto.py`, `test_engine_pg.py` |
+| Recupero di singole righe (confronto per chiave primaria tra tabella ripristinata e attuale, copia di sicurezza, una sola transazione) | Agent provato su PG16; UI provata con agent simulato | `test_engine_pg.py::test_06b0`, `tests/ui/e2e.cjs` |
+| Prova di disaster recovery (ripristina l'intero cluster in scratch, lo avvia, controlla ogni database, misura il tempo) | Provata su PG16 (cluster di test piccolo): il tempo misurato vale per quel server e volume di dati | `test_engine_pg.py::test_06x` |
+| Pagina «Oggi»: problemi con causa e passo successivo (backup mancanti/vecchi, buchi WAL, archiviazione che fallisce, slot inattivi, repliche in ritardo, dischi, connessioni, verifica/drill in ritardo) | Funziona sulla telemetria; soglie generali, non tarate | `tests/server/health.test.ts` |
+| Notifiche webhook (JSON o testo Slack/Teams): nuovo problema, promemoria, risolto; ritenta dopo un errore; l'URL non torna mai al browser | Funziona (provato contro un server HTTP locale); **non provato contro Slack/Teams reali; niente email** | `tests/server/health.test.ts` |
+| Approvazione a due persone per ambiente (pg_hba, parametri, HA, sostituzione tabella, recupero righe) | Funziona; richiede almeno due amministratori attivi | `tests/server/approvals.test.ts` |
+| HBA: adozione delle regole esistenti nel blocco gestito (ordine di valutazione invariato) e regole temporanee con scadenza | Agent provato su PG16; scadenza guidata dallo scheduler; **non disponibili su Patroni (DCS)** | `test_hba_pg.py::test_5`, `tests/server/hba.test.ts` |
+| LDAP/AD | **Anteprima**: visibile e marcata, senza funzione dietro | — |
 | Velocità rispetto a pgBackRest | **Mai misurata**: nessuna affermazione | — |
 
 Limiti noti: il ripristino di una tabella non include chiavi esterne, viste, sequenze; i backup da standby richiedono `archive_mode=always`; gli incrementali richiedono `data_checksums` o `wal_log_hints`; backup e ripristino richiedono l’agent sul server.
