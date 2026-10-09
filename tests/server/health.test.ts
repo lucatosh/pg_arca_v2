@@ -23,6 +23,13 @@ import { requiredRole } from '../../server/auth';
   const codes = (cid: string) => evaluate(store.peek(), now).filter(i => i.clusterId === cid).map(i => i.code).sort();
   assert.deepStrictEqual(codes('p'), ['archiver_failing', 'backup_failed', 'backup_stale', 'connections', 'disk', 'drill_stale', 'node_offline', 'pending_restart', 'repl_lag', 'slot_stale', 'wal_gap'], JSON.stringify(codes('p')));
   assert.deepStrictEqual(codes('ok'), [], 'a healthy cluster raises nothing');
+  { // Patroni members without an agent raise node_without_agent (one issue per missing member), enrolled ones don't
+    const base = store.peek(); const g1: any = base.nodes.n3;
+    const st: any = { ...base, clusters: [...base.clusters, { id: 'q', name: 'q-db', environment: 'dev', source: 'agent' }],
+      nodes: { ...base.nodes, nq: { ...g1, id: 'nq', name: 'q1', clusterId: 'q', snapshot: { ...g1.snapshot, patroni: { scope: 'q', members: [{ name: 'q1', role: 'leader', state: 'running' }, { name: 'q2', role: 'replica', state: 'streaming' }, { name: 'q3', role: 'replica', state: 'stopped' }] } } } } };
+    const w = evaluate(st, now).filter(i => i.clusterId === 'q' && i.code === 'node_without_agent');
+    assert.deepStrictEqual(w.map(i => i.nodeName).sort(), ['q2', 'q3']); assert(w.every(i => i.severity === 'warning'));
+  }
   assert(evaluate(store.peek(), now).every(i => i.clusterId !== 'demo'), 'demo cluster is not monitored');
   const slot = evaluate(store.peek(), now).find(i => i.code === 'slot_stale')!; assert.strictEqual(slot.severity, 'critical'); assert(/old_slot/.test(slot.title)); assert(!evaluate(store.peek(), now).some(i => /live/.test(i.title)), 'active slots are fine');
   const b = briefing(store.peek(), now); assert.strictEqual(b.status, 'critical'); assert(b.counts.critical >= 3); assert.strictEqual(b.issues[0].severity, 'critical');

@@ -39,6 +39,11 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       if (!primary && online.length === 0 && nodes.length === 1) break;           // already covered by no_primary
       add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Nodo ${n.name} non risponde`, cause: n.lastSeen ? `Ultimo contatto ${new Date(n.lastSeen).toISOString()}. Agente fermo, server spento o rete interrotta.` : 'Questo nodo non ha mai inviato dati.' });
     }
+    // Patroni members with no agent: if the nodes WITH an agent fail, nothing can run backups/restores/HBA changes there.
+    const known = new Set(nodes.map((n: any) => n.name));
+    const orphan = new Map<string, any>();
+    for (const n of online) for (const m of (n.snapshot?.patroni?.members || [])) if (m?.name && !known.has(m.name) && !orphan.has(m.name)) orphan.set(m.name, m);
+    for (const [name, m] of orphan) add({ severity: 'warning', code: 'node_without_agent', detail: name, nodeName: name, title: `Nodo ${name} senza agent`, cause: `Patroni lo vede (${m.role || 'membro'}, ${m.state || 'stato sconosciuto'}) ma non c’è un agent: se i nodi con l’agent si fermano, backup, ripristini e modifiche non sono possibili. Installa l’agent su ogni nodo del cluster.`, action: { label: 'Collega il nodo', page: 'cluster' } });
     const pg = primary?.snapshot?.postgres || {};
     const pol = resolvePolicy(st, c).policy;
 
