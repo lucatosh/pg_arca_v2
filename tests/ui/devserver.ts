@@ -55,6 +55,7 @@ const withAgent = process.env.NO_AGENT !== '1';
     const handle = async (op: any) => {
       const p = op.params;
       await report(op.id, { status: 'running', progress: { phase: 'starting' } });
+      if (op.type === 'restore_promote') { await sleep(500); return report(op.id, { status: 'succeeded', result: { object: p.object, mode: p.mode, promoted_as: 'public.orders_pitr_20260101000000', old_kept_as: 'public.orders', rows: 1234, stage_dropped: !!p.drop_stage } }); }
       if (op.type === 'hba_read') {
         const eff = [{ line_number: 90, type: 'local', database: ['all'], user_name: ['postgres'], address: null, netmask: null, auth_method: 'peer', options: null, error: null },
           { line_number: 95, type: 'host', database: ['all'], user_name: ['all'], address: '10.0.0.0', netmask: '255.0.0.0', auth_method: 'md5', options: null, error: null }];

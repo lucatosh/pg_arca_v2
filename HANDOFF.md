@@ -22,7 +22,7 @@ Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggi
 - [x] Rilevamento: `advise()` sull'agent + differenze tra nodi sul server (UI non ancora aggiornata). Promozione tabella (`engine/granular.py::promote_object`, UI mancante).
 
 ## DA FARE (ordine consigliato)
-0. UI: rilevamento (consigli/differenze per nodo), "promuovi tabella" nel ripristino, restyling grafico, regole HBA importabili dal file nel blocco gestito.
+0. UI: restyling grafico; regole HBA importabili dal file nel blocco gestito; UI delle strategie su più cluster in blocco.
 1. Provare dal vivo (con `npm install`): `direct.ts`, `/ws/logs`, `/api/network/*`, avvio di `server.ts`.
 2. HA e parametri su un cluster Patroni reale.
 4. Benchmark vs pgBackRest (nessun claim finché non misurato).

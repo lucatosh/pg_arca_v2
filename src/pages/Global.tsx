@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { api, uid } from '../api';
-import { Badge, Banner, Button, Card, Empty, Skeleton, dt, num } from '../ui';
+import { Badge, Banner, Button, Card, Empty, Icon, Skeleton, dt, num } from '../ui';
+import { go } from '../router';
 import { toast, useQuery, revalidate } from '../hooks';
 
 export function Audit({ clusters }: { clusters: any[] }) {
@@ -20,16 +21,39 @@ export function Audit({ clusters }: { clusters: any[] }) {
   </>;
 }
 
+const FIX_TAB: Record<string, [string, string]> = { ARCHIVE_OFF: ['backup', 'Apri Backup'], ARCHIVE_FOREIGN: ['backup', 'Apri Backup'], NO_CHECKSUMS: ['backup', 'Apri Backup'], SSL_OFF: ['hba', 'Apri Accessi (HBA)'], WAL_MINIMAL: ['params', 'Apri Parametri'] };
+const SEV: Record<string, number> = { critical: 0, warning: 1, info: 2 };
+const SEV_LABEL: Record<string, string> = { critical: 'Critico', warning: 'Da sistemare', info: 'Suggerimento' };
+
 export function Discovery() {
   const q = useQuery<any>('/api/discovery/results', { interval: 10000 });
-  const [busy, setBusy] = useState(false); const [key] = useState(() => uid('scan'));
+  const [busy, setBusy] = useState(false); const [sev, setSev] = useState<string>('all');
   const scan = async () => { setBusy(true); try { const r = await api('POST', '/api/discovery/scan', {}, { key: uid('scan') }); toast(r.requested ? `Rilevamento richiesto a ${r.requested} nodi` : 'Nessun agent online', r.requested ? 'ok' : 'info'); setTimeout(() => revalidate('/api/discovery/results'), 4000); } catch (e: any) { toast(e.message, 'bad'); } finally { setBusy(false); } };
   const d = q.data;
+  const findings: any[] = !d ? [] : d.nodes.flatMap((n: any) => (n.findings || []).map((f: any) => ({ ...f, node: n.nodeName, clusterId: n.clusterId, clusterName: n.clusterName }))).sort((a: any, b: any) => (SEV[a.severity] ?? 3) - (SEV[b.severity] ?? 3));
+  const shown = findings.filter(f => sev === 'all' || f.severity === sev);
+  // identical finding on several nodes of the same cluster → one row listing the nodes
+  const grouped = useMemo(() => { const m = new Map<string, any>(); for (const f of shown) { const k = `${f.clusterId}|${f.code}|${f.target}`; const g = m.get(k); if (g) g.nodes.push(f.node); else m.set(k, { ...f, nodes: [f.node] }); } return [...m.values()]; }, [shown]);
   return <>
-    <div className="pagehead"><div className="grow"><h1>Rilevamento</h1><p className="sub">Cosa gli agent trovano sui server: PostgreSQL, Patroni, etcd, PgBouncer.</p></div><Button icon="refresh" busy={busy} onClick={scan}>Esegui ora</Button></div>
-    {d ? <div className="grid g4">{[['Nodi con agent', d.summary.nodes], ['Istanze PostgreSQL', d.summary.postgres], ['Cluster Patroni', d.summary.patroni], ['Cluster etcd', d.summary.etcd]].map(([l, v]) => <Card key={l as string}><div className="kpi"><span className="v">{v}</span><span className="l">{l}</span></div></Card>)}</div> : null}
-    {!d ? <Skeleton h={100} /> : !d.nodes.length ? <Card><Empty icon="search" title="Nessun agent collegato">Il rilevamento reale parte dall’agent: installalo su un server (Cluster → Collega cluster) e i servizi trovati compariranno qui.</Empty></Card> :
-      d.nodes.map((n: any) => <Card key={n.nodeId} title={n.nodeName} actions={<span className="faint small">ultimo contatto {dt(n.lastSeen)}</span>}>
-        {n.discovery ? <pre className="out">{JSON.stringify(n.discovery.summary || n.discovery, null, 2)}</pre> : <p className="muted">Nessun rilevamento ancora eseguito su questo nodo.</p>}</Card>)}
+    <div className="pagehead"><div className="grow"><h1>Rilevamento</h1><p className="sub">Cosa gli agent trovano sui server, cosa va sistemato e dove i nodi dello stesso cluster non coincidono.</p></div><Button icon="refresh" busy={busy} onClick={scan}>Esegui ora</Button></div>
+    {d ? <div className="grid g4">{[['Nodi con agent', d.summary.nodes, ''], ['Istanze PostgreSQL', d.summary.postgres, ''], ['Problemi critici', d.summary.critical, d.summary.critical ? 'bad' : 'ok'], ['Differenze tra nodi', d.summary.drift, d.summary.drift ? 'warn' : 'ok']].map(([l, v, k]) => <Card key={l as string}><div className="kpi"><span className="v" style={k === 'bad' ? { color: 'var(--bad)' } : k === 'warn' ? { color: 'var(--warn)' } : undefined}>{v}</span><span className="l">{l}</span></div></Card>)}</div> : null}
+    {!d ? <Skeleton h={100} /> : !d.nodes.length ? <Card><Empty icon="search" title="Nessun agent collegato">Il rilevamento reale parte dall’agent: installalo su un server (Cluster → Collega cluster) e i servizi trovati compariranno qui.</Empty></Card> : <div className="stack-l" style={{ marginTop: 16 }}>
+      <Card title="Da sistemare" actions={<select className="input" style={{ width: 'auto' }} value={sev} onChange={e => setSev(e.target.value)} aria-label="Gravità"><option value="all">Tutte</option><option value="critical">Critiche</option><option value="warning">Da sistemare</option><option value="info">Suggerimenti</option></select>} pad={false}>
+        {!grouped.length ? <div className="bd"><Banner kind="ok" title="Nessun problema rilevato">Gli agent non hanno trovato nulla da segnalare{sev !== 'all' ? ' con questo filtro' : ''}.</Banner></div> :
+          <div className="tablewrap"><table className="t"><tbody>{grouped.map((f, i) => <tr key={i}><td style={{ width: 120 }}><Badge kind={f.severity === 'critical' ? 'bad' : f.severity === 'warning' ? 'warn' : 'info'}>{SEV_LABEL[f.severity] || f.severity}</Badge></td>
+            <td><strong>{f.title}</strong><div className="small muted">{f.detail}</div>{f.fix ? <div className="small" style={{ marginTop: 4 }}><Icon n="zap" s={13} /> {f.fix}</div> : null}</td>
+            <td className="small muted">{f.clusterName ? <a href={`#/c/${encodeURIComponent(f.clusterId)}`}>{f.clusterName}</a> : 'Server'}<div>{f.nodes.join(', ')}</div></td>
+            <td className="num">{f.clusterId && FIX_TAB[f.code] ? <Button sm onClick={() => go(`c/${encodeURIComponent(f.clusterId)}/${FIX_TAB[f.code][0]}`)}>{FIX_TAB[f.code][1]}</Button> : null}</td></tr>)}</tbody></table></div>}</Card>
+
+      <Card title="Differenze di configurazione tra i nodi" pad={false}>{!d.drift.length ? <div className="bd muted">I nodi di ogni cluster hanno gli stessi valori nei parametri confrontati.</div> :
+        <div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>Parametro</th><th>Valori</th></tr></thead><tbody>{d.drift.map((x: any, i: number) => <tr key={i}><td><a href={`#/c/${encodeURIComponent(x.clusterId)}/params`}>{x.clusterName}</a></td><td><code>{x.setting}</code></td>
+          <td>{Object.entries(x.values).map(([n, v]) => <span key={n} className="chip" style={{ marginRight: 6 }} title={n}>{n}: {String(v)}</span>)}</td></tr>)}</tbody></table></div>}
+        <div className="bd small muted">Parametri diversi tra membri dello stesso cluster sono una causa frequente di sorprese dopo un failover.</div></Card>
+
+      <div className="grid g2">{d.nodes.map((n: any) => <Card key={n.nodeId} title={n.nodeName} actions={<span className="faint small">ultimo contatto {dt(n.lastSeen)}</span>}>
+        {n.discovery ? <div className="stack"><dl className="kv small">{n.clusterName ? <><dt>Cluster</dt><dd><a href={`#/c/${encodeURIComponent(n.clusterId)}`}>{n.clusterName}</a></dd></> : null}
+          {Object.entries(n.discovery.summary || {}).filter(([k, v]) => !k.startsWith('findings') && Number(v) > 0).map(([k, v]) => <React.Fragment key={k}><dt>{k.replace(/_found$/, '').replace(/_/g, ' ')}</dt><dd>{String(v)}</dd></React.Fragment>)}</dl>
+          <details><summary className="small muted" style={{ cursor: 'pointer' }}>Dettagli tecnici</summary><pre className="out">{JSON.stringify(n.discovery, null, 2)}</pre></details></div> : <p className="muted">Nessun rilevamento ancora eseguito su questo nodo.</p>}</Card>)}</div>
+    </div>}
   </>;
 }

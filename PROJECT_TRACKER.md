@@ -23,7 +23,7 @@ Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguit
 | Gestione pg_hba (Patroni DCS o file, simulazione anti lock-out, verifica con `pg_hba_file_rules`, rollback) | Agent provato su PostgreSQL 16 reale; **DCS Patroni mai provato su un cluster reale** | `unix-agent/tests/test_hba*.py`, `tests/server/hba.test.ts`, `tests/ui/hbalogic.test.ts` |
 | Assistente HBA nella UI (duplicati, regole oscurate, ordine, descrizioni, modelli) | Reale | nel browser con agent simulato | `tests/ui/e2e.cjs` |
 | Rilevamento: consigli dell'agent e differenze tra nodi | Reale | | `tests/server/discovery.test.ts`, `unix-agent/tests/test_discovery_advisor.py` |
-| Riporta una tabella ripristinata nel database (`as_new` / `replace`, non distruttivo) | Agent provato su PG16; **non ancora esposto nella UI** | `test_engine_pg.py` |
+| Riporta una tabella ripristinata nel database (`as_new` / `replace`, non distruttivo) | Agent provato su PG16; | `test_engine_pg.py` |
 | LDAP/AD, RBAC, tuning | — | **Anteprima** (marcati in UI) | — |
 
 ## Cosa coprono i test del motore (PostgreSQL 16)
@@ -39,7 +39,7 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 ## Da fare
 1. Provare `direct.ts`, `logs.ts` e `netscan.ts` con `npm install` su una macchina con rete.
 2. Provare HA e parametri su un cluster Patroni reale.
-3. Esporre "promuovi tabella" nella UI di ripristino (l'agent è pronto e provato).
+3. Provare "promuovi tabella" dalla UI contro un agent reale (l'agent è provato su PG16).
 4. Benchmark contro pgBackRest prima di qualsiasi affermazione di velocità.
-5. LDAP/AD, RBAC, tuning: oggi anteprima. Poi: UI rilevamento (consigli/differenze), restyling grafico.
+5. LDAP/AD, RBAC, tuning: oggi anteprima. Poi: restyling grafico.
 6. Integrare i documenti di progetto v1.0–v1.2 (non presenti nel repository).

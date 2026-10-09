@@ -29,6 +29,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [tgt, setTgt] = useState<Target>({ mode: 'latest' });
   const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false);
   const [ask, setAsk] = useState(false);
+  const prom = useOpRunner(c.id); const [pmode, setPmode] = useState<'as_new' | 'replace'>('as_new'); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false);
   const dbsR = useOpRunner(c.id); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id);
 
   const from = useMemo(() => Math.min(...sets.map(s => Date.parse(s.stop_time!))), [sets]);
@@ -107,11 +108,14 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       {plan.op?.status === 'succeeded' && !exec.op ? <div className="row"><Button onClick={() => setStep(2)}>Indietro</Button><div className="grow" /><Button kind="primary" icon="restore" onClick={() => setAsk(true)}>Avvia ripristino</Button></div> : null}
       {(exec.op || exec.error) ? <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
         {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' ? <>Cartella pronta in <code>{exec.op!.result.destination}</code>. {exec.op!.result.start_hint}</> : <>Dati disponibili nel database <code>{exec.op!.result.result_database}</code>.{exec.op!.result.inspect ? <> Per controllare: <code>{exec.op!.result.inspect}</code></> : null}</>}</Banner> : null}
-        {doneOk && exec.op!.result.promote_hint ? <p className="small muted">Per riportare la tabella nel database di produzione: <code>{exec.op!.result.promote_hint}</code></p> : null}
+        {doneOk && scope === 'object' && exec.op!.result.result_database ? <Promote stage={exec.op!.result.result_database} obj={obj} mode={pmode} setMode={setPmode} drop={pdrop} setDrop={setPdrop} runner={prom} ask={() => setAskPromote(true)} /> : null}
         <Result op={exec.op} />
         {(exec.op && !running) ? <div><Button onClick={() => { exec.reset(); plan.reset(); setStep(0); }}>Nuovo ripristino</Button></div> : null}</div></Card> : null}
     </div>}
 
+    {askPromote ? <Confirm title="Riportare la tabella nel database?" danger={pmode === 'replace'} confirmLabel="Riporta" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); prom.run('restore_promote', { stage_db: exec.op!.result.result_database, object: obj, mode: pmode, drop_stage: pdrop }); }}>
+      <p>{pmode === 'as_new' ? <>La tabella ripristinata compare accanto all’originale con un nome che termina in <code>_pitr_&lt;data&gt;</code>. L’originale non viene toccato.</> : <>L’originale viene rinominata <code>_old_&lt;data&gt;</code> (i dati restano) e la tabella ripristinata prende il suo nome. Chiavi esterne, viste e funzioni continuano a puntare alla vecchia.</>}</p>
+      <p className="small muted">{pdrop ? 'Il database di quarantena viene eliminato a operazione riuscita.' : 'Il database di quarantena resta disponibile.'}</p></Confirm> : null}
     {ask ? <Confirm title="Avviare il ripristino?" confirmLabel="Avvia" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); exec.run(x.type, x.p); }}>
       <p>{scope === 'instance' ? <>Ricostruisce il cluster in <code>{dest}</code>.</> : scope === 'database' ? <>Crea il database <code>{newName}</code> da <code>{db}</code>.</> : <>Ricostruisce <code>{obj}</code> in un database di quarantena.</>} L’istanza in esecuzione e i suoi dati non vengono modificati. Se qualcosa fallisce, ciò che è stato creato viene rimosso.</p></Confirm> : null}
   </div>;
@@ -137,4 +141,18 @@ function ObjectPicker({ r, busy, search, setSearch, db, value, onPick }: { r: Op
       {r?.status === 'failed' ? <div style={{ padding: 12 }} className="muted">{r.error}</div> : null}</div>
     {r?.result?.truncated ? <p className="small muted">Elenco troncato: affina la ricerca.</p> : null}
     <p className="small muted">Le dipendenze (chiavi esterne, viste, sequenze) non vengono incluse: si recupera la sola tabella.</p></div>;
+}
+
+function Promote({ stage, obj, mode, setMode, drop, setDrop, runner, ask }: { stage: string; obj: string; mode: 'as_new' | 'replace'; setMode: (m: 'as_new' | 'replace') => void; drop: boolean; setDrop: (b: boolean) => void; runner: ReturnType<typeof useOpRunner>; ask: () => void }) {
+  const r = runner.op?.result; const done = runner.op?.status === 'succeeded';
+  return <div className="stack"><div className="hr" /><strong>Riporta la tabella nel database</strong>
+    <p className="small muted">Controlla prima i dati nella quarantena (<code>{stage}</code>). Poi scegli come rimetterla in <code>{obj.split('.').slice(0, 1)}</code>: non cancella mai nulla.</p>
+    {!done ? <>
+      <label className={`opt ${mode === 'as_new' ? 'on' : ''}`}><input type="radio" checked={mode === 'as_new'} onChange={() => setMode('as_new')} /><div><div>Accanto all’originale (consigliato)</div><div className="small muted">Nuova tabella con suffisso <code>_pitr_&lt;data&gt;</code>: confronti e poi decidi.</div></div></label>
+      <label className={`opt ${mode === 'replace' ? 'on' : ''}`}><input type="radio" checked={mode === 'replace'} onChange={() => setMode('replace')} /><div><div>Al posto dell’originale</div><div className="small muted">L’originale diventa <code>_old_&lt;data&gt;</code> (dati conservati); quella ripristinata prende il nome.</div></div></label>
+      <label className="check"><input type="checkbox" checked={drop} onChange={e => setDrop(e.target.checked)} />Elimina la quarantena dopo la riuscita</label>
+      <div><Button kind="primary" icon="restore" busy={runner.busy} disabled={runner.busy} onClick={ask}>Riporta la tabella</Button></div></> : null}
+    {(runner.op || runner.error) && !done ? <OpPanel op={runner.op} error={runner.error} label="Promozione della tabella" /> : null}
+    {done ? <Banner kind="ok" title="Tabella riportata">{r?.mode === 'replace' ? <>La tabella ripristinata è ora <code>{r.promoted_as}</code>; l’originale è conservata come <code>{r.old_kept_as}</code>.</> : <>Creata <code>{r?.promoted_as}</code> accanto all’originale.</>}{r?.rows != null ? ` ${num(r.rows)} righe.` : ''}{r?.warning ? <span className="hba-warn"> {r.warning}</span> : null}</Banner> : null}
+    {done ? <Result op={runner.op} /> : null}</div>;
 }

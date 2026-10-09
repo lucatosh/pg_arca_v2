@@ -30,6 +30,14 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 }); await shot('11-plan');
   await p.click('button:has-text("Avvia ripristino")'); await p.click('.modal button:has-text("Avvia")');
   await p.waitForSelector('text=Ripristino completato', { timeout: 15000 }); await shot('12-restore-done');
+  // restore one table, then promote it back
+  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Una tabella")');
+  await p.waitForSelector('.card select option:has-text("appdb")', { state: 'attached', timeout: 10000 }); await p.selectOption('.card select', 'appdb');
+  await p.click('.tree button:has-text("orders")'); await p.click('button:has-text("Avanti")'); await p.waitForSelector('[role=slider]'); await p.click('button:has-text("Avanti")');
+  await p.waitForSelector('text=Quarantena'); await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 });
+  await p.click('button:has-text("Avvia ripristino")'); await p.click('.modal button:has-text("Avvia")');
+  await p.waitForSelector('text=Riporta la tabella nel database', { timeout: 15000 }); await shot('12b-promote');
+  await p.click('button:has-text("Riporta la tabella")'); await p.click('.modal button:has-text("Riporta")'); await p.waitForSelector('text=Tabella riportata', { timeout: 10000 }); await shot('12c-promoted');
   // ops tab, logs tab, preview tab
   await p.click('role=tab[name=/Operazioni/]'); await p.waitForSelector('text=Registro operazioni'); await shot('13-ops');
   await p.click('role=tab[name=/Log/]'); await p.waitForSelector('text=Log in tempo reale');
@@ -52,6 +60,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   // palette
   await p.keyboard.press('Control+k'); await p.waitForSelector('[role=dialog][aria-label="Ricerca rapida"]'); await p.keyboard.type('registro'); await p.keyboard.press('Enter');
   await p.waitForSelector('text=Registro attività'); await shot('15-audit');
+  // discovery
+  await p.goto(base + '/#/discovery'); await p.waitForSelector('text=Differenze di configurazione tra i nodi'); await p.waitForSelector('text=Da sistemare'); await shot('15a-discovery');
   // strategies
   await p.goto(base + '/#/strategy'); await p.waitForSelector('text=cluster senza backup automatico'); await shot('15b-strategy');
   await p.click('button:has-text("Applica i consigliati per ambiente")'); await p.waitForSelector('text=Tutti i cluster hanno una strategia attiva'); await shot('15c-strategy-applied');
