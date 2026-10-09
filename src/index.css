@@ -160,3 +160,6 @@ pre.out { background: var(--surface-2); border: 1px solid var(--line); padding: 
 .logbox { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; height: 420px; overflow: auto; }
 .sets .chainrow td:first-child { border-left: 3px solid var(--accent); } .sets .d1 td:first-child { padding-left: 28px; }
 .rtwrap { padding: 14px 4px 4px; } .rt .tip { position: absolute; top: -26px; transform: translateX(-50%); font-size: 12px; background: var(--ink); color: var(--bg); padding: 1px 7px; border-radius: 4px; white-space: nowrap; pointer-events: none; }
+
+.mobnav { display: none; width: auto; max-width: 52vw; }
+@media (max-width: 860px) { .mobnav { display: block; } .topbar { padding: 8px 16px; } .topbar .btn[style*="min-width"] { min-width: 0 !important; } .topbar .kbd { display: none; } }

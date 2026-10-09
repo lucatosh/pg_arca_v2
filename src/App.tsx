@@ -58,6 +58,8 @@ function Shell({ user, logout }: { user: string; logout: () => void }) {
     </aside>
     <div className="main">
       <div className="topbar">
+        <select className="input mobnav" aria-label="Vai a" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
+          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="discovery">Rilevamento</option><option value="audit">Registro attività</option></select>
         <button className="btn" onClick={() => setPal(true)} style={{ minWidth: 260, justifyContent: 'flex-start', color: 'var(--ink-3)' }}><Icon n="search" />Cerca cluster, azioni…<span className="kbd end">Ctrl K</span></button>
         <div className="grow" />
         {running.length ? <button className="btn" onClick={() => { const o = running[0]; if (o.clusterId && o.clusterId !== 'unassigned') go(`c/${encodeURIComponent(o.clusterId)}/operations`); }}><Icon n="refresh" spin />{running.length} {running.length === 1 ? 'operazione in corso' : 'operazioni in corso'}</button> : null}

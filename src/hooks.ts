@@ -61,7 +61,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
       const r = await get<{ operation: Op }>(`/api/operations/${id}`);
       if (!alive.current) return;
       setOp(r.operation);
-      if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); return; }
+      if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; revalidate('/api/operations'); onDone?.(r.operation); return; }
     } catch (e: any) { if (!alive.current) return; setError(e.message); }
     timer.current = setTimeout(() => poll(id), 1000);
   }, [onDone]);
@@ -72,7 +72,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
     setBusy(true); setError(null); setOp(null);
     try {
       const r = await api<{ operation: Op }>('POST', `/api/clusters/${clusterId}/operations`, { type, params, nodeId: extra.nodeId }, { key: keyRef.current.key });
-      setOp(r.operation);
+      setOp(r.operation); revalidate('/api/operations');
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); } else poll(r.operation.id);
       return r.operation;
     } catch (e: any) { setBusy(false); setError(e.body?.message || e.message); return null; }

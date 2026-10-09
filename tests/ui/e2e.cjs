@@ -20,8 +20,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=/Backup .* completato/', { timeout: 15000 }); await shot('06-backup-done');
   // restore wizard: database
   await p.click('role=tab[name=/Ripristino/]'); await p.waitForSelector('text=Cosa vuoi ripristinare');
-  await p.waitForSelector('select option:has-text("appdb")', { state: 'attached', timeout: 10000 });
-  await p.selectOption('select', 'appdb'); await shot('07-restore-what'); await p.click('button:has-text("Avanti")');
+  await p.waitForSelector('.card select option:has-text("appdb")', { state: 'attached', timeout: 10000 });
+  await p.selectOption('.card select', 'appdb'); await shot('07-restore-what'); await p.click('button:has-text("Avanti")');
   await p.waitForSelector('[role=slider]'); await shot('08-timeline');
   const tr = await p.locator('.rt .track').boundingBox();
   await p.mouse.click(tr.x + tr.width * 0.55, tr.y + 30); await p.waitForTimeout(200); await shot('09-timeline-picked');
