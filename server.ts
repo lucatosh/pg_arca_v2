@@ -12,6 +12,8 @@ import { startScheduler } from './server/scheduler';
 import { mountPlatformRoutes } from './server/platform';
 import { mountPolicyRoutes } from './server/policies';
 import { mountHbaRoutes } from './server/hba';
+import { mountNotifyRoutes, startNotifier } from './server/notify';
+import { briefing } from './server/health';
 import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv } from './server/auth';
 import { runSelfTest } from './server/selftest';
 import { attachLogSocket, broadcastLiveLog, mountLogRoutes } from './server/logs';
@@ -58,6 +60,8 @@ mountClusterRoutes(app, store, direct, buildDemoCluster);
 mountPlatformRoutes(app, store);
 mountPolicyRoutes(app, store);
 mountHbaRoutes(app, store);
+mountNotifyRoutes(app, store);
+app.get('/api/health', (_req: any, res: any) => res.json(briefing(store.peek())));
 mountLogRoutes(app);
 mountNetscanRoutes(app);
 
@@ -79,6 +83,7 @@ bootstrapAdminFromEnv(store);
 seedDemoOnFirstRun(store, buildDemoCluster).catch(e => console.error('[pg_arca] demo seed failed', e));
 direct.startPolling();
 startScheduler(store);
+startNotifier(store);
 
 // Static / Vite
 if (process.env.NODE_ENV === 'production') {

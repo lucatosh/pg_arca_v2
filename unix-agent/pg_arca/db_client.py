@@ -40,6 +40,9 @@ SELECT json_build_object(
   'archiver', (SELECT row_to_json(a) FROM (SELECT archived_count, failed_count, last_archived_wal, last_archived_time,
                                                   last_failed_wal, last_failed_time FROM pg_stat_archiver) a),
   'settings', (SELECT json_object_agg(name, setting) FROM pg_settings WHERE name = ANY(string_to_array(:'keys', ','))),
+  'slots', (SELECT COALESCE(json_agg(json_build_object('name', slot_name, 'type', slot_type, 'active', active,
+              'retained_bytes', CASE WHEN pg_is_in_recovery() OR restart_lsn IS NULL THEN NULL ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint END)), '[]'::json)
+              FROM pg_replication_slots),
   'pending_restart', (SELECT COALESCE(json_agg(name), '[]'::json) FROM pg_settings WHERE pending_restart)
 );
 """

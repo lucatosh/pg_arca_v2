@@ -36,6 +36,7 @@ export function roleOf(store: Store, user: string): Role | null {
 const RULES: { m: RegExp; p: RegExp; min: Role }[] = [
   { m: /^(GET|HEAD)$/, p: /^\/api\/users(\/|$)/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /^\/api\/enrollment-tokens/, min: 'admin' },
+  { m: /^(GET|HEAD)$/, p: /^\/api\/notifications/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /./, min: 'viewer' },
   { m: /^POST$/, p: /^\/api\/operations\/[^/]+\/cancel$/, min: 'operator' },
   { m: /^POST$/, p: /^\/api\/clusters\/[^/]+\/operations$/, min: 'operator' },

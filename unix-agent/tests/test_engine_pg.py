@@ -252,6 +252,18 @@ class EngineTests(unittest.TestCase):
         metas = [f for f in os.listdir(F.wal) if f.endswith(".meta") and len(f) == 29]
         self.assertTrue(metas and all(json.load(open(os.path.join(F.wal, m))).get("enc")  for m in metas))
 
+    def test_06y_telemetry_snapshot_has_slots(self):
+        from pg_arca.db_client import PostgresClient
+        q("postgres", "SELECT pg_create_physical_replication_slot('pgarca_t_slot')")
+        try:
+            snap = PostgresClient(user="postgres", port=F.port, socket_dir=F.sock, psql_path=os.path.join(BIN, "psql")).get_snapshot()
+            self.assertTrue(snap.get("alive"), snap)
+            sl = [x for x in snap["slots"] if x["name"] == "pgarca_t_slot"]
+            self.assertEqual(len(sl), 1); self.assertFalse(sl[0]["active"])
+            self.assertIn("max_connections", snap["settings"])
+        finally:
+            q("postgres", "SELECT pg_drop_replication_slot('pgarca_t_slot')")
+
     def test_07_failed_restore_leaves_nothing_behind(self):
         with self.assertRaises(EngineError):
             restore_object(F.ctx, "app.public.no_such_table", target_time=F.t1, stage_db="stage_never")

@@ -9,7 +9,7 @@
     "lint": "tsc --noEmit",
     "preview": "vite preview",
     "start": "NODE_ENV=production tsx server.ts",
-    "test": "tsx tests/server/ops.test.ts && tsx tests/server/view.test.ts && tsx tests/server/api.test.ts && tsx tests/server/scheduler.test.ts && tsx tests/server/policies.test.ts && tsx tests/server/hba.test.ts && tsx tests/server/discovery.test.ts && tsx tests/server/rbac.test.ts && tsx tests/ui/hbalogic.test.ts && tsx tests/ui/tuning.test.ts && cd unix-agent && python3 -m unittest discover -s tests -t . -v"
+    "test": "tsx tests/server/ops.test.ts && tsx tests/server/view.test.ts && tsx tests/server/api.test.ts && tsx tests/server/scheduler.test.ts && tsx tests/server/policies.test.ts && tsx tests/server/hba.test.ts && tsx tests/server/discovery.test.ts && tsx tests/server/rbac.test.ts && tsx tests/server/health.test.ts && tsx tests/ui/hbalogic.test.ts && tsx tests/ui/tuning.test.ts && cd unix-agent && python3 -m unittest discover -s tests -t . -v"
   },
   "dependencies": {
     "express": "^4.21.2",
