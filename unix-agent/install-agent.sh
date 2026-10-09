@@ -97,7 +97,9 @@ Restart=always
 RestartSec=5
 # least privilege: read the system, write only agent state
 NoNewPrivileges=yes
-ProtectSystem=strict
+# 'full' (not 'strict'): restores, pg_hba/postgresql.conf edits and PGDATA/tablespaces live in arbitrary paths (/var/lib/pgsql, /data, /pgdata, /mnt/...). Only /usr, /boot and /etc stay read-only, with the usual PostgreSQL config dirs re-opened.
+ProtectSystem=full
+ReadWritePaths=-/etc/postgresql -/etc/postgresql-common -/etc/patroni -/etc/pgbouncer
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=$CONF_DIR $STATE_ROOT $REPO_DIR $LOG_DIR $SCRATCH
