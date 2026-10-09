@@ -12,31 +12,31 @@ GIT_NAME=${GIT_NAME:?set GIT_NAME}; GIT_EMAIL=${GIT_EMAIL:?set GIT_EMAIL}
 as_user() { if [[ $LAB_USER == root ]]; then "$@"; else sudo -u "$LAB_USER" -H "$@"; fi; }
 log() { echo "== $*"; }
 
-log "packages"
+log "packages (apt/dnf output is shown; the first run can take several minutes on a VM)"
 ALL=0; [[ ${1:-} == --all ]] && ALL=1
 if command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq && apt-get install -y -qq ca-certificates curl git jq tar openssh-client bc rsync gnupg
+  apt-get update && apt-get install -y ca-certificates curl git jq tar openssh-client bc rsync gnupg
   if ! command -v docker >/dev/null; then
     . /etc/os-release
     install -m 0755 -d /etc/apt/keyrings
     if curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc 2>/dev/null; then
       echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
     fi
-    if ! { apt-get update -qq && apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; }; then
+    if ! { apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; }; then
       echo "   Docker's repo has no packages for '$VERSION_CODENAME' (yet): falling back to Ubuntu's own docker.io"
-      rm -f /etc/apt/sources.list.d/docker.list; apt-get update -qq
-      apt-get install -y -qq docker.io docker-compose-v2 docker-buildx || apt-get install -y -qq docker.io docker-compose-v2
+      rm -f /etc/apt/sources.list.d/docker.list; apt-get update
+      apt-get install -y docker.io docker-compose-v2 docker-buildx || apt-get install -y docker.io docker-compose-v2
     fi
   fi
-  command -v node >/dev/null && [[ $(node -p 'process.versions.node.split(".")[0]') -ge 20 ]] || apt-get install -y -qq nodejs npm
+  command -v node >/dev/null && [[ $(node -p 'process.versions.node.split(".")[0]') -ge 20 ]] || apt-get install -y nodejs npm
 elif command -v dnf >/dev/null; then
-  dnf install -y -q dnf-plugins-core git curl jq tar openssh-clients bc rsync
+  dnf install -y dnf-plugins-core git curl jq tar openssh-clients bc rsync
   if ! command -v docker >/dev/null; then
     dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-    dnf install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   fi
-  command -v node >/dev/null || dnf module install -y -q nodejs:20 2>/dev/null || echo "WARN: install Node >= 20 yourself"
+  command -v node >/dev/null || dnf module install -y nodejs:20 2>/dev/null || echo "WARN: install Node >= 20 yourself"
 else echo "neither apt-get nor dnf found"; exit 1; fi
 systemctl enable --now docker
 [[ $LAB_USER != root ]] && usermod -aG docker "$LAB_USER"
