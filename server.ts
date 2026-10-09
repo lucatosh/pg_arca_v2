@@ -599,27 +599,7 @@ const bestPracticeRoles: RBACRoleDefinition[] = [
 ];
 
 // Storage and Retention Defaults
-const storageBackends = [
-  {
-    id: 'store-s3-prod',
-    name: 'AWS S3 Production Vault',
-    type: 's3' as const,
-    pathOrBucket: 's3://pgarca-backups-europe-west1/cluster-prod',
-    region: 'eu-west-1',
-    active: true,
-    totalStorageBytes: 54975581388800,
-    usedStorageBytes: 1429365116928
-  },
-  {
-    id: 'store-posix-local',
-    name: 'Local NVMe Fast Tier',
-    type: 'posix' as const,
-    pathOrBucket: '/var/lib/pgarca/repo',
-    active: true,
-    totalStorageBytes: 3298534883328,
-    usedStorageBytes: 858993459200
-  }
-];
+const storageBackends: any[] = []; // configured by the customer (posix/s3/nfs); none by default
 
 let retentionConfig = {
   fullCount: 7,
@@ -631,13 +611,8 @@ let retentionConfig = {
 };
 
 const casStore = {
-  totalChunks: 69717,
-  uniqueChunks: 38240,
-  rawBytes: 4568920000,
-  storedCompressedBytes: 1644811200,
-  compressionAlgo: 'zstd (level 3)',
-  dedupRatio: 2.78,
-  chunkSize: '64 KiB (8 x 8192 B pages)',
+  totalChunks: 0, uniqueChunks: 0, rawBytes: 0, storedCompressedBytes: 0,
+  compressionAlgo: 'zstd', dedupRatio: 0, chunkSize: '64 KiB (8 x 8192 B pages)',
 };
 
 // ==============================================================================
@@ -754,149 +729,10 @@ export const STRATEGY_PRESETS = {
 };
 
 // Initial Seed of Backup Policies
-let backupPolicies: BackupPolicyConfig[] = [
-  {
-    id: 'pol-env-prod',
-    scopeType: 'environment',
-    targetId: 'prod',
-    targetName: 'Ambiente di Produzione (PROD - Ereditato da tutti i cluster)',
-    enabled: true,
-    strategyPreset: 'enterprise_critical',
-    ...STRATEGY_PRESETS.enterprise_critical,
-    walStorageBucket: 's3://pgarca-backups-europe-west1/prod-vault',
-    lastRunFull: '2026-10-07T00:04:12Z',
-    lastRunIncr: '2026-10-08T06:00:48Z',
-    nextScheduledRun: '2026-10-08T18:00:00Z'
-  },
-  {
-    id: 'pol-env-prep',
-    scopeType: 'environment',
-    targetId: 'prep',
-    targetName: 'Ambiente di Pre-Produzione & Staging (PREP)',
-    enabled: true,
-    strategyPreset: 'standard_workload',
-    ...STRATEGY_PRESETS.standard_workload,
-    walStorageBucket: 's3://pgarca-backups-europe-west1/prep-vault',
-    lastRunFull: '2026-10-01T03:00:00Z',
-    lastRunIncr: '2026-10-08T04:00:00Z',
-    nextScheduledRun: '2026-10-09T04:00:00Z'
-  },
-  {
-    id: 'pol-folder-financial',
-    scopeType: 'folder',
-    targetId: 'critical-billing-folder',
-    targetName: 'Cartella / Gruppo: "Sistemi Finanziari & Billing Core"',
-    enabled: true,
-    strategyPreset: 'enterprise_critical',
-    ...STRATEGY_PRESETS.enterprise_critical,
-    walStorageBucket: 's3://pgarca-backups-europe-west1/billing-dedicated',
-    walArchiveTimeoutSeconds: 30, // Ultra-aggressive RPO
-    lastRunFull: '2026-10-07T00:04:12Z',
-    lastRunIncr: '2026-10-08T06:00:48Z',
-    nextScheduledRun: '2026-10-08T12:00:00Z'
-  },
-  {
-    id: 'pol-cluster-dev-override',
-    scopeType: 'cluster',
-    targetId: 'cluster-dev-01',
-    targetName: 'Cluster pg-dev-sandbox-01 (Override Individuale)',
-    enabled: false,
-    strategyPreset: 'lightweight_saver',
-    ...STRATEGY_PRESETS.lightweight_saver,
-    walStorageBucket: '/var/lib/pgarca/repo/dev-sandbox',
-    lastRunFull: '2026-10-01T04:00:00Z',
-    lastRunIncr: '2026-10-05T05:00:00Z',
-    nextScheduledRun: '2026-10-12T05:00:00Z'
-  }
-];
+let backupPolicies: BackupPolicyConfig[] = []; // created by the user; no seed data
 
 // Cluster Parameters Store (DCS + Postgres)
-const clusterParametersStore: Record<string, { dcs: ClusterDCSParams; pg: ClusterPostgresParams }> = {
-  'cluster-prod-01': {
-    dcs: {
-      ttl: 30,
-      loop_wait: 10,
-      retry_timeout: 10,
-      maximum_lag_on_failover: 1048576,
-      synchronous_mode: 'on',
-      synchronous_node_count: 1
-    },
-    pg: {
-      wal_level: 'replica',
-      archive_mode: 'on',
-      archive_command: 'pg_arca archive-push %p',
-      archive_timeout: 60,
-      wal_compression: 'on',
-      max_wal_senders: 10,
-      wal_keep_size: '1024MB',
-      shared_buffers: '16GB',
-      work_mem: '64MB',
-      maintenance_work_mem: '2GB',
-      effective_cache_size: '48GB',
-      checkpoint_completion_target: '0.9',
-      checkpoint_timeout: '15min',
-      max_connections: 500,
-      autovacuum_vacuum_cost_limit: 1000,
-      autovacuum_vacuum_scale_factor: 0.05
-    }
-  },
-  'cluster-prep-01': {
-    dcs: {
-      ttl: 30,
-      loop_wait: 10,
-      retry_timeout: 10,
-      maximum_lag_on_failover: 1048576,
-      synchronous_mode: 'on',
-      synchronous_node_count: 1
-    },
-    pg: {
-      wal_level: 'replica',
-      archive_mode: 'on',
-      archive_command: 'pg_arca archive-push %p',
-      archive_timeout: 300,
-      wal_compression: 'on',
-      max_wal_senders: 8,
-      wal_keep_size: '512MB',
-      shared_buffers: '8GB',
-      work_mem: '32MB',
-      maintenance_work_mem: '1GB',
-      effective_cache_size: '24GB',
-      checkpoint_completion_target: '0.9',
-      checkpoint_timeout: '15min',
-      max_connections: 300,
-      autovacuum_vacuum_cost_limit: 500,
-      autovacuum_vacuum_scale_factor: 0.08
-    }
-  },
-  'cluster-dev-01': {
-    dcs: {
-      ttl: 30,
-      loop_wait: 10,
-      retry_timeout: 10,
-      maximum_lag_on_failover: 1048576,
-      synchronous_mode: 'off',
-      synchronous_node_count: 0
-    },
-    pg: {
-      wal_level: 'minimal', // Misconfigured initially so user can test the advisor!
-      archive_mode: 'off',   // Off initially
-      archive_command: '',
-      archive_timeout: 0,
-      wal_compression: 'off',
-      max_wal_senders: 4,
-      wal_keep_size: '128MB',
-      shared_buffers: '512MB',
-      work_mem: '8MB',
-      maintenance_work_mem: '128MB',
-      effective_cache_size: '1536MB',
-      checkpoint_completion_target: '0.5',
-      checkpoint_timeout: '5min',
-      max_connections: 200,
-      autovacuum_vacuum_cost_limit: 200,
-      autovacuum_vacuum_scale_factor: 0.20
-    }
-  }
-};
+const clusterParametersStore: Record<string, { dcs: ClusterDCSParams; pg: ClusterPostgresParams }> = {}; // filled lazily per cluster
 
 // Helper: Assess Cluster Parameters vs PostgreSQL Best Practices
 function evaluateClusterDiagnostics(cluster: ManagedCluster, dcs: ClusterDCSParams, pg: ClusterPostgresParams) {
