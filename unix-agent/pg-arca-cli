@@ -1,280 +1,138 @@
-#!/usr/bin/env bash
-# ==============================================================================
-# pg_arca — Command-Line Interface (CLI) for Unix Nodes
-# ==============================================================================
-# Enterprise CLI for PostgreSQL Physical Archiving, Content-Addressed Backup,
-# Continuous WAL Integrity & Granular Surgical Point-In-Time Recovery.
-# ==============================================================================
+#!/usr/bin/env python3
+"""pg-arca-cli — local command line for the pg_arca node agent (runs on the database host)."""
+import argparse
+import json
+import os
+import sys
+import uuid
 
-set -euo pipefail
+sys.path.insert(0, os.environ.get("PG_ARCA_HOME", os.path.dirname(os.path.abspath(__file__)) if os.path.isdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pg_arca")) else "/opt/pg-arca"))
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONF_FILE="${PG_ARCA_CONF:-/etc/pg-arca/agent.conf}"
-AGENT_PORT="9898"
-AUTH_TOKEN=""
-
-if [[ -f "$CONF_FILE" ]]; then
-    AGENT_PORT=$(python3 -c "import json; f=open('$CONF_FILE'); d=json.load(f); print(d.get('listen_port', 9898))" 2>/dev/null || echo "9898")
-    AUTH_TOKEN=$(python3 -c "import json; f=open('$CONF_FILE'); d=json.load(f); print(d.get('auth_token', ''))" 2>/dev/null || echo "")
-fi
-
-AGENT_URL="http://127.0.0.1:${PG_ARCA_PORT:-$AGENT_PORT}"
-HEADER_AUTH=()
-if [[ -n "$AUTH_TOKEN" ]]; then
-    HEADER_AUTH=(-H "Authorization: Bearer $AUTH_TOKEN" -H "X-Arca-Token: $AUTH_TOKEN")
-fi
-
-show_help() {
-    cat << EOF
-pg_arca Enterprise Unix CLI — PostgreSQL Resilient Archiver & Cluster Manager
-
-Usage:
-  pg-arca-cli <command> [options]
-
-Commands:
-  status                     Inspect local node health, Patroni DCS role, LSN, and CAS stats
-  wal-check                  Verify WAL parameters, archived segments, and 100% gapless continuity
-  wal-archive <path> <file>  Atomic WAL archiver invoked by PostgreSQL archive_command
-  wal-get <file> <dest>      Fast WAL retriever invoked by PostgreSQL restore_command
-  backup [options]           Create a CAS block-deduplicated backup (Full, Incr, or Sparse DB)
-  list-backups               List all backup manifests and CAS storage deduplication ratios
-  restore [options]          Execute surgical, non-destructive Granular PITR restore
-  discover [options]         Intelligent auto-discovery of Patroni, Postgres, ETCD, PgBouncer & configs
-  reload                     Safely trigger configuration hot-reload (pg_reload_conf)
-  switchover [candidate]     Trigger controlled Patroni zero-downtime failover
-  rolling-restart            Orchestrate zero-downtime rolling restart across cluster
-  version                    Display CLI and agent version
-
-Restore Options:
-  --scope <type>             Restore scope: 'object' (table), 'schema', 'sparse' (single DB), 'cluster'
-  --database <name>          Target database name (default: billing)
-  --schema <name>            Target schema name (default: public)
-  --tables <t1,t2>           Comma-separated table list (for object scope)
-  --target-time <timestamp>  Target recovery point (e.g. "2026-10-08T11:42:00Z")
-  --target-lsn <lsn>         Target LSN (e.g. "0/1E880F00")
-  --mode <clone|in_place>    Destination mode: 'clone' (safe isolated, default) or 'in_place'
-  --clone-name <name>        Name of recovered database or table clone
-  --dry-run                  Simulate and validate recovery target without applying changes
-  --force-in-place-confirm   Required confirmation if running with --mode in_place
-EOF
-}
-
-cmd="${1:-}"
-
-case "$cmd" in
-    status)
-        echo "=== [pg_arca] Local Node & Cluster Status ==="
-        if curl -s -f "${HEADER_AUTH[@]}" "${AGENT_URL}/api/status" > /tmp/pg_arca_st.json 2>/dev/null; then
-            cat /tmp/pg_arca_st.json | python3 -m json.tool
-            rm -f /tmp/pg_arca_st.json
-        else
-            echo "[*] Agent daemon offline su port 9898. Eseguo ispezione diretta tramite moduli Unix locali..."
-            python3 -c "
-import sys, os, json
-sys.path.insert(0, '$SCRIPT_DIR')
-from pg_arca.discovery import ClusterDiscoveryEngine
-engine = ClusterDiscoveryEngine()
-res = engine.scan_all()
-print(json.dumps({
-    'agent_status': 'local_engine_active',
-    'postgres_instances': res['postgres_instances'],
-    'patroni_clusters': res['patroni_clusters'],
-    'summary': res['summary']
-}, indent=2))
-"
-        fi
-        ;;
-
-    wal-check)
-        echo "=== [pg_arca] Continuous WAL Archive Health & Continuity Report ==="
-        if curl -s -f "${HEADER_AUTH[@]}" "${AGENT_URL}/api/wal/status" > /tmp/pg_arca_wal.json 2>/dev/null; then
-            cat /tmp/pg_arca_wal.json | python3 -m json.tool
-            rm -f /tmp/pg_arca_wal.json
-        else
-            echo "[*] Agent daemon offline su port 9898. Eseguo verifica diretta dell'archivio WAL da filesystem..."
-            python3 -c "
-import sys, os, json
-sys.path.insert(0, '$SCRIPT_DIR')
-from pg_arca.wal_manager import WalManager
 from pg_arca.config import load_config
-cfg = load_config()
-wal_dir = cfg.get('wal_archive_dir', '/var/lib/postgresql/wal_archive')
-wm = WalManager(wal_dir=wal_dir)
-print(json.dumps(wm.verify_continuity(), indent=2))
-"
-        fi
-        ;;
-
-    wal-archive)
-        src_path="${2:-}"
-        seg_file="${3:-}"
-        if [[ -z "$src_path" || -z "$seg_file" ]]; then
-            echo "ERROR: Usage: pg-arca-cli wal-archive <src_path> <seg_filename>" >&2
-            exit 1
-        fi
-        /usr/local/bin/pg-arca-wal-archive.sh "$src_path" "$seg_file"
-        ;;
-
-    wal-get)
-        seg_file="${2:-}"
-        dest_path="${3:-}"
-        if [[ -z "$seg_file" || -z "$dest_path" ]]; then
-            echo "ERROR: Usage: pg-arca-cli wal-get <seg_filename> <dest_path>" >&2
-            exit 1
-        fi
-        python3 -c "
-import sys, os
+from pg_arca.runtime import Runtime, AGENT_VERSION
+from pg_arca.executor import OperationExecutor
 from pg_arca.wal_manager import WalManager
-from pg_arca.config import load_config
-cfg = load_config()
-wm = WalManager(wal_dir=cfg.get('wal_archive_dir', '/var/lib/postgresql/wal_archive'))
-ok, msg = wm.retrieve_segment('$seg_file', '$dest_path')
-if not ok:
-    sys.stderr.write(msg + '\n')
-    sys.exit(1)
-"
-        ;;
+from pg_arca.engine.ctx import Ctx
+from pg_arca.engine.summary import RepoSummary
 
-    backup)
-        shift
-        scope="sparse"
-        database="billing"
-        btype="incremental"
-        while [[ $# -gt 0 ]]; do
-            case "$1" in
-                --scope) scope="$2"; shift 2 ;;
-                --database) database="$2"; shift 2 ;;
-                --type) btype="$2"; shift 2 ;;
-                *) shift ;;
-            esac
-        done
-        echo "=== [pg_arca] Triggering CAS Block-Deduplicated Backup ($btype, scope=$scope) ==="
-        payload="{\"scope\":\"$scope\",\"database\":\"$database\",\"type\":\"$btype\"}"
-        curl -s -X POST "${HEADER_AUTH[@]}" -H "Content-Type: application/json" -d "$payload" "${AGENT_URL}/api/backup/create" | python3 -m json.tool
-        ;;
 
-    list-backups)
-        echo "=== [pg_arca] Backup Manifests & CAS Repository Storage ==="
-        curl -s "${HEADER_AUTH[@]}" "${AGENT_URL}/api/backup/manifests" | python3 -m json.tool
-        ;;
+def build(args):
+    cfg = load_config(args.config)
+    rt = Runtime(cfg)
+    wal = WalManager(cfg["wal_archive_dir"], cfg.get("compression", "zstd"), cfg.get("compression_level", 3),
+                     ((rt.instance or {}).get("control") or {}).get("wal_segment_size") or 16 * 1024 * 1024)
+    return cfg, rt, wal
 
-    restore)
-        shift
-        scope="sparse"
-        database="billing"
-        schema="public"
-        tables="invoices"
-        target_time=""
-        target_lsn=""
-        mode="clone"
-        clone_name="billing_pitr_recovered"
-        dry_run="false"
-        confirmed="false"
 
-        while [[ $# -gt 0 ]]; do
-            case "$1" in
-                --scope) scope="$2"; shift 2 ;;
-                --database) database="$2"; shift 2 ;;
-                --schema) schema="$2"; shift 2 ;;
-                --tables) tables="$2"; shift 2 ;;
-                --target-time) target_time="$2"; shift 2 ;;
-                --target-lsn) target_lsn="$2"; shift 2 ;;
-                --mode) mode="$2"; shift 2 ;;
-                --clone-name) clone_name="$2"; shift 2 ;;
-                --dry-run) dry_run="true"; shift ;;
-                --force-in-place-confirm) confirmed="true"; shift ;;
-                *) shift ;;
-            esac
-        done
+def pj(o): print(json.dumps(o, indent=2, default=str))
 
-        if [[ "$mode" == "in_place" && "$confirmed" != "true" && "$dry_run" != "true" ]]; then
-            echo "==========================================================================" >&2
-            echo "CRITICAL SAFETY WARNING: IN-PLACE OVERWRITE REQUESTED ON PRODUCTION DATA!" >&2
-            echo "To protect against accidental database destruction, you MUST provide:" >&2
-            echo "   --force-in-place-confirm" >&2
-            echo "Operation aborted cleanly without touching any data." >&2
-            echo "==========================================================================" >&2
-            exit 1
-        fi
 
-        echo "=== [pg_arca] Granular Surgical Point-In-Time Recovery ==="
-        echo "Scope: $scope | Target DB: $database | Mode: $mode"
+def cmd_status(a):
+    cfg, rt, wal = build(a); pj(rt.build_snapshot(wal, RepoSummary(Ctx.from_config(cfg, rt))))
 
-        IFS=',' read -r -a table_array <<< "$tables"
-        tables_json=$(python3 -c "import json; print(json.dumps('$tables'.split(',')))")
 
-        payload=$(cat << EOF
-{
-  "scope": "$scope",
-  "database": "$database",
-  "schema": "$schema",
-  "target_objects": $tables_json,
-  "target_time": "${target_time:-2026-10-08T11:42:00Z}",
-  "target_lsn": "${target_lsn:-0/1E880F00}",
-  "destination_mode": "$mode",
-  "clone_name": "$clone_name",
-  "admin_confirmed": $confirmed,
-  "dry_run": $dry_run
-}
-EOF
-)
-        curl -s -X POST "${HEADER_AUTH[@]}" -H "Content-Type: application/json" -d "$payload" "${AGENT_URL}/api/pitr/execute" | python3 -m json.tool
-        ;;
+def cmd_discover(a):
+    cfg, rt, _ = build(a); pj(rt.report)
 
-    discover)
-        echo "=== [pg_arca] Running Deep Cluster & Configuration Discovery ==="
-        python3 -c "
-import sys, json
-sys.path.insert(0, '/opt/pg-arca')
-sys.path.insert(0, './unix-agent')
-try:
-    from pg_arca.discovery import ClusterDiscoveryEngine
-    engine = ClusterDiscoveryEngine()
-    res = engine.scan_all()
-    print(json.dumps(res, indent=2))
-except Exception as e:
-    sys.stderr.write(f'Discovery error: {e}\n')
-    sys.exit(1)
-"
-        ;;
 
-    reload)
-        echo "=== [pg_arca] Triggering Safe Configuration Hot Reload (pg_reload_conf) ==="
-        curl -s -X POST "${HEADER_AUTH[@]}" "${AGENT_URL}/api/pg/reload" | python3 -m json.tool
-        ;;
+def cmd_wal_check(a):
+    cfg, rt, wal = build(a); rep = wal.verify_continuity(max_age=0); pj(rep); return 0 if rep["continuous"] else 3
 
-    switchover)
-        candidate="${2:-}"
-        echo "=== [pg_arca] Initiating Patroni Controlled Switchover ==="
-        payload="{}"
-        if [[ -n "$candidate" ]]; then
-            payload="{\"candidate\":\"$candidate\"}"
-        fi
-        curl -s -X POST "${HEADER_AUTH[@]}" -H "Content-Type: application/json" -d "$payload" "${AGENT_URL}/api/patroni/switchover"
-        echo ""
-        ;;
 
-    rolling-restart)
-        echo "=== [pg_arca] Orchestrating Zero-Downtime Rolling Restart ==="
-        echo "Step 1: Checking sync standby nodes status..."
-        curl -s "${HEADER_AUTH[@]}" "${AGENT_URL}/api/patroni/cluster" | python3 -m json.tool 2>/dev/null || true
-        echo "Step 2: Restarting standby instances first..."
-        echo "Step 3: Performing controlled switchover..."
-        echo "Step 4: Restarting demoted primary node..."
-        echo "[+] Rolling restart finished with zero transaction drop."
-        ;;
+def cmd_archive_setup(a):
+    cfg, rt, _ = build(a)
+    print("# PostgreSQL parameters for continuous archiving (PITR):")
+    print("archive_mode = on")
+    print("archive_command = '/usr/local/bin/pg-arca-wal archive %p %f'")
+    print("restore_command = '/usr/local/bin/pg-arca-wal get %f %p'")
+    print("wal_level = replica        # or higher; 'minimal' cannot be archived")
+    print("archive_timeout = 60       # bounds RPO on quiet systems")
+    if rt.patroni.configured:
+        print("\n# Patroni manages parameters: apply via 'patronictl edit-config' (or the console), not postgresql.conf.")
+    print("\n# archive_mode / wal_level need a restart; archive_command can be reloaded.")
 
-    version)
-        echo "pg_arca Enterprise Suite v1.0.0 (Unix Engine & CLI)"
-        ;;
 
-    help|-h|--help|"")
-        show_help
-        ;;
+def cmd_op(a):
+    cfg, rt, _ = build(a)
+    ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: rt.refresh(), runtime=rt)
+    oid = a.id or ("op-" + uuid.uuid4().hex[:12])
+    st, res, err = ex.execute({"id": oid, "type": a.type, "params": json.loads(a.params or "{}")})
+    pj({"id": oid, "status": st, "result": res, "error": err}); return 0 if st == "succeeded" else 1
 
-    *)
-        echo "Unknown command: $cmd" >&2
-        show_help
-        exit 1
-        ;;
-esac
+
+def _run(a, op_type, params):
+    cfg, rt, _ = build(a)
+    ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: rt.refresh(), runtime=rt)
+    ex._tl.op_id = None
+    import sys as _s
+    last = [0]
+
+    def prog(d):
+        import time as _t
+        if _t.time() - last[0] > 2 and _s.stderr.isatty():
+            last[0] = _t.time(); _s.stderr.write("\r  %s %s%%   " % (d.get("phase"), d.get("pct", "")))
+    st, res, err = ex.execute({"id": "op-" + uuid.uuid4().hex[:12], "type": op_type, "params": params})
+    pj({"status": st, "result": res, "error": err}); return 0 if st == "succeeded" else 1
+
+
+def _targets(a):
+    d = {}
+    for k in ("set", "target_time", "target_lsn", "target_xid", "target_name"):
+        if getattr(a, k, None): d[k] = getattr(a, k)
+    if getattr(a, "exclusive", False): d["inclusive"] = False
+    return d
+
+
+def cmd_backup(a): return _run(a, "backup_run", {"type": a.type, "note": a.note or ""})
+def cmd_info(a): return _run(a, "backup_info", {})
+def cmd_verify(a): return _run(a, "backup_verify", {"deep": a.deep, "restore_test": a.restore_test})
+def cmd_expire(a): return _run(a, "backup_expire", {"dry_run": a.dry_run})
+def cmd_forensics(a): return _run(a, "wal_forensics", {"limit": a.limit})
+
+
+def cmd_restore(a):
+    p = _targets(a)
+    if a.scope == "instance":
+        p.update(destination=a.destination, delta=a.delta)
+        return _run(a, "restore_instance" if not a.dry_run else "restore_plan", dict(p, scope="instance") if a.dry_run else p)
+    if a.scope == "database":
+        p.update(database=a.db, new_name=a.rename)
+        return _run(a, "restore_database" if not a.dry_run else "restore_plan", dict(p, scope="database") if a.dry_run else p)
+    p.update(object=a.object, stage_db=a.rename)
+    return _run(a, "restore_object" if not a.dry_run else "restore_plan", dict(p, scope="object") if a.dry_run else p)
+
+
+def cmd_version(a): print("pg-arca-cli / agent %s" % AGENT_VERSION)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="pg-arca-cli", description=__doc__)
+    p.add_argument("--config", help="agent.conf path (default /etc/pg-arca/agent.conf)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("status", help="full local telemetry snapshot (what the agent reports to the console)").set_defaults(fn=cmd_status)
+    sub.add_parser("discover", help="real auto-discovery of PostgreSQL / Patroni / etcd / pgbouncer / pgBackRest on this host").set_defaults(fn=cmd_discover)
+    sub.add_parser("wal-check", help="verify WAL archive continuity (exit 3 on gaps)").set_defaults(fn=cmd_wal_check)
+    sub.add_parser("archive-setup", help="print the exact PostgreSQL/Patroni settings for archiving + PITR").set_defaults(fn=cmd_archive_setup)
+    o = sub.add_parser("op", help="run one console-style operation locally (same journal & safety checks)")
+    o.add_argument("type"); o.add_argument("--params", help="JSON object"); o.add_argument("--id", help="operation id (op-<12 hex>); reuse to get idempotent behaviour")
+    o.set_defaults(fn=cmd_op)
+    b = sub.add_parser("backup", help="take a backup (full | diff | incr)"); b.add_argument("--type", default="incr", choices=["full", "diff", "incr"]); b.add_argument("--note"); b.set_defaults(fn=cmd_backup)
+    sub.add_parser("info", help="list backups, WAL range, dedup ratio").set_defaults(fn=cmd_info)
+    v = sub.add_parser("verify", help="verify repository integrity (--deep re-hashes every chunk; --restore-test proves recoverability by recovering)")
+    v.add_argument("--deep", action="store_true"); v.add_argument("--restore-test", action="store_true"); v.set_defaults(fn=cmd_verify)
+    e = sub.add_parser("expire", help="apply retention (sets, unreferenced chunks, WAL)"); e.add_argument("--dry-run", action="store_true"); e.set_defaults(fn=cmd_expire)
+    f = sub.add_parser("forensics", help="find DROP/TRUNCATE events in the WAL archive"); f.add_argument("--limit", type=int, default=20); f.set_defaults(fn=cmd_forensics)
+    r = sub.add_parser("restore", help="restore an instance, a database or one object (optionally to a point in time)")
+    r.add_argument("scope", choices=["instance", "database", "object"])
+    r.add_argument("--destination", help="instance: empty directory (never the live PGDATA)")
+    r.add_argument("--db"); r.add_argument("--object", help="database.schema.name"); r.add_argument("--rename", help="new database name / quarantine database name")
+    r.add_argument("--set"); r.add_argument("--target-time", help="needs a UTC offset, e.g. '2026-07-26 18:34:11+02'"); r.add_argument("--target-lsn")
+    r.add_argument("--target-xid"); r.add_argument("--target-name"); r.add_argument("--exclusive", action="store_true", help="stop just BEFORE the target")
+    r.add_argument("--delta", action="store_true"); r.add_argument("--dry-run", action="store_true", help="show the plan only"); r.set_defaults(fn=cmd_restore)
+    sub.add_parser("version").set_defaults(fn=cmd_version)
+    a = p.parse_args()
+    sys.exit(a.fn(a) or 0)
+
+
+if __name__ == "__main__":
+    main()

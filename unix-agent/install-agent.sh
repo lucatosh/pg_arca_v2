@@ -1,125 +1,116 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# pg_arca — Node Agent Automated Installer for Ubuntu / Debian
+# pg_arca node agent installer — RHEL/Rocky/Alma 8-10, Debian, Ubuntu
+#
+#   curl -fsSL https://<console>/agent/install.sh | sudo \
+#        PG_ARCA_URL=https://<console> PG_ARCA_ENROLL_TOKEN=arca_enr_... bash
+#
+# Idempotent: re-running upgrades the code and keeps config + credentials.
+# Env:  PG_ARCA_URL (required on first install)   PG_ARCA_ENROLL_TOKEN (required until enrolled)
+#       PG_ARCA_NODE_NAME   PG_ARCA_TLS_CA=/path/ca.pem   PG_ARCA_BUNDLE_SHA256=<hex>
+#       PG_ARCA_REPO=/var/lib/pgarca/repo   PG_ARCA_USER=postgres
 # ==============================================================================
 set -euo pipefail
 
-if [[ $EUID -ne 0 ]]; then
-   echo "ERROR: This installer must be run as root (or with sudo)." >&2
-   exit 1
+die() { echo "ERROR: $*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || die "run as root (sudo)"
+
+PGUSER_OS="${PG_ARCA_USER:-postgres}"
+id "$PGUSER_OS" &>/dev/null || die "OS user '$PGUSER_OS' not found. The agent must run as the PostgreSQL OS user (set PG_ARCA_USER=...)."
+INSTALL_DIR=/opt/pg-arca; CONF_DIR=/etc/pg-arca; STATE_ROOT=/var/lib/pgarca
+REPO_DIR="${PG_ARCA_REPO:-$STATE_ROOT/repo}"; WAL_DIR="$STATE_ROOT/wal"; LOG_DIR=/var/log/pgarca; SCRATCH=/var/tmp/pg_arca_scratch
+
+# --- python + tools ------------------------------------------------------------
+if ! command -v python3 >/dev/null; then
+  if command -v dnf >/dev/null; then dnf install -y -q python3; elif command -v apt-get >/dev/null; then apt-get update -qq && apt-get install -y -qq python3; else die "python3 missing"; fi
+fi
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,6) else 1)' || die "Python >= 3.6 required"
+if ! command -v zstd >/dev/null; then
+  { command -v dnf >/dev/null && dnf install -y -q zstd; } || { command -v apt-get >/dev/null && apt-get install -y -qq zstd; } || echo "WARN: zstd not installed; WAL/chunks will be stored uncompressed"
 fi
 
-echo "=================================================================="
-echo "  pg_arca Enterprise Node Agent Installer for Ubuntu / Debian"
-echo "=================================================================="
-
-# 1. Check Python 3
-if ! command -v python3 &>/dev/null; then
-    echo "[*] Installing Python 3 runtime..."
-    apt-get update -qq && apt-get install -y -qq python3 python3-pip
+# --- obtain the bundle ------------------------------------------------------------
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+if [[ -n "$SRC" && -d "$SRC/pg_arca" && -f "$SRC/pg-arca-agent.py" ]]; then
+  BUNDLE="$SRC"
+else
+  [[ -n "${PG_ARCA_URL:-}" ]] || die "PG_ARCA_URL is required"
+  CURL=(curl -fsSL --retry 3); [[ -n "${PG_ARCA_TLS_CA:-}" ]] && CURL+=(--cacert "$PG_ARCA_TLS_CA")
+  "${CURL[@]}" "${PG_ARCA_URL%/}/agent/pg-arca-agent.tar.gz" -o "$TMP/agent.tgz" || die "cannot download the agent bundle from $PG_ARCA_URL"
+  if [[ -n "${PG_ARCA_BUNDLE_SHA256:-}" ]]; then echo "${PG_ARCA_BUNDLE_SHA256}  $TMP/agent.tgz" | sha256sum -c - >/dev/null || die "bundle checksum mismatch"; fi
+  mkdir "$TMP/b" && tar xzf "$TMP/agent.tgz" -C "$TMP/b"; BUNDLE="$TMP/b"
 fi
 
-# Optional compression packages
-echo "[*] Checking compression tools (lz4, zstd)..."
-apt-get install -y -qq zstd lz4 curl >/dev/null 2>&1 || true
+# --- layout ----------------------------------------------------------------------
+install -d -m 0755 "$INSTALL_DIR"
+install -d -m 0750 -o "$PGUSER_OS" "$CONF_DIR" "$STATE_ROOT" "$REPO_DIR" "$WAL_DIR" "$STATE_ROOT/state" "$LOG_DIR" "$SCRATCH"
+rm -rf "$INSTALL_DIR/pg_arca.new"; cp -r "$BUNDLE/pg_arca" "$INSTALL_DIR/pg_arca.new"
+rm -rf "$INSTALL_DIR/pg_arca.old"; [[ -d "$INSTALL_DIR/pg_arca" ]] && mv "$INSTALL_DIR/pg_arca" "$INSTALL_DIR/pg_arca.old"
+mv "$INSTALL_DIR/pg_arca.new" "$INSTALL_DIR/pg_arca"; rm -rf "$INSTALL_DIR/pg_arca.old"
+install -m 0755 "$BUNDLE/pg-arca-agent.py" "$INSTALL_DIR/pg-arca-agent.py"
+install -m 0755 "$BUNDLE/pg-arca-cli" /usr/local/bin/pg-arca-cli
+install -m 0755 "$BUNDLE/pg-arca-wal" /usr/local/bin/pg-arca-wal
+chown -R root:root "$INSTALL_DIR"
 
-# 2. Directory Structure
-INSTALL_DIR="/opt/pg-arca"
-CONF_DIR="/etc/pg-arca"
-REPO_DIR="/var/lib/pgarca/repo"
-WAL_DIR="/var/lib/postgresql/wal_archive"
-SCRATCH_DIR="/var/tmp/pg_arca_scratch"
-LOG_DIR="/var/log/pgarca"
-RUN_DIR="/var/run/pg-arca"
-
-echo "[*] Creating secure directories..."
-mkdir -p "$INSTALL_DIR" "$CONF_DIR" "$REPO_DIR" "$WAL_DIR" "$SCRATCH_DIR" "$LOG_DIR" "$RUN_DIR"
-
-# 3. Copy Agent Files
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cp -r "$SCRIPT_DIR/pg_arca" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/pg-arca-agent.py" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/pg-arca-wal-archive.sh" /usr/local/bin/pg-arca-wal-archive.sh
-cp "$SCRIPT_DIR/pg-arca-cli" /usr/local/bin/pg-arca-cli
-
-chmod +x /usr/local/bin/pg-arca-wal-archive.sh /usr/local/bin/pg-arca-cli "$INSTALL_DIR/pg-arca-agent.py"
-
-# 4. Intelligent Cluster & Configuration Auto-Discovery
-echo "[*] Running intelligent cluster & directory auto-discovery..."
-AUTOCONFIG=$(python3 -c "
-import sys, json
-sys.path.insert(0, '$SCRIPT_DIR')
-try:
-    from pg_arca.discovery import ClusterDiscoveryEngine
-    engine = ClusterDiscoveryEngine()
-    scan = engine.scan_all()
-    clusters = scan.get('patroni_clusters', [])
-    c_name = clusters[0]['name'] if clusters else 'cluster-prod-01'
-    data_dir = clusters[0].get('pg_data_dir') if clusters else '/var/lib/postgresql/16/main'
-    rest_url = clusters[0].get('restapi_endpoint') if clusters else 'http://127.0.0.1:8008'
-    print(json.dumps({'cluster_name': c_name, 'data_dir': data_dir, 'patroni_url': rest_url, 'found': bool(clusters)}))
-except Exception as e:
-    print(json.dumps({'cluster_name': 'cluster-prod-01', 'data_dir': '/var/lib/postgresql/16/main', 'patroni_url': 'http://127.0.0.1:8008', 'found': False}))
-")
-
-DETECTED_NAME=$(echo "$AUTOCONFIG" | python3 -c "import sys, json; print(json.load(sys.stdin).get('cluster_name', 'cluster-prod-01'))")
-DETECTED_DATA=$(echo "$AUTOCONFIG" | python3 -c "import sys, json; print(json.load(sys.stdin).get('data_dir', '/var/lib/postgresql/16/main'))")
-DETECTED_PATRONI=$(echo "$AUTOCONFIG" | python3 -c "import sys, json; print(json.load(sys.stdin).get('patroni_url', 'http://127.0.0.1:8008'))")
-
-echo "  [+] Discovered Cluster: $DETECTED_NAME"
-echo "  [+] Discovered Data Dir: $DETECTED_DATA"
-echo "  [+] Discovered Patroni: $DETECTED_PATRONI"
-
-# 5. Configuration Template
+# --- config (never overwritten) -------------------------------------------------------
 if [[ ! -f "$CONF_DIR/agent.conf" ]]; then
-    echo "[*] Generating customized $CONF_DIR/agent.conf with discovered parameters..."
-    cp "$SCRIPT_DIR/agent.conf.example" "$CONF_DIR/agent.conf"
-    # Generate random unique auth token
-    TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(16))")
-    sed -i "s/arca-secret-production-token-98f2b7a4/arca-token-$TOKEN/g" "$CONF_DIR/agent.conf"
-    sed -i "s/cluster-prod-01/$DETECTED_NAME/g" "$CONF_DIR/agent.conf"
-    sed -i "s|/var/lib/postgresql/data|$DETECTED_DATA|g" "$CONF_DIR/agent.conf"
-    chmod 600 "$CONF_DIR/agent.conf"
+  [[ -n "${PG_ARCA_URL:-}" ]] || die "PG_ARCA_URL is required on first install"
+  python3 - "$CONF_DIR/agent.conf" <<PY
+import json, os, sys
+c = {"connection_mode": "push", "web_server_url": os.environ["PG_ARCA_URL"].rstrip("/"),
+     "repo_path": "$REPO_DIR", "wal_archive_dir": "$WAL_DIR", "scratch_dir": "$SCRATCH", "state_dir": "$STATE_ROOT/state",
+     "credentials_file": "$CONF_DIR/credentials.json", "pg_user": "$PGUSER_OS"}
+if os.environ.get("PG_ARCA_NODE_NAME"): c["node_name"] = os.environ["PG_ARCA_NODE_NAME"]
+if os.environ.get("PG_ARCA_TLS_CA"): c["tls_ca_file"] = os.environ["PG_ARCA_TLS_CA"]
+json.dump(c, open(sys.argv[1], "w"), indent=2)
+PY
+  chown "$PGUSER_OS" "$CONF_DIR/agent.conf"; chmod 0640 "$CONF_DIR/agent.conf"
 fi
-
-# 6. Set Permissions for postgres system user
-if id "postgres" &>/dev/null; then
-    chown -R postgres:postgres "$INSTALL_DIR" "$REPO_DIR" "$WAL_DIR" "$SCRATCH_DIR" "$LOG_DIR" "$RUN_DIR"
-    chown postgres:postgres "$CONF_DIR/agent.conf"
+if [[ -n "${PG_ARCA_ENROLL_TOKEN:-}" && ! -f "$CONF_DIR/credentials.json" ]]; then
+  umask 077; printf 'PG_ARCA_ENROLL_TOKEN=%s\n' "$PG_ARCA_ENROLL_TOKEN" > "$CONF_DIR/enroll.env"; chown "$PGUSER_OS" "$CONF_DIR/enroll.env"; chmod 0600 "$CONF_DIR/enroll.env"
 fi
+if [[ ! -f "$CONF_DIR/credentials.json" && ! -f "$CONF_DIR/enroll.env" ]]; then die "no credentials yet and PG_ARCA_ENROLL_TOKEN not provided"; fi
 
-# 7. Install Systemd Service
-echo "[*] Configuring systemd service..."
-cat << 'EOF' > /etc/systemd/system/pg-arca-agent.service
+# --- service -------------------------------------------------------------------------
+cat > /etc/systemd/system/pg-arca-agent.service <<UNIT
 [Unit]
-Description=pg_arca Enterprise Node Agent Daemon
-After=network.target patroni.service postgresql.service
-Wants=patroni.service
+Description=pg_arca node agent
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=postgres
-Group=postgres
-WorkingDirectory=/opt/pg-arca
-Environment=PYTHONPATH=/opt/pg-arca
-ExecStart=/usr/bin/python3 /opt/pg-arca/pg-arca-agent.py
+User=$PGUSER_OS
+Environment=PYTHONPATH=$INSTALL_DIR PG_ARCA_CONF=$CONF_DIR/agent.conf PG_ARCA_CONF_FILE=$CONF_DIR/agent.conf
+EnvironmentFile=-$CONF_DIR/enroll.env
+ExecStart=/usr/bin/env python3 $INSTALL_DIR/pg-arca-agent.py
 Restart=always
 RestartSec=5
+# least privilege: read the system, write only agent state
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=$CONF_DIR $STATE_ROOT $REPO_DIR $LOG_DIR $SCRATCH
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+# be a good neighbour on a production database host
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=20
+IOWeight=20
 LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
-EOF
-
+UNIT
 systemctl daemon-reload
-systemctl enable pg-arca-agent.service >/dev/null 2>&1 || true
-
-echo "=================================================================="
-echo "  pg_arca Agent Installation Completed Successfully!"
-echo "=================================================================="
-echo "  Configuration file:   $CONF_DIR/agent.conf"
-echo "  Repository Vault:     $REPO_DIR"
-echo "  WAL Archive:          $WAL_DIR"
-echo "  CLI Utility:          pg-arca-cli"
-echo "  Systemd Service:      systemctl start pg-arca-agent"
-echo "=================================================================="
+systemctl enable --now pg-arca-agent.service >/dev/null
+sleep 2
+systemctl is-active --quiet pg-arca-agent.service && echo "pg_arca agent is running." || { echo "agent failed to start:"; journalctl -u pg-arca-agent -n 20 --no-pager; exit 1; }
+echo "Check the console: this node appears under Clusters within seconds. Logs: journalctl -u pg-arca-agent -f"
+echo "WAL archiving (PITR) - set on the primary (or in Patroni postgresql.parameters):"
+echo "   archive_mode = on"
+echo "   archive_command = '/usr/local/bin/pg-arca-wal archive %p %f'   # see: pg-arca-cli archive-setup"

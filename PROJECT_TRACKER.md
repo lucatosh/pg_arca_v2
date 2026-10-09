@@ -1,73 +1,52 @@
-# pg_arca — Project Progress Tracker & Feature Catalog
-=====================================================
-*Documento di tracciamento continuo delle funzionalità implementate, test eseguiti e stato dei componenti.*
+# pg_arca — registro dei componenti
 
-Data Ultimo Aggiornamento: 2026-10-08
-Versione Architettura: 1.0.0 Enterprise Ready
+Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguito**; non c’è nulla di "validato" senza un test dietro.
 
----
+## Componenti
 
-## 📋 1. Indice Generale dei Moduli Realizzati
+| Componente | File | Stato | Verifica |
+| --- | --- | --- | --- |
+| Stato persistente atomico | `server/store.ts` | Reale | `tests/server/*` |
+| Journal operazioni (idempotenza, lease, TTL, corsie, annullamento) | `server/ops.ts`, `server/optypes.ts` | Reale | `ops.test.ts` |
+| Vista cluster da telemetria | `server/view.ts` | Reale | `view.test.ts` |
+| Agent: iscrizione, heartbeat, report, log | `server/agents.ts` | Reale | `api.test.ts` + e2e Python |
+| Autenticazione (admin al primo avvio, scrypt, sessioni, throttling) | `server/auth.ts` | Reale | `api.test.ts` |
+| Inventario cluster, demo unico eliminabile | `server/clusters.ts`, `server/demo.ts` | Reale | `api.test.ts` |
+| Collegamento senza agent | `server/direct.ts` | **Mai eseguito contro PostgreSQL reale** | solo stub |
+| Scheduler backup | `server/scheduler.ts` | Reale | `scheduler.test.ts` |
+| Audit e rilevamento aggregato | `server/platform.ts` | Reale | `api.test.ts` |
+| Log in tempo reale (WebSocket), scansione di rete | `server/logs.ts`, `server/netscan.ts` | Scritti; **non eseguiti** (mancano `ws`/`express` nell’ambiente di sviluppo): solo controllo sintattico | — |
+| Agent: rilevamento, esecutore, Patroni, WAL, CLI | `unix-agent/pg_arca/*` | Reale | `unix-agent/tests` |
+| Motore backup/ripristino | `unix-agent/pg_arca/engine/*` | Reale | 15 test su PostgreSQL 16 |
+| Interfaccia web modulare | `src/*` | Reale, provata nel browser | `tests/ui/e2e.cjs` (agent simulato) |
+| Strategie di backup per cartella / ambiente / cluster (modelli suggeriti e personalizzati, ereditarietà) | Reale |: risolte a ogni tick dello scheduler, nessuna copia | `tests/server/policies.test.ts`, `tests/ui/e2e.cjs` |
+| Gestione pg_hba (Patroni DCS o file, simulazione anti lock-out, verifica con `pg_hba_file_rules`, rollback) | Agent provato su PostgreSQL 16 reale; **DCS Patroni mai provato su un cluster reale** | `unix-agent/tests/test_hba*.py`, `tests/server/hba.test.ts`, `tests/ui/hbalogic.test.ts` |
+| Assistente HBA nella UI (duplicati, regole oscurate, ordine, descrizioni, modelli) | Reale | nel browser con agent simulato | `tests/ui/e2e.cjs` |
+| Rilevamento: consigli dell'agent e differenze tra nodi | Reale | | `tests/server/discovery.test.ts`, `unix-agent/tests/test_discovery_advisor.py` |
+| Riporta una tabella ripristinata nel database (`as_new` / `replace`, non distruttivo) | Agent provato su PG16; | `test_engine_pg.py` |
+| Utenti e ruoli | `server/auth.ts`, `src/pages/Users.tsx` | Reale | `rbac.test.ts` |
+| Cifratura repository | `unix-agent/pg_arca/engine/crypt.py`, `repo.py`, `wal_manager.py` | Reale (opzionale, richiede `cryptography`) | `test_crypto.py` + suite PG16 cifrata |
+| Recupero righe, prova di disaster recovery | `engine/granular.py` | Reale | `test_engine_pg.py` (PG16) |
+| Salute, briefing, notifiche | `server/health.ts`, `server/notify.ts`, `src/pages/Today.tsx` | Reale; webhook non provati contro servizi reali | `health.test.ts` |
+| Approvazioni a due persone, impostazioni avanzate | `server/approvals.ts`, `src/pages/Settings.tsx` | Reale | `approvals.test.ts` |
+| HBA: adozione e regole temporanee | `hba.py`, `hba_ops.py`, `server/scheduler.ts::hbaExpiryTick` | Reale (non su Patroni) | `test_hba_pg.py`, `hba.test.ts` |
+| LDAP/AD | — | **Anteprima** (marcato in UI) | — |
 
-| Modulo | Componente | Descrizione Architetturale | Stato Validazione |
-| :--- | :--- | :--- | :--- |
-| **01. Discovery Engine** | `unix-agent/pg_arca/discovery.py`<br>`src/components/GlobalDiscoveryHub.tsx` | Scansione deep automatica su filesystem Unix, rilevamento topologia Patroni, nodi PostgreSQL, ETCD DCS, PgBouncer, analisi sintattica file di configurazione (`patroni.yml`, `postgresql.conf`, `pg_hba.conf`) e comparatore diff multi-nodo con best-practice advisor. | ✅ **100% Funzionante & Testato** |
-| **02. Granular PITR Studio** | `unix-agent/pg_arca/granular_restore.py`<br>`server.ts`<br>`src/App.tsx`<br>`src/components/ImmutableWalInspector.tsx` | Ripristino point-in-time chirurgico a livello di intero cluster, singolo database sparse, schema o singola tabella. Salvaguardia anti-tampering dei nomi file WAL (24-caratteri esadecimali immutabili), validazione continua dello stream WAL e calcolo automatico RTO. | ✅ **100% Funzionante & Testato** |
-| **03. Motore Dedup CAS** | `unix-agent/pg_arca/cas_engine.py` | Storage content-addressable block-level per backup incrementali e sparse. Calcolo hash SHA-256 su blocchi da 8KB a 1MB con dedup ratio tipico di 4.8:1 e compressione Zstd/LZ4 integrata. | ✅ **100% Funzionante & Testato** |
-| **04. Agente Unix & CLI** | `unix-agent/pg-arca-cli`<br>`unix-agent/install-agent.sh`<br>`unix-agent/pg_arca/api_server.py` | Daemon locale su porta 9898 con API REST protette da token Bearer/X-Arca-Token. CLI `pg-arca-cli` con comandi operativi (`status`, `wal-check`, `wal-archive`, `wal-get`, `backup`, `restore`, `discover`, `reload`, `switchover`, `rolling-restart`) e fallback automatico in caso di demone offline. | ✅ **100% Funzionante & Testato** |
-| **05. Patroni HA & DCS** | `unix-agent/pg_arca/patroni_bridge.py`<br>`server.ts` | Orchestrazione ad alta disponibilità basata su Patroni e quorum etcd3. Monitoraggio replica streaming sincrona/asincrona, lag in byte e ms, switchover guidato a zero downtime e rolling restart controllato. | ✅ **100% Funzionante & Testato** |
-| **06. Sicurezza, HBA & LDAP** | `server.ts`<br>`src/App.tsx` | Gestione centralizzata regole `pg_hba.conf` con validazione CIDR strict. Sincronizzazione automatizzata delle utenze Active Directory tramite integrazione ldap2pg e profilazione ruoli RBAC granulare. | ✅ **100% Funzionante & Testato** |
-| **07. Registro Audit & History** | `server.ts`<br>`src/components/GlobalAuditHistory.tsx` | Registro immutabile di tutte le operazioni eseguite sull'infrastruttura con filtro per cluster, severità (`SUCCESS`, `WARNING`, `FAILED`), operatore e categoria, corredato da export JSON conforme SOC2/GDPR. | ✅ **100% Funzionante & Testato** |
-| **08. Multi-Cluster Cache** | `src/utils/clusterCache.ts`<br>`src/components/CommandPalette.tsx` | Cache client-side con strategia stale-while-revalidate per navigazione fluida su decine di cluster contemporanei. Quick switcher / Command Palette attivabile tramite scorciatoia rapida `⌘K` / `Ctrl+K`. | ✅ **100% Funzionante & Testato** |
+## Cosa coprono i test del motore (PostgreSQL 16)
+backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’istanza; ripristino sparso di un database; ripristino di un oggetto; ripristino fallito che non lascia nulla; `target_time` senza fuso rifiutato; percorsi protetti; verifica e info; prova di ripristino; rilevamento di blocchi corrotti; ricerca DROP/TRUNCATE; sicurezza dopo un backup interrotto; pulizia.
 
----
+## Decisioni
+- Un solo cluster demo; nessun altro dato fittizio.
+- Nessuna simulazione presentata come reale: ciò che non funziona è "Anteprima" o risponde con un errore chiaro.
+- Ripristino sempre non distruttivo (nome nuovo / quarantena / cartella vuota).
+- UI riscritta da zero in moduli (CSS semplice, nessuna dipendenza oltre React); il vecchio monolite da 4247 righe, Tailwind e lucide sono stati rimossi.
+- `server.ts` ridotto da ~2700 a ~90 righe: le rotte simulate (HA, HBA, LDAP, RBAC, PITR, stanze, politiche, parametri, tuning) sono state eliminate; HA e parametri passano dal motore operazioni.
 
-## 🛠️ 2. Dettaglio dei Passi Eseguiti e Problematiche Risolte
-
-### A. Sicurezza dei Campi e Immutabilità del Nome WAL
-- **Criticità Rilevata**: Nei form di ripristino Point-In-Time (PITR), l'utente poteva precedentemente digitare o modificare liberamente il nome di un file WAL fisico. In PostgreSQL, i file WAL (es. `00000001000000000000002E`) hanno un nome matematicamente vincolato alla timeline, log ID e offset del segmento: qualsiasi modifica arbitraria causa un blocco irreparabile (`PANIC: could not locate a valid checkpoint record`).
-- **Soluzione Implementata**:
-  - Creato il componente `ImmutableWalInspector.tsx`.
-  - Il nome del file WAL selezionato è ora visualizzato in modalità di sola lettura e protetto da un badge crittografico `[🔒 Immutabile (Anti-Tampering)]`.
-  - Integrato un catalogo navigabile dei segmenti WAL archiviati con hash SHA-256, timeline, numero di transazioni e dimensione (16 MiB).
-  - Aggiunta validazione in tempo reale su Timestamp (ISO-8601 UTC) e coordinate LSN (`^[0-9A-Fa-f]{1,8}/[0-9A-Fa-f]{1,8}$`), con blocco dell'azione in caso di input non conforme.
-
-### B. Scalabilità Multi-Cluster e Fluidità UI
-- **Criticità Rilevata**: Con molti cluster gestiti contemporaneamente, le richieste HTTP ripetute rischiavano di creare waterfall di rete e rallentare il passaggio tra le diverse viste.
-- **Soluzione Implementata**:
-  - Implementato `clusterCache.ts` con architettura di caching a due livelli (Memoria RAM Map + LocalStorage) con TTL configurabile e revalidazione in background.
-  - Implementato `CommandPalette.tsx` (richiamabile da tastiera con `⌘K` o `Ctrl+K`): permette la ricerca fuzzy istantanea tra cluster, nodi, database, schemi, tabelle e comandi di sistema.
-
-### C. Discovery Engine & Scanner Unix Intelligente
-- **Funzionalità Realizzata**:
-  - Modulo Python `unix-agent/pg_arca/discovery.py` capace di scansionare ricorsivamente percorsi standard (`/etc/patroni`, `/etc/postgresql`, `/var/lib/postgresql`, `/etc/etcd`, `/etc/pgbouncer`, `/etc/haproxy`, `/etc/pgbackrest`, `/etc/pg-arca`) e percorsi personalizzati con risoluzione di variabili di ambiente (`$PGDATA`, `$PGVERSION`, `$CLUSTER_NAME`, ecc.).
-  - Parsing automatico dei file `patroni.yml`, `postgresql.conf`, `pg_hba.conf`, `etcd.conf.yml`, `pgbouncer.ini`.
-  - Ispezione dei processi attivi su porta 5432, 8008, 2379, 6432, 9898 e dei servizi systemd.
-  - Interfaccia React `GlobalDiscoveryHub.tsx` con card riassuntive, pulsante di importazione immediata del cluster scoperto nell'inventario e comparatore cross-nodo per individuare divergenze di configurazione.
-
-### D. Agente Unix e Resilienza CLI
-- **Criticità Rilevata**: Se il demone `pg-arca-agent` non era ancora avviato sulla macchina (o il servizio systemd era in manutenzione), i comandi CLI restituivano errori di connessione curl crudi.
-- **Soluzione Implementata**:
-  - Aggiunto fallback automatico in `pg-arca-cli` per i comandi `status` e `wal-check`: in assenza del server HTTP locale sulla porta 9898, la CLI esegue direttamente l'ispezione locale chiamando i moduli Python (`ClusterDiscoveryEngine` e `WalManager.verify_continuity()`), garantendo continuità operativa all'amministratore di sistema anche a demone fermo.
-  - Testata e validata la corretta compilazione di tutti i moduli Python (`py_compile` con 0 errori).
-
----
-
-## 🔍 3. Matrice dei Test Eseguiti & Verifiche di Sistema
-
-| Test Eseguito | Comando / Metodo | Esito | Note Operative |
-| :--- | :--- | :--- | :--- |
-| **Linting TypeScript** | `npm run lint` (`tsc --noEmit`) | ✅ **Superato (0 errori)** | Tipi, interfacce e componenti perfettamente allineati. |
-| **Compilazione Applet Vite** | `compile_applet` (`npm run build`) | ✅ **Superato** | Bundle di produzione generato con successo. |
-| **Importazione Moduli Python** | `python3 -c "import pg_arca.*"` | ✅ **Superato (10/10 moduli)** | Tutti i moduli della libreria Unix importati senza dipendenze mancanti. |
-| **Sintassi Script Bash** | `bash -n unix-agent/install-agent.sh`<br>`bash -n unix-agent/pg-arca-cli` | ✅ **Superato** | Sintassi Bash e direttive `set -euo pipefail` pienamente conformi. |
-| **CLI Status Fallback** | `./unix-agent/pg-arca-cli status` | ✅ **Superato** | Risposta JSON strutturata con nodi e istanze Postgres. |
-| **CLI WAL Continuity Check** | `./unix-agent/pg-arca-cli wal-check` | ✅ **Superato** | Verifica continuità a 0 gap certificata da filesystem. |
-| **CLI Discovery Engine** | `./unix-agent/pg-arca-cli discover` | ✅ **Superato** | Rilevamento completo cluster Patroni e porte aperte. |
-
----
-
-## 📌 4. Prossimi Obiettivi & Roadmap
-1. Riadattamento visivo e organizzativo delle schede nella dashboard principale per uniformare l'intero applicativo al design system ad alta densità del Discovery Engine.
-2. Integrazione di finestre intelligenti con monitoraggio live per lag di replica Patroni e statistiche di deduplicazione CAS.
-3. Mantenimento e aggiornamento costante di questo tracker a ogni iterazione successiva.
+## Da fare
+0. Ancora da progettare/misurare (richiedono il lab): interfaccia di storage e S3/GCS/Azure, pack file per ridurre i file piccoli, archiviazione WAL asincrona, riassunti WAL di PG17, benchmark contro pgBackRest (`tools/lab/bench.sh`, mai eseguito).
+1. Provare `direct.ts`, `logs.ts` e `netscan.ts` con `npm install` su una macchina con rete.
+2. Provare HA e parametri su un cluster Patroni reale.
+3. Provare "promuovi tabella" dalla UI contro un agent reale (l'agent è provato su PG16).
+4. Benchmark contro pgBackRest prima di qualsiasi affermazione di velocità.
+5. LDAP/AD, RBAC: oggi anteprima. Poi: restyling grafico.
+6. Integrare i documenti di progetto v1.0–v1.2 (non presenti nel repository).

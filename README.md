@@ -1,143 +1,114 @@
-# pg_arca — PostgreSQL Physical Resilient Archiver & Enterprise Cluster Manager
-=============================================================================
+# pg_arca
 
-**pg_arca** è la suite aziendale completa per l'amministrazione, il backup fisico a livello di pagina (block-level CAS deduplication), il ripristino chirurgico granulare (**Granular PITR** a zero downtime), l'orchestrazione ad alta disponibilità (**Patroni 3-node HA & etcd3**) e l'auto-rilevamento intelligente dell'infrastruttura Unix.
+Console e agent per **backup, ripristino a un istante preciso (PITR) e gestione dei cluster PostgreSQL**.
 
----
+- **Console web** (Node/Express + React): inventario cluster, nodi, alta affidabilità (Patroni), parametri, backup, ripristino, registro attività.
+- **Agent Unix** (Python 3.6+, solo libreria standard): gira sul server del database, apre la connessione verso la console (nessuna porta in ingresso), esegue le operazioni e contiene il motore di backup/ripristino.
 
-## 📑 Indice dei Contenuti
-1. [Architettura Generale](#-1-architettura-generale)
-2. [Guida Installazione Lato Macchina Unix / Ubuntu](#-2-guida-installazione-lato-macchina-unix--ubuntu)
-3. [Guida Installazione Piattaforma Web & Backend](#-3-guida-installazione-piattaforma-web--backend)
-4. [Guida Creazione Cluster Patroni 3 Nodi su KVM / Ubuntu VM](#-4-guida-creazione-cluster-patroni-3-nodi-su-kvm--ubuntu-vm)
-5. [Riferimento Comandi CLI (`pg-arca-cli`)](#-5-riferimento-comandi-cli-pg-arca-cli)
-6. [Guida Operativa Granular Point-In-Time Recovery (PITR)](#-6-guida-operativa-granular-point-in-time-recovery-pitr)
-7. [Tracciamento delle Funzionalità & Test](#-7-tracciamento-delle-funzionalità--test)
+> Questo documento descrive **ciò che esiste ed è stato eseguito**. Le parti non ancora reali sono elencate esplicitamente in [Stato](#stato-reale-delle-funzioni).
 
----
+## Stato reale delle funzioni
 
-## 🏛️ 1. Architettura Generale
+| Area | Stato | Come è stato verificato |
+| --- | --- | --- |
+| Collegamento cluster con agent (token monouso, iscrizione, heartbeat, long-poll) | Funziona | Test end-to-end agent↔console su HTTP con le route reali |
+| Collegamento cluster **senza** agent (connessione PostgreSQL, Patroni REST opzionale) | Scritto, **mai eseguito contro un PostgreSQL reale** (il pacchetto `pg` non è installabile nell'ambiente di sviluppo) | Solo test con stub: provarlo prima di fidarsene |
+| Operazioni (idempotency-key, lease, ri-consegna, TTL, annullamento, corsie controllo/dati) | Funziona | `tests/server/ops.test.ts`, `api.test.ts` |
+| Backup completo / differenziale / incrementale a livello di pagina, deduplica, verifica di ogni blocco in lettura | Funziona | 15 test su **PostgreSQL 16 reale** (`unix-agent/tests/test_engine_pg.py`) |
+| Ripristino istanza con PITR (tempo / LSN / xid / nome), verifica copertura WAL prima di partire | Funziona | idem |
+| Ripristino di **un database** (estrae solo i suoi file) e di **una tabella** (in database di quarantena) | Funziona | idem |
+| Prova di ripristino (recupera davvero l’ultimo backup in un’istanza temporanea) | Funziona | idem |
+| Pulizia (retention, garbage collection dei blocchi, WAL) | Funziona | idem |
+| Ricerca DROP/TRUNCATE nei WAL (`pg_waldump`) | Funziona | idem |
+| Pianificazione backup (idempotente, back-off, retention, verifica periodica) | Funziona | `tests/server/scheduler.test.ts` |
+| Alta affidabilità: switchover, failover, riavvio membro, manutenzione (Patroni) | Scritto con precondizioni e verifica dell’effetto; **mai provato su un cluster Patroni reale** | Test con Patroni simulato |
+| Parametri (`ALTER SYSTEM` + reload) | Scritto; provato con psql simulato | `unix-agent/tests` |
+| Interfaccia web | Funziona nel browser (Chromium) con agent simulato | `tests/ui/e2e.cjs` |
+| Strategie di backup per cartella / ambiente / cluster (modelli suggeriti e personalizzati, ereditarietà) | Funziona: risolte a ogni tick dello scheduler, nessuna copia | `tests/server/policies.test.ts`, `tests/ui/e2e.cjs` |
+| Gestione pg_hba (Patroni DCS o file, simulazione anti lock-out, verifica con `pg_hba_file_rules`, rollback) | Agent provato su PostgreSQL 16 reale; **DCS Patroni mai provato su un cluster reale** | `unix-agent/tests/test_hba*.py`, `tests/server/hba.test.ts`, `tests/ui/hbalogic.test.ts` |
+| Assistente HBA nella UI (duplicati, regole oscurate, ordine, descrizioni, modelli) | Funziona nel browser con agent simulato | `tests/ui/e2e.cjs` |
+| Rilevamento: consigli dell'agent e differenze tra nodi | Funziona | `tests/server/discovery.test.ts`, `unix-agent/tests/test_discovery_advisor.py` |
+| Riporta una tabella ripristinata nel database (`as_new` / `replace`, non distruttivo) | Agent provato su PG16; | `test_engine_pg.py` |
+| Tuning guidato (RAM/core dell'agent + carico → parametri, applicati con `pg_set_param`) | Funziona; regole generali di dimensionamento, non misure | `tests/ui/tuning.test.ts` |
+| Utenti e ruoli (amministratore / operatore / sola lettura), sessioni revocate al cambio ruolo | Funziona; negazione per default su ogni rotta che modifica | `tests/server/rbac.test.ts` |
+| Cifratura del repository (AES-256-GCM su blocchi, manifest, cataloghi e archivio WAL; identificativi dei blocchi con chiave; chiave fuori dal repository) | Funziona; provata con l'intera suite su PG16 con repository cifrato (`PG_ARCA_TEST_ENCRYPT=1`). Un repository esistente non si cifra sul posto: ne serve uno nuovo. Richiede il pacchetto Python `cryptography`. File `.history`/label dei WAL restano in chiaro | `unix-agent/tests/test_crypto.py`, `test_engine_pg.py` |
+| Recupero di singole righe (confronto per chiave primaria tra tabella ripristinata e attuale, copia di sicurezza, una sola transazione) | Agent provato su PG16; UI provata con agent simulato | `test_engine_pg.py::test_06b0`, `tests/ui/e2e.cjs` |
+| Prova di disaster recovery (ripristina l'intero cluster in scratch, lo avvia, controlla ogni database, misura il tempo) | Provata su PG16 (cluster di test piccolo): il tempo misurato vale per quel server e volume di dati | `test_engine_pg.py::test_06x` |
+| Pagina «Oggi»: problemi con causa e passo successivo (backup mancanti/vecchi, buchi WAL, archiviazione che fallisce, slot inattivi, repliche in ritardo, dischi, connessioni, verifica/drill in ritardo) | Funziona sulla telemetria; soglie generali, non tarate | `tests/server/health.test.ts` |
+| Notifiche webhook (JSON o testo Slack/Teams): nuovo problema, promemoria, risolto; ritenta dopo un errore; l'URL non torna mai al browser | Funziona (provato contro un server HTTP locale); **non provato contro Slack/Teams reali; niente email** | `tests/server/health.test.ts` |
+| Approvazione a due persone per ambiente (pg_hba, parametri, HA, sostituzione tabella, recupero righe) | Funziona; richiede almeno due amministratori attivi | `tests/server/approvals.test.ts` |
+| HBA: adozione delle regole esistenti nel blocco gestito (ordine di valutazione invariato) e regole temporanee con scadenza | Agent provato su PG16; scadenza guidata dallo scheduler; **non disponibili su Patroni (DCS)** | `test_hba_pg.py::test_5`, `tests/server/hba.test.ts` |
+| LDAP/AD | **Anteprima**: visibile e marcata, senza funzione dietro | — |
+| Velocità rispetto a pgBackRest | **Mai misurata**: nessuna affermazione | — |
 
-La soluzione si compone di tre livelli sinergici:
-1. **pg_arca Unix Node Agent (`/unix-agent`)**:
-   - Demone residente in Python 3 su porta locale `9898` (servizio systemd `pg-arca-agent.service`).
-   - Gestore continuità registri WAL con archiviazione atomica ad alta velocità e compressione (Zstd/LZ4).
-   - Content-Addressable Storage (CAS) con deduplicazione dei blocchi su filesystem e storage object/NFS.
-   - Motore di ripristino selettivo granulare (database singolo, schema o tabella) senza sovrascrivere l'intero cluster.
-   - Discovery Engine intelligente per il rilevamento automatico di percorsi e cluster su macchine Unix.
-2. **pg_arca Control Plane Backend (`server.ts`)**:
-   - Server full-stack Node.js / Express con API REST enterprise per inventario multi-cluster, storico audit immutabile e coordinamento policy.
-   - Cache store ad alte prestazioni con sincronizzazione bidirezionale con i nodi fisici.
-3. **pg_arca Web Console (`src/App.tsx`)**:
-   - Console reattiva single-page con Command Palette globale (`⌘K` / `Ctrl+K`), visualizzatore diff di configurazione multi-nodo, studio temporale 30 giorni e ispettore di sicurezza dei registri WAL.
+Limiti noti: il ripristino di una tabella non include chiavi esterne, viste, sequenze; i backup da standby richiedono `archive_mode=always`; gli incrementali richiedono `data_checksums` o `wal_log_hints`; backup e ripristino richiedono l’agent sul server.
 
----
+## Architettura
 
-## 🐧 2. Guida Installazione Lato Macchina Unix / Ubuntu
+```
+Browser ──HTTPS──> Console (server.ts) <──HTTPS (solo uscente)── Agent (su ogni nodo) ── psql / pg_ctl / Patroni REST
+                      │  store.json (atomico)                         │  repository: cas/ + stanza/<cluster>/backup/<set>/
+                      └─ operazioni, audit, scheduler                 └─ archivio WAL condiviso (write-once, fsync)
+```
 
-### Requisiti di Sistema
-- **Sistema Operativo**: Ubuntu Server 20.04 LTS, 22.04 LTS o 24.04 LTS.
-- **PostgreSQL**: Versioni supportate 14, 15, 16 o 17.
-- **Python**: Python 3.8+ con modulo `venv` e `pip`.
-- **Utente di sistema**: `postgres` (UID convenzionale 26 o 1001).
+- **Repository**: archivio *content-addressed* — blocchi da 64 KiB, hash blake2b-256 verificato a ogni lettura, compressione zstd/zlib. Ogni backup è un manifesto di `[offset, lunghezza, hash]`; i blocchi uguali si memorizzano una volta sola.
+- **Incrementali**: si confrontano le LSN di pagina (solo file principali; FSM/VM e altri fork interi). La catena viene validata prima di partire, altrimenti il backup diventa completo.
+- **Sicurezza dei backup**: i blocchi scritti attorno a un’esecuzione interrotta vengono riverificati prima della deduplica; un solo `sync` prima del commit del backup; la garbage collection ha 48 h di tolleranza.
+- **Ripristino**: non scrive mai nella data directory in uso (percorsi protetti, controllo dei symlink, mai come root). I database ripristinati prendono sempre un **nome nuovo**; una tabella arriva in un database di **quarantena**; in caso di errore ciò che è stato creato viene eliminato. L’istanza temporanea usata per il recovery è isolata (nessuna rete, archiviazione spenta, sola lettura).
+- **PITR**: `target_time` richiede il fuso orario; il backup di partenza è il più recente concluso prima dell’istante scelto; la copertura WAL è controllata *prima* di iniziare.
+- **Operazioni**: ogni azione ha una Idempotency-Key; backup e ripristino non vengono mai ripetuti automaticamente dopo un crash; corsia *controllo* (HA, parametri) separata dalla corsia *dati* (backup, ripristino) così un backup di ore non blocca uno switchover.
 
-### Procedura di Installazione Guidata
+## Avvio rapido
 
-1. **Clonazione o trasferimento della cartella `unix-agent` sul nodo:**
-   ```bash
-   sudo mkdir -p /opt/pg-arca
-   sudo chown -R $(whoami):$(whoami) /opt/pg-arca
-   # Copia i file da unix-agent/ verso /opt/pg-arca/
-   cp -r unix-agent/* /opt/pg-arca/
-   cd /opt/pg-arca
-   ```
+Console (serve Node 20+):
 
-2. **Esecuzione dell'installer con Auto-Discovery:**
-   Lo script esegue automaticamente la scansione della macchina, individua l'istanza PostgreSQL, l'eventuale configurazione Patroni in `/etc/patroni` e genera la configurazione personalizzata:
-   ```bash
-   chmod +x install-agent.sh pg-arca-cli
-   sudo ./install-agent.sh
-   ```
-
-   Durante l'esecuzione, lo script:
-   - Crea le directory `/var/lib/pg-arca/repo` (CAS Storage), `/var/lib/postgresql/wal_archive` (Continuous WAL Archive) e `/var/log/pg-arca`.
-   - Genera il file `/etc/pg-arca/agent.conf` con un token crittografico univoco.
-   - Configura il wrapper `/usr/local/bin/pg-arca-wal-archive.sh`.
-   - Installa e abilita il servizio systemd `pg-arca-agent.service`.
-
-3. **Verifica dello Stato del Demone:**
-   ```bash
-   sudo systemctl status pg-arca-agent
-   # Test con la CLI
-   /opt/pg-arca/pg-arca-cli status
-   /opt/pg-arca/pg-arca-cli wal-check
-   ```
-
-4. **Collegamento con PostgreSQL (`postgresql.conf` o `patroni.yml`):**
-   Aggiungere nel file di configurazione PostgreSQL dell'istanza o nel modello bootstrap di Patroni:
-   ```ini
-   wal_level = replica
-   archive_mode = on
-   archive_command = '/usr/local/bin/pg-arca-wal-archive.sh %p %f'
-   archive_timeout = 60
-   restore_command = '/opt/pg-arca/pg-arca-cli wal-get %f %p'
-   ```
-   Ricaricare la configurazione:
-   ```bash
-   sudo -u postgres psql -c "SELECT pg_reload_conf();"
-   ```
-
----
-
-## 🌐 3. Guida Installazione Piattaforma Web & Backend
-
-### Requisiti
-- **Node.js**: Versione 18.x, 20.x o successiva.
-- **NPM**: Versione 9.x+.
-
-### Avvio in Ambiente di Sviluppo & Test
 ```bash
-# 1. Installazione pacchetti
 npm install
-
-# 2. Controllo coerenza tipi e sintassi
-npm run lint
-
-# 3. Avvio server integrato (Backend Express + Frontend Vite su porta 3000)
-npm run dev
+npm test                 # suite TypeScript + test Python dell’agent
+npm run dev              # http://localhost:3000 — il primo accesso crea l’amministratore
+# produzione: npm run build && NODE_ENV=production tsx server.ts
 ```
-La console risponderà su `http://localhost:3000` (o sull'indirizzo IP della macchina).
 
-### Deploy in Produzione con Systemd & Nginx Reverse Proxy
+Variabili: `PORT`, `PG_ARCA_DATA_DIR` (stato persistente, default `./data`), `PG_ARCA_ADMIN_USER` / `PG_ARCA_ADMIN_PASSWORD` (creazione non interattiva dell’amministratore). Metti la console dietro un reverse proxy TLS.
+
+Agent: dalla console, **Cluster → Collega cluster → Con agent**, copia il comando e lancialo come root sul server. L’installer rileva PostgreSQL/Patroni, crea utente, directory e servizio systemd. Poi, sul primario, abilita l’archiviazione WAL (la scheda Backup mostra le righe esatte):
+
+```ini
+wal_level = replica
+archive_mode = on
+archive_command = '/usr/local/bin/pg-arca-wal archive %p %f'
+```
+
+Il primo backup deve essere completo; poi attiva la pianificazione dalla scheda Backup.
+
+## Riga di comando (sul nodo)
+
 ```bash
-# 1. Compilazione del frontend
-npm run build
-
-# 2. Configurazione file di avvio systemd per la web app (/etc/systemd/system/pg-arca-web.service)
-sudo tee /etc/systemd/system/pg-arca-web.service > /dev/null << 'EOF'
-[Unit]
-Description=pg_arca Enterprise Control Plane & Web Suite
-After=network.target
-
-[Service]
-Type=simple
-User=postgres
-WorkingDirectory=/opt/pg-arca-web
-ExecStart=/usr/bin/node /opt/pg-arca-web/dist/server.js
-Restart=always
-RestartSec=5
-Environment=NODE_ENV=production
-Environment=PORT=3000
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now pg-arca-web
+pg-arca-cli status                    # telemetria locale
+pg-arca-cli discover                  # rilevamento reale di PostgreSQL, Patroni, etcd, pgbouncer, pgBackRest
+pg-arca-cli wal-check                 # continuità archivio WAL (exit 3 se ci sono buchi)
+pg-arca-cli backup --type full        # full | diff | incr
+pg-arca-cli info                      # backup, intervallo WAL, deduplica
+pg-arca-cli verify [--deep] [--restore-test]
+pg-arca-cli expire [--dry-run]
+pg-arca-cli forensics                 # DROP/TRUNCATE nei WAL
+pg-arca-cli restore database --db billing --target-time '2026-10-08 11:42:00+02' --rename billing_pitr
+pg-arca-cli restore object --object billing.public.invoices --target-time '2026-10-08 11:42:00+02'
+pg-arca-cli restore instance --destination /var/lib/postgresql/restore --target-time '2026-10-08 11:42:00+02' [--dry-run]
 ```
 
----
+## Sviluppo e test
+
+| Cosa | Comando |
+| --- | --- |
+| Server (ops, vista, API, scheduler) | `tsx tests/server/<nome>.test.ts` |
+| Agent (WAL, esecutore, e2e con la console) | `cd unix-agent && python3 -m unittest discover -s tests -t .` |
+| Motore con PostgreSQL 16 reale | come utente **non root** (PostgreSQL rifiuta root): `su postgres -c 'cd unix-agent && python3 -m unittest tests.test_engine_pg'` — salta da solo se manca PostgreSQL o se sei root |
+| Interfaccia nel browser | `esbuild src/main.tsx --bundle --outfile=<dir>/app.js --loader:.css=css --jsx=automatic`, poi `tsx tests/ui/devserver.ts 5188 <dir>` e `node tests/ui/e2e.cjs` (Playwright; il server di test usa le route reali con un agent simulato — solo per i test) |
+
+## Guida: cluster Patroni di prova a 3 nodi
+
+> Procedura di laboratorio ereditata dalla prima versione del progetto: **non è stata rieseguita** durante il rifacimento. Verifica versioni e percorsi prima di usarla.
 
 ## 🚀 4. Guida Creazione Cluster Patroni 3 Nodi su KVM / Ubuntu VM
 
@@ -332,66 +303,6 @@ sudo patronictl -c /etc/patroni/patroni.yml list
 
 ---
 
-## 🛠️ 5. Riferimento Comandi CLI (`pg-arca-cli`)
-
-La CLI interagisce automaticamente con il demone locale (o esegue il fallback diagnostico diretto se offline):
-
-```bash
-# 1. Ispezione stato nodo, ruolo DCS e LSN
-pg-arca-cli status
-
-# 2. Controllo salute e continuità dell'archivio WAL (0 Gap Check)
-pg-arca-cli wal-check
-
-# 3. Scansione deep di auto-rilevamento configurazioni e cluster
-pg-arca-cli discover
-
-# 4. Creazione backup blocco-deduplicato CAS
-pg-arca-cli backup --scope sparse --database billing --type incremental
-
-# 5. Lista backup disponibili nel catalogo
-pg-arca-cli list-backups
-
-# 6. Ripristino chirurgico non distruttivo (Granular PITR Sandbox)
-pg-arca-cli restore \
-  --scope object \
-  --database billing \
-  --schema public \
-  --tables invoices \
-  --target-time "2026-10-08T11:42:00Z" \
-  --mode clone \
-  --clone-name invoices_pitr_recovered
-
-# 7. Hot reload sicuro configurazioni senza stop del servizio
-pg-arca-cli reload
-
-# 8. Switchover controllato del nodo leader Patroni
-pg-arca-cli switchover pg-node-02
-```
-
----
-
-## ⏱️ 6. Guida Operativa Granular Point-In-Time Recovery (PITR)
-
-### Scenario Tipico: TRUNCATE o DELETE accidentale su tabella di produzione
-
-1. **Apertura Studio PITR**:
-   Dalla web UI o tramite `pg-arca-cli`, selezionare il cluster (`cluster-prod-emea`) e accedere alla scheda **Granular PITR Studio**.
-2. **Scelta Ambito Chirugico**:
-   Selezionare `Oggetto Singolo (Tabella)` o `Singolo Database (Sparse OID)` per evitare di dover ripristinare i centinaia di gigabyte dell'intero cluster.
-3. **Selezione delle Coordinate Temporali Immutabili**:
-   - Scegliere il punto temporale esatto prima dell'incidente (es. `2026-10-08T11:42:00Z`).
-   - L'Ispettore WAL mostra il file esatto da riprodurre (`00000001000000000000002E`). **Il nome è rigidamente bloccato e protetto da manomissioni.**
-4. **Modalità Sandbox Isolato (Consigliata)**:
-   - Specificare il nome della tabella o database di destinazione clonato (`invoices_recovered`).
-   - `pg_arca` estrae solo i blocchi e i segmenti WAL necessari, materializza la sandbox separata e permette ai DBA di verificare i dati prima di qualsiasi DDL.
-5. **Modalità In-Place con Safety Snapshot & Rollback**:
-   - Se eseguito in-place, `pg_arca` crea automaticamente uno snapshot binario preventivo di salvataggio.
-   - In caso di anomalie o discrepanze, è disponibile il tasto **Rollback Istantaneo a 1-Click** per ritornare allo stato esatto pre-ripristino.
-
----
-
-## 📊 7. Tracciamento delle Funzionalità & Test
-
-Per consultare la cronologia dettagliata di tutte le feature implementate, la matrice dei test superati e la tracciabilità delle modifiche, fare riferimento al file dedicato:
-👉 **[PROJECT_TRACKER.md](./PROJECT_TRACKER.md)**
+## Documenti correlati
+- [HANDOFF.md](./HANDOFF.md): stato del lavoro e come riprenderlo.
+- [PROJECT_TRACKER.md](./PROJECT_TRACKER.md): registro dei componenti, dei test e delle decisioni.
