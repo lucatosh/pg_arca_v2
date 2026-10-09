@@ -9,6 +9,7 @@ import { BackupTab } from './Backup';
 import { RestoreTab } from './Restore';
 import { LogsTab } from './Logs';
 import { HbaTab } from './Hba';
+import { ProtectionRibbon } from './Ribbon';
 
 export const TAB_ITEMS: { id: string; label: string; icon?: string; preview?: boolean; agent?: boolean }[] = [
   { id: 'overview', label: 'Panoramica', icon: 'layers' }, { id: 'nodes', label: 'Nodi', icon: 'server' }, { id: 'ha', label: 'Alta affidabilità', icon: 'swap' },
@@ -42,6 +43,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
         <p className="sub">{c.environment} · PostgreSQL {c.pgVersion || '—'} · timeline {c.activeTimeline || '—'}</p></div>
       <Button icon="trash" onClick={() => setDetach(true)}>Scollega</Button></div>
     {c.isSandbox ? <Banner kind="info" title="Cluster demo">Dati di esempio: le operazioni non vengono eseguite. Puoi eliminarlo quando hai collegato un cluster reale.</Banner> : null}
+    {agentic ? <ProtectionRibbon c={c} /> : null}
     <Tabs value={cur} onChange={t => go(`c/${encodeURIComponent(id)}/${t}`)} items={TAB_ITEMS.map(t => ({ id: t.id, label: t.label, icon: t.icon, preview: t.preview }))} />
     {cur === 'overview' && <Overview c={c} agentic={agentic} />}
     {cur === 'nodes' && <Nodes c={c} />}

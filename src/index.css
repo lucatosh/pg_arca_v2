@@ -179,3 +179,24 @@ pre.out { background: var(--surface-2); border: 1px solid var(--line); padding: 
 .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline dotted; }
 
 .hr { height: 1px; background: var(--line); margin: 6px 0; }
+
+/* ---- visual pass: calmer surfaces, number-forward KPIs, protection ribbon ---- */
+:root { --bg: #eef1f3; --radius: 8px; --ribbon-none: repeating-linear-gradient(135deg, transparent 0 3px, var(--line) 3px 4px); --now: #e0701f; }
+:root[data-theme="dark"] { --bg: #0b1218; --now: #f0883a; }
+.card { border-color: transparent; box-shadow: var(--shadow); }
+.card > .hd { border-bottom-color: var(--line); background: transparent; }
+.card > .hd h2 { font-size: 14px; letter-spacing: 0; color: var(--ink-2); font-weight: 600; }
+.kpi .v { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
+.kpi .l { color: var(--ink-3); font-size: 12.5px; }
+h1 { font-size: 26px; letter-spacing: -0.02em; font-weight: 650; }
+.side .navbtn[aria-current="page"], .side .citem[aria-current="page"] { box-shadow: inset 2px 0 0 var(--now); }
+.tabs button[aria-selected="true"] { color: var(--accent); }
+.ribbon { display: block; width: 100%; margin: 14px 0 6px; padding: 12px 14px 10px; border: 0; border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.ribbon:hover { outline: 2px solid var(--accent-soft); }
+.ribbon .cells { display: grid; grid-template-columns: repeat(30, 1fr); gap: 3px; height: 30px; }
+.ribbon .cells i { border-radius: 3px; background: var(--ribbon-none); box-shadow: inset 0 0 0 1px var(--line); }
+.ribbon .cells i.full { background: var(--accent); box-shadow: none; } .ribbon .cells i.diff { background: color-mix(in srgb, var(--accent) 62%, var(--surface)); box-shadow: none; } .ribbon .cells i.incr { background: color-mix(in srgb, var(--accent) 32%, var(--surface)); box-shadow: none; }
+.ribbon .cells i.today { box-shadow: 0 2px 0 0 var(--now); }
+.ribbon .wal { height: 3px; margin-top: 5px; border-radius: 2px; background: var(--line); } .ribbon .wal.ok { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 25%, transparent), var(--accent)); } .ribbon .wal.bad { background: repeating-linear-gradient(90deg, var(--bad) 0 12px, transparent 12px 18px); }
+.ribbon .cap { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 13px; flex-wrap: wrap; }
+@media (prefers-reduced-motion: no-preference) { .ribbon .cells i.today { animation: nowpulse 2.4s ease-in-out infinite; } @keyframes nowpulse { 50% { box-shadow: 0 2px 0 0 transparent; } } }
