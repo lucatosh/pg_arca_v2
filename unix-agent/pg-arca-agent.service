@@ -1,0 +1,20 @@
+[Unit]
+Description=pg_arca Enterprise Node Agent Daemon
+After=network.target patroni.service postgresql.service
+Wants=patroni.service
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+Environment=PG_ARCA_PORT=9898
+Environment=PATRONI_URL=http://127.0.0.1:8008
+Environment=WAL_ARCHIVE_DIR=/var/lib/postgresql/wal_archive
+ExecStart=/usr/bin/python3 /usr/local/bin/pg-arca-agent.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

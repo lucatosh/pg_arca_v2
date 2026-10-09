@@ -1,0 +1,8 @@
+{
+  "name": "Remix pg_arca",
+  "description": "Imported from GitHub: lucatosh/pg_arca",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
