@@ -44,6 +44,7 @@ services:
     container_name: pg1
     init: true
     environment:
+      PATRONICTL_CONFIG_FILE: /etc/patroni.yml
       NODE: pg1
       PG_SUPER_PASSWORD: ${PG_SUPER_PASSWORD}
       PG_REPL_PASSWORD: ${PG_REPL_PASSWORD}
@@ -67,6 +68,7 @@ services:
     container_name: pg2
     init: true
     environment:
+      PATRONICTL_CONFIG_FILE: /etc/patroni.yml
       NODE: pg2
       PG_SUPER_PASSWORD: ${PG_SUPER_PASSWORD}
       PG_REPL_PASSWORD: ${PG_REPL_PASSWORD}
@@ -90,6 +92,7 @@ services:
     container_name: pg3
     init: true
     environment:
+      PATRONICTL_CONFIG_FILE: /etc/patroni.yml
       NODE: pg3
       PG_SUPER_PASSWORD: ${PG_SUPER_PASSWORD}
       PG_REPL_PASSWORD: ${PG_REPL_PASSWORD}

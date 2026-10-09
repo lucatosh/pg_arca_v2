@@ -81,7 +81,7 @@ fi
 [[ -f $LAB_HOME/.gitconfig ]] || as_user touch "$LAB_HOME/.gitconfig"   # bind-mounted into the nodes
 if [[ $ALL == 1 ]]; then
   log "console (systemd) + lab up + smoke"
-  ( cd "$LAB_DIR" && as_user npm install --no-audit --no-fund )
+  ( cd "$LAB_DIR" && as_user npm install --no-audit --no-fund && as_user npx vite build )   # UI bundle: production mode serves dist/
   cat > /etc/systemd/system/pg-arca-console.service <<UNIT
 [Unit]
 Description=pg_arca web console (lab)
