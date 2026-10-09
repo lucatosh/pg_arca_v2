@@ -52,7 +52,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
     {cur === 'operations' && <Operations c={c} />}
     {cur === 'logs' && <LogsTab c={c} />}
     {PREVIEW_TEXT[cur] ? <Preview title={TAB_ITEMS.find(t => t.id === cur)!.label}>{PREVIEW_TEXT[cur]}</Preview> : null}
-    {detach ? <Confirm danger title={`Scollegare ${c.name}?`} confirmLabel="Scollega" requireText={c.name} busy={busy} onClose={() => setDetach(false)} onConfirm={doDetach}>
+    {detach ? <Confirm danger title={`Scollegare ${c.name}?`} confirmLabel="Scollega" requireText={c.isSandbox ? undefined : c.name} busy={busy} onClose={() => setDetach(false)} onConfirm={doDetach}>
       <p>La console smette di gestire questo cluster, revoca gli agent e annulla le operazioni in coda. <strong>I dati e i backup sul server non vengono toccati.</strong></p></Confirm> : null}
   </>;
 }
