@@ -182,6 +182,43 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(plan["rows_restored"], 500)
         self.assertEqual(int(q("stage_customers", "SELECT count(*) FROM public.customers")[0][0]), 500)
 
+    def test_06b0_row_level_recovery(self):
+        from pg_arca.engine.granular import diff_object, apply_rows
+        import json
+        q("app", "CREATE TABLE customers(id int primary key, name text); INSERT INTO customers SELECT g,'live'||g FROM generate_series(1,5) g")
+        try:
+            d = diff_object(F.ctx, "stage_customers", "app.public.customers")
+            self.assertEqual(d["primary_key"], ["id"])
+            self.assertEqual(d["counts"]["missing_now"], 495)          # 500 recovered rows, ids 1..5 exist live
+            self.assertEqual(d["counts"]["changed"], 5)
+            self.assertEqual(d["counts"]["added_since"], 0)
+            q("app", "INSERT INTO customers VALUES (900,'new')")
+            d = diff_object(F.ctx, "stage_customers", "app.public.customers", limit=3)
+            self.assertEqual(d["counts"]["added_since"], 1); self.assertEqual(len(d["missing_now"]), 3)
+            self.assertEqual(d["added_since"][0]["key"], [900])
+            ch = d["changed"][0]
+            self.assertEqual(ch["live"]["name"], "live%d" % ch["key"][0]); self.assertNotEqual(ch["restored"]["name"], ch["live"]["name"])
+            # dry run touches nothing
+            r0 = apply_rows(F.ctx, "stage_customers", "app.public.customers", restore_keys=["[1]", "[200]"], delete_keys=["[900]"], dry_run=True)
+            self.assertEqual((r0["inserted"], r0["updated"], r0["deleted"]), (1, 1, 1))
+            self.assertEqual(int(q("app", "SELECT count(*) FROM customers")[0][0]), 6)
+            r = apply_rows(F.ctx, "stage_customers", "app.public.customers", restore_keys=["[1]", "[200]"], delete_keys=["[900]"])
+            self.assertEqual((r["inserted"], r["updated"], r["deleted"]), (1, 1, 1))
+            self.assertEqual(int(q("app", "SELECT count(*) FROM customers")[0][0]), 6)        # 5 + 1 inserted - 1 deleted
+            self.assertNotEqual(q("app", "SELECT name FROM customers WHERE id=1")[0][0], "live1")
+            self.assertEqual(q("app", "SELECT name FROM %s WHERE id=1" % r["safety_copy"])[0][0], "live1", "previous version kept")
+            self.assertEqual(q("app", "SELECT name FROM customers WHERE id=900"), [])
+            self.assertEqual(q("app", "SELECT name FROM %s WHERE id=900" % r["safety_copy"])[0][0], "new")
+            # an unknown key aborts everything, nothing half applied
+            with self.assertRaises(EngineError):
+                apply_rows(F.ctx, "stage_customers", "app.public.customers", restore_keys=["[2]", "[99999]"])
+            self.assertEqual(q("app", "SELECT name FROM customers WHERE id=2")[0][0], "live2")
+            with self.assertRaises(EngineError):
+                apply_rows(F.ctx, "somedb", "app.public.customers", restore_keys=["[2]"])
+            q("app", "DROP TABLE %s" % r["safety_copy"])
+        finally:
+            q("app", "DROP TABLE IF EXISTS customers")
+
     def test_06b_promote_table_back(self):
         r = promote_object(F.ctx, "stage_customers", "app.public.customers", mode="as_new", drop_stage=False)
         self.assertTrue(r["promoted_as"].startswith("public.customers_pitr_")); self.assertIsNone(r["old_kept_as"])

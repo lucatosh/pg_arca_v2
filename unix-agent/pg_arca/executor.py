@@ -74,6 +74,8 @@ class OperationExecutor:
         r("restore_database", self.h_restore_database, False)
         r("restore_object", self.h_restore_object, False)
         r("restore_promote", self.h_restore_promote, False)
+        r("restore_diff", self.h_restore_diff, False)
+        r("restore_apply_rows", self.h_restore_apply_rows, False)
         r("wal_forensics", self.h_forensics, True)
         # pg_hba.conf
         r("hba_read", self.h_hba_read, True)
@@ -435,6 +437,17 @@ class OperationExecutor:
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
         return granular.promote_object(ctx, str(p.get("stage_db")), str(p.get("object")), mode=p.get("mode", "as_new"), drop_stage=bool(p.get("drop_stage", True)), into=p.get("into"))
+
+    def h_restore_diff(self, p):
+        from pg_arca.engine import granular
+        ctx = self._ctx_ro()
+        return granular.diff_object(ctx, str(p.get("stage_db")), str(p.get("object")), into=p.get("into"), limit=min(int(p.get("limit", 200)), 1000))
+
+    def h_restore_apply_rows(self, p):
+        from pg_arca.engine import granular
+        ctx = self._ctx() if not p.get("into") else self._ctx_ro()
+        return granular.apply_rows(ctx, str(p.get("stage_db")), str(p.get("object")), restore_keys=p.get("restore_keys") or [], delete_keys=p.get("delete_keys") or [],
+                                   into=p.get("into"), dry_run=bool(p.get("dry_run")))
 
     def h_forensics(self, p):
         from pg_arca.engine.maintenance import forensics

@@ -66,6 +66,14 @@ function targetErr(p: Record<string, any>): string | null {
   return null;
 }
 const hbaRulesErr = (p: Record<string, any>): string | null => (!Array.isArray(p.rules) || p.rules.length > 200 || p.rules.some((r: any) => !r || typeof r !== 'object')) ? 'rules must be a list of at most 200 objects' : null;
+const stageErr = (p: any) => !/^(pgarca_)?stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : null);
+const keysErr = (p: any) => {
+  for (const f of ['restore_keys', 'delete_keys']) {
+    const v = p[f]; if (v === undefined) continue;
+    if (!Array.isArray(v) || v.length > 50000 || v.some((k: any) => typeof k !== 'string' || k.length > 2000 || !k.startsWith('['))) return f + ' must be a list of JSON-array primary keys (max 50000)';
+  }
+  return (p.restore_keys?.length || p.delete_keys?.length) ? null : 'select at least one row';
+};
 const dataOp = { mutating: true, target: 'any_node' as const, lane: 'data' as const, cancellable: true };
 const intoErr = (p: Record<string, any>) => {
   if (p.into === undefined || p.into === null) return null;
@@ -95,6 +103,8 @@ Object.assign(OP_SPECS, {
   hba_apply:    { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) || (p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
   hba_rollback: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.backup && !/^[\w.\-]{1,100}$/.test(String(p.backup)) ? 'invalid backup name' : null) },
   restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^(pgarca_)?stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : (p.mode && !['as_new', 'replace'].includes(p.mode) ? 'mode must be as_new|replace' : intoErr(p))) },
+  restore_diff:     { ...dataOp, mutating: false, cancellable: false, validate: (p: any) => stageErr(p) || intoErr(p) },
+  restore_apply_rows: { ...dataOp, cancellable: false, validate: (p: any) => stageErr(p) || keysErr(p) || intoErr(p) },
   wal_forensics:    { ...dataOp, mutating: false, validate: () => null },
 } as Record<string, OpSpec>);
 

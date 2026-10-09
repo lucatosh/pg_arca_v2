@@ -380,3 +380,173 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
         return result
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------------------------------------------- row-level recovery
+ROW_DIFF_MAX = 2000000
+
+
+def _table_info(sess, fq):
+    """Primary key columns, the columns we may write (not generated) and whether an identity ALWAYS column needs OVERRIDING."""
+    reg = sess.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit(fq))
+    if reg != "t":
+        return None
+    cols = [r[0] for r in sess.query("SELECT attname FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum" % sql_lit(fq))]
+    gen = set(r[0] for r in sess.query("SELECT attname FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND NOT attisdropped AND attgenerated<>''" % sql_lit(fq)))
+    pk = [r[0] for r in sess.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=ANY(i.indkey) WHERE i.indrelid=%s::regclass AND i.indisprimary ORDER BY array_position(i.indkey::int2[], a.attnum)" % sql_lit(fq))]
+    always = sess.scalar("SELECT count(*)>0 FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND attidentity='a'" % sql_lit(fq)) == "t"
+    return {"cols": cols, "generated": gen, "pk": pk, "identity_always": always}
+
+
+def _keyhash(sess, fq, pk, common):
+    ex = "ARRAY[%s]::text[]" % ",".join(sql_lit(c) for c in common["drop"]) if common["drop"] else "ARRAY[]::text[]"
+    keyexpr = "jsonb_build_array(%s)::text" % ",".join("t.%s" % quote_ident(c) for c in pk)
+    out = {}
+    for r in sess.query("SELECT %s, md5((to_jsonb(t) - %s)::text) FROM %s t" % (keyexpr, ex, fq)):
+        out[r[0]] = r[1]
+    return out
+
+
+def _sample(sess, fq, pk, keys):
+    keyexpr = "jsonb_build_array(%s)::text" % ",".join("t.%s" % quote_ident(c) for c in pk)
+    res = {}
+    for i in range(0, len(keys), 200):
+        part = keys[i:i + 200]
+        for r in sess.query("SELECT %s, to_jsonb(t)::text FROM %s t WHERE %s = ANY(ARRAY[%s])" % (keyexpr, fq, keyexpr, ",".join(sql_lit(k) for k in part))):
+            res[r[0]] = r[1]
+    return res
+
+
+def diff_object(ctx, stage_db, spec, into=None, limit=200):
+    """Compare a table recovered into a quarantine database with the live table (matched on primary key).
+    Returns what exists only in the recovered copy (deleted since), only in the live table (added since) and what changed.
+    Read-only on both sides."""
+    import json
+    parts = (spec or "").split(".")
+    if len(parts) != 3:
+        raise EngineError("PGA-GEN-082", "object must be database.schema.name")
+    dbname, schema, name = parts
+    if not (stage_db or "").startswith(("pgarca_stage_", "stage_")):
+        raise EngineError("PGA-GEN-081", "only quarantine databases created by pg_arca can be compared (name starts with pgarca_stage_)")
+    _check_name(stage_db, "quarantine database")
+    admin = _dest_conn(ctx, into)
+    fq = "%s.%s" % (quote_ident(schema), quote_ident(name))
+    st = PgSession(admin.with_db(stage_db), read_only=True)
+    lv = PgSession(admin.with_db(dbname), read_only=True)
+    try:
+        si, li = _table_info(st, fq), _table_info(lv, fq)
+        if si is None:
+            raise EngineError("PGA-GEN-083", "table %s not found in %s" % (fq, stage_db))
+        if li is None:
+            raise EngineError("PGA-GEN-085", "table %s does not exist in %s any more: use promote to bring it back as a whole" % (fq, dbname))
+        if not si["pk"] or si["pk"] != li["pk"]:
+            raise EngineError("PGA-GEN-086", "row-level comparison needs the same primary key on both sides (restored: %s, live: %s)" % (si["pk"] or "none", li["pk"] or "none"),
+                              "tables without a primary key can only be recovered as a whole (promote)")
+        for s_, label in ((st, "recovered"), (lv, "live")):
+            n = int(s_.scalar("SELECT count(*) FROM %s" % fq))
+            if n > ROW_DIFF_MAX:
+                raise EngineError("PGA-GEN-087", "%s table has %d rows (limit %d for row-level comparison)" % (label, n, ROW_DIFF_MAX), "use promote, or restore into a side table and compare in SQL")
+        common = [c for c in si["cols"] if c in li["cols"]]
+        sdrop = {"drop": [c for c in si["cols"] if c not in common]}
+        ldrop = {"drop": [c for c in li["cols"] if c not in common]}
+        a = _keyhash(st, fq, si["pk"], sdrop)
+        b = _keyhash(lv, fq, li["pk"], ldrop)
+        only_old = sorted(k for k in a if k not in b)
+        only_new = sorted(k for k in b if k not in a)
+        changed = sorted(k for k in a if k in b and a[k] != b[k])
+        out = {"object": spec, "primary_key": si["pk"], "restored_rows": len(a), "live_rows": len(b), "columns_only_in_one_side": sorted(set(si["cols"]) ^ set(li["cols"])),
+               "counts": {"missing_now": len(only_old), "added_since": len(only_new), "changed": len(changed)}, "limit": limit}
+        out["missing_now"] = [{"key": json.loads(k), "restored": json.loads(v)} for k, v in sorted(_sample(st, fq, si["pk"], only_old[:limit]).items())]
+        out["added_since"] = [{"key": json.loads(k), "live": json.loads(v)} for k, v in sorted(_sample(lv, fq, li["pk"], only_new[:limit]).items())]
+        sr, lr = _sample(st, fq, si["pk"], changed[:limit]), _sample(lv, fq, li["pk"], changed[:limit])
+        out["changed"] = [{"key": json.loads(k), "restored": json.loads(sr[k]), "live": json.loads(lr[k])} for k in sorted(sr) if k in lr]
+        return out
+    finally:
+        st.close()
+        lv.close()
+
+
+def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, dry_run=False):
+    """Put selected rows from the quarantine copy back into the live table, in ONE transaction.
+      restore_keys : primary keys (JSON arrays) to insert if missing or overwrite with the recovered version
+      delete_keys  : primary keys (JSON arrays) of rows added after the restore point that should be removed
+    Before touching anything the current version of every affected row is saved in pgarca_rowsafe_<ts>_<table>.
+    Nothing is applied if any key cannot be found or the table definitions differ in a way that makes the copy unsafe."""
+    import json
+    parts = (spec or "").split(".")
+    if len(parts) != 3:
+        raise EngineError("PGA-GEN-082", "object must be database.schema.name")
+    dbname, schema, name = parts
+    if not (stage_db or "").startswith(("pgarca_stage_", "stage_")):
+        raise EngineError("PGA-GEN-081", "only quarantine databases created by pg_arca can be used as source")
+    _check_name(stage_db, "quarantine database")
+    restore_keys, delete_keys = list(restore_keys or []), list(delete_keys or [])
+    if not restore_keys and not delete_keys:
+        raise EngineError("PGA-GEN-088", "no rows selected")
+    if len(restore_keys) + len(delete_keys) > 50000:
+        raise EngineError("PGA-GEN-089", "too many rows for one transaction (max 50000): use promote for large recoveries")
+    for k in restore_keys + delete_keys:
+        try:
+            if not isinstance(json.loads(k), list):
+                raise ValueError()
+        except ValueError:
+            raise EngineError("PGA-GEN-090", "invalid key %r (expected a JSON array of the primary key values)" % (k,))
+    admin = _dest_conn(ctx, into)
+    fq = "%s.%s" % (quote_ident(schema), quote_ident(name))
+    st = PgSession(admin.with_db(stage_db), read_only=True)
+    tg = PgSession(admin.with_db(dbname))
+    try:
+        si, li = _table_info(st, fq), _table_info(tg, fq)
+        if si is None or li is None:
+            raise EngineError("PGA-GEN-083", "table %s must exist both in the quarantine database and in %s" % (fq, dbname))
+        if not li["pk"] or si["pk"] != li["pk"]:
+            raise EngineError("PGA-GEN-086", "primary key differs or is missing (restored: %s, live: %s)" % (si["pk"] or "none", li["pk"] or "none"))
+        writable = [c for c in li["cols"] if c in si["cols"] and c not in li["generated"]]
+        missing = [c for c in li["cols"] if c not in si["cols"] and c not in li["generated"]]
+        if missing and restore_keys:
+            raise EngineError("PGA-GEN-091", "live table has columns that the restored table does not have (%s): rows would lose those values" % ", ".join(missing),
+                              "use promote, or restore only after the columns were removed")
+        keyexpr = "jsonb_build_array(%s)::text" % ",".join("t.%s" % quote_ident(c) for c in li["pk"])
+        rows = _sample(st, fq, si["pk"], restore_keys) if restore_keys else {}
+        absent = [k for k in restore_keys if k not in rows]
+        if absent:
+            raise EngineError("PGA-GEN-092", "%d key(s) not found in the recovered table, e.g. %s" % (len(absent), absent[0]))
+        cur = _sample(tg, fq, li["pk"], restore_keys + delete_keys)
+        will_insert = [k for k in restore_keys if k not in cur]
+        will_update = [k for k in restore_keys if k in cur]
+        will_delete = [k for k in delete_keys if k in cur]
+        res = {"object": spec, "inserted": len(will_insert), "updated": len(will_update), "deleted": len(will_delete),
+               "ignored_delete_keys": len(delete_keys) - len(will_delete), "dry_run": bool(dry_run)}
+        if dry_run:
+            return res
+        ts = now_utc().strftime("%Y%m%d%H%M%S")
+        safe = ("pgarca_rowsafe_%s_%s" % (ts, name))[:63]
+        collist = ",".join(quote_ident(c) for c in writable)
+        setlist = ",".join("%s=EXCLUDED.%s" % (quote_ident(c), quote_ident(c)) for c in writable if c not in li["pk"])
+        ovr = " OVERRIDING SYSTEM VALUE" if li["identity_always"] else ""
+        tg.query("BEGIN")
+        try:
+            touched = [k for k in restore_keys + delete_keys if k in cur]
+            if touched:
+                tg.query("CREATE TABLE %s.%s AS SELECT t.* FROM %s t WHERE %s = ANY(ARRAY[%s])" % (quote_ident(schema), quote_ident(safe), fq, keyexpr, ",".join(sql_lit(k) for k in touched)))
+                res["safety_copy"] = "%s.%s" % (schema, safe)
+            for i in range(0, len(restore_keys), 500):
+                part = restore_keys[i:i + 500]
+                doc = json.dumps([json.loads(rows[k]) for k in part])
+                conflict = ("DO UPDATE SET " + setlist) if setlist else "DO NOTHING"
+                tg.query("INSERT INTO %s (%s)%s SELECT %s FROM jsonb_populate_recordset(NULL::%s, %s::jsonb) ON CONFLICT (%s) %s"
+                         % (fq, collist, ovr, collist, fq, sql_lit(doc), ",".join(quote_ident(c) for c in li["pk"]), conflict))
+            for i in range(0, len(will_delete), 500):
+                part = will_delete[i:i + 500]
+                tg.query("DELETE FROM %s t WHERE %s = ANY(ARRAY[%s])" % (fq, keyexpr, ",".join(sql_lit(k) for k in part)))
+            tg.query("COMMIT")
+        except BaseException:
+            try:
+                tg.query("ROLLBACK")
+            except EngineError:
+                pass
+            raise
+        return res
+    finally:
+        st.close()
+        tg.close()
