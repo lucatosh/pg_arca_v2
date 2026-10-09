@@ -12,7 +12,8 @@ from pg_arca.config import load_config
 from pg_arca.runtime import Runtime, AGENT_VERSION
 from pg_arca.executor import OperationExecutor
 from pg_arca.wal_manager import WalManager
-from pg_arca.cas_engine import CasStore
+from pg_arca.engine.ctx import Ctx
+from pg_arca.engine.summary import RepoSummary
 
 
 def build(args):
@@ -27,7 +28,7 @@ def pj(o): print(json.dumps(o, indent=2, default=str))
 
 
 def cmd_status(a):
-    cfg, rt, wal = build(a); pj(rt.build_snapshot(wal, CasStore(cfg["repo_path"])))
+    cfg, rt, wal = build(a); pj(rt.build_snapshot(wal, RepoSummary(Ctx.from_config(cfg, rt))))
 
 
 def cmd_discover(a):
@@ -53,10 +54,52 @@ def cmd_archive_setup(a):
 
 def cmd_op(a):
     cfg, rt, _ = build(a)
-    ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: rt.refresh())
+    ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: rt.refresh(), runtime=rt)
     oid = a.id or ("op-" + uuid.uuid4().hex[:12])
     st, res, err = ex.execute({"id": oid, "type": a.type, "params": json.loads(a.params or "{}")})
     pj({"id": oid, "status": st, "result": res, "error": err}); return 0 if st == "succeeded" else 1
+
+
+def _run(a, op_type, params):
+    cfg, rt, _ = build(a)
+    ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: rt.refresh(), runtime=rt)
+    ex._tl.op_id = None
+    import sys as _s
+    last = [0]
+
+    def prog(d):
+        import time as _t
+        if _t.time() - last[0] > 2 and _s.stderr.isatty():
+            last[0] = _t.time(); _s.stderr.write("\r  %s %s%%   " % (d.get("phase"), d.get("pct", "")))
+    st, res, err = ex.execute({"id": "op-" + uuid.uuid4().hex[:12], "type": op_type, "params": params})
+    pj({"status": st, "result": res, "error": err}); return 0 if st == "succeeded" else 1
+
+
+def _targets(a):
+    d = {}
+    for k in ("set", "target_time", "target_lsn", "target_xid", "target_name"):
+        if getattr(a, k, None): d[k] = getattr(a, k)
+    if getattr(a, "exclusive", False): d["inclusive"] = False
+    return d
+
+
+def cmd_backup(a): return _run(a, "backup_run", {"type": a.type, "note": a.note or ""})
+def cmd_info(a): return _run(a, "backup_info", {})
+def cmd_verify(a): return _run(a, "backup_verify", {"deep": a.deep, "restore_test": a.restore_test})
+def cmd_expire(a): return _run(a, "backup_expire", {"dry_run": a.dry_run})
+def cmd_forensics(a): return _run(a, "wal_forensics", {"limit": a.limit})
+
+
+def cmd_restore(a):
+    p = _targets(a)
+    if a.scope == "instance":
+        p.update(destination=a.destination, delta=a.delta)
+        return _run(a, "restore_instance" if not a.dry_run else "restore_plan", dict(p, scope="instance") if a.dry_run else p)
+    if a.scope == "database":
+        p.update(database=a.db, new_name=a.rename)
+        return _run(a, "restore_database" if not a.dry_run else "restore_plan", dict(p, scope="database") if a.dry_run else p)
+    p.update(object=a.object, stage_db=a.rename)
+    return _run(a, "restore_object" if not a.dry_run else "restore_plan", dict(p, scope="object") if a.dry_run else p)
 
 
 def cmd_version(a): print("pg-arca-cli / agent %s" % AGENT_VERSION)
@@ -73,6 +116,19 @@ def main():
     o = sub.add_parser("op", help="run one console-style operation locally (same journal & safety checks)")
     o.add_argument("type"); o.add_argument("--params", help="JSON object"); o.add_argument("--id", help="operation id (op-<12 hex>); reuse to get idempotent behaviour")
     o.set_defaults(fn=cmd_op)
+    b = sub.add_parser("backup", help="take a backup (full | diff | incr)"); b.add_argument("--type", default="incr", choices=["full", "diff", "incr"]); b.add_argument("--note"); b.set_defaults(fn=cmd_backup)
+    sub.add_parser("info", help="list backups, WAL range, dedup ratio").set_defaults(fn=cmd_info)
+    v = sub.add_parser("verify", help="verify repository integrity (--deep re-hashes every chunk; --restore-test proves recoverability by recovering)")
+    v.add_argument("--deep", action="store_true"); v.add_argument("--restore-test", action="store_true"); v.set_defaults(fn=cmd_verify)
+    e = sub.add_parser("expire", help="apply retention (sets, unreferenced chunks, WAL)"); e.add_argument("--dry-run", action="store_true"); e.set_defaults(fn=cmd_expire)
+    f = sub.add_parser("forensics", help="find DROP/TRUNCATE events in the WAL archive"); f.add_argument("--limit", type=int, default=20); f.set_defaults(fn=cmd_forensics)
+    r = sub.add_parser("restore", help="restore an instance, a database or one object (optionally to a point in time)")
+    r.add_argument("scope", choices=["instance", "database", "object"])
+    r.add_argument("--destination", help="instance: empty directory (never the live PGDATA)")
+    r.add_argument("--db"); r.add_argument("--object", help="database.schema.name"); r.add_argument("--rename", help="new database name / quarantine database name")
+    r.add_argument("--set"); r.add_argument("--target-time", help="needs a UTC offset, e.g. '2026-07-26 18:34:11+02'"); r.add_argument("--target-lsn")
+    r.add_argument("--target-xid"); r.add_argument("--target-name"); r.add_argument("--exclusive", action="store_true", help="stop just BEFORE the target")
+    r.add_argument("--delta", action="store_true"); r.add_argument("--dry-run", action="store_true", help="show the plan only"); r.set_defaults(fn=cmd_restore)
     sub.add_parser("version").set_defaults(fn=cmd_version)
     a = p.parse_args()
     sys.exit(a.fn(a) or 0)

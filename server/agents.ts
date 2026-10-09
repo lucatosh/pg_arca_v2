@@ -141,13 +141,14 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
   app.post('/api/agent/ops/:id/report', async (req: Request, res: Response) => {
     const node = authNode(store, req);
     if (!node) return res.status(401).json({ error: 'unauthorized' });
-    const { status, result, error } = req.body || {};
+    const { status, result, error, progress } = req.body || {};
     if (!['running', 'succeeded', 'failed'].includes(status)) return res.status(400).json({ error: 'invalid_status' });
-    const r = await ops.report(store, node.id, req.params.id, status, result, error ? String(error).slice(0, 4000) : undefined);
+    const r = await ops.report(store, node.id, req.params.id, status, result, error ? String(error).slice(0, 4000) : undefined, 120,
+      status === 'running' && progress && typeof progress === 'object' ? JSON.parse(JSON.stringify(progress).slice(0, 4000)) : undefined);
     if (r.ok && status === 'succeeded' && r.op?.type === 'discovery_scan' && result && typeof result === 'object') {
       await store.mutate(d => { if (d.nodes[node.id]) { d.nodes[node.id].discovery = result; refreshCluster(d, d.nodes[node.id].clusterId || ''); } });
     }
-    res.status(r.ok ? 200 : 409).json({ ok: r.ok, reason: r.reason, status: r.op?.status });
+    res.status(r.ok ? 200 : 409).json({ ok: r.ok, reason: r.reason, status: r.op?.status, cancel: !!r.cancel });
   });
 }
 
@@ -220,6 +221,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
 
     try {
       if (cluster.source === 'direct') {
+        if (spec.lane === 'data') return res.status(409).json({ error: 'agent_required', message: 'Backup, restore and PITR run on the database host: install the agent on a node of this cluster (agentless attach cannot read the data directory).' });
         if (!deps.directExec) return res.status(501).json({ error: 'direct_not_available' });
         const { op, created } = await ops.runLocal(store, { type, clusterId: cluster.id, params, idempotencyKey: key, createdBy: actorOf(req) },
                                                     () => deps.directExec!(cluster, type, params));

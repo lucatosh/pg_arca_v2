@@ -63,6 +63,8 @@ export interface Operation {
   ttlSeconds: number;         // after this, a still-queued op expires instead of running late
   result?: any;
   error?: string;
+  progress?: any;             // live progress reported by the agent while running (phase, pct, bytes...)
+  cancelRequested?: boolean;  // cooperative cancel of a running data operation
   history: { at: string; status: OpStatus; note?: string }[];
 }
 

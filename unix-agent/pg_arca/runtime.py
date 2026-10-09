@@ -115,7 +115,7 @@ class Runtime(object):
             "node_name": self.config["node_name"], "agent_version": AGENT_VERSION,
             "postgres": pg, "patroni": self.patroni_view(),
             "wal": wal.verify_continuity() if wal else None,
-            "cas": cas.get_stats() if cas else None,
+            "backup": cas.get_stats() if cas else None,
             "system": self.system_metrics({"pgdata": inst.get("data_directory"), "repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir")}),
             "toolchain": self.report.get("toolchain"),
             "cluster_key": inst.get("cluster_key"),

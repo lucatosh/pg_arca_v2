@@ -17,7 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pg_arca.config import load_config, validate
 from pg_arca.runtime import Runtime, LogShipper, AGENT_VERSION
 from pg_arca.executor import OperationExecutor
-from pg_arca.cas_engine import CasStore
+from pg_arca.engine.ctx import Ctx
+from pg_arca.engine.summary import RepoSummary
 from pg_arca.wal_manager import WalManager
 from pg_arca.console_client import ConsoleClient
 from pg_arca.api_server import ThreadingSimpleServer, make_agent_handler
@@ -46,8 +47,14 @@ def main():
 
     wal = WalManager(config["wal_archive_dir"], config.get("compression", "zstd"), config.get("compression_level", 3),
                      ((inst or {}).get("control") or {}).get("wal_segment_size") or 16 * 1024 * 1024)
-    cas = CasStore(config["repo_path"])
-    ex = OperationExecutor(config, rt.db, rt.patroni, discovery=lambda: rt.refresh())
+    class _Summary(object):                 # rebuilt lazily: the PostgreSQL binding may change after re-discovery
+        def get_stats(self_inner):
+            try:
+                return RepoSummary(Ctx.from_config(config, rt)).get_stats()
+            except Exception as e:
+                return {"configured": False, "error": str(e)[:200]}
+    cas = _Summary()
+    ex = OperationExecutor(config, rt.db, rt.patroni, discovery=lambda: rt.refresh(), runtime=rt)
     stop = threading.Event()
     client = None
     mode = config["connection_mode"]

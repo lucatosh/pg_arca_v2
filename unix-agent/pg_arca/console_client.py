@@ -133,7 +133,9 @@ class ConsoleClient(threading.Thread):
                 self._post("/api/agent/ops/%s/report" % op_id, {"status": status, "result": result, "error": error})
                 del self.unreported[op_id]
             else:
-                self._post("/api/agent/ops/%s/report" % op_id, {"status": "running"})   # lease keep-alive
+                r = self._post("/api/agent/ops/%s/report" % op_id, {"status": "running", "progress": self.executor.progress_of(op_id)})   # lease keep-alive + live progress
+                if r.get("cancel"):
+                    self.executor.request_cancel(op_id)
 
         free_slots = max(0, 2 - len(self.inflight))
         wait = 0 if self.inflight or not free_slots else min(8, int(self.config.get("heartbeat_interval_seconds", 10)))

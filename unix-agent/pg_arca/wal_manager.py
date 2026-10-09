@@ -32,6 +32,7 @@ import time
 logger = logging.getLogger("pg_arca.wal_manager")
 
 SEG_RE = re.compile(r"^([0-9A-F]{8})([0-9A-F]{8})([0-9A-F]{8})$")
+BACKUP_LABEL_RE = re.compile(r"^[0-9A-F]{24}\.[0-9A-F]{8}\.backup$")     # e.g. 000000010000000000000003.00000028.backup
 EXIT_NOT_FOUND = 1
 EXIT_CORRUPT = 126      # aborts PostgreSQL recovery (documented behaviour of restore_command)
 
@@ -134,7 +135,7 @@ class WalManager:
     # ------------------------------------------------------------------ archive
     def archive_segment(self, src_path, name):
         """archive_command %p %f. Returns (ok, dest, sha256, message); raises WalArchiveError on refusal."""
-        is_history = name.endswith(".history")
+        is_history = name.endswith(".history") or BACKUP_LABEL_RE.match(name) is not None      # tiny text files: stored readable
         if not (SEG_RE.match(name) or is_history or re.match(r"^[0-9A-F]{24}\.partial$", name)):
             raise WalArchiveError("PGA-WAL-010", "refusing unexpected file name %r" % name)
         if not os.path.isfile(src_path):
@@ -224,6 +225,45 @@ class WalManager:
                     os.unlink(tmp)
                 except OSError:
                     pass
+
+    # ------------------------------------------------------------------ inventory (used by the backup engine)
+    def has_segment(self, name):
+        return self._find(name)[0] is not None
+
+    def list_segments(self):
+        """Sorted list of archived WAL segment base names (no .history/.backup/.partial/.meta)."""
+        out = set()
+        try:
+            names = os.listdir(self.wal_dir)
+        except OSError:
+            return []
+        for n in names:
+            if n.startswith("."):
+                continue
+            base, _, ext = n.partition(".")
+            if SEG_RE.match(base) and (ext == "" or ext in ("zst", "lz4", "gz")):
+                out.add(base)
+        return sorted(out)
+
+    def list_histories(self):
+        try:
+            return sorted(n for n in os.listdir(self.wal_dir) if n.endswith(".history"))
+        except OSError:
+            return []
+
+    def remove_segment(self, name):
+        """Expire one segment (retention only). Meta goes LAST so a crash never leaves an untracked-but-valid object."""
+        path, _ = self._find(name)
+        if path:
+            os.unlink(path)
+        try:
+            os.unlink(os.path.join(self.wal_dir, name + ".meta"))
+        except OSError:
+            pass
+        _fsync_dir(self.wal_dir)
+
+    def read_segment_to(self, name, dest_path):
+        return self.retrieve_segment(name, dest_path)
 
     # ------------------------------------------------------------------ continuity
     def verify_continuity(self, max_age=30):

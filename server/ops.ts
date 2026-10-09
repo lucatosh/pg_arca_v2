@@ -14,6 +14,7 @@
  *  - EXPIRING: a queued op past its TTL is never run late (a switchover requested an hour
  *    ago while the agent was offline must not fire when it reconnects).
  */
+import { laneOf, OP_SPECS } from './optypes';
 import { Store, Operation, OpStatus, AppState, newId, nowIso } from './store';
 
 export const MAX_ATTEMPTS = 5;
@@ -88,15 +89,16 @@ export function lease(store: Store, nodeId: string, max = 1, leaseSeconds = 120,
       }
     }
     // 2. pick, one in-flight per cluster
-    const busy = new Set(draft.operations.filter(o => o.status === 'leased' || o.status === 'running').map(o => o.clusterId));
+    const busy = new Set(draft.operations.filter(o => o.status === 'leased' || o.status === 'running').map(o => `${o.clusterId}:${laneOf(o.type)}`));
     for (const op of draft.operations) {
       if (out.length >= max) break;
       if (op.status !== 'queued' || op.nodeId !== nodeId) continue;
-      if (busy.has(op.clusterId)) continue;
+      const laneKey = `${op.clusterId}:${laneOf(op.type)}`;
+      if (busy.has(laneKey)) continue;
       op.attempts += 1;
       op.leaseUntil = new Date(now + leaseSeconds * 1000).toISOString();
       push(op, 'leased', `attempt ${op.attempts}`);
-      busy.add(op.clusterId);
+      busy.add(laneKey);
       out.push(structuredClone(op));
     }
     return out;
@@ -105,7 +107,7 @@ export function lease(store: Store, nodeId: string, max = 1, leaseSeconds = 120,
 
 /** Agent report. Idempotent and monotonic. */
 export function report(store: Store, nodeId: string, opId: string, status: 'running' | 'succeeded' | 'failed',
-                       result?: any, error?: string, extendLeaseSeconds = 120): Promise<{ ok: boolean; op?: Operation; reason?: string }> {
+                       result?: any, error?: string, extendLeaseSeconds = 120, progress?: any): Promise<{ ok: boolean; op?: Operation; reason?: string; cancel?: boolean }> {
   return store.mutate(draft => {
     const op = draft.operations.find(o => o.id === opId);
     if (!op) return { ok: false, reason: 'unknown operation' };
@@ -118,9 +120,13 @@ export function report(store: Store, nodeId: string, opId: string, status: 'runn
       if (op.status === 'queued') return { ok: false, op, reason: 'not leased' };
       op.leaseUntil = new Date(Date.now() + extendLeaseSeconds * 1000).toISOString();
       if (op.status !== 'running') push(op, 'running');
-      return { ok: true, op };
+      if (progress && typeof progress === 'object') op.progress = progress;
+      return { ok: true, op, cancel: !!op.cancelRequested };
     }
+    if (status === 'failed' && op.cancelRequested) { push(op, 'cancelled', 'cancelled by operator while running'); op.error = error; op.leaseUntil = undefined; op.progress = undefined;
+      audit(draft, { clusterId: op.clusterId, actor: `agent:${nodeId}`, action: `op.${op.type}`, status: 'CANCELLED', details: { opId } }); return { ok: true, op }; }
     push(op, status, status === 'failed' ? error : undefined);
+    op.progress = undefined;
     op.result = result;
     op.error = error;
     op.leaseUntil = undefined;
@@ -135,6 +141,12 @@ export function cancel(store: Store, opId: string, actor = 'admin'): Promise<{ o
     const op = draft.operations.find(o => o.id === opId);
     if (!op) return { ok: false, reason: 'unknown operation' };
     if (op.status === 'cancelled') return { ok: true, op };
+    if ((op.status === 'leased' || op.status === 'running') && OP_SPECS[op.type]?.cancellable) {
+      op.cancelRequested = true;                      // cooperative: the agent sees it on its next keep-alive and aborts cleanly
+      op.updatedAt = nowIso();
+      audit(draft, { clusterId: op.clusterId, actor, action: `op.cancel-requested:${op.type}`, status: 'requested', details: { opId } });
+      return { ok: true, op, reason: 'cancel requested' };
+    }
     if (op.status !== 'queued') return { ok: false, op, reason: `cannot cancel a ${op.status} operation` };
     push(op, 'cancelled', `by ${actor}`);
     audit(draft, { clusterId: op.clusterId, actor, action: `op.cancel:${op.type}`, status: 'cancelled', details: { opId } });

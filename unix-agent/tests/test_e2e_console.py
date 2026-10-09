@@ -6,7 +6,6 @@ from pg_arca.runtime import Runtime
 from pg_arca.executor import OperationExecutor
 from pg_arca.console_client import ConsoleClient
 from pg_arca.wal_manager import WalManager
-from pg_arca.cas_engine import CasStore
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FAKES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fakes")
@@ -47,7 +46,7 @@ class E2E(unittest.TestCase):
         # discovery on a box without a running PG: instance is None. Bind the fake psql explicitly.
         rt.instance = {"data_directory": "/fake/pgdata", "cluster_key": "sysid:7312345678901234567", "port": 5432}
         ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: {"summary": {"postgres_instances_found": 1}})
-        client = ConsoleClient(cfg, rt, ex, WalManager(cfg["wal_archive_dir"], "none"), CasStore(cfg["repo_path"]))
+        client = ConsoleClient(cfg, rt, ex, WalManager(cfg["wal_archive_dir"], "none"), None)
         client.start()
         try:
             for _ in range(60):

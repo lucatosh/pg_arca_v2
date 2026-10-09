@@ -14,9 +14,11 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 
 from pg_arca.config import atomic_write_json
+from pg_arca.engine.util import Cancelled, EngineError
 
 logger = logging.getLogger("pg_arca.executor")
 
@@ -28,11 +30,15 @@ class OpError(Exception):
 
 
 class OperationExecutor:
-    def __init__(self, config, db, patroni, discovery=None):
+    def __init__(self, config, db, patroni, discovery=None, runtime=None):
         self.config = config
         self.db = db
         self.patroni = patroni
+        self.runtime = runtime               # needed by backup / restore operations (PGDATA, socket)
         self.discovery = discovery           # callable -> dict
+        self._tl = threading.local()
+        self._live = {}                      # op_id -> latest progress dict (in memory; reported with every keep-alive)
+        self._cancel = set()                 # op ids with a cooperative cancel request
         self.dir = os.path.join(config.get("state_dir", "/var/lib/pgarca/state"), "ops")
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
         self.handlers = {}                   # type -> (fn, retry_safe)
@@ -57,6 +63,16 @@ class OperationExecutor:
         r("patroni_reload", self.h_patroni_reload, True)
         r("patroni_pause", self.h_pause, True)
         r("patroni_config_patch", self.h_config_patch, True)
+        # backup / restore / PITR (engine)
+        r("backup_run", self.h_backup_run, False)
+        r("backup_info", self.h_backup_info, True)
+        r("backup_verify", self.h_backup_verify, True)
+        r("backup_expire", self.h_backup_expire, True)
+        r("restore_plan", self.h_restore_plan, True)
+        r("restore_instance", self.h_restore_instance, False)
+        r("restore_database", self.h_restore_database, False)
+        r("restore_object", self.h_restore_object, False)
+        r("wal_forensics", self.h_forensics, True)
 
     # ------------------------------------------------------------------ journal
     def _path(self, op_id):
@@ -103,14 +119,40 @@ class OperationExecutor:
                                 "operation was NOT repeated automatically. Check the cluster state, then resubmit if needed." % op_type)
 
         atomic_write_json(self._path(op_id), {"id": op_id, "type": op_type, "status": "running", "started": time.time(), "attempt": (prior or {}).get("attempt", 0) + 1})
+        self._tl.op_id = op_id
         try:
             result = fn(params)
             return self._finish(op_id, op_type, "succeeded", result, None)
         except OpError as e:
             return self._finish(op_id, op_type, "failed", None, str(e))
+        except Cancelled:
+            return self._finish(op_id, op_type, "failed", None, "cancelled by operator")
+        except EngineError as e:
+            return self._finish(op_id, op_type, "failed", None, e.as_text())
         except Exception as e:  # unexpected: still a clean failure, with detail in the log
             logger.exception("operation %s crashed", op_id)
             return self._finish(op_id, op_type, "failed", None, "internal error: %s" % e)
+        finally:
+            self._live.pop(op_id, None)
+            self._cancel.discard(op_id)
+            self._tl.op_id = None
+
+    # ------------------------------------------------------------------ progress / cancel (used by the console client)
+    def progress_of(self, op_id):
+        return self._live.get(op_id)
+
+    def request_cancel(self, op_id):
+        self._cancel.add(op_id)
+
+    def _progress(self, data):
+        op_id = getattr(self._tl, "op_id", None)
+        if op_id:
+            data = dict(data)
+            data["at"] = time.time()
+            self._live[op_id] = data
+
+    def _cancelled(self):
+        return getattr(self._tl, "op_id", None) in self._cancel
 
     def _finish(self, op_id, op_type, status, result, error):
         try:
@@ -283,3 +325,105 @@ class OperationExecutor:
         if st >= 300:
             raise OpError("Patroni rejected the patch (%s): %s" % (st, json.dumps(d)[:300]))
         return {"applied": True, "config": d}
+
+
+    # ------------------------------------------------------------------ handlers: backup / restore (engine)
+    def _ctx(self):
+        from pg_arca.engine.ctx import Ctx
+        if not self.runtime:
+            raise OpError("backup/restore are not available: executor has no runtime binding")
+        self.runtime.refresh() if not self.runtime.instance else None
+        if not self.runtime.instance:
+            raise OpError("no PostgreSQL instance found on this host")
+        if not self.runtime.instance.get("running"):
+            raise OpError("PostgreSQL is not running on this host (backups need a running instance; restores can still target a directory)")
+        return Ctx.from_config(self.config, self.runtime, log=lambda lv, m: logger.log({"warn": logging.WARNING, "error": logging.ERROR}.get(lv, logging.INFO), "[engine] %s", m))
+
+    def _engine_refresh_summary(self, ctx):
+        try:
+            from pg_arca.engine.summary import RepoSummary
+            RepoSummary(ctx).refresh_cas()
+        except Exception:
+            logger.debug("summary refresh failed", exc_info=True)
+
+    def h_backup_run(self, p):
+        from pg_arca.engine.backup import run_backup
+        ctx = self._ctx()
+        meta = run_backup(ctx, str(p.get("type", "incr")), int(p.get("archive_timeout", 120)), self._progress, self._cancelled,
+                          owner=getattr(self._tl, "op_id", ""), note=str(p.get("note", ""))[:200])
+        self._engine_refresh_summary(ctx)
+        st = meta.get("stats") or {}
+        return {"set": meta["id"], "type": meta["type"], "parent": meta.get("parent"), "start_lsn": meta["start_lsn"], "stop_lsn": meta["stop_lsn"],
+                "duration_sec": meta["duration_sec"], "bytes_logical": st.get("bytes_logical"), "bytes_written": st.get("bytes_written"),
+                "files": st.get("files"), "chunks_dedup": st.get("chunks_dedup"), "chunks_new": st.get("chunks_new"),
+                "pages_read": st.get("pages_read"), "pages_kept": st.get("pages_kept")}
+
+    def h_backup_info(self, p):
+        from pg_arca.engine.maintenance import repo_info
+        return repo_info(self._ctx_ro())
+
+    def _ctx_ro(self):
+        """Read-only inspection does not need a running PostgreSQL."""
+        from pg_arca.engine.ctx import Ctx
+        if not self.runtime:
+            raise OpError("executor has no runtime binding")
+        if not self.runtime.instance:
+            self.runtime.refresh()
+        return Ctx.from_config(self.config, self.runtime)
+
+    def h_backup_verify(self, p):
+        from pg_arca.engine.maintenance import verify
+        from pg_arca.engine.granular import restore_test
+        ctx = self._ctx_ro()
+        out = verify(ctx, bool(p.get("deep")), self._progress, self._cancelled)
+        if p.get("restore_test"):
+            self._progress({"phase": "restore-test"})
+            out["restore_test"] = restore_test(ctx, p.get("set"), self._progress, self._cancelled)
+        return out
+
+    def h_backup_expire(self, p):
+        from pg_arca.engine.maintenance import expire
+        ctx = self._ctx_ro()
+        out = expire(ctx, bool(p.get("dry_run")), p.get("retention_full"), p.get("retention_days"))
+        if not p.get("dry_run"):
+            self._engine_refresh_summary(ctx)
+        return out
+
+    @staticmethod
+    def _targets(p):
+        return dict(target_time=p.get("target_time") or None, target_lsn=p.get("target_lsn") or None, target_xid=p.get("target_xid") or None,
+                    target_name=p.get("target_name") or None, inclusive=bool(p.get("inclusive", True)))
+
+    def h_restore_plan(self, p):
+        ctx = self._ctx_ro()
+        t = self._targets(p)
+        scope = p.get("scope")
+        if scope == "instance":
+            from pg_arca.engine.restore import restore_instance
+            return restore_instance(ctx, p.get("set"), p.get("destination") or "/nonexistent-plan-only", dry_run=True, **{k: v for k, v in t.items()})
+        from pg_arca.engine import granular
+        if scope == "database":
+            return granular.restore_database(ctx, str(p.get("database")), p.get("set"), dry_run=True, new_name=p.get("new_name"), **t)
+        return granular.restore_object(ctx, str(p.get("object")), p.get("set"), dry_run=True, stage_db=p.get("stage_db"), **t)
+
+    def h_restore_instance(self, p):
+        from pg_arca.engine.restore import restore_instance
+        ctx = self._ctx_ro()
+        return restore_instance(ctx, p.get("set"), p.get("destination"), action=p.get("action", "promote"), delta=bool(p.get("delta")),
+                                tablespace_remap=p.get("tablespace_remap"), progress=self._progress, cancel=self._cancelled, **self._targets(p))
+
+    def h_restore_database(self, p):
+        from pg_arca.engine import granular
+        ctx = self._ctx() if not p.get("into") else self._ctx_ro()
+        return granular.restore_database(ctx, str(p.get("database")), p.get("set"), into=p.get("into"), new_name=p.get("new_name"),
+                                         jobs=int(p.get("jobs", 2)), progress=self._progress, cancel=self._cancelled, **self._targets(p))
+
+    def h_restore_object(self, p):
+        from pg_arca.engine import granular
+        ctx = self._ctx() if not p.get("into") else self._ctx_ro()
+        return granular.restore_object(ctx, str(p.get("object")), p.get("set"), into=p.get("into"), stage_db=p.get("stage_db"),
+                                       data_only=bool(p.get("data_only")), progress=self._progress, cancel=self._cancelled, **self._targets(p))
+
+    def h_forensics(self, p):
+        from pg_arca.engine.maintenance import forensics
+        return forensics(self._ctx_ro(), int(p.get("limit", 20)), p.get("since"), p.get("until"))
