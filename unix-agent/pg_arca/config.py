@@ -45,7 +45,8 @@ DEFAULT_CONFIG = {
     "pg_user": "postgres",
     "pg_port": 0,              # 0 = auto (discovery / postmaster.pid)
     "pg_host": "",             # "" = auto (unix socket dir from postmaster.pid)
-    "pg_data": "",             # "" = auto (discovery)
+    "pg_data": "",             # "" = auto (discovery). Explicit override only: env PG_ARCA_PGDATA or agent.conf
+    "pg_data_hint": "",        # from the generic PGDATA env var: only a fallback, because many images/profiles set PGDATA to a parent dir (e.g. the postgres docker image + Patroni)
     "patroni_url": "",         # "" = auto (discovery)
     "patroni_user": "",
     "patroni_password": "",
@@ -83,7 +84,7 @@ def load_config(conf_path=None):
     env_map = {
         "PG_ARCA_WEB_URL": "web_server_url", "PG_ARCA_ENROLL_TOKEN": "enrollment_token", "PG_ARCA_NODE_NAME": "node_name",
         "PG_ARCA_ENVIRONMENT": "environment", "PG_ARCA_CONNECTION_MODE": "connection_mode", "PG_ARCA_AUTH_TOKEN": "auth_token",
-        "PG_ARCA_REPO": "repo_path", "WAL_ARCHIVE_DIR": "wal_archive_dir", "PATRONI_URL": "patroni_url", "PGDATA": "pg_data",
+        "PG_ARCA_REPO": "repo_path", "WAL_ARCHIVE_DIR": "wal_archive_dir", "PATRONI_URL": "patroni_url", "PG_ARCA_PGDATA": "pg_data", "PGDATA": "pg_data_hint",
         "PG_ARCA_TLS_CA": "tls_ca_file",
     }
     for env, key in env_map.items():

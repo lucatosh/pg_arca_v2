@@ -24,6 +24,8 @@ case "${1:-help}" in
   agentlog) docker exec -it "${2:-$(leader)}" tail -f /var/log/pgarca/agent.out ;;
   console) # run the web console on this host (background), from the repo root
     cd ../..; [[ -d node_modules/express ]] || npm install; [[ -f dist/index.html ]] || npx vite build; setsid nohup npm start >/tmp/pg_arca_console.log 2>&1 < /dev/null & echo "console on :3000, log /tmp/pg_arca_console.log" ;;
+  agent-update) # reinstall the agent code from /work on every node and restart only the agent (Patroni/PostgreSQL untouched, credentials kept)
+    for n in pg1 pg2 pg3; do docker exec -e PG_ARCA_NO_SERVICE=1 "$n" bash /work/unix-agent/install-agent.sh >/dev/null && docker exec "$n" pkill -f pg-arca-agent.py || true; echo "$n agent updated"; done ;;
   agent-reset) # forget the console enrollment on every node and restart them one by one (then delete the old clusters in the console and approve again)
     for n in pg1 pg2 pg3; do docker exec "$n" rm -f /etc/pg-arca/credentials.json /etc/pg-arca/join.json /etc/pg-arca/enroll.env; docker restart "$n" >/dev/null; echo "$n restarted"; sleep 20; done ;;
   switchover) l=$(leader); t=${2:?target node (pg1|pg2|pg3)}; docker exec "$l" patronictl -c /etc/patroni.yml switchover --leader "$l" --candidate "$t" --force; sleep 8; ./lab.sh status ;;
@@ -42,6 +44,7 @@ case "${1:-help}" in
   *) cat <<H
 ./lab.sh up | down | reset | status | smoke
          shell [node] | psql | logs [node] | agentlog [node]
+         agent-update       after `git pull`: reinstall + restart only the agent on all nodes
          agent-reset        forget console enrollment on all nodes (re-announce)
          console            start the pg_arca web console on this host (npm start, :3000)
          switchover <node>  planned role change   |  failover  kill the leader and watch Patroni elect another

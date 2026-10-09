@@ -52,10 +52,26 @@ class Ctx(object):
         seg = ((inst.get("control") or {}).get("wal_segment_size")) or 16 * 1024 * 1024
         here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         wal_bin = config.get("wal_bin") or (os.path.join(here, "pg-arca-wal") if os.path.exists(os.path.join(here, "pg-arca-wal")) else None)
-        return cls(conn, config.get("pg_data") or inst.get("data_directory") or "", config["repo_path"], stanza, config["wal_archive_dir"],
+        return cls(conn, _resolve_pgdata(config, inst, log), config["repo_path"], stanza, config["wal_archive_dir"],
                    config.get("scratch_dir", "/var/tmp/pg_arca_scratch"), config.get("process_max", 4), config.get("compression", "zstd"),
                    config.get("compression_level", 3), bool(config.get("start_fast", False)), config.get("retention_full", 2),
                    config.get("retention_days", 0), seg, log, wal_bin, key_file=config.get("encryption_key_file") or os.environ.get("PG_ARCA_KEY_FILE") or None)
+
+
+def _resolve_pgdata(config, inst, log=None):
+    """The data directory to back up. The running instance (discovery / SHOW data_directory) is the authority; an explicit pg_data is honoured only if it
+    really is a PGDATA, and the generic PGDATA env var is just a last-resort hint (it often points at a parent directory)."""
+    def valid(p):
+        return bool(p) and os.path.exists(os.path.join(p, "PG_VERSION"))
+    explicit, found, hint = config.get("pg_data") or "", inst.get("data_directory") or "", config.get("pg_data_hint") or ""
+    if valid(explicit):
+        return explicit
+    if explicit and log:
+        log("warning", "configured pg_data %s is not a PGDATA (no PG_VERSION): using the detected data directory %s" % (explicit, found or "(none)"))
+    for cand in (found, hint, explicit):
+        if valid(cand):
+            return cand
+    return found or hint or explicit
 
 
 def _shq(s):
