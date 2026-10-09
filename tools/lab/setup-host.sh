@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# One-shot, idempotent prep of a CentOS/Rocky/Alma/RHEL 8-10 lab host: Docker + compose, git (identity + GitHub auth), Node, firewall, repo clone.
-#   sudo GIT_NAME="Luca" GIT_EMAIL="you@x.it" [GH_TOKEN=ghp_...] bash setup-host.sh
+# One-shot, idempotent prep of a lab host (Ubuntu/Debian via apt, or RHEL-family via dnf): Docker + compose, git (identity + GitHub auth), Node, firewall, repo clone.
+#   sudo GIT_NAME="Luca" GIT_EMAIL="you@x.it" [GH_TOKEN=ghp_...] bash setup-host.sh [--all]
+#   --all  also: console as a systemd service on :3000, lab up, smoke test (everything in one go)
 # Env: LAB_DIR=/opt/pg_arca_v2   REPO_URL=https://github.com/lucatosh/pg_arca_v2.git   BRANCH=main   LAB_USER=<non-root user that will run lab.sh (default: $SUDO_USER)>
 #      GH_TOKEN  -> https auth stored in ~/.git-credentials (0600);  without it an ed25519 deploy key is generated and its public half printed.
 set -euo pipefail
@@ -12,19 +13,39 @@ as_user() { if [[ $LAB_USER == root ]]; then "$@"; else sudo -u "$LAB_USER" -H "
 log() { echo "== $*"; }
 
 log "packages"
-command -v dnf >/dev/null || { echo "dnf not found: this script targets RHEL-family hosts"; exit 1; }
-dnf install -y -q dnf-plugins-core git curl jq tar openssh-clients bc rsync
-if ! command -v docker >/dev/null; then
-  dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-  dnf install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-fi
+ALL=0; [[ ${1:-} == --all ]] && ALL=1
+if command -v apt-get >/dev/null; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq && apt-get install -y -qq ca-certificates curl git jq tar openssh-client bc rsync gnupg
+  if ! command -v docker >/dev/null; then
+    . /etc/os-release
+    install -m 0755 -d /etc/apt/keyrings
+    if curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc 2>/dev/null; then
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+    fi
+    if ! { apt-get update -qq && apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; }; then
+      echo "   Docker's repo has no packages for '$VERSION_CODENAME' (yet): falling back to Ubuntu's own docker.io"
+      rm -f /etc/apt/sources.list.d/docker.list; apt-get update -qq
+      apt-get install -y -qq docker.io docker-compose-v2 docker-buildx || apt-get install -y -qq docker.io docker-compose-v2
+    fi
+  fi
+  command -v node >/dev/null && [[ $(node -p 'process.versions.node.split(".")[0]') -ge 20 ]] || apt-get install -y -qq nodejs npm
+elif command -v dnf >/dev/null; then
+  dnf install -y -q dnf-plugins-core git curl jq tar openssh-clients bc rsync
+  if ! command -v docker >/dev/null; then
+    dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    dnf install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  fi
+  command -v node >/dev/null || dnf module install -y -q nodejs:20 2>/dev/null || echo "WARN: install Node >= 20 yourself"
+else echo "neither apt-get nor dnf found"; exit 1; fi
 systemctl enable --now docker
 [[ $LAB_USER != root ]] && usermod -aG docker "$LAB_USER"
-docker compose version >/dev/null
-if ! command -v node >/dev/null; then dnf module install -y -q nodejs:20 2>/dev/null || { echo "WARN: install Node >= 20 yourself (needed only to run the console on this host)"; }; fi
+docker compose version >/dev/null || { echo "docker compose plugin missing"; exit 1; }
+command -v node >/dev/null && echo "   node $(node -v)"
 
 log "firewall (containers -> console on the host)"
-if systemctl is-active --quiet firewalld; then
+if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw allow 3000/tcp >/dev/null; ufw allow from 172.28.0.0/16 >/dev/null; fi
+if systemctl is-active --quiet firewalld 2>/dev/null; then
   firewall-cmd --permanent --zone=trusted --add-source=172.28.0.0/16 >/dev/null
   firewall-cmd --permanent --add-port=3000/tcp >/dev/null    # console UI
   firewall-cmd --reload >/dev/null
@@ -58,4 +79,25 @@ else
   as_user git clone --branch "$BRANCH" "$REPO_URL" "$LAB_DIR" || echo "WARN: clone failed (deploy key not added yet?). Re-run this script after adding it."
 fi
 [[ -f $LAB_HOME/.gitconfig ]] || as_user touch "$LAB_HOME/.gitconfig"   # bind-mounted into the nodes
-echo; echo "Done. Log out/in once (docker group), then:  cd $LAB_DIR/tools/lab && ./lab.sh up"
+if [[ $ALL == 1 ]]; then
+  log "console (systemd) + lab up + smoke"
+  ( cd "$LAB_DIR" && as_user npm install --no-audit --no-fund )
+  cat > /etc/systemd/system/pg-arca-console.service <<UNIT
+[Unit]
+Description=pg_arca web console (lab)
+After=network-online.target docker.service
+[Service]
+User=$LAB_USER
+WorkingDirectory=$LAB_DIR
+ExecStart=/usr/bin/env npm start
+Restart=always
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload; systemctl enable --now pg-arca-console >/dev/null
+  as_user sg docker -c "cd $LAB_DIR/tools/lab && ./lab.sh up && ./lab.sh smoke" || echo "lab up/smoke reported a problem: see output above, then: ./lab.sh logs pg1"
+  IP=$(hostname -I | awk '{print $1}')
+  echo; echo "Console: http://$IP:3000  (VirtualBox NAT: http://localhost:3000 with port forwarding 3000->3000). Create the admin, then approve the 3 announced nodes."
+  exit 0
+fi
+echo; echo "Done. Log out/in once (docker group), then:  cd $LAB_DIR/tools/lab && ./lab.sh console && ./lab.sh up"

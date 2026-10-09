@@ -23,7 +23,7 @@ case "${1:-help}" in
   logs)    $DC logs -f --tail=100 "${2:-pg1}" ;;
   agentlog) docker exec -it "${2:-$(leader)}" tail -f /var/log/pgarca/agent.out ;;
   console) # run the web console on this host (background), from the repo root
-    cd ../..; [[ -d node_modules/express ]] || npm install; nohup npm start >/tmp/pg_arca_console.log 2>&1 & echo "console on :3000, log /tmp/pg_arca_console.log" ;;
+    cd ../..; [[ -d node_modules/express ]] || npm install; setsid nohup npm start >/tmp/pg_arca_console.log 2>&1 < /dev/null & echo "console on :3000, log /tmp/pg_arca_console.log" ;;
   switchover) l=$(leader); t=${2:?target node (pg1|pg2|pg3)}; docker exec "$l" patronictl switchover --leader "$l" --candidate "$t" --force; sleep 8; ./lab.sh status ;;
   failover) l=$(leader); echo "stopping leader $l (kill -9 style)"; docker kill "$l" >/dev/null; for _ in $(seq 40); do n=$(leader || true); [[ -n $n && $n != "$l" ]] && break; sleep 3; done; echo "new leader: ${n:-NONE}"; docker start "$l" >/dev/null; sleep 20; ./lab.sh status ;;
   smoke)   # sanity checks, exits non-zero on the first failure

@@ -4,7 +4,12 @@
 
 Topology: 3×etcd, 3×(PostgreSQL 16 + Patroni + pg_arca agent), HAProxy (5000 primary / 5001 replicas / 7000 stats). The backup repo and WAL archive are shared volumes across the 3 nodes (lab convenience: any node can restore what another backed up). The agent is installed at container start with the real `install-agent.sh` (no systemd: `PG_ARCA_NO_SERVICE`), so every `up` also exercises the installer.
 
-## On the CentOS host
+## Quick start (Ubuntu/Debian/RHEL-family, one command)
+```bash
+sudo apt-get update && sudo apt-get install -y git && sudo git clone https://github.com/lucatosh/pg_arca_v2.git /opt/pg_arca_v2 && sudo GIT_NAME="Luca" GIT_EMAIL="mitrluca3@gmail.com" /opt/pg_arca_v2/tools/lab/setup-host.sh --all
+```
+
+## Step by step
 ```bash
 git clone https://github.com/lucatosh/pg_arca_v2.git /opt/pg_arca_v2   # or let setup-host.sh do it
 cd /opt/pg_arca_v2/tools/lab
