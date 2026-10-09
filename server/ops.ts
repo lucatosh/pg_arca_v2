@@ -43,13 +43,15 @@ export function audit(draft: AppState, e: { clusterId?: string; actor: string; a
   if (draft.audit.length > 5000) draft.audit.splice(0, draft.audit.length - 5000);
 }
 
-/** Idempotent. Returns {op, created}. */
+const stable = (v: any): string => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
+
+/** Idempotent. Returns {op, created}. Same key + different request (type, cluster or params) is a conflict, never a silent replay. */
 export function submit(store: Store, input: SubmitInput): Promise<{ op: Operation; created: boolean }> {
   return store.mutate(draft => {
     const key = input.idempotencyKey || newId('auto');
     const existing = draft.operations.find(o => o.idempotencyKey === key);
     if (existing) {
-      if (existing.type !== input.type || existing.clusterId !== input.clusterId) {
+      if (existing.type !== input.type || existing.clusterId !== input.clusterId || stable(existing.params) !== stable(input.params || {})) {
         throw Object.assign(new Error('idempotency key reused with a different request'), { code: 'IDEMPOTENCY_CONFLICT' });
       }
       return { op: existing, created: false };

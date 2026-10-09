@@ -74,6 +74,11 @@ class OperationExecutor:
         r("restore_database", self.h_restore_database, False)
         r("restore_object", self.h_restore_object, False)
         r("wal_forensics", self.h_forensics, True)
+        # pg_hba.conf
+        r("hba_read", self.h_hba_read, True)
+        r("hba_plan", self.h_hba_plan, True)
+        r("hba_apply", self.h_hba_apply, True)           # compare-before-write: re-running is a no-op
+        r("hba_rollback", self.h_hba_rollback, False)
 
     # ------------------------------------------------------------------ journal
     def _path(self, op_id):
@@ -428,6 +433,22 @@ class OperationExecutor:
     def h_forensics(self, p):
         from pg_arca.engine.maintenance import forensics
         return forensics(self._ctx_ro(), int(p.get("limit", 20)), p.get("since"), p.get("until"))
+
+    def h_hba_read(self, p):
+        from pg_arca import hba_ops
+        return hba_ops.read(self, p, OpError)
+
+    def h_hba_plan(self, p):
+        from pg_arca import hba_ops
+        return hba_ops.plan(self, p, OpError)
+
+    def h_hba_apply(self, p):
+        from pg_arca import hba_ops
+        return hba_ops.apply(self, p, OpError)
+
+    def h_hba_rollback(self, p):
+        from pg_arca import hba_ops
+        return hba_ops.rollback(self, p, OpError)
 
     def h_backup_catalog(self, p):
         from pg_arca.engine.maintenance import catalog_browse

@@ -65,6 +65,7 @@ function targetErr(p: Record<string, any>): string | null {
   if (p.set && p.set !== 'latest' && !setId.test(String(p.set))) return 'invalid backup set id';
   return null;
 }
+const hbaRulesErr = (p: Record<string, any>): string | null => (!Array.isArray(p.rules) || p.rules.length > 200 || p.rules.some((r: any) => !r || typeof r !== 'object')) ? 'rules must be a list of at most 200 objects' : null;
 const dataOp = { mutating: true, target: 'any_node' as const, lane: 'data' as const, cancellable: true };
 const intoErr = (p: Record<string, any>) => {
   if (p.into === undefined || p.into === null) return null;
@@ -89,6 +90,10 @@ Object.assign(OP_SPECS, {
   restore_database: { ...dataOp, validate: (p: any) => !pgName(p.database) ? 'database required' : (p.new_name && !dbName.test(String(p.new_name)) ? 'invalid new_name' : (targetErr(p) || intoErr(p))) },
   restore_object:   { ...dataOp, validate: (p: any) => !/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' :
                                                        (p.stage_db && !dbName.test(String(p.stage_db)) ? 'invalid stage_db' : (targetErr(p) || intoErr(p))) },
+  hba_read:     { mutating: false, target: 'node', lane: 'control', validate: () => null },
+  hba_plan:     { mutating: false, target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) },
+  hba_apply:    { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) || (p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
+  hba_rollback: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.backup && !/^[\w.\-]{1,100}$/.test(String(p.backup)) ? 'invalid backup name' : null) },
   wal_forensics:    { ...dataOp, mutating: false, validate: () => null },
 } as Record<string, OpSpec>);
 
