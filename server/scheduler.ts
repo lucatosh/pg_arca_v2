@@ -27,7 +27,7 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     const target = nodes.find(n => n.snapshot?.postgres?.is_in_recovery === false) || undefined;
     if (!target) continue;
     const myOps = st.operations.filter(o => o.clusterId === c.id);
-    if (myOps.some(o => !isTerminal(o.status) && ['backup_run', 'backup_verify', 'backup_expire', 'restore_instance', 'restore_database', 'restore_object', 'restore_promote'].includes(o.type))) continue;
+    if (myOps.some(o => !isTerminal(o.status) && ['backup_run', 'backup_verify', 'backup_expire', 'restore_instance', 'restore_database', 'restore_object', 'restore_promote', 'restore_drill'].includes(o.type))) continue;
 
     const bk = target.snapshot?.backup;
     const sets: any[] = (bk?.recent_sets || []).filter((s: any) => s.status === 'COMPLETE');

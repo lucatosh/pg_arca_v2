@@ -62,6 +62,11 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       if (now - base > pol.verifyEveryHours * 3600_000 * 2) add({ severity: 'info', code: 'verify_stale', title: 'Verifica dei backup in ritardo', cause: lastVerify ? `Ultima verifica riuscita ${hrs((now - lastVerify) / 3600_000)} fa.` : 'Nessuna verifica riuscita finora: un backup non verificato è solo una speranza.', action: { label: 'Vedi i backup', page: 'backup' } });
     }
 
+    const drills = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'restore_drill' && o.status === 'succeeded');
+    const lastDrill = drills.length ? drills[drills.length - 1] : null;
+    if (isProd && sets.length && (!lastDrill || now - Date.parse(lastDrill.updatedAt) > 90 * 86400_000))
+      add({ severity: 'info', code: 'drill_stale', title: lastDrill ? 'Prova di disaster recovery vecchia di oltre 90 giorni' : 'Mai provato il ripristino completo', cause: lastDrill ? 'Una prova periodica conferma che il ripristino funziona ancora e quanto tempo richiede.' : 'Non sai ancora quanto tempo servirebbe a ripristinare l’intero cluster: una prova lo misura senza toccare la produzione.', action: { label: 'Vedi i backup', page: 'backup' } });
+
     // ---- WAL / archiving
     const wal = (primary || nodes[0])?.snapshot?.wal;
     if (wal && wal.gap_count > 0) add({ severity: 'critical', code: 'wal_gap', title: `Archivio WAL con ${wal.gap_count} buco/i`, cause: 'Mancano segmenti WAL: il recupero a un istante preciso oltre il buco non è possibile. Esegui subito un nuovo backup completo.', action: { label: 'Vedi il recupero', page: 'restore' } });
@@ -103,7 +108,8 @@ export function briefing(st: any, now = Date.now()) {
   const recentOps = (st.operations as any[]).filter(o => Date.parse(o.updatedAt) >= since);
   const clusters = (st.clusters as any[]).filter(c => !c.isSandbox && c.source !== 'direct').map(c => {
     const mine = issues.filter(i => i.clusterId === c.id);
-    return { id: c.id, name: c.name, environment: c.environment, folder: c.folder || '', issues: mine.length, worst: mine[0]?.severity || 'ok' };
+    const dr = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'restore_drill' && o.status === 'succeeded').pop();
+    return { id: c.id, name: c.name, environment: c.environment, folder: c.folder || '', issues: mine.length, worst: mine[0]?.severity || 'ok', rto: dr?.result?.rto_seconds != null ? { seconds: dr.result.rto_seconds, at: dr.updatedAt, bytes: dr.result.data_bytes } : null };
   });
   return {
     generatedAt: new Date(now).toISOString(), status: counts.critical ? 'critical' : counts.warning ? 'warning' : 'ok', counts, issues, clusters,

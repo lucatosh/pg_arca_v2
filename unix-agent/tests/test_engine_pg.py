@@ -264,6 +264,19 @@ class EngineTests(unittest.TestCase):
         finally:
             q("postgres", "SELECT pg_drop_replication_slot('pgarca_t_slot')")
 
+    def test_06x_disaster_drill_measures_recovery(self):
+        from pg_arca.engine.granular import restore_drill
+        r = restore_drill(F.ctx)
+        self.assertTrue(r["full_cluster"]); self.assertIn("app", r["databases_checked"]); self.assertGreater(r["rto_seconds"], 0); self.assertGreater(r["data_bytes"], 0)
+        self.assertEqual([d for d in os.listdir(F.scratch) if not d.startswith(".")], [], "scratch cleaned")
+        real = F.ctx.scratch_dir
+        try:
+            F.ctx.scratch_dir = "/proc/pgarca-nospace"          # unusable volume: refuse before doing any work
+            with self.assertRaises(EngineError):
+                restore_drill(F.ctx)
+        finally:
+            F.ctx.scratch_dir = real
+
     def test_07_failed_restore_leaves_nothing_behind(self):
         with self.assertRaises(EngineError):
             restore_object(F.ctx, "app.public.no_such_table", target_time=F.t1, stage_db="stage_never")

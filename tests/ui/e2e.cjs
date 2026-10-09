@@ -16,6 +16,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Protezione dei dati'); await shot('03-overview');
   // backup tab
   await p.click('role=tab[name=/Backup/]'); await p.waitForSelector('text=Esegui un backup'); await shot('04-backup');
+  { const b = p.locator('button:has-text("Prova di disaster recovery")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster ripristinato in 13 minuti', { timeout: 10000 }); await shot('04b-drill'); } }
   await p.click('button:has-text("Avvia backup")'); await p.waitForSelector('text=Copia dei dati'); await shot('05-backup-running');
   await p.waitForSelector('text=/Backup .* completato/', { timeout: 15000 }); await shot('06-backup-done');
   // restore wizard: database

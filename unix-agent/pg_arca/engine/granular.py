@@ -258,6 +258,54 @@ def restore_test(ctx, set_spec=None, progress=None, cancel=None):
     return info
 
 
+def restore_drill(ctx, set_spec=None, progress=None, cancel=None):
+    """Disaster-recovery drill: recover the WHOLE cluster from the repository into scratch space, start it, replay WAL to the end of the backup
+    (or archive), connect to every database, then throw it away. The result is a MEASURED recovery time for this data volume on this host."""
+    target = ctx.repo.resolve_set(set_spec)
+    chain = build_chain(ctx.repo, target)
+    missing = check_wal_for_chain(ctx, chain)
+    if missing:
+        raise EngineError("PGA-WAL-022", "WAL archive is missing %d segment(s) (first: %s)" % (len(missing), missing[0]))
+    cat = ctx.repo.load_catalog(target)
+    oids = set(int(d["oid"]) for d in cat["databases"].values())
+    need = int((target.get("stats") or {}).get("bytes_logical") or sum(d.get("size", 0) for d in cat["databases"].values()))
+    try:
+        st = os.statvfs(ctx.scratch_dir if os.path.isdir(ctx.scratch_dir) else os.path.dirname(ctx.scratch_dir.rstrip("/")) or "/")
+        free = st.f_bavail * st.f_frsize
+    except OSError:
+        free = None
+    if free is not None and free < need * 1.15:
+        raise EngineError("PGA-DRL-001", "not enough scratch space for a full drill: need about %s, %s free in %s" % (human(int(need * 1.15)), human(free), ctx.scratch_dir),
+                          "free space or set scratch_dir on a bigger volume; a drill recovers the whole cluster")
+    t0 = time.time()
+    eph, info = _recover(ctx, chain, oids, None, None, None, None, True, progress, cancel, immediate=True)
+    try:
+        ok, bad = [], []
+        s = PgSession(eph.conn("postgres"), read_only=True)
+        try:
+            names = [r[0] for r in s.query("SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate")]
+        finally:
+            s.close()
+        for n in names:
+            try:
+                d = PgSession(eph.conn(n), read_only=True)
+                try:
+                    d.scalar("SELECT count(*) FROM pg_class")
+                    ok.append(n)
+                finally:
+                    d.close()
+            except EngineError as e:
+                bad.append({"database": n, "error": e.message})
+        if bad:
+            raise EngineError("PGA-DRL-002", "recovered cluster started but %d database(s) are not readable: %s" % (len(bad), bad[0]["error"]))
+    finally:
+        eph.cleanup()
+    secs = round(time.time() - t0, 1)
+    info.update(set=target["id"], databases_checked=ok, rto_seconds=secs, data_bytes=need,
+                throughput_mb_s=round(need / 1048576.0 / max(secs, 0.1), 1), full_cluster=True)
+    return info
+
+
 def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None):
     """
     Move a table recovered into a quarantine database back into the real database. Never destructive:

@@ -37,9 +37,9 @@ export function TodayPage({ me, role }: { me: string; role: string }) {
           {i.action ? <Button sm onClick={() => open(i)}>{i.action.label}</Button> : null}</div>)}</div></Card> : null}
       {d.last24h.failures.length ? <Card title="Operazioni fallite nelle ultime 24 ore"><div className="tablewrap"><table className="t"><tbody>
         {d.last24h.failures.map((f: any) => <tr key={f.id}><td>{TYPE[f.type] || f.type}</td><td className="muted">{f.error || '—'}</td><td className="num small muted">{ago(f.at)}</td><td className="num"><Button sm onClick={() => go(`c/${encodeURIComponent(f.clusterId)}/operations`)}>Apri</Button></td></tr>)}</tbody></table></div></Card> : null}
-      <Card title="Cluster"><div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>Ambiente</th><th>Stato</th></tr></thead><tbody>
-        {d.clusters.map((c: any) => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}><td><strong>{c.name}</strong>{c.folder ? <span className="faint small"> · {c.folder}</span> : null}</td><td>{c.environment}</td>
+      <Card title="Cluster"><div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>Ambiente</th><th>Ripristino misurato</th><th>Stato</th></tr></thead><tbody>
+        {d.clusters.map((c: any) => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}><td><strong>{c.name}</strong>{c.folder ? <span className="faint small"> · {c.folder}</span> : null}</td><td>{c.environment}</td><td className="small">{c.rto ? <span title={`Prova del ${new Date(c.rto.at).toLocaleDateString('it-CH')}`}>{c.rto.seconds >= 120 ? `${Math.round(c.rto.seconds / 60)} min` : `${Math.round(c.rto.seconds)} s`}</span> : <span className="muted">mai provato</span>}</td>
           <td>{c.worst === 'ok' ? <Badge kind="ok">In ordine</Badge> : <Badge kind={SEV[c.worst].kind}>{c.issues} {c.issues === 1 ? 'segnalazione' : 'segnalazioni'}</Badge>}</td></tr>)}
-        {!d.clusters.length ? <tr><td colSpan={3} className="muted">Nessun cluster con agente collegato.</td></tr> : null}</tbody></table></div></Card></>}
+        {!d.clusters.length ? <tr><td colSpan={4} className="muted">Nessun cluster con agente collegato.</td></tr> : null}</tbody></table></div></Card></>}
   </>;
 }

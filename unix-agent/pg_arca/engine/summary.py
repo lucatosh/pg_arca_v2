@@ -61,4 +61,5 @@ class RepoSummary(object):
                 "last_backup_age_hours": age, "last_failure": ({k: failed[-1].get(k) for k in ("id", "status", "reason", "start_time")} if failed else None),
                 "full_count": len([s for s in done if s["type"] == "full"]),
                 "total_chunks": (cas or {}).get("chunks"), "stored_bytes": stored, "raw_bytes": logical,
-                "dedup_ratio": round(logical / float(stored), 2) if stored else None, "repo_path": repo.path, "recent_sets": recent}
+                "dedup_ratio": round(logical / float(stored), 2) if stored else None, "repo_path": repo.path,
+                "encryption": ({"alg": "aes-256-gcm", "key_id": repo.crypto.key_id} if repo.crypto else None), "recent_sets": recent}

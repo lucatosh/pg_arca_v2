@@ -21,13 +21,16 @@ import { requiredRole } from '../../server/auth';
     d.settings.policyAssignments = { 'env:prod': { templateId: 'prod-standard' } };
   });
   const codes = (cid: string) => evaluate(store.peek(), now).filter(i => i.clusterId === cid).map(i => i.code).sort();
-  assert.deepStrictEqual(codes('p'), ['archiver_failing', 'backup_failed', 'backup_stale', 'connections', 'disk', 'node_offline', 'pending_restart', 'repl_lag', 'slot_stale', 'wal_gap'], JSON.stringify(codes('p')));
+  assert.deepStrictEqual(codes('p'), ['archiver_failing', 'backup_failed', 'backup_stale', 'connections', 'disk', 'drill_stale', 'node_offline', 'pending_restart', 'repl_lag', 'slot_stale', 'wal_gap'], JSON.stringify(codes('p')));
   assert.deepStrictEqual(codes('ok'), [], 'a healthy cluster raises nothing');
   assert(evaluate(store.peek(), now).every(i => i.clusterId !== 'demo'), 'demo cluster is not monitored');
   const slot = evaluate(store.peek(), now).find(i => i.code === 'slot_stale')!; assert.strictEqual(slot.severity, 'critical'); assert(/old_slot/.test(slot.title)); assert(!evaluate(store.peek(), now).some(i => /live/.test(i.title)), 'active slots are fine');
   const b = briefing(store.peek(), now); assert.strictEqual(b.status, 'critical'); assert(b.counts.critical >= 3); assert.strictEqual(b.issues[0].severity, 'critical');
   assert.strictEqual(b.clusters.find(c => c.id === 'p')!.worst, 'critical'); assert.strictEqual(b.clusters.find(c => c.id === 'ok')!.worst, 'ok');
 
+  // a measured drill clears the reminder and shows the recovery time
+  await store.mutate(d => { d.operations.push({ id: 'dr1', type: 'restore_drill', clusterId: 'p', status: 'succeeded', updatedAt: new Date(now).toISOString(), createdAt: new Date(now).toISOString(), result: { rto_seconds: 754, data_bytes: 5 * GB } } as any); });
+  assert(!codes('p').includes('drill_stale')); assert.strictEqual(briefing(store.peek(), now).clusters.find(c => c.id === 'p')!.rto!.seconds, 754);
   // ---- notifications: webhooks, dedupe, reminders, recovery, retry
   const sent: any[] = []; let fail = false;
   const send: Sender = async (url, body) => { if (fail) return { ok: false, error: 'HTTP 500' }; sent.push({ url, body }); return { ok: true }; };
