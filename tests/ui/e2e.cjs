@@ -33,7 +33,22 @@ const base = process.env.BASE || 'http://localhost:5188';
   // ops tab, logs tab, preview tab
   await p.click('role=tab[name=/Operazioni/]'); await p.waitForSelector('text=Registro operazioni'); await shot('13-ops');
   await p.click('role=tab[name=/Log/]'); await p.waitForSelector('text=Log in tempo reale');
-  await p.click('role=tab[name=/Accessi/]'); await p.waitForSelector('text=Anteprima'); await shot('14-preview');
+  await p.click('role=tab[name=/Accessi/]'); await p.waitForSelector('text=Regole gestite dalla console'); await p.waitForSelector('text=Repliche attive senza'); await shot('14-hba');
+  // HBA assistant: suggestion, duplicate refusal, shadow warning, plan, apply
+  await p.click('.banner.warn button:has-text("Aggiungi")'); await p.waitForSelector('text=Replica da 10.0.2.7');
+  await p.click('button:has-text("Aggiungi una regola")');
+  await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/33'); await p.waitForSelector('text=formato CIDR');
+  await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/24'); await p.waitForSelector('text=può usare ogni database dalla rete 10.0.20.0/24');
+  await p.click('button:has-text("Aggiungi alla lista")'); await p.waitForSelector('td:has-text("dalla rete 10.0.20.0/24")');
+  await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/24');
+  await p.waitForSelector('text=Duplicata'); assert(await p.locator('button:has-text("Aggiungi alla lista")').isDisabled(), 'duplicate refused'); await shot('14b-hba-dup');
+  await p.click('button[aria-label=Chiudi]');
+  await p.selectOption('#hba-order', 'wide');
+  await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata'); await shot('14c-hba-plan');
+  await p.selectOption('#hba-order', 'specific');
+  await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata');
+  await p.click('button:has-text("Applica"):not([disabled]) >> nth=0'); await p.click('.modal button:has-text("Applica")');
+  await p.waitForSelector('text=applicato e verificato', { timeout: 15000 }); await shot('14d-hba-applied');
   // palette
   await p.keyboard.press('Control+k'); await p.waitForSelector('[role=dialog][aria-label="Ricerca rapida"]'); await p.keyboard.type('registro'); await p.keyboard.press('Enter');
   await p.waitForSelector('text=Registro attività'); await shot('15-audit');

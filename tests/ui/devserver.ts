@@ -3,13 +3,14 @@
  * scheduler-less) over HTTP, with a scripted fake agent so the browser can drive complete flows without PostgreSQL.
  * Usage: tsx tests/ui/devserver.ts <port> <staticDir>
  */
-import fs from 'fs'; import os from 'os'; import path from 'path'; import http from 'http';
+import { createHash } from 'crypto'; import fs from 'fs'; import os from 'os'; import path from 'path'; import http from 'http';
 import { MiniApp } from '../server/mini-express';
 import { Store, loadSecretKey } from '../../server/store';
 import { DirectDriver } from '../../server/direct';
 import { mountAgentRoutes, mountOperatorRoutes } from '../../server/agents';
 import { mountClusterRoutes, seedDemoOnFirstRun } from '../../server/clusters';
 import { mountPlatformRoutes } from '../../server/platform';
+import { mountHbaRoutes } from '../../server/hba';
 import { mountAuthRoutes, requireAdmin } from '../../server/auth';
 
 const port = Number(process.argv[2] || 5188); const staticDir = process.argv[3] || '/tmp/claude-0/ui';
@@ -21,7 +22,7 @@ const withAgent = process.env.NO_AGENT !== '1';
   const demo = () => ({ id: 'cluster-demo', name: 'Cluster demo', environment: 'dev', isSandbox: true, status: 'healthy', pgVersion: '16', databases: [{ name: 'demo', size: 1e9 }], totalSizeBytes: 1e9, tps: 0, haState: { nodes: [{ name: 'demo-1', role: 'primary', online: true, state: 'running', host: 'demo', port: 5432, replicationLagBytes: 0, cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 100, source: 'agent' }] } });
   app.use(requireAdmin(store));
   mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec });
-  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store);
+  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store);
   await seedDemoOnFirstRun(store, demo);
 
   // --- scripted fake agent -------------------------------------------------------------------------------
@@ -39,6 +40,7 @@ const withAgent = process.env.NO_AGENT !== '1';
     const full = addSet(new Date(Date.now() - 6 * 86400e3), 'F');
     for (let i = 5; i >= 1; i--) addSet(new Date(Date.now() - i * 86400e3), 'I', full);
     let xact = 1000;
+    let hbaManaged: any[] = []; const hbaRev = () => createHash('sha1').update(JSON.stringify(hbaManaged)).digest('hex').slice(0, 16);
     const snap = () => ({
       postgres: { alive: true, is_in_recovery: false, role: 'primary', version: '16.4', current_lsn: '0/5000000', timeline: 1, xact_total: (xact += 400), connections: { used: 12, max: 100 },
         databases: [{ oid: 16384, name: 'appdb', size: 4e9 }, { oid: 16385, name: 'billing', size: 1e9 }], settings: { archive_mode: process.env.ARCHIVE_OFF ? 'off' : 'on' },
@@ -52,6 +54,17 @@ const withAgent = process.env.NO_AGENT !== '1';
     const handle = async (op: any) => {
       const p = op.params;
       await report(op.id, { status: 'running', progress: { phase: 'starting' } });
+      if (op.type === 'hba_read') {
+        const eff = [{ line_number: 90, type: 'local', database: ['all'], user_name: ['postgres'], address: null, netmask: null, auth_method: 'peer', options: null, error: null },
+          { line_number: 95, type: 'host', database: ['all'], user_name: ['all'], address: '10.0.0.0', netmask: '255.0.0.0', auth_method: 'md5', options: null, error: null }];
+        const mrules = hbaManaged.map(r => ({ ...r }));
+        return report(op.id, { status: 'succeeded', result: { hba_file: '/etc/postgresql/16/main/pg_hba.conf', mode: 'file', rev: hbaRev(), raw: '# fake pg_hba\nlocal all postgres peer\nhost all all 10.0.0.0/8 md5\n', truncated: false,
+          managed: { present: mrules.length > 0, rules: mrules, rev: hbaRev() }, effective: [...hbaManaged.map((r, i) => ({ line_number: 10 + i, type: r.type, database: r.database.split(','), user_name: r.user.split(','), address: r.address.split('/')[0] || null, netmask: null, auth_method: r.method, options: null, error: null })), ...eff],
+          errors: [], ssl: true, has_includes: false, rule_count: 2, suggest: { replication_clients: [{ user: 'replicator', address: '10.0.2.7', ssl: true }], roles: ['app', 'replicator', 'dba'], databases: ['appdb', 'billing', 'postgres'] }, backups: [] } });
+      }
+      if (op.type === 'hba_plan') { await sleep(300); const rs = p.rules || []; return report(op.id, { status: 'succeeded', result: { valid: true, errors: [], warnings: [], changed: JSON.stringify(rs) !== JSON.stringify(hbaManaged), mode: 'file', base_rev: hbaRev(),
+        diff: ['--- pg_hba (attuale)', '+++ pg_hba (nuovo)', ...rs.map((r: any) => `+${r.type} ${r.database} ${r.user} ${r.address || ''} ${r.method}`)], simulation: [{ label: 'locale: utente postgres (peer)', before: true, after: true, critical: true }, { label: 'replica 10.0.2.7 (replicator)', before: true, after: true, critical: true }], would_lock_out: [] } }); }
+      if (op.type === 'hba_apply') { await sleep(400); hbaManaged = (p.rules || []).map((r: any) => ({ ...r })); return report(op.id, { status: 'succeeded', result: { changed: true, mode: 'file', rev: hbaRev(), backup: 'pg_hba.conf.pgarca-1', rules: hbaManaged.length } }); }
       if (op.type === 'backup_run') {
         for (let i = 1; i <= 4; i++) { await sleep(700); const r = await report(op.id, { status: 'running', progress: { phase: 'copy', files: i * 100, files_total: 400, bytes: i * 1e8, bytes_total: 4e8 } }); if (r.body.cancel) return report(op.id, { status: 'failed', error: 'cancelled' }); }
         const parent = [...sets].reverse().find(s => s.type === 'full')?.id;
