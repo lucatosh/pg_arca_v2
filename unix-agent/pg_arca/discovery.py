@@ -1,469 +1,758 @@
 """
-pg_arca Intelligent Configuration & Cluster Discovery Engine
-============================================================
-Deep scanner for PostgreSQL, Patroni, ETCD, PgBouncer, and HA components
-across standard Unix paths, environment variables, systemd services, and running processes.
+pg_arca real auto-discovery engine
+==================================
+Everything reported here is *observed on the host*; nothing is assumed or
+defaulted. If PostgreSQL is not found, the result is simply empty.
+
+Evidence sources (in order of trust):
+  1. /proc            running processes, cwd, uid, open sockets  (no privileges needed
+                      for own processes; root sees everything)
+  2. PGDATA files     postmaster.pid, PG_VERSION, global/pg_control (system_identifier),
+                      postgresql.conf / postgresql.auto.conf, standby.signal,
+                      pg_tblspc symlinks
+  3. Patroni          patroni.yml found from the process command line + live REST probe
+  4. systemd          unit state (informational)
+  5. Config files    pgbouncer.ini, etcd conf, pgbackrest.conf (migration hint)
+
+Compatible with Python 3.6+ (RHEL 8) and stdlib only.
 """
 
-import os
-import sys
-import re
+import glob
+import ipaddress
 import json
-import socket
 import logging
-from typing import Dict, List, Any, Optional
+import os
+import re
+import shutil
+import socket
+import struct
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("pg_arca.discovery")
 
-# Standard classic Unix search directories
-DEFAULT_SEARCH_PATHS = [
-    # Patroni configs
-    "/etc/patroni",
-    "/etc/patroni.yml",
-    "/etc/patroni.yaml",
-    "/opt/patroni",
-    "/var/lib/patroni",
-    "/etc/patroni/configs",
-    
-    # PostgreSQL standard paths (Debian / Ubuntu / RHEL)
-    "/etc/postgresql",
-    "/var/lib/postgresql",
-    "/var/lib/postgresql/data",
-    "/var/lib/pgsql",
-    "/var/lib/pgsql/data",
-    "/usr/local/pgsql/data",
-    
-    # ETCD / DCS configs
-    "/etc/etcd",
-    "/etc/default/etcd",
-    "/var/lib/etcd",
-    
-    # PgBouncer / HAProxy
-    "/etc/pgbouncer",
-    "/etc/haproxy",
-    
-    # Backup & Archiving
-    "/etc/pgbackrest",
-    "/etc/pg-arca",
-    "/var/lib/pgarca"
+SCHEMA_VERSION = 2
+
+PG_INTERESTING_PARAMS = (
+    "port", "listen_addresses", "unix_socket_directories", "wal_level", "archive_mode",
+    "archive_command", "archive_timeout", "max_wal_senders", "max_connections",
+    "wal_log_hints", "data_checksums", "shared_preload_libraries", "hot_standby",
+    "primary_conninfo", "restore_command", "max_wal_size", "data_directory",
+    "hba_file", "ident_file", "cluster_name", "ssl",
+)
+
+EXTRA_CONFIG_GLOBS = [
+    "/etc/patroni*.y*ml", "/etc/patroni/*.y*ml", "/opt/patroni/*.y*ml",
+    "/etc/postgresql*/**/postgresql.conf", "/var/lib/pgsql/**/postgresql.conf",
+    "/etc/pgbouncer/pgbouncer.ini", "/etc/pgbackrest/pgbackrest.conf",
+    "/etc/pgbackrest.conf", "/etc/etcd/etcd.conf*", "/etc/default/etcd",
 ]
 
-# Standard dynamic variables supported
-DEFAULT_VARIABLES = {
-    "$PGDATA": os.environ.get("PGDATA", "/var/lib/postgresql/16/main"),
-    "$PGVERSION": os.environ.get("PGVERSION", "16"),
-    "$CLUSTER_NAME": os.environ.get("CLUSTER_NAME", "cluster-prod-01"),
-    "$ENVIRONMENT": os.environ.get("ENVIRONMENT", "prod"),
-    "$HOSTNAME": socket.gethostname()
-}
+SERVICE_PATTERN = re.compile(r"(postgres|patroni|etcd|pgbouncer|haproxy|pgbackrest|pg-arca|pgpool|repmgr|keepalived)", re.I)
 
-class ClusterDiscoveryEngine:
-    def __init__(self, search_paths: Optional[List[str]] = None, custom_variables: Optional[Dict[str, str]] = None):
-        self.variables = dict(DEFAULT_VARIABLES)
-        if custom_variables:
-            self.variables.update(custom_variables)
 
-        raw_paths = search_paths or DEFAULT_SEARCH_PATHS
-        self.search_paths = [self._resolve_variables(p) for p in raw_paths]
+# ----------------------------------------------------------------------------
+# small helpers
+# ----------------------------------------------------------------------------
+def _read(path: str, limit: int = 256 * 1024) -> Optional[str]:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read(limit)
+    except Exception:
+        return None
 
-    def _resolve_variables(self, path: str) -> str:
-        res = path
-        for var, val in self.variables.items():
-            res = res.replace(var, val)
-        return os.path.expanduser(res)
 
-    def scan_all(self) -> Dict[str, Any]:
-        """
-        Runs comprehensive auto-discovery:
-        1. Filesystem scan for config files (.conf, .yml, .yaml, .ini)
-        2. Process inspection (Postgres, Patroni, ETCD, PgBouncer)
-        3. Port listener detection (5432, 8008, 2379, 6432)
-        4. Systemd service discovery
-        5. Correlated cluster topology synthesis
-        """
-        discovered_files = self._scan_filesystem()
-        running_processes = self._scan_processes()
-        listening_ports = self._scan_ports()
-        systemd_services = self._scan_systemd()
+def _run(cmd: List[str], timeout: float = 4.0, env: Optional[Dict[str, str]] = None) -> Tuple[bool, str]:
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=timeout, env=env)
+        return p.returncode == 0, (p.stdout or "").strip()
+    except Exception:
+        return False, ""
 
-        patroni_clusters = self._correlate_patroni_clusters(discovered_files, running_processes, listening_ports)
-        postgres_instances = self._correlate_postgres_instances(discovered_files, running_processes, listening_ports)
-        etcd_clusters = self._correlate_etcd(discovered_files, running_processes, listening_ports)
-        pgbouncer_instances = self._correlate_pgbouncer(discovered_files, running_processes, listening_ports)
 
-        return {
-            "node_hostname": socket.gethostname(),
-            "timestamp": "2026-10-08T21:40:00Z",
-            "search_paths_scanned": self.search_paths,
-            "variables_used": self.variables,
-            "summary": {
-                "patroni_clusters_found": len(patroni_clusters),
-                "postgres_instances_found": len(postgres_instances),
-                "etcd_clusters_found": len(etcd_clusters),
-                "pgbouncer_instances_found": len(pgbouncer_instances),
-                "total_config_files_parsed": len(discovered_files)
-            },
-            "patroni_clusters": patroni_clusters,
-            "postgres_instances": postgres_instances,
-            "etcd_clusters": etcd_clusters,
-            "pgbouncer_instances": pgbouncer_instances,
-            "discovered_config_files": discovered_files,
-            "running_processes": running_processes,
-            "listening_ports": listening_ports,
-            "systemd_services": systemd_services
-        }
-
-    def _scan_filesystem(self) -> List[Dict[str, Any]]:
-        results = []
-        visited = set()
-
-        for base_path in self.search_paths:
-            if not os.path.exists(base_path):
-                continue
-
-            if os.path.isfile(base_path):
-                if base_path not in visited:
-                    visited.add(base_path)
-                    info = self._inspect_file(base_path)
-                    if info:
-                        results.append(info)
-                continue
-
-            # Walk directory with depth limit
-            try:
-                for root, dirs, files in os.walk(base_path, followlinks=False):
-                    # Prevent deep recursions
-                    depth = root[len(base_path):].count(os.sep)
-                    if depth > 4:
-                        dirs.clear()
-                        continue
-
-                    for file in files:
-                        full_path = os.path.join(root, file)
-                        if full_path in visited:
-                            continue
-                        
-                        ext = os.path.splitext(file)[1].lower()
-                        name = file.lower()
-                        if ext in ['.conf', '.yml', '.yaml', '.ini'] or name in ['postgresql.conf', 'pg_hba.conf', 'patroni.yml', 'patroni.yaml', 'etcd.conf']:
-                            visited.add(full_path)
-                            info = self._inspect_file(full_path)
-                            if info:
-                                results.append(info)
-            except Exception as e:
-                logger.warning(f"Error scanning directory {base_path}: {e}")
-
-        return results
-
-    def _inspect_file(self, file_path: str) -> Optional[Dict[str, Any]]:
+def _http_json(url: str, timeout: float = 1.5, headers: Optional[Dict[str, str]] = None) -> Tuple[int, Any]:
+    req = urllib.request.Request(url, headers=dict({"User-Agent": "pg_arca-agent"}, **(headers or {})))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            return resp.status, (json.loads(raw) if raw.strip() else {})
+    except urllib.error.HTTPError as e:  # Patroni answers 503 for non-leader health endpoints, body is still JSON
         try:
-            stat = os.stat(file_path)
-            size = stat.st_size
-            if size > 5 * 1024 * 1024: # Skip files > 5MB
-                return None
+            return e.code, json.loads(e.read().decode("utf-8", "replace"))
+        except Exception:
+            return e.code, None
+    except Exception:
+        return 0, None
 
-            filename = os.path.basename(file_path)
-            file_type = "unknown"
-            parsed_data = {}
 
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read(64 * 1024) # read first 64KB for classification
-
-            if "patroni" in filename.lower() or "dcs:" in content or "postgresql:" in content and "scope:" in content:
-                file_type = "patroni_yaml"
-                parsed_data = self._parse_patroni_preview(content)
-            elif filename in ["postgresql.conf", "postgresql.auto.conf"] or "shared_buffers" in content or "wal_level" in content:
-                file_type = "postgresql_conf"
-                parsed_data = self._parse_postgres_preview(content)
-            elif filename == "pg_hba.conf" or "host " in content or "local " in content:
-                file_type = "pg_hba_conf"
-            elif "etcd" in filename.lower() or "ETCD_NAME" in content or "initial-cluster" in content:
-                file_type = "etcd_conf"
-            elif "pgbouncer" in filename.lower() or "[pgbouncer]" in content:
-                file_type = "pgbouncer_ini"
-
-            return {
-                "path": file_path,
-                "name": filename,
-                "size_bytes": size,
-                "permissions": oct(stat.st_mode)[-3:],
-                "file_type": file_type,
-                "parsed_highlights": parsed_data,
-                "is_readable": os.access(file_path, os.R_OK),
-                "is_writable": os.access(file_path, os.W_OK)
-            }
-        except Exception as e:
-            return {
-                "path": file_path,
-                "name": os.path.basename(file_path),
-                "error": str(e),
-                "is_readable": False
-            }
-
-    def _parse_patroni_preview(self, content: str) -> Dict[str, Any]:
-        highlights = {}
-        for line in content.splitlines():
-            line = line.strip()
-            if line.startswith("scope:"):
-                highlights["scope"] = line.split(":", 1)[1].strip().strip('"\'')
-            elif line.startswith("name:") or line.startswith("node_name:"):
-                highlights["node_name"] = line.split(":", 1)[1].strip().strip('"\'')
-            elif "listen:" in line and "8008" in line:
-                highlights["restapi_port"] = 8008
-            elif "data_dir:" in line:
-                highlights["data_dir"] = line.split(":", 1)[1].strip().strip('"\'')
-            elif "etcd3:" in line or "etcd:" in line:
-                highlights["dcs_type"] = "etcd"
-            elif "consul:" in line:
-                highlights["dcs_type"] = "consul"
-        return highlights
-
-    def _parse_postgres_preview(self, content: str) -> Dict[str, Any]:
-        params = {}
-        for line in content.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                parts = line.split("=", 1)
-                k = parts[0].strip()
-                v = parts[1].split("#")[0].strip().strip("'\"")
-                if k in ["port", "shared_buffers", "wal_level", "archive_mode", "max_connections", "archive_command", "max_wal_size"]:
-                    params[k] = v
-        return params
-
-    def _scan_processes(self) -> List[Dict[str, Any]]:
-        # Check /proc or simulation
-        processes = []
-        targets = ["postgres", "patroni", "etcd", "pgbouncer", "haproxy"]
-        
-        # Check running processes if /proc is accessible
-        if os.path.exists("/proc"):
-            try:
-                for pid in os.listdir("/proc"):
-                    if not pid.isdigit():
-                        continue
-                    cmdline_path = f"/proc/{pid}/cmdline"
-                    if os.path.exists(cmdline_path):
-                        with open(cmdline_path, 'rb') as f:
-                            raw = f.read().decode('utf-8', errors='ignore').replace('\x00', ' ')
-                            for t in targets:
-                                if t in raw:
-                                    processes.append({
-                                        "pid": int(pid),
-                                        "name": t,
-                                        "cmdline": raw[:160]
-                                    })
-                                    break
-            except Exception:
-                pass
-
-        return processes
-
-    def _scan_ports(self) -> List[Dict[str, Any]]:
-        ports_to_check = [
-            {"port": 5432, "service": "PostgreSQL"},
-            {"port": 8008, "service": "Patroni REST API"},
-            {"port": 2379, "service": "ETCD Client API"},
-            {"port": 2380, "service": "ETCD Peer Communication"},
-            {"port": 6432, "service": "PgBouncer Pooler"},
-            {"port": 9898, "service": "pg_arca Unix Node Agent"}
-        ]
-        results = []
-        for p in ports_to_check:
-            is_open = False
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(0.2)
-                res = s.connect_ex(('127.0.0.1', p['port']))
-                if res == 0:
-                    is_open = True
-                s.close()
-            except Exception:
-                pass
-            results.append({
-                "port": p["port"],
-                "service": p["service"],
-                "open": is_open
-            })
-        return results
-
-    def _scan_systemd(self) -> List[Dict[str, Any]]:
-        import subprocess
-        unit_names = [
-            ("patroni.service", "Patroni High-Availability Cluster Orchestrator"),
-            ("postgresql@16-main.service", "PostgreSQL 16 Database Cluster (managed by Patroni)"),
-            ("postgresql.service", "PostgreSQL Database Server"),
-            ("etcd.service", "ETCD Distributed Consensus Store"),
-            ("pgbouncer.service", "PgBouncer Connection Pooler"),
-            ("pg-arca-agent.service", "pg_arca Enterprise Archiver & Restore Agent")
-        ]
-        services = []
-        for unit, desc in unit_names:
-            is_active = False
-            try:
-                res = subprocess.run(["systemctl", "is-active", unit], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1)
-                is_active = (res.returncode == 0 and res.stdout.strip() == "active")
-            except Exception:
-                # If systemctl is not available or non-systemd container
-                is_active = False
-            services.append({"unit": unit, "active": is_active, "description": desc})
-        return services
-
-    def _correlate_patroni_clusters(self, files: List[Dict[str, Any]], processes: List[Dict[str, Any]], ports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        clusters = []
-        patroni_files = [f for f in files if f.get("file_type") == "patroni_yaml"]
-        patroni_port_open = any(p.get("port") == 8008 and p.get("open") for p in ports)
-        patroni_proc_running = any("patroni" in p.get("name", "").lower() for p in processes)
-
-        # Only correlate if genuine evidence of Patroni exists on this node
-        if patroni_files or patroni_port_open or patroni_proc_running:
-            cluster_name = "patroni-cluster"
-            config_path = "/etc/patroni/patroni.yml"
-            rest_url = "http://127.0.0.1:8008"
-
-            if patroni_files:
-                first = patroni_files[0]
-                config_path = first.get("path", config_path)
-                highlights = first.get("parsed_highlights", {})
-                if "scope" in highlights:
-                    cluster_name = highlights["scope"]
-
-            # Try to probe live Patroni REST API for real members
-            leader = "unknown"
-            active_count = 1
-            try:
-                import urllib.request
-                req = urllib.request.Request(f"{rest_url}/cluster", headers={"User-Agent": "pg_arca-agent"})
-                with urllib.request.urlopen(req, timeout=1.0) as resp:
-                    if resp.status == 200:
-                        c_json = json.loads(resp.read().decode())
-                        members = c_json.get("members", [])
-                        active_count = len(members)
-                        for m in members:
-                            if m.get("role") in ("leader", "primary"):
-                                leader = m.get("name", "unknown")
-            except Exception:
-                pass
-
-            clusters.append({
-                "id": f"disc-{cluster_name}",
-                "name": cluster_name,
-                "detected_from": config_path,
-                "dcs_type": "etcd",
-                "dcs_endpoint": "http://127.0.0.1:2379",
-                "restapi_endpoint": rest_url,
-                "pg_data_dir": self.variables.get("$PGDATA", "/var/lib/postgresql/16/main"),
-                "active_nodes_count": active_count,
-                "leader_node": leader,
-                "dynamic_configuration_detected": True,
-                "wal_archive_enabled": True,
-                "status": "ready_to_import"
-            })
-        return clusters
-
-    def _correlate_postgres_instances(self, files: List[Dict[str, Any]], processes: List[Dict[str, Any]], ports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        instances = []
-        pg_port_open = any(p.get("port") == 5432 and p.get("open") for p in ports)
-        pg_proc_running = any("postgres" in p.get("name", "").lower() for p in processes)
-        pg_files = [f for f in files if "postgresql" in f.get("path", "").lower()]
-
-        if pg_port_open or pg_proc_running or pg_files:
-            instances.append({
-                "version": f"PostgreSQL {self.variables.get('$PGVERSION', '16')}",
-                "data_directory": self.variables.get("$PGDATA", "/var/lib/postgresql/16/main"),
-                "config_file": pg_files[0].get("path") if pg_files else "/etc/postgresql/16/main/postgresql.conf",
-                "hba_file": "/etc/postgresql/16/main/pg_hba.conf",
-                "port": 5432,
-                "socket_directory": "/var/run/postgresql",
-                "is_managed_by_patroni": any(p.get("port") == 8008 and p.get("open") for p in ports),
-                "port_listening": pg_port_open
-            })
-        return instances
-
-    def _correlate_etcd(self, files: List[Dict[str, Any]], processes: List[Dict[str, Any]], ports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        etcd_instances = []
-        etcd_port_open = any(p.get("port") == 2379 and p.get("open") for p in ports)
-        etcd_proc = any("etcd" in p.get("name", "").lower() for p in processes)
-        if etcd_port_open or etcd_proc:
-            etcd_instances.append({
-                "cluster_token": "etcd-patroni-cluster",
-                "client_url": "http://127.0.0.1:2379",
-                "status": "active" if etcd_port_open else "standby"
-            })
-        return etcd_instances
-
-    def _correlate_pgbouncer(self, files: List[Dict[str, Any]], processes: List[Dict[str, Any]], ports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        pgb_instances = []
-        pgb_port_open = any(p.get("port") == 6432 and p.get("open") for p in ports)
-        pgb_proc = any("pgbouncer" in p.get("name", "").lower() for p in processes)
-        if pgb_port_open or pgb_proc:
-            pgb_instances.append({
-                "config_path": "/etc/pgbouncer/pgbouncer.ini",
-                "port": 6432,
-                "pool_mode": "transaction",
-                "status": "active" if pgb_port_open else "standby"
-            })
-        return pgb_instances
-
-    def scan_network_cidr(self, target_cidr: str, ports: Optional[List[int]] = None, timeout_ms: int = 300) -> Dict[str, Any]:
-        """
-        Executes genuine non-blocking TCP socket scans across network CIDR / subnets
-        from the Unix Agent node to discover live PostgreSQL, Patroni, and DCS endpoints.
-        """
-        import time
-        check_ports = ports or [5432, 8008, 2379, 6432, 9898]
-        start_t = time.time()
-        discovered = []
-
-        # Parse target IPs
-        ips = []
-        if "/" in target_cidr:
-            try:
-                import ipaddress
-                net = ipaddress.ip_network(target_cidr, strict=False)
-                # limit to first 256 hosts for fast responsive scanning
-                for i, ip_obj in enumerate(net.hosts()):
-                    if i >= 256:
-                        break
-                    ips.append(str(ip_obj))
-            except Exception:
-                ips = [target_cidr.split("/")[0]]
+def parse_conf(text: str) -> Dict[str, str]:
+    """Parse postgresql.conf style 'key = value  # comment' lines (last one wins, like PG)."""
+    out = {}  # type: Dict[str, str]
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^([A-Za-z_][\w.]*)\s*(?:=|\s)\s*(.*)$", line)
+        if not m:
+            continue
+        key, val = m.group(1).lower(), m.group(2).strip()
+        if val.startswith("'"):
+            end = val.find("'", 1)
+            while end != -1 and val[end - 1:end + 1] == "\\'":
+                end = val.find("'", end + 1)
+            val = val[1:end] if end != -1 else val[1:]
         else:
-            ips = [target_cidr.strip()]
+            val = val.split("#", 1)[0].strip()
+        out[key] = val
+    return out
 
-        for host in ips:
-            for pt in check_ports:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(timeout_ms / 1000.0)
-                probe_start = time.time()
-                try:
-                    res = s.connect_ex((host, pt))
-                    latency_ms = max(1, int((time.time() - probe_start) * 1000))
-                    if res == 0:
-                        svc = "PostgreSQL" if pt == 5432 else "Patroni REST API" if pt == 8008 else "ETCD DCS" if pt == 2379 else "PgBouncer" if pt == 6432 else "pg_arca Agent"
-                        discovered.append({
-                            "host": host,
-                            "port": pt,
-                            "open": True,
-                            "service": svc,
-                            "latency_ms": latency_ms
-                        })
-                except Exception:
-                    pass
-                finally:
-                    s.close()
 
-        duration_ms = int((time.time() - start_t) * 1000)
+def parse_simple_yaml(text: str) -> Dict[str, Any]:
+    """
+    Minimal YAML reader sufficient for patroni.yml (maps, nested maps, scalars,
+    '- item' lists, inline [a, b] lists). Falls back to PyYAML when installed.
+    """
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+
+    def scalar(v: str) -> Any:
+        v = v.strip()
+        if " #" in v:
+            v = v.split(" #", 1)[0].strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+            return v[1:-1]
+        if v.startswith("[") and v.endswith("]"):
+            return [scalar(x) for x in v[1:-1].split(",") if x.strip()]
+        low = v.lower()
+        if low in ("true", "yes"):
+            return True
+        if low in ("false", "no"):
+            return False
+        if re.match(r"^-?\d+$", v):
+            return int(v)
+        return v
+
+    root = {}  # type: Dict[str, Any]
+    stack = [(-1, root)]  # (indent, container)
+    last_key = {}  # id(container) -> key awaiting value
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        line = raw.strip()
+        while len(stack) > 1 and indent <= stack[-1][0]:
+            stack.pop()
+        container = stack[-1][1]
+        if line.startswith("- "):
+            key = last_key.get(id(container))
+            if key is not None:
+                if not isinstance(container.get(key), list):
+                    container[key] = []
+                container[key].append(scalar(line[2:]))
+            continue
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        k = k.strip().strip("'\"")
+        v = v.strip()
+        if v == "" or v.startswith("#"):
+            child = {}  # type: Dict[str, Any]
+            container[k] = child
+            last_key[id(container)] = k
+            stack.append((indent, child))
+        else:
+            container[k] = scalar(v)
+            last_key[id(container)] = k
+    return root
+
+
+def read_system_identifier(pgdata: str) -> Optional[str]:
+    """First 8 bytes of global/pg_control are the cluster's system_identifier (uint64, host endian)."""
+    try:
+        with open(os.path.join(pgdata, "global", "pg_control"), "rb") as f:
+            raw = f.read(8)
+        if len(raw) == 8:
+            return str(struct.unpack("=Q", raw)[0])
+    except Exception:
+        pass
+    return None
+
+
+# ----------------------------------------------------------------------------
+# engine
+# ----------------------------------------------------------------------------
+class ClusterDiscoveryEngine:
+    def __init__(self, search_paths: Optional[List[str]] = None, custom_variables: Optional[Dict[str, str]] = None,
+                 pg_user: str = "postgres"):
+        self.extra_paths = list(search_paths or [])
+        self.variables = dict(custom_variables or {})
+        self.pg_user = pg_user
+
+    # ---- public --------------------------------------------------------
+    def scan_all(self) -> Dict[str, Any]:
+        t0 = time.time()
+        procs = self._scan_processes()
+        listeners = self._scan_listeners(procs)
+        systemd = self._scan_systemd()
+
+        instances = self._discover_postgres(procs, listeners)
+        patroni = self._discover_patroni(procs, listeners, instances)
+        etcd = self._discover_etcd(procs, listeners)
+        pgb = self._discover_pgbouncer(procs, listeners)
+        backrest = self._discover_pgbackrest()
+        self._link_patroni_to_instances(instances, patroni)
+
         return {
-            "target": target_cidr,
-            "ips_scanned_count": len(ips),
-            "ports_checked": check_ports,
-            "active_endpoints": discovered,
-            "duration_ms": duration_ms
+            "schema_version": SCHEMA_VERSION,
+            "node_hostname": socket.gethostname(),
+            "fqdn": socket.getfqdn(),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "scan_duration_ms": int((time.time() - t0) * 1000),
+            "run_as": {"uid": os.geteuid(), "is_root": os.geteuid() == 0},
+            "toolchain": self._toolchain(),
+            "summary": {
+                "postgres_instances_found": len(instances),
+                "patroni_clusters_found": len(patroni),
+                "etcd_clusters_found": len(etcd),
+                "pgbouncer_instances_found": len(pgb),
+                "pgbackrest_stanzas_found": sum(len(b.get("stanzas", [])) for b in backrest),
+            },
+            "postgres_instances": instances,
+            "patroni_clusters": patroni,
+            "etcd_clusters": etcd,
+            "pgbouncer_instances": pgb,
+            "pgbackrest": backrest,
+            "listening_ports": listeners,
+            "systemd_services": systemd,
+            "running_processes": [{k: p[k] for k in ("pid", "name", "uid", "cmdline")} for p in procs],
+            "warnings": self._warnings(procs, instances),
         }
+
+    # ---- tooling -------------------------------------------------------
+    def _toolchain(self) -> Dict[str, Optional[str]]:
+        names = ["psql", "pg_controldata", "pg_basebackup", "pg_waldump", "pg_amcheck",
+                 "pg_ctl", "patronictl", "pgbackrest", "zstd", "systemctl"]
+        found = {n: shutil.which(n) for n in names}
+        # RHEL / PGDG keep binaries out of PATH: /usr/pgsql-NN/bin, Debian: /usr/lib/postgresql/NN/bin
+        for pat in ("/usr/pgsql-*/bin", "/usr/lib/postgresql/*/bin", "/opt/pgsql*/bin", "/usr/local/pgsql*/bin"):
+            for d in sorted(glob.glob(pat), reverse=True):
+                for n in names:
+                    if not found.get(n) and os.path.exists(os.path.join(d, n)):
+                        found[n] = os.path.join(d, n)
+        try:
+            import zstandard  # noqa: F401
+            found["python_zstandard"] = "installed"
+        except Exception:
+            found["python_zstandard"] = None
+        return found
+
+    def _find_bin(self, name: str, bin_dirs: Optional[List[str]] = None) -> Optional[str]:
+        for d in bin_dirs or []:
+            p = os.path.join(d, name)
+            if os.path.exists(p):
+                return p
+        return self._toolchain().get(name)
+
+    # ---- processes -----------------------------------------------------
+    def _scan_processes(self) -> List[Dict[str, Any]]:
+        out = []
+        interesting = ("postgres", "postmaster", "patroni", "etcd", "pgbouncer", "haproxy", "pgbackrest", "pg_arca", "pg-arca")
+        for pid_s in os.listdir("/proc") if os.path.isdir("/proc") else []:
+            if not pid_s.isdigit():
+                continue
+            base = "/proc/%s" % pid_s
+            try:
+                with open(base + "/cmdline", "rb") as f:
+                    argv = [a for a in f.read().decode("utf-8", "replace").split("\x00") if a != ""]
+            except Exception:
+                continue
+            if not argv:
+                continue
+            exe_name = os.path.basename(argv[0].split()[0]) if argv[0] else ""
+            joined = " ".join(argv)
+            name = None
+            for t in interesting:
+                if exe_name == t or exe_name.startswith(t) or (t in ("patroni", "pg_arca") and t in joined):
+                    name = "postgres" if t == "postmaster" else t
+                    break
+            if name is None:
+                continue
+            uid = -1
+            status = _read(base + "/status", 4096) or ""
+            m = re.search(r"^Uid:\s+(\d+)", status, re.M)
+            ppid_m = re.search(r"^PPid:\s+(\d+)", status, re.M)
+            if m:
+                uid = int(m.group(1))
+            try:
+                cwd = os.readlink(base + "/cwd")
+            except Exception:
+                cwd = None
+            out.append({
+                "pid": int(pid_s), "ppid": int(ppid_m.group(1)) if ppid_m else 0,
+                "name": name, "uid": uid, "argv": argv, "cwd": cwd, "cmdline": joined[:300],
+            })
+        return out
+
+    # ---- listeners (/proc/net/tcp -> pid) ------------------------------
+    def _scan_listeners(self, procs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        inode_to_pid = {}  # type: Dict[str, int]
+        for p in procs:
+            try:
+                for fd in os.listdir("/proc/%d/fd" % p["pid"]):
+                    try:
+                        tgt = os.readlink("/proc/%d/fd/%s" % (p["pid"], fd))
+                    except Exception:
+                        continue
+                    if tgt.startswith("socket:["):
+                        inode_to_pid[tgt[8:-1]] = p["pid"]
+            except Exception:
+                continue
+        pid_name = {p["pid"]: p["name"] for p in procs}
+        known = {5432: "PostgreSQL", 6432: "PgBouncer", 8008: "Patroni REST", 2379: "etcd client",
+                 2380: "etcd peer", 9898: "pg_arca agent", 5000: "HAProxy (rw)", 5001: "HAProxy (ro)"}
+        out = []
+        seen = set()
+        for fname, v6 in (("/proc/net/tcp", False), ("/proc/net/tcp6", True)):
+            text = _read(fname) or ""
+            for line in text.splitlines()[1:]:
+                f = line.split()
+                if len(f) < 10 or f[3] != "0A":  # 0A = LISTEN
+                    continue
+                addr_hex, port_hex = f[1].rsplit(":", 1)
+                port = int(port_hex, 16)
+                inode = f[9]
+                pid = inode_to_pid.get(inode)
+                if (port, pid) in seen:
+                    continue
+                seen.add((port, pid))
+                if pid is None and port not in known:
+                    continue  # unrelated listener we cannot attribute
+                loopback = addr_hex in ("0100007F", "00000000000000000000000001000000")
+                out.append({"port": port, "pid": pid, "process": pid_name.get(pid),
+                            "service_hint": known.get(port), "loopback_only": loopback, "ipv6": v6})
+        return sorted(out, key=lambda x: x["port"])
+
+    # ---- systemd -------------------------------------------------------
+    def _scan_systemd(self) -> List[Dict[str, Any]]:
+        if not shutil.which("systemctl"):
+            return []
+        ok, txt = _run(["systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain", "--no-pager"], timeout=4)
+        if not ok:
+            return []
+        out = []
+        for line in txt.splitlines():
+            parts = line.split(None, 4)
+            if len(parts) >= 4 and SERVICE_PATTERN.search(parts[0]):
+                out.append({"unit": parts[0], "load": parts[1], "active": parts[2] == "active",
+                            "sub": parts[3], "description": parts[4] if len(parts) > 4 else ""})
+        return out
+
+    # ---- PostgreSQL ----------------------------------------------------
+    def _postmaster_pgdata(self, p: Dict[str, Any]) -> Optional[str]:
+        argv = p["argv"]
+        for i, a in enumerate(argv):
+            if a == "-D" and i + 1 < len(argv):
+                return os.path.abspath(argv[i + 1])
+            if a.startswith("-D") and len(a) > 2:
+                return os.path.abspath(a[2:])
+            if a.startswith("--pgdata="):
+                return os.path.abspath(a.split("=", 1)[1])
+        if p["cwd"] and os.path.exists(os.path.join(p["cwd"], "PG_VERSION")):
+            return p["cwd"]  # postmaster chdir()s into PGDATA
+        return None
+
+    def _discover_postgres(self, procs: List[Dict[str, Any]], listeners: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        pgdatas = {}  # type: Dict[str, Dict[str, Any]]
+        pids = {p["pid"] for p in procs if p["name"] == "postgres"}
+        for p in procs:
+            if p["name"] != "postgres":
+                continue
+            if p["ppid"] in pids:      # backend / worker, not the postmaster
+                continue
+            base = os.path.basename(p["argv"][0].split()[0])
+            if base not in ("postgres", "postmaster", "postgres:"):
+                continue
+            d = self._postmaster_pgdata(p)
+            if d:
+                pgdatas[d] = {"pid": p["pid"], "running": True, "uid": p["uid"], "cmdline": p["cmdline"]}
+
+        # Patroni `data_dir` and well-known locations: also report *stopped* clusters
+        for pat in ("/var/lib/pgsql/*/data", "/var/lib/pgsql/data", "/var/lib/postgresql/*/*", "/var/lib/postgresql/data"):
+            for d in glob.glob(pat):
+                if os.path.exists(os.path.join(d, "PG_VERSION")) and d not in pgdatas:
+                    pgdatas[d] = {"pid": None, "running": self._pid_alive_from_file(d), "uid": None, "cmdline": None}
+        for d in self.extra_paths:
+            if os.path.exists(os.path.join(d, "PG_VERSION")):
+                pgdatas.setdefault(d, {"pid": None, "running": self._pid_alive_from_file(d), "uid": None, "cmdline": None})
+
+        out = []
+        for d, ev in sorted(pgdatas.items()):
+            out.append(self._inspect_pgdata(d, ev, listeners))
+        return out
+
+    @staticmethod
+    def _pid_alive_from_file(pgdata: str) -> bool:
+        txt = _read(os.path.join(pgdata, "postmaster.pid"), 2048)
+        if not txt:
+            return False
+        try:
+            return os.path.exists("/proc/%d" % int(txt.splitlines()[0]))
+        except Exception:
+            return False
+
+    def _inspect_pgdata(self, pgdata: str, ev: Dict[str, Any], listeners: List[Dict[str, Any]]) -> Dict[str, Any]:
+        warn = []  # type: List[str]
+        readable = os.access(pgdata, os.R_OK | os.X_OK)
+        info = {
+            "data_directory": pgdata,
+            "readable_by_agent": readable,
+            "running": ev["running"],
+            "postmaster_pid": ev["pid"],
+            "os_user_uid": ev["uid"],
+        }  # type: Dict[str, Any]
+        if not readable:
+            warn.append("PGDATA is not readable by the agent user (run the agent as the postgres user or root)")
+
+        ver = (_read(os.path.join(pgdata, "PG_VERSION"), 32) or "").strip()
+        info["major_version"] = ver or None
+        info["system_identifier"] = read_system_identifier(pgdata)
+
+        # postmaster.pid: line1 pid, 2 datadir, 3 start time, 4 port, 5 socket dir, 6 listen addr
+        pidtxt = _read(os.path.join(pgdata, "postmaster.pid"), 4096)
+        port = None
+        sockdir = None
+        if pidtxt:
+            ls = pidtxt.splitlines()
+            if len(ls) >= 5:
+                port = int(ls[3]) if ls[3].strip().isdigit() else None
+                sockdir = ls[4].strip() or None
+            if len(ls) >= 6:
+                info["listen_address"] = ls[5].strip()
+
+        # configuration: main conf may live outside PGDATA (Debian) -> try cmdline -c config_file=, then PGDATA
+        conf_candidates = [os.path.join(pgdata, "postgresql.conf")]
+        if ev.get("cmdline"):
+            m = re.search(r"config_file=(\S+)", ev["cmdline"])
+            if m:
+                conf_candidates.insert(0, m.group(1))
+        for cand in glob.glob("/etc/postgresql/*/*/postgresql.conf"):
+            txt = _read(cand) or ""
+            if parse_conf(txt).get("data_directory", "").rstrip("/") == pgdata.rstrip("/"):
+                conf_candidates.insert(0, cand)
+        conf = {}  # type: Dict[str, str]
+        conf_file = None
+        for c in conf_candidates:
+            txt = _read(c)
+            if txt is not None:
+                conf = parse_conf(txt)
+                conf_file = c
+                break
+        auto = parse_conf(_read(os.path.join(pgdata, "postgresql.auto.conf")) or "")
+        conf.update(auto)
+        info["config_file"] = conf_file
+        info["settings"] = {k: conf[k] for k in PG_INTERESTING_PARAMS if k in conf}
+
+        if port is None and "port" in conf and conf["port"].isdigit():
+            port = int(conf["port"])
+        info["port"] = port
+        if sockdir is None and "unix_socket_directories" in conf:
+            sockdir = conf["unix_socket_directories"].split(",")[0].strip() or None
+        info["socket_directory"] = sockdir
+        info["port_listening"] = any(l["port"] == port for l in listeners) if port else False
+
+        # role hint without connecting
+        has_standby = os.path.exists(os.path.join(pgdata, "standby.signal"))
+        has_recovery = os.path.exists(os.path.join(pgdata, "recovery.signal"))
+        info["role_hint"] = "standby" if has_standby else ("recovering" if has_recovery else "primary")
+        info["role_hint_source"] = "signal files (confirm with pg_is_in_recovery())"
+
+        # archive state
+        arch_cmd = conf.get("archive_command", "")
+        info["archiving"] = {
+            "archive_mode": conf.get("archive_mode", "off"),
+            "archive_command": arch_cmd,
+            "wal_level": conf.get("wal_level"),
+            "managed_by_pg_arca": "pg-arca" in arch_cmd or "pg_arca" in arch_cmd,
+            "foreign_tool": ("pgbackrest" if "pgbackrest" in arch_cmd else
+                             "wal-g" if "wal-g" in arch_cmd else
+                             "barman" if "barman" in arch_cmd else None),
+        }
+
+        # tablespaces (real symlinks)
+        tbs = []
+        tsdir = os.path.join(pgdata, "pg_tblspc")
+        try:
+            for e in sorted(os.listdir(tsdir)):
+                lp = os.path.join(tsdir, e)
+                if os.path.islink(lp):
+                    tbs.append({"oid": e, "location": os.path.realpath(lp), "exists": os.path.exists(lp)})
+        except Exception:
+            pass
+        info["tablespaces"] = tbs
+
+        # pg_controldata (authoritative: checksums, timeline, state, LSN)
+        info["control"] = self._controldata(pgdata, ver)
+        if info["control"].get("data_checksums") is False and conf.get("wal_log_hints", "off") != "on":
+            warn.append("data_checksums=off and wal_log_hints=off: page-level incrementals are NOT safe; only full backups allowed")
+
+        # Postgres version from binary directory
+        info["warnings"] = warn
+        info["connect"] = {"host": sockdir or "127.0.0.1", "port": port, "user": self.pg_user}
+        return info
+
+    def _controldata(self, pgdata: str, major: str) -> Dict[str, Any]:
+        bins = ["/usr/pgsql-%s/bin" % major, "/usr/lib/postgresql/%s/bin" % major]
+        exe = self._find_bin("pg_controldata", bins)
+        if not exe:
+            return {"available": False, "reason": "pg_controldata not found"}
+        ok, txt = _run([exe, "-D", pgdata], timeout=5, env=dict(os.environ, LC_ALL="C"))
+        if not ok:
+            return {"available": False, "reason": "pg_controldata failed (permissions?)"}
+        kv = {}
+        for line in txt.splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                kv[k.strip()] = v.strip()
+        cs = kv.get("Data page checksum version")
+        return {
+            "available": True,
+            "system_identifier": kv.get("Database system identifier"),
+            "cluster_state": kv.get("Database cluster state"),
+            "timeline": int(kv["Latest checkpoint's TimeLineID"]) if kv.get("Latest checkpoint's TimeLineID", "").isdigit() else None,
+            "checkpoint_lsn": kv.get("Latest checkpoint location"),
+            "redo_lsn": kv.get("Latest checkpoint's REDO location"),
+            "wal_level": kv.get("wal_level setting"),
+            "data_checksums": (cs is not None and cs != "0"),
+            "block_size": int(kv["Database block size"]) if kv.get("Database block size", "").isdigit() else None,
+            "wal_segment_size": int(kv["Bytes per WAL segment"]) if kv.get("Bytes per WAL segment", "").isdigit() else None,
+            "max_connections": int(kv["max_connections setting"]) if kv.get("max_connections setting", "").isdigit() else None,
+        }
+
+    # ---- Patroni -------------------------------------------------------
+    def _discover_patroni(self, procs, listeners, instances) -> List[Dict[str, Any]]:
+        yml_paths = []  # type: List[str]
+        running = [p for p in procs if p["name"] == "patroni"]
+        for p in running:
+            for a in p["argv"][1:]:
+                if re.search(r"\.ya?ml$", a) and os.path.exists(a):
+                    yml_paths.append(a)
+        for pat in EXTRA_CONFIG_GLOBS[:3]:
+            for f in glob.glob(pat):
+                txt = _read(f, 65536) or ""
+                if re.search(r"^scope\s*:", txt, re.M) and re.search(r"^\s*postgresql\s*:", txt, re.M):
+                    yml_paths.append(f)
+        yml_paths = list(dict.fromkeys(yml_paths))
+        if not yml_paths and running:
+            yml_paths = [""]  # process seen but config unreadable: still report with live probe
+        elif not yml_paths and any(l["port"] == 8008 for l in listeners):
+            code, nd = _http_json("http://127.0.0.1:8008/patroni")   # only if it really answers like Patroni
+            if isinstance(nd, dict) and "patroni" in nd:
+                yml_paths = [""]
+
+        out = []
+        for path in yml_paths:
+            cfg = parse_simple_yaml(_read(path) or "") if path else {}
+            rest = cfg.get("restapi", {}) if isinstance(cfg.get("restapi"), dict) else {}
+            pg = cfg.get("postgresql", {}) if isinstance(cfg.get("postgresql"), dict) else {}
+            listen = str(rest.get("listen", "0.0.0.0:8008"))
+            rport = int(listen.rsplit(":", 1)[-1]) if listen.rsplit(":", 1)[-1].isdigit() else 8008
+            connect = str(rest.get("connect_address", "")) or "127.0.0.1:%d" % rport
+            scheme = "https" if rest.get("certfile") else "http"
+            base = "%s://127.0.0.1:%d" % (scheme, rport)
+            auth_hdr = {}  # type: Dict[str, str]
+            ra = rest.get("authentication")
+            if isinstance(ra, dict) and ra.get("username"):
+                import base64
+                auth_hdr["Authorization"] = "Basic " + base64.b64encode(
+                    ("%s:%s" % (ra.get("username"), ra.get("password", ""))).encode()).decode()
+
+            dcs = None
+            dcs_hosts = None
+            for t in ("etcd3", "etcd", "consul", "zookeeper", "exhibitor", "kubernetes", "raft"):
+                if t in cfg:
+                    dcs = t
+                    sect = cfg[t]
+                    if isinstance(sect, dict):
+                        dcs_hosts = sect.get("hosts") or sect.get("host") or sect.get("url") or sect.get("hosts_url")
+                    break
+
+            node = {}  # type: Dict[str, Any]
+            members = []  # type: List[Dict[str, Any]]
+            code, nd = _http_json(base + "/patroni", headers=auth_hdr)
+            if isinstance(nd, dict):
+                node = {"role": nd.get("role"), "state": nd.get("state"), "timeline": nd.get("timeline"),
+                        "patroni_version": (nd.get("patroni") or {}).get("version"),
+                        "server_version": nd.get("server_version"), "pending_restart": nd.get("pending_restart"),
+                        "replication_state": nd.get("replication_state"),
+                        "xlog": nd.get("xlog"), "tags": nd.get("tags")}
+            ccode, cd = _http_json(base + "/cluster", headers=auth_hdr)
+            if isinstance(cd, dict):
+                members = [{"name": m.get("name"), "role": m.get("role"), "state": m.get("state"),
+                            "host": m.get("host"), "port": m.get("port"), "timeline": m.get("timeline"),
+                            "lag": m.get("lag"), "api_url": m.get("api_url")} for m in cd.get("members", [])]
+            leader = next((m["name"] for m in members if m["role"] in ("leader", "master", "primary")), None)
+            dcfg = {}
+            dcode, dd = _http_json(base + "/config", headers=auth_hdr)
+            if isinstance(dd, dict):
+                dcfg = {"ttl": dd.get("ttl"), "loop_wait": dd.get("loop_wait"), "retry_timeout": dd.get("retry_timeout"),
+                        "maximum_lag_on_failover": dd.get("maximum_lag_on_failover"),
+                        "synchronous_mode": (dd.get("synchronous_mode") or False),
+                        "use_pg_rewind": (dd.get("postgresql") or {}).get("use_pg_rewind"),
+                        "parameters": (dd.get("postgresql") or {}).get("parameters", {})}
+
+            scope = cfg.get("scope") or (cd.get("scope") if isinstance(cd, dict) else None)
+            out.append({
+                "scope": scope,
+                "namespace": cfg.get("namespace"),
+                "node_name": cfg.get("name") or node.get("name"),
+                "config_path": path or None,
+                "restapi_port": rport,
+                "restapi_authenticated": bool(auth_hdr),
+                "rest_reachable": code in (200, 503) and isinstance(nd, dict),
+                "dcs_type": dcs, "dcs_hosts": dcs_hosts,
+                "data_dir": pg.get("data_dir"),
+                "bin_dir": pg.get("bin_dir"),
+                "pg_connect_address": pg.get("connect_address"),
+                "local_node": node, "members": members, "leader": leader,
+                "dynamic_config": dcfg,
+                "uses_pg_arca_replica_method": "pg_arca" in json.dumps(pg.get("create_replica_methods", "")),
+            })
+        return out
+
+    def _link_patroni_to_instances(self, instances, patroni):
+        for inst in instances:
+            for pc in patroni:
+                dd = pc.get("data_dir")
+                if dd and os.path.realpath(dd) == os.path.realpath(inst["data_directory"]):
+                    inst["patroni"] = {"scope": pc["scope"], "node_name": pc["node_name"],
+                                       "role": pc["local_node"].get("role"), "state": pc["local_node"].get("state"),
+                                       "restapi_port": pc["restapi_port"]}
+                    inst["cluster_key"] = "patroni:%s" % pc["scope"]
+                    break
+            else:
+                if inst.get("system_identifier"):
+                    inst["cluster_key"] = "sysid:%s" % inst["system_identifier"]
+
+    # ---- etcd ----------------------------------------------------------
+    def _discover_etcd(self, procs, listeners) -> List[Dict[str, Any]]:
+        out = []
+        for p in procs:
+            if p["name"] != "etcd":
+                continue
+            args = " ".join(p["argv"])
+            def opt(name):
+                m = re.search(r"--%s[= ]([^\s]+)" % name, args)
+                return m.group(1) if m else None
+            out.append({"pid": p["pid"], "name": opt("name"), "data_dir": opt("data-dir"),
+                        "client_urls": opt("listen-client-urls"), "advertise_client_urls": opt("advertise-client-urls"),
+                        "initial_cluster": opt("initial-cluster"),
+                        "client_port_listening": any(l["port"] == 2379 for l in listeners)})
+        return out
+
+    # ---- pgbouncer -----------------------------------------------------
+    def _discover_pgbouncer(self, procs, listeners) -> List[Dict[str, Any]]:
+        paths = []
+        for p in procs:
+            if p["name"] == "pgbouncer":
+                paths += [a for a in p["argv"][1:] if a.endswith(".ini") and os.path.exists(a)]
+        if os.path.exists("/etc/pgbouncer/pgbouncer.ini"):
+            paths.append("/etc/pgbouncer/pgbouncer.ini")
+        out = []
+        for path in list(dict.fromkeys(paths)):
+            txt = _read(path) or ""
+            sect = None
+            vals = {}   # type: Dict[str, str]
+            dbs = {}    # type: Dict[str, str]
+            for line in txt.splitlines():
+                line = line.strip()
+                if not line or line[0] in ";#":
+                    continue
+                if line.startswith("["):
+                    sect = line.strip("[]").lower()
+                    continue
+                if "=" in line:
+                    k, v = [x.strip() for x in line.split("=", 1)]
+                    (vals if sect == "pgbouncer" else dbs if sect == "databases" else {})[k] = v
+            out.append({"config_path": path, "listen_addr": vals.get("listen_addr"),
+                        "listen_port": int(vals["listen_port"]) if vals.get("listen_port", "").isdigit() else 6432,
+                        "pool_mode": vals.get("pool_mode"), "auth_type": vals.get("auth_type"),
+                        "max_client_conn": vals.get("max_client_conn"), "databases": dbs,
+                        "running": any(p["name"] == "pgbouncer" for p in procs)})
+        return out
+
+    # ---- pgBackRest (migration aid) ------------------------------------
+    def _discover_pgbackrest(self) -> List[Dict[str, Any]]:
+        out = []
+        for path in ("/etc/pgbackrest/pgbackrest.conf", "/etc/pgbackrest.conf"):
+            txt = _read(path)
+            if txt is None:
+                continue
+            stanzas = []
+            repo = None
+            sect = None
+            for line in txt.splitlines():
+                line = line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    sect = line[1:-1]
+                    if sect not in ("global", "global:archive-push", "global:archive-get"):
+                        stanzas.append(sect)
+                elif "=" in line and sect == "global" and line.startswith("repo1-path"):
+                    repo = line.split("=", 1)[1].strip()
+            out.append({"config_path": path, "repo1_path": repo, "stanzas": stanzas})
+        return out
+
+    # ---- warnings ------------------------------------------------------
+    def _warnings(self, procs, instances) -> List[str]:
+        w = []
+        if os.geteuid() != 0 and any(p["uid"] not in (-1, os.geteuid()) for p in procs if p["name"] == "postgres"):
+            w.append("Agent is not root and PostgreSQL runs as another user: some data may be hidden. "
+                     "Run the agent as the postgres user (recommended) or root.")
+        if not instances:
+            w.append("No PostgreSQL data directory found on this host.")
+        return w
+
+    # ---- network scan (explicit, operator-triggered only) -------------
+    def scan_network_cidr(self, target_cidr: str, ports: Optional[List[int]] = None, timeout_ms: int = 300) -> Dict[str, Any]:
+        check_ports = ports or [5432, 8008, 2379, 6432, 9898]
+        start = time.time()
+        try:
+            net = ipaddress.ip_network(target_cidr.strip(), strict=False)
+        except ValueError as e:
+            return {"error": "invalid target: %s" % e}
+        if net.num_addresses > 1024:
+            return {"error": "range too large (max /22, 1024 addresses)"}
+        hosts = [str(h) for h in (net.hosts() if net.num_addresses > 2 else net)]
+        names = {5432: "PostgreSQL", 8008: "Patroni REST API", 2379: "etcd client", 6432: "PgBouncer", 9898: "pg_arca agent"}
+
+        def probe(hp):
+            host, port = hp
+            t = time.time()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(timeout_ms / 1000.0)
+            try:
+                if s.connect_ex((host, port)) == 0:
+                    return {"host": host, "port": port, "open": True, "service": names.get(port, "tcp/%d" % port),
+                            "latency_ms": max(1, int((time.time() - t) * 1000))}
+            except Exception:
+                pass
+            finally:
+                s.close()
+            return None
+
+        with ThreadPoolExecutor(max_workers=64) as ex:
+            found = [r for r in ex.map(probe, [(h, p) for h in hosts for p in check_ports]) if r]
+        return {"target": target_cidr, "ips_scanned_count": len(hosts), "ports_checked": check_ports,
+                "active_endpoints": found, "duration_ms": int((time.time() - start) * 1000)}
+
 
 if __name__ == "__main__":
-    scanner = ClusterDiscoveryEngine()
-    results = scanner.scan_all()
-    print(json.dumps(results, indent=2))
+    print(json.dumps(ClusterDiscoveryEngine().scan_all(), indent=2))
