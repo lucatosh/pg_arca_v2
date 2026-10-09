@@ -35,6 +35,8 @@ class Runtime(object):
         pick = None
         if c.get("pg_data"):
             pick = next((i for i in insts if os.path.realpath(i["data_directory"]) == os.path.realpath(c["pg_data"])), None)
+        if pick is None and c.get("pg_port"):
+            pick = next((i for i in insts if int(i.get("port") or 0) == int(c["pg_port"])), None)
         if pick is None:
             pick = next((i for i in insts if i.get("running") and i.get("port_listening")), None) or next((i for i in insts if i.get("running")), None) or (insts[0] if insts else None)
         self.instance = pick

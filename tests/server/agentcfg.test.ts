@@ -1,0 +1,10 @@
+import assert from 'assert';
+import { validateOp } from '../../server/optypes';
+const ok = (p: any) => validateOp('agent_config_set', p) === null;
+assert(ok({ set: { pg_data: '/data/pg', pg_port: 5433 } }));
+assert(ok({ set: { pg_data: null } }), 'null resets an override');
+assert(!ok({}) && !ok({ set: {} }) && !ok({ set: [] }) && !ok({ set: 'x' }));
+assert(!ok({ set: { auth_token: 'x' } }), 'only whitelisted settings');
+assert(!ok({ set: { repo_path: { a: 1 } } }) && !ok({ set: { repo_path: '/a\nb' } }));
+assert.strictEqual(validateOp('agent_config_get', {}), null);
+console.log('agent config op tests OK');

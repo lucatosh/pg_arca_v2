@@ -13,3 +13,10 @@ Principio: **nessuna assunzione sul layout**. L'agent legge cosa gira (processi,
 | DB gestiti (RDS, Cloud SQL, Azure) | **Non supportato** | niente accesso al filesystem: solo funzioni via SQL |
 
 Assunzioni residue note (da eliminare o verificare): agent sullo stesso host di PostgreSQL; accesso locale (socket/peer) come utente `pg_user`; `archive_command` punta a `/usr/local/bin/pg-arca-wal`; systemd unit con `ProtectSystem=full`.
+
+## Percorsi e variabili personalizzate (`Nodi` → «Percorsi e rilevamento»)
+- L'agent mostra per ogni impostazione il valore rilevato, quello impostato e la fonte (rilevato / agent.conf / impostato qui / ambiente).
+- Modificabili solo da un amministratore, solo le impostazioni in elenco (PGDATA, binari, porta, socket/host, utente, repository, archivio WAL, cartella temporanea, URL Patroni).
+- L'agent controlla ogni valore sul server prima di salvarlo (PGDATA deve contenere PG_VERSION e global/pg_control; i percorsi di scrittura non possono essere cartelle di sistema; niente `..`; URL senza credenziali). Salvataggio tutto-o-niente su `agent.local.json` (0640), applicato subito.
+- Precedenza: default < agent.conf < agent.local.json < variabili d'ambiente del servizio.
+- Provato: validazione, salvataggio, precedenza, handler dell'agent (unit test), operazioni lato console. **Non provato nel browser** con un agent reale.

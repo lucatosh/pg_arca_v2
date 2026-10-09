@@ -10,6 +10,7 @@ import { RestoreTab } from './Restore';
 import { LogsTab } from './Logs';
 import { HbaTab } from './Hba';
 import { TuningTab } from './Tuning';
+import { AgentSettings } from './AgentSettings';
 import { ProtectionRibbon } from './Ribbon';
 
 export const TAB_ITEMS: { id: string; label: string; icon?: string; preview?: boolean; agent?: boolean }[] = [
@@ -100,6 +101,7 @@ function Nodes({ c }: { c: any }) {
         <tbody>{mine.map(n => <tr key={n.id}><td><span className="row gap-s"><Dot kind={n.online ? 'ok' : 'bad'} />{n.name}</span></td><td>{n.agentVersion}</td><td>{ago(n.lastSeen)}</td><td className="mono">{n.remoteIp}</td>
           <td className="num"><Button sm icon="trash" onClick={() => setRevoke(n)}>Revoca</Button></td></tr>)}
           {!mine.length ? <tr><td colSpan={5} className="muted">Nessun agent.</td></tr> : null}</tbody></table></div></Card> : null}
+    {!c.isSandbox && c.source !== 'direct' ? <AgentSettings clusterId={c.id} nodes={mine.map(n => ({ id: n.id, name: n.name, online: n.online }))} /> : null}
     {tok ? <Card title={tok.node ? `Installa l’agent su ${tok.node}` : 'Nuovo nodo'}><div className="stack"><p>Esegui come root sul nuovo server. Il token vale per un nodo e scade tra un’ora.</p><CopyBlock text={tok.installCommand} /><Button onClick={() => setTok(null)}>Chiudi</Button></div></Card> : null}
     {revoke ? <Confirm danger title={`Revocare l’agent di ${revoke.name}?`} confirmLabel="Revoca" busy={busy} onClose={() => setRevoke(null)} onConfirm={doRevoke}>
       <p>Il segreto dell’agent diventa subito non valido e le operazioni in coda per questo nodo vengono annullate. PostgreSQL sul nodo non viene toccato; per ricollegarlo serve un nuovo token.</p></Confirm> : null}

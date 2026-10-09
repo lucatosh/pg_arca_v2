@@ -15,6 +15,18 @@ const ident = /^[A-Za-z_][A-Za-z0-9_.]{0,62}$/;
 const paramName = /^[a-z_][a-z0-9_.]{0,62}$/;
 const noCtl = (v: string) => !/[\u0000-\u001f]/.test(v) && v.length <= 4096;
 
+const CFG_KEYS = ['pg_data', 'pg_bin_dir', 'pg_port', 'pg_host', 'pg_user', 'repo_path', 'wal_archive_dir', 'scratch_dir', 'patroni_url'];
+function cfgErr(p: any): string | null {
+  const c = p?.set; if (!c || typeof c !== 'object' || Array.isArray(c)) return 'set must be an object';
+  const ks = Object.keys(c); if (!ks.length || ks.length > CFG_KEYS.length) return 'nothing to change';
+  for (const k of ks) {
+    if (!CFG_KEYS.includes(k)) return `setting not editable: ${k}`;
+    const v = c[k]; if (v === null) continue;
+    if (typeof v !== 'string' && typeof v !== 'number') return `invalid value for ${k}`;
+    if (typeof v === 'string' && !noCtl(v)) return `invalid value for ${k}`;
+  }
+  return null;
+}
 export const OP_SPECS: Record<string, OpSpec> = {
   pg_reload:        { mutating: true,  target: 'node', validate: () => null },
   wal_switch:       { mutating: true,  target: 'primary', validate: () => null },
@@ -101,6 +113,8 @@ Object.assign(OP_SPECS, {
   hba_read:     { mutating: false, target: 'node', lane: 'control', validate: () => null },
   hba_plan:     { mutating: false, target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) },
   hba_apply:    { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) || (p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
+  agent_config_get: { mutating: false, target: 'node', lane: 'control', validate: () => null },
+  agent_config_set: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => cfgErr(p) },
   hba_expire:   { mutating: true,  target: 'node', lane: 'control', validate: () => null },
   hba_rollback: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.backup && !/^[\w.\-]{1,100}$/.test(String(p.backup)) ? 'invalid backup name' : null) },
   restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^(pgarca_)?stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : (p.mode && !['as_new', 'replace'].includes(p.mode) ? 'mode must be as_new|replace' : intoErr(p))) },

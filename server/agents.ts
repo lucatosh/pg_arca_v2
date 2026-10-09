@@ -220,6 +220,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (!key) return res.status(400).json({ error: 'idempotency_key_required', message: 'Send an Idempotency-Key header (any unique string per user action).' });
     const bad = validateOp(String(type), params);
     if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
+    if (type === 'agent_config_set' && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Solo un amministratore può cambiare percorsi e impostazioni dell’agent.' });
     const spec = OP_SPECS[type];
     if (requiresApproval(st, cluster, type, params)) {
       const reqRec = await requestApproval(store, ops.audit, { cluster, type, params, nodeId, ttlSeconds, key, actor: actorOf(req) });

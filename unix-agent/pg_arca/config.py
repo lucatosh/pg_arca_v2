@@ -16,6 +16,7 @@ Python 3.6+ (RHEL 8) compatible, stdlib only.
 import json
 import logging
 import os
+import sys
 import socket
 import tempfile
 
@@ -87,6 +88,12 @@ def load_config(conf_path=None):
         "PG_ARCA_REPO": "repo_path", "WAL_ARCHIVE_DIR": "wal_archive_dir", "PATRONI_URL": "patroni_url", "PG_ARCA_PGDATA": "pg_data", "PGDATA": "pg_data_hint",
         "PG_ARCA_TLS_CA": "tls_ca_file",
     }
+    try:                                                   # console-managed, validated overrides (see overrides.py); environment still wins
+        from pg_arca import overrides as _ov
+        config["_overrides_path"] = os.path.join(os.path.dirname(os.path.abspath(target)), _ov.LOCAL_NAME)
+        _ov.apply_to(config, _ov.load(config))
+    except Exception as e:                                 # never let a bad overrides file stop the agent
+        sys.stderr.write("WARN: ignoring %s: %s\n" % (_ov.LOCAL_NAME if "_ov" in dir() else "overrides", e))
     for env, key in env_map.items():
         if os.environ.get(env):
             config[key] = os.environ[env]

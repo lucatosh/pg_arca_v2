@@ -75,6 +75,8 @@ class OperationExecutor:
         r("restore_object", self.h_restore_object, False)
         r("restore_promote", self.h_restore_promote, False)
         r("hba_expire", self.h_hba_expire, False)
+        r("agent_config_get", self.h_cfg_get, True)
+        r("agent_config_set", self.h_cfg_set, True)       # same input -> same file: idempotent
         r("restore_drill", self.h_restore_drill, False)
         r("restore_diff", self.h_restore_diff, False)
         r("restore_apply_rows", self.h_restore_apply_rows, False)
@@ -470,6 +472,33 @@ class OperationExecutor:
     def h_hba_apply(self, p):
         from pg_arca import hba_ops
         return hba_ops.apply(self, p, OpError)
+
+    def h_cfg_get(self, p):
+        from pg_arca import overrides
+        return {"settings": overrides.describe(self.config, self.runtime), "file": overrides.local_path(self.config)}
+
+    def h_cfg_set(self, p):
+        """Save validated overrides, apply them to the running agent and re-run discovery. Nothing is written when any value is invalid."""
+        from pg_arca import overrides
+        ch = p.get("set")
+        if not isinstance(ch, dict) or not ch:
+            raise OpError("nothing to change")
+        try:
+            overrides.save(self.config, ch)
+        except overrides.OverrideError as e:
+            a = e.args[0] if e.args else e
+            raise OpError("; ".join("%s: %s" % (overrides.LABELS.get(k, k), m) for k, m in a.items()) if isinstance(a, dict) else str(a))
+        from pg_arca.config import load_config                # re-resolve defaults < agent.conf < overrides < env for the changed keys
+        try:
+            fresh = load_config(os.environ.get("PG_ARCA_CONF_FILE") or None)
+        except SystemExit:
+            fresh = {}
+        for k in ch:
+            if k in fresh:
+                self.config[k] = fresh[k]
+        if self.runtime:
+            self.runtime.refresh()
+        return {"settings": overrides.describe(self.config, self.runtime), "applied": sorted(ch)}
 
     def h_hba_expire(self, p):
         from pg_arca import hba_ops
