@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+# archive_command / restore_command entry point:   pg-arca-wal archive %p %f   |   pg-arca-wal get %f %p
+import os, sys
+sys.path.insert(0, os.environ.get("PG_ARCA_HOME", "/opt/pg-arca"))
+from pg_arca.wal_archive import main
+sys.exit(main(sys.argv))

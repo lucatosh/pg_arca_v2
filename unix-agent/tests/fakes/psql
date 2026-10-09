@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+# Fake psql for agent tests: answers by recognising the SQL; records every invocation.
+import sys, os, json
+args = sys.argv[1:]
+sql = sys.stdin.read() if "-f" in args else (args[args.index("-c") + 1] if "-c" in args else "")
+log = os.environ.get("FAKE_PSQL_LOG")
+if log:
+    with open(log, "a") as f: f.write(json.dumps({"args": args, "sql": sql}) + "\n")
+if os.environ.get("FAKE_PSQL_DOWN"):
+    sys.stderr.write("psql: error: connection refused\n"); sys.exit(2)
+v = {a.split("=", 1)[0]: a.split("=", 1)[1] for a in [args[i + 1] for i, x in enumerate(args) if x == "-v" and i + 1 < len(args)] if "=" in a}
+if "'is_in_recovery', pg_is_in_recovery()" in sql:
+    print(json.dumps({"version": "16.4", "is_in_recovery": False, "role": "primary", "current_lsn": "0/3000060", "timeline": 2,
+                      "system_identifier": "7312345678901234567", "port": 5432, "databases": [{"oid": 5, "name": "app", "size": 8192}],
+                      "connections": {"used": 3, "max": 100}, "xact_total": 5000, "archiver": None, "settings": {"work_mem": "4096"}, "pending_restart": []}))
+elif "pg_stat_replication" in sql: print("[]")
+elif "pg_reload_conf" in sql and "ALTER SYSTEM" not in sql: print("t")
+elif "FROM pg_settings WHERE name = :'pname'" in sql and "pending_restart" not in sql: print(json.dumps({"setting": "4096", "context": "user"}))
+elif "pending_restart" in sql and "pname" in sql: print(json.dumps({"setting": v.get("pval", "4096"), "pending": False}))
+elif "ALTER SYSTEM" in sql: print("")
+elif "pg_switch_wal" in sql: print("000000020000000000000003")
+elif "SELECT 1" in sql: print("1")
+else: print("")

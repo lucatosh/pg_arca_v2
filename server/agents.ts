@@ -115,7 +115,15 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       if (n.clusterId) refreshCluster(d, n.clusterId);
     });
     const max = Math.max(0, Math.min(Number(b.max_ops ?? 1) || 1, 5));
-    const todo = max ? await ops.lease(store, node.id, max) : [];
+    // Long-poll: hold the request (<= wait_seconds) until an operation is runnable for this node, so operator
+    // actions reach NAT'ed agents in ~a second without any inbound port.
+    const waitMs = Math.max(0, Math.min(Number(b.wait_seconds ?? 0) || 0, 20)) * 1000;
+    const deadline = Date.now() + waitMs;
+    let todo = max ? await ops.lease(store, node.id, max) : [];
+    while (max && todo.length === 0 && Date.now() < deadline && store.peek().nodes[node.id]) {
+      await new Promise(r => setTimeout(r, 250));
+      if (store.peek().operations.some(o => o.nodeId === node.id && o.status === 'queued')) todo = await ops.lease(store, node.id, max);
+    }
     res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, ops: todo.map(o => ({ id: o.id, type: o.type, params: o.params, attempt: o.attempts, cluster_id: o.clusterId })) });
   });
 

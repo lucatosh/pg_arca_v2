@@ -17,10 +17,7 @@ def verify_request_auth(headers, config, client_address=None):
     Verifies incoming request against configured auth_mode.
     Returns (is_authenticated, error_message).
     """
-    auth_mode = config.get("auth_mode", "open")
-
-    if auth_mode == "open":
-        return True, None
+    auth_mode = config.get("auth_mode", "token")
 
     # 1. Bearer Token Check
     auth_header = headers.get("Authorization", "")
@@ -64,4 +61,4 @@ def verify_request_auth(headers, config, client_address=None):
             return False, "Remote TCP access forbidden under unix_socket_only mode"
         return True, None
 
-    return True, None
+    return False, "unknown auth_mode"
