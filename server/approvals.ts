@@ -30,16 +30,17 @@ export function activeAdmins(settings: any): number {
 
 /** Advanced settings: for now the per-environment four-eyes switch. Returns the saved view. */
 export function mountAdvancedRoutes(app: any, store: any, audit: (d: any, e: any) => void) {
-  const view = (st: any) => ({ approvals: advanced(st).approvals, environments: APPROVABLE_ENVS, activeAdmins: activeAdmins(st.settings) });
+  const view = (st: any) => ({ joinRequests: (advanced(st) as any).joinRequests !== false, approvals: advanced(st).approvals, environments: APPROVABLE_ENVS, activeAdmins: activeAdmins(st.settings) });
   app.get('/api/advanced', (_req: any, res: any) => { const st = store.peek(); res.json({ ...view({ settings: st.settings }), }); });
   app.put('/api/advanced', async (req: any, res: any) => {
-    const a = req.body?.approvals;
-    if (!a || typeof a !== 'object') return res.status(400).json({ error: 'invalid', message: 'approvals richiesto' });
+    const a = req.body?.approvals ?? store.peek().settings.advanced?.approvals ?? {};
+    if (typeof a !== 'object') return res.status(400).json({ error: 'invalid', message: 'approvals non valido' });
+    const join = req.body?.joinRequests === undefined ? ((store.peek().settings.advanced || {}).joinRequests !== false) : !!req.body.joinRequests;
     const next: Record<string, boolean> = {};
     for (const [k, v] of Object.entries(a)) { if (!APPROVABLE_ENVS.includes(k)) return res.status(400).json({ error: 'invalid_env', message: 'Ambiente sconosciuto: ' + k }); if (v) next[k] = true; }
     if (Object.keys(next).length && activeAdmins(store.peek().settings) < 2)
       return res.status(409).json({ error: 'need_two_admins', message: 'Per attivare le approvazioni servono almeno due amministratori attivi: altrimenti nessuno potrebbe approvare.' });
-    await store.mutate((d: any) => { d.settings.advanced = { ...(d.settings.advanced || {}), approvals: next }; audit(d, { actor: req.actor || 'admin', action: 'settings.approvals', status: 'OK', details: { environments: Object.keys(next) } }); });
+    await store.mutate((d: any) => { d.settings.advanced = { ...(d.settings.advanced || {}), approvals: next, joinRequests: join }; audit(d, { actor: req.actor || 'admin', action: 'settings.advanced', status: 'OK', details: { approvals: Object.keys(next), joinRequests: join } }); });
     res.json(view(store.peek()));
   });
 }

@@ -16,6 +16,7 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
 import { mountNotifyRoutes } from '../../server/notify';
 import { mountAdvancedRoutes } from '../../server/approvals';
 import { briefing } from '../../server/health';
+import { mountJoinRoutes } from '../../server/join';
 import { audit } from '../../server/ops';
 
 const port = Number(process.argv[2] || 5188); const staticDir = process.argv[3] || '/tmp/claude-0/ui';
@@ -27,8 +28,8 @@ const withAgent = process.env.NO_AGENT !== '1';
   const demo = () => ({ id: 'cluster-demo', name: 'Cluster demo', environment: 'dev', isSandbox: true, status: 'healthy', pgVersion: '16', databases: [{ name: 'demo', size: 1e9 }], totalSizeBytes: 1e9, tps: 0, haState: { nodes: [{ name: 'demo-1', role: 'primary', online: true, state: 'running', host: 'demo', port: 5432, replicationLagBytes: 0, cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 100, source: 'agent' }] } });
   app.use(requireAdmin(store));
   mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec });
-  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountNotifyRoutes(app, store, async () => ({ ok: true })); mountAdvancedRoutes(app, store, audit);
-  app.get('/api/health', (_q: any, r: any) => r.json(briefing(store.peek())));
+  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountNotifyRoutes(app, store, async () => ({ ok: true })); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store);
+  app.get('/api/briefing', (_q: any, r: any) => r.json(briefing(store.peek())));
   await seedDemoOnFirstRun(store, demo);
 
   // --- scripted fake agent -------------------------------------------------------------------------------

@@ -41,7 +41,7 @@ import { requiredRole } from '../../server/auth';
   const put = await call('PUT', '/api/notifications', { reminderHours: 24, webhooks: [{ name: 'Slack DBA', url: 'https://hooks.example/services/T0/B0/secretXYZ9', format: 'slack', minSeverity: 'critical', enabled: true }] });
   assert.strictEqual(put.status, 200); const wid = put.body.webhooks[0].id;
   assert(!JSON.stringify(put.body).includes('secretXYZ9'), 'the secret URL is never returned'); assert(put.body.webhooks[0].urlMasked.endsWith('XYZ9'));
-  assert.strictEqual(requiredRole('GET', '/api/notifications'), 'admin'); assert.strictEqual(requiredRole('PUT', '/api/notifications'), 'admin'); assert.strictEqual(requiredRole('GET', '/api/health'), 'viewer');
+  assert.strictEqual(requiredRole('GET', '/api/notifications'), 'admin'); assert.strictEqual(requiredRole('PUT', '/api/notifications'), 'admin'); assert.strictEqual(requiredRole('GET', '/api/briefing'), 'viewer');
   const tick = async (t: number) => { await store.mutate(d => { (d.nodes.n1 as any).lastSeen = iso(t); (d.nodes.n3 as any).lastSeen = iso(t); }); return notifyTick(store, t, send); };
   let r = await tick(now); assert.strictEqual(sent.length, 1); assert(r[wid].sent >= 3); assert(/archiver|WAL|Slot/i.test(sent[0].body.text));
   assert(!sent[0].body.text.includes('good-db'));

@@ -34,7 +34,7 @@ export function authNode(store: Store, req: Request): NodeRecord | null {
 }
 
 /** Recompute the persisted cluster view from the nodes that belong to it (called inside a mutate). */
-function refreshCluster(draft: any, clusterId: string) {
+export function refreshCluster(draft: any, clusterId: string) {
   const idx = draft.clusters.findIndex((c: any) => c.id === clusterId);
   if (idx < 0) return;
   const prior = draft.clusters[idx];

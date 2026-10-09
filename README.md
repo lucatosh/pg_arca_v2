@@ -38,6 +38,7 @@ Console e agent per **backup, ripristino a un istante preciso (PITR) e gestione 
 | Notifiche webhook (JSON o testo Slack/Teams): nuovo problema, promemoria, risolto; ritenta dopo un errore; l'URL non torna mai al browser | Funziona (provato contro un server HTTP locale); **non provato contro Slack/Teams reali; niente email** | `tests/server/health.test.ts` |
 | Approvazione a due persone per ambiente (pg_hba, parametri, HA, sostituzione tabella, recupero righe) | Funziona; richiede almeno due amministratori attivi | `tests/server/approvals.test.ts` |
 | HBA: adozione delle regole esistenti nel blocco gestito (ordine di valutazione invariato) e regole temporanee con scadenza | Agent provato su PG16; scadenza guidata dallo scheduler; **non disponibili su Patroni (DCS)** | `test_hba_pg.py::test_5`, `tests/server/hba.test.ts` |
+| Nuovi server che si annunciano da soli (agent installato senza token → richiesta in attesa → approvazione nella UI con scelta di ambiente/cluster) | Funziona, provato con l'agent reale contro la console reale; il segreto lo genera l'agent e alla console arriva solo l'hash. Endpoint non autenticato, quindi limitato (100 in attesa, 10 per indirizzo, scadenza 48 h) e disattivabile in Impostazioni | `tests/server/join.test.ts`, `unix-agent/tests/test_e2e_console.py`, `tests/ui/e2e.cjs` |
 | LDAP/AD | **Anteprima**: visibile e marcata, senza funzione dietro | — |
 | Velocità rispetto a pgBackRest | **Mai misurata**: nessuna affermazione | — |
 

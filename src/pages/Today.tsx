@@ -7,7 +7,7 @@ import { go } from '../router';
 const SEV: Record<string, { label: string; kind: 'bad' | 'warn' | 'info' }> = { critical: { label: 'Urgente', kind: 'bad' }, warning: { label: 'Da controllare', kind: 'warn' }, info: { label: 'Informazione', kind: 'info' } };
 const TYPE: Record<string, string> = { backup_run: 'Backup', backup_verify: 'Verifica', backup_expire: 'Pulizia', restore_instance: 'Ripristino', restore_database: 'Ripristino', restore_object: 'Ripristino', restore_promote: 'Riporta tabella', hba_apply: 'Regole di accesso', pg_set_param: 'Parametro' };
 
-export function useHealth(interval = 20000) { return useQuery<any>('/api/health', { interval }); }
+export function useHealth(interval = 20000) { return useQuery<any>('/api/briefing', { interval }); }
 
 function PendingApprovals({ me, role }: { me: string; role: string }) {
   const q = useQuery<{ approvals: any[] }>('/api/approvals', { interval: 10000 });

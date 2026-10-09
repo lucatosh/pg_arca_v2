@@ -10,6 +10,7 @@ import { StrategyPage } from './pages/Strategy';
 import { UsersPage } from './pages/Users';
 import { TodayPage, useHealth } from './pages/Today';
 import { SettingsPage } from './pages/Settings';
+import { JoinBanner } from './pages/Join';
 
 export const statusKind = (s?: string): 'ok' | 'warn' | 'bad' => (s === 'healthy' ? 'ok' : s === 'degraded' ? 'warn' : s === 'critical' || s === 'down' ? 'bad' : 'warn');
 
@@ -74,6 +75,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         {running.length ? <button className="btn" onClick={() => { const o = running[0]; if (o.clusterId && o.clusterId !== 'unassigned') go(`c/${encodeURIComponent(o.clusterId)}/operations`); }}><Icon n="refresh" spin />{running.length} {running.length === 1 ? 'operazione in corso' : 'operazioni in corso'}</button> : null}
       </div>
       <main className="page">
+        {role === 'admin' ? <JoinBanner /> : null}
         {route.page === 'clusters' && <Clusters clusters={clusters} loading={loading} demoAvailable={!!data?.demoAvailable} />}
         {route.page === 'cluster' && <ClusterView id={route.id!} tab={route.tab} />}
         {route.page === 'audit' && <Audit clusters={clusters} />}

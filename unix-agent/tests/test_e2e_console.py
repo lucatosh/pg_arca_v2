@@ -79,4 +79,40 @@ class E2E(unittest.TestCase):
         finally:
             client.stop()
 
+    def test_self_join_without_token(self):
+        """Agent installed with only the console URL: it announces itself, the admin approves, it starts reporting. No token ever existed."""
+        adm = Admin(self.base)
+        st, _ = adm.call("POST", "/api/auth/login", {"username": "admin", "password": "correct-horse-battery"}); self.assertEqual(st, 200)
+        t = tempfile.mkdtemp()
+        os.environ["PATH"] = FAKES + os.pathsep + os.environ["PATH"]
+        cfg = load_config(); cfg.update({"web_server_url": self.base, "enrollment_token": "", "node_name": "joiner",
+            "credentials_file": os.path.join(t, "cred.json"), "state_dir": os.path.join(t, "state"), "wal_archive_dir": os.path.join(t, "wal"),
+            "repo_path": os.path.join(t, "repo"), "heartbeat_interval_seconds": 1, "pg_host": "127.0.0.1"})
+        rt = Runtime(cfg)
+        rt.instance = {"data_directory": "/fake/pgdata", "cluster_key": "sysid:555", "port": 5432}
+        ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: {"summary": {}})
+        client = ConsoleClient(cfg, rt, ex, WalManager(cfg["wal_archive_dir"], "none"), None)
+        client.start()
+        try:
+            for _ in range(60):
+                st, d = adm.call("GET", "/api/join-requests")
+                if d.get("requests"): break
+                time.sleep(0.25)
+            else: self.fail("the server never announced itself")
+            req = [r for r in d["requests"] if r["nodeName"] == "joiner"][0]
+            self.assertFalse(os.path.exists(cfg["credentials_file"]), "no credentials before approval")
+            st, o = adm.call("POST", "/api/join-requests/%s/approve" % req["id"], {"environment": "test", "name": "joined-cluster"}); self.assertEqual(st, 200, o)
+            for _ in range(80):
+                if os.path.exists(cfg["credentials_file"]):
+                    st, cl = adm.call("GET", "/api/clusters")
+                    jc = [c for c in cl["clusters"] if any(n["name"] == "joiner" and n.get("lastSeen") for n in c.get("agentNodes", [])) and c.get("pgVersion")]
+                    if jc: break
+                time.sleep(0.25)
+            else: self.fail("approved agent never started reporting")
+            self.assertEqual(oct(os.stat(cfg["credentials_file"]).st_mode & 0o777), "0o600")
+            self.assertEqual(jc[0]["id"], o["clusterId"])         # same database identity as the first node: joined that cluster (or created it)
+            self.assertFalse(os.path.exists(os.path.join(t, "join.json")), "join state removed after approval")
+        finally:
+            client.stop()
+
 if __name__ == "__main__": unittest.main()

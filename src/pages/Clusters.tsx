@@ -81,7 +81,10 @@ function AgentFlow({ onClose, back }: { onClose: () => void; back: () => void })
     <Field label="Ambiente"><select className="input" value={env} onChange={e => setEnv(e.target.value)}>{ENVS.map(e => <option key={e[0]} value={e[0]}>{e[1]}</option>)}</select></Field>
     <Field label="Etichetta del nodo" hint="Solo per riconoscere il token nel registro."><input className="input" value={label} onChange={e => setLabel(e.target.value)} placeholder="es. pg-prod-01" /></Field>
     {err ? <Banner kind="bad">{err}</Banner> : null}
-    <div className="row"><Button onClick={back}>Indietro</Button><Button kind="primary" busy={busy} onClick={create}>Genera comando di installazione</Button></div></div>;
+    <div className="row"><Button onClick={back}>Indietro</Button><Button kind="primary" busy={busy} onClick={create}>Genera comando di installazione</Button></div>
+    <div className="hr" /><details><summary className="small" style={{ cursor: 'pointer' }}>Preferisci senza token? Il server si annuncia da solo</summary>
+      <div className="stack" style={{ marginTop: 8 }}><p className="small muted">Esegui questo comando come root sul server: l’agent si annuncia alla console e qui compare «Nuovo server rilevato». Lo approvi tu, scegliendo l’ambiente.</p>
+        <CopyBlock text={`curl -fsSL ${location.origin}/agent/install.sh | sudo PG_ARCA_URL=${location.origin} bash`} /></div></details></div>;
   return <div className="stack">
     <p>Esegui questo comando <strong>come root</strong> sul server del database. Il token vale per un solo nodo e scade tra un’ora.</p>
     <CopyBlock text={tok.installCommand} />

@@ -23,6 +23,8 @@ Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggi
 
 - [x] Utenti/ruoli, cifratura repository, recupero righe, prova di disaster recovery, pagina Oggi + salute, notifiche webhook, approvazioni a due persone + Impostazioni, HBA adozione/regole temporanee (vedi README per limiti e test).
 
+- [x] Auto-annuncio dei server: `install-agent.sh` senza `PG_ARCA_ENROLL_TOKEN` → la console mostra «Nuovo server rilevato» (admin) e chiede se aggiungerlo. Il token resta valido come prima.
+
 ## DA FARE (ordine consigliato)
 0. UI: restyling grafico ulteriore; UI delle strategie su più cluster in blocco; prove periodiche di disaster recovery pianificate dalla strategia (oggi la prova è manuale); notifiche email; controlli aggiuntivi (scadenza certificati, archive_command cambiato, spiegazioni di causa più ricche).
 1. Provare dal vivo (con `npm install`): `direct.ts`, `/ws/logs`, `/api/network/*`, avvio di `server.ts`.

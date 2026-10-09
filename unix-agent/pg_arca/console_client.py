@@ -6,10 +6,12 @@ Failure behaviour: exponential backoff with jitter; a 401 means the node was rev
 dies first, redelivery + the executor journal re-report the stored outcome (never re-execute).
 """
 
+import hashlib
 import json
 import logging
 import os
 import random
+import secrets
 import ssl
 import threading
 import time
@@ -17,7 +19,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-from pg_arca.config import load_credentials, save_credentials
+from pg_arca.config import atomic_write_json, load_credentials, save_credentials
 from pg_arca.runtime import AGENT_VERSION
 
 logger = logging.getLogger("pg_arca.console")
@@ -83,13 +85,59 @@ class ConsoleClient(threading.Thread):
         except OSError:
             pass
 
+    # ------------------------------------------------------------------ self-announcement (no enrollment token)
+    def _join_state(self):
+        """fingerprint + our own secret, created once and kept (0600): the console only ever receives the secret's hash."""
+        path = os.path.join(os.path.dirname(self.config["credentials_file"]), "join.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                j = json.load(f)
+            if j.get("fingerprint") and j.get("secret"):
+                return j, path
+        except Exception:
+            pass
+        j = {"fingerprint": secrets.token_urlsafe(24), "secret": secrets.token_hex(32)}
+        atomic_write_json(path, j)
+        return j, path
+
+    def join_step(self):
+        """One announce/poll round. Returns True once approved and credentials are saved, False while waiting (the caller sleeps)."""
+        j, path = self._join_state()
+        body = {"fingerprint": j["fingerprint"], "secret_hash": hashlib.sha256(j["secret"].encode("utf-8")).hexdigest(), "node_name": self.config["node_name"],
+                "agent_version": AGENT_VERSION, "discovery": self.rt.report}
+        self._post("/api/agent/request-join", body, auth=False)
+        st = self._post("/api/agent/join-status", {"fingerprint": j["fingerprint"], "secret": j["secret"]}, auth=False)
+        if st.get("status") == "approved":
+            save_credentials(self.config, st["node_id"], j["secret"], st.get("cluster_id"))
+            self.creds = load_credentials(self.config)
+            logger.info("approved by the console: node %s, cluster %s", st["node_id"], st.get("cluster_id"))
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return True
+        if st.get("status") == "rejected":
+            logger.error("the console administrator rejected this server. Retrying in 30 minutes (ask them to approve it, or use an enrollment token).")
+            self.stop_ev.wait(1800)
+            try:
+                os.unlink(path)                      # a new fingerprint on the next round
+            except OSError:
+                pass
+        else:
+            logger.info("waiting for approval in the console (Cluster page) ...")
+        return False
+
     # ------------------------------------------------------------------ main loop
     def run(self):
         backoff = 1.0
         while not self.stop_ev.is_set():
             try:
                 if not self.creds:
-                    self.enroll()
+                    if self.config.get("enrollment_token"):
+                        self.enroll()
+                    elif not self.join_step():
+                        self.stop_ev.wait(10)
+                        continue
                 interval = self.beat()
                 backoff = 1.0
                 self.stop_ev.wait(interval)

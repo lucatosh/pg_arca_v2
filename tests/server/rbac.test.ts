@@ -7,13 +7,18 @@ import { mountClusterRoutes, seedDemoOnFirstRun } from '../../server/clusters';
 import { mountPlatformRoutes } from '../../server/platform';
 import { mountHbaRoutes } from '../../server/hba';
 import { mountPolicyRoutes } from '../../server/policies';
+import { mountNotifyRoutes } from '../../server/notify';
+import { mountAdvancedRoutes } from '../../server/approvals';
+import { mountJoinRoutes } from '../../server/join';
+import { briefing } from '../../server/health';
+import { audit } from '../../server/ops';
 import { mountAuthRoutes, requireAdmin, requiredRole, can } from '../../server/auth';
 
 (async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rbac-')); const store = new Store(dir), app = new MiniApp(); const direct = new DirectDriver(store, loadSecretKey(dir));
   const demo = () => ({ id: 'cluster-demo', name: 'DEMO', environment: 'dev', isSandbox: true, databases: [], haState: { nodes: [] } });
   app.use(requireAdmin(store));
-  mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec }); mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store);
+  mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec }); mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountNotifyRoutes(app, store); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store); app.get('/api/briefing', (_q: any, r: any) => r.json(briefing(store.peek())));
   await seedDemoOnFirstRun(store, demo);
   const call = (m: string, u: string, body?: any, cookie?: string) => app.call(m, u, { body, headers: cookie ? { cookie } : {} });
   const PW = 'correct-horse-battery';
@@ -33,6 +38,10 @@ import { mountAuthRoutes, requireAdmin, requiredRole, can } from '../../server/a
   }
 
   const setup = await call('POST', '/api/auth/setup', { username: 'admin', password: PW }); const A = setup.headers['set-cookie'].split(';')[0];
+  // no mounted API route may answer without a session, except the explicit public ones (login, agent gateway, liveness)
+  const SAMPLE = (r: any) => r.re.source.replace(/^\^|\$$/g, '').replace(/\(\[\^\/\]\+\)/g, 'x').replace(/\\\//g, '/');
+  for (const r of app.routes) { const u = SAMPLE(r); if (!u.startsWith('/api/') || u.startsWith('/api/auth/') || u.startsWith('/api/agent/') || u === '/api/health') continue;
+    const x = await call(r.method, u, r.method === 'GET' ? undefined : {}); assert.equal(x.status, 401, `${r.method} ${u} must require login (got ${x.status})`); }
   assert.equal((await call('POST', '/api/users', { username: 'ops', password: 'operator-password-1', role: 'operator' }, A)).status, 201);
   assert.equal((await call('POST', '/api/users', { username: 'viewer1', password: 'viewer-password-12', role: 'viewer' }, A)).status, 201);
   assert.equal((await call('POST', '/api/users', { username: 'viewer1', password: 'viewer-password-12', role: 'viewer' }, A)).status, 409);
