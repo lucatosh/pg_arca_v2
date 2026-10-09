@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AuthGate } from './AuthGate';
 import { useQuery, isTerminal, Op } from './hooks';
-import { Icon, Toasts, Dot, Modal } from './ui';
+import { Icon, Toasts, Dot, Modal, Empty } from './ui';
 import { go, useRoute } from './router';
 import { Clusters } from './pages/Clusters';
 import { ClusterView, TAB_ITEMS } from './pages/ClusterView';
 import { Audit, Discovery } from './pages/Global';
 import { StrategyPage } from './pages/Strategy';
+import { UsersPage } from './pages/Users';
 
 export const statusKind = (s?: string): 'ok' | 'warn' | 'bad' => (s === 'healthy' ? 'ok' : s === 'degraded' ? 'warn' : s === 'critical' || s === 'down' ? 'bad' : 'warn');
 
@@ -15,10 +16,10 @@ function applyTheme(t: string) { if (t === 'auto') document.documentElement.remo
 
 export function App() {
   useEffect(() => { applyTheme(theme()); }, []);
-  return <><AuthGate>{(s, logout) => <Shell user={s.user} logout={logout} />}</AuthGate><Toasts /></>;
+  return <><AuthGate>{(s, logout) => <Shell user={s.user} role={s.role} logout={logout} />}</AuthGate><Toasts /></>;
 }
 
-function Shell({ user, logout }: { user: string; logout: () => void }) {
+function Shell({ user, role, logout }: { user: string; role: string; logout: () => void }) {
   const route = useRoute();
   const { data, loading } = useQuery<{ clusters: any[]; demoAvailable: boolean }>('/api/clusters', { interval: 5000 });
   const opsQ = useQuery<{ operations: Op[] }>('/api/operations', { interval: 4000 });
@@ -40,6 +41,7 @@ function Shell({ user, logout }: { user: string; logout: () => void }) {
         <button className="navbtn" aria-current={route.page === 'clusters' ? 'page' : undefined} onClick={() => go('')}><Icon n="layers" />Cluster</button>
         <button className="navbtn" aria-current={route.page === 'strategy' ? 'page' : undefined} onClick={() => go('strategy')}><Icon n="shield" />Strategie di backup</button>
         <button className="navbtn" aria-current={route.page === 'discovery' ? 'page' : undefined} onClick={() => go('discovery')}><Icon n="search" />Rilevamento</button>
+        {role === 'admin' ? <button className="navbtn" aria-current={route.page === 'users' ? 'page' : undefined} onClick={() => go('users')}><Icon n="user" />Utenti</button> : null}
         <button className="navbtn" aria-current={route.page === 'audit' ? 'page' : undefined} onClick={() => go('audit')}><Icon n="list" />Registro attività</button>
       </nav>
       <div className="group">Cluster collegati</div>
@@ -51,7 +53,7 @@ function Shell({ user, logout }: { user: string; logout: () => void }) {
         {!loading && !clusters.length ? <div className="small" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>Nessun cluster.</div> : null}
       </div>
       <div className="foot">
-        <span className="trunc" title={user}><Icon n="user" s={14} /> {user}</span>
+        <span className="trunc" title={user}><Icon n="user" s={14} /> {user}{role !== 'admin' ? <span className="faint"> · {role === 'viewer' ? 'sola lettura' : 'operatore'}</span> : null}</span>
         <span className="row gap-s">
           <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={cycle} title={`Tema: ${th === 'auto' ? 'automatico' : th === 'dark' ? 'scuro' : 'chiaro'}`} aria-label="Cambia tema"><Icon n={th === 'dark' ? 'moon' : th === 'light' ? 'sun' : 'settings'} /></button>
           <button className="btn ghost sm" style={{ color: 'inherit' }} onClick={logout}>Esci</button>
@@ -72,6 +74,7 @@ function Shell({ user, logout }: { user: string; logout: () => void }) {
         {route.page === 'audit' && <Audit clusters={clusters} />}
         {route.page === 'discovery' && <Discovery />}
         {route.page === 'strategy' && <StrategyPage />}
+        {route.page === 'users' && (role === 'admin' ? <UsersPage me={user} /> : <Empty icon="lock" title="Solo per gli amministratori" />)}
       </main>
     </div>
     {pal ? <Palette onClose={() => setPal(false)} clusters={clusters} route={route} cycle={cycle} /> : null}

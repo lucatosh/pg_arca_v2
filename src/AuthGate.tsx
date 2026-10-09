@@ -2,9 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { api, get } from './api';
 import { Button, Field, Icon, Banner } from './ui';
 
-export interface Session { user: string }
+export interface Session { user: string; role: string }
 export function AuthGate({ children }: { children: (s: Session, logout: () => void) => React.ReactNode }) {
-  const [st, setSt] = useState<{ setupRequired: boolean; authenticated: boolean; user?: string } | null>(null);
+  const [st, setSt] = useState<{ setupRequired: boolean; authenticated: boolean; user?: string; role?: string } | null>(null);
   const [fail, setFail] = useState<string | null>(null);
   const load = () => get('/api/auth/status').then(setSt).catch(e => setFail(e.message));
   useEffect(() => {
@@ -15,7 +15,7 @@ export function AuthGate({ children }: { children: (s: Session, logout: () => vo
   }, []);
   if (fail) return <div className="authwrap"><Banner kind="bad" title="Server non raggiungibile">{fail}</Banner></div>;
   if (!st) return <div className="authwrap"><div className="skeleton" style={{ height: 220, width: 360 }} /></div>;
-  if (st.authenticated) return <>{children({ user: st.user || 'admin' }, async () => { try { await api('POST', '/api/auth/logout'); } catch { /* ignore */ } load(); })}</>;
+  if (st.authenticated) return <>{children({ user: st.user || 'admin', role: st.role || 'admin' }, async () => { try { await api('POST', '/api/auth/logout'); } catch { /* ignore */ } load(); })}</>;
   return <Login setup={st.setupRequired} onDone={load} />;
 }
 
