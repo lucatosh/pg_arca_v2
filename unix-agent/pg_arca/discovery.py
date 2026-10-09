@@ -190,6 +190,62 @@ def read_system_identifier(pgdata: str) -> Optional[str]:
 # ----------------------------------------------------------------------------
 # engine
 # ----------------------------------------------------------------------------
+def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Readiness / hygiene findings derived from what discovery saw. Every finding says what is wrong and what to do about it."""
+    out: List[Dict[str, Any]] = []
+
+    def add(sev, code, title, detail, fix="", target=""):
+        out.append({"severity": sev, "code": code, "title": title, "detail": detail, "fix": fix, "target": target})
+
+    tc = scan.get("toolchain") or {}
+    if not tc.get("psql"):
+        add("critical", "NO_PSQL", "psql non trovato", "L'agent usa psql per interrogare PostgreSQL ed eseguire backup e ripristini.", "Installa il pacchetto client di PostgreSQL.", "host")
+    if not tc.get("pg_waldump"):
+        add("info", "NO_WALDUMP", "pg_waldump non trovato", "Senza pg_waldump non si possono cercare DROP/TRUNCATE nei WAL.", "Installa i binari del server PostgreSQL (postgresql-NN).", "host")
+    if not tc.get("python_zstandard") and not tc.get("zstd"):
+        add("info", "NO_ZSTD", "Compressione zstd non disponibile", "I blocchi verranno compressi con zlib (più grandi e più lenti).", "pip install zstandard (o installa il comando zstd).", "host")
+    for i in scan.get("postgres_instances") or []:
+        tgt = i.get("data_directory", "")
+        st = i.get("settings") or {}
+        ar = i.get("archiving") or {}
+        ctl = i.get("control") or {}
+        try:
+            major = int(str(i.get("major_version") or "0").split(".")[0])
+        except ValueError:
+            major = 0
+        if not i.get("readable_by_agent", True):
+            add("critical", "UNREADABLE", "Data directory non leggibile dall'agent", "Senza accesso ai file l'agent non può fare backup.", "Esegui l'agent come utente postgres (o root).", tgt)
+        if 0 < major < 14:
+            add("critical", "PG_EOL", "PostgreSQL %d è fuori supporto" % major, "Non riceve più correzioni di sicurezza.", "Pianifica l'aggiornamento a una versione supportata (16 o superiore).", tgt)
+        if not i.get("running"):
+            add("warning", "NOT_RUNNING", "Istanza non in esecuzione", "I backup richiedono PostgreSQL attivo (i ripristini su cartella no).", "Avvia PostgreSQL.", tgt)
+        mode = (ar.get("archive_mode") or "off").lower()
+        if mode == "off":
+            add("warning", "ARCHIVE_OFF", "Archiviazione WAL spenta", "Senza WAL archiviati non esiste il ripristino a un istante preciso.", "archive_mode = on; archive_command = '/usr/local/bin/pg-arca-wal archive %p %f' (richiede un riavvio).", tgt)
+        elif ar.get("foreign_tool"):
+            add("warning", "ARCHIVE_FOREIGN", "L'archiviazione è gestita da %s" % ar["foreign_tool"], "Sostituire archive_command interrompe quella catena di backup.", "Valuta una migrazione guidata: non cambiare archive_command a caldo.", tgt)
+        if (ctl.get("wal_level") or ar.get("wal_level")) == "minimal":
+            add("critical", "WAL_MINIMAL", "wal_level = minimal", "Con wal_level minimal non si può archiviare né replicare.", "wal_level = replica (richiede un riavvio).", tgt)
+        if ctl.get("available") and not ctl.get("data_checksums") and (st.get("wal_log_hints") or "off") != "on":
+            add("info", "NO_CHECKSUMS", "Backup incrementali non abilitabili", "Servono data_checksums o wal_log_hints per distinguere le pagine cambiate; ora sono possibili solo backup completi.", "wal_log_hints = on (riavvio) oppure pg_checksums --enable a istanza ferma.", tgt)
+        if st.get("ssl") and st["ssl"] != "on":
+            add("warning", "SSL_OFF", "TLS spento", "Le connessioni non sono cifrate e le regole hostssl non possono corrispondere.", "ssl = on con certificato e chiave configurati.", tgt)
+        if (st.get("fsync") or "on") == "off" or (st.get("full_page_writes") or "on") == "off":
+            add("critical", "UNSAFE_DURABILITY", "fsync / full_page_writes disattivati", "Un crash può corrompere i dati e i backup fisici non sono consistenti.", "Riattiva fsync e full_page_writes.", tgt)
+    for pc in scan.get("patroni_clusters") or []:
+        if not pc.get("rest_accessible", True) and pc.get("rest_url"):
+            add("warning", "PATRONI_REST", "API REST di Patroni non raggiungibile", "Switchover, failover e modifiche HA non sono possibili da qui.", "Controlla restapi.listen / credenziali.", pc.get("scope", ""))
+    for ec in scan.get("etcd_clusters") or []:
+        n = len(ec.get("members") or [])
+        if n and n % 2 == 0:
+            add("warning", "ETCD_EVEN", "etcd con %d membri" % n, "Un numero pari di membri non aumenta la tolleranza ai guasti.", "Usa 3 o 5 membri.", ec.get("name", ""))
+        if n == 1:
+            add("warning", "ETCD_SINGLE", "etcd con un solo membro", "Se si ferma, Patroni degrada il cluster.", "Usa 3 membri.", ec.get("name", ""))
+    order = {"critical": 0, "warning": 1, "info": 2}
+    out.sort(key=lambda f: order[f["severity"]])
+    return out
+
+
 class ClusterDiscoveryEngine:
     def __init__(self, search_paths: Optional[List[str]] = None, custom_variables: Optional[Dict[str, str]] = None,
                  pg_user: str = "postgres"):
@@ -211,7 +267,7 @@ class ClusterDiscoveryEngine:
         backrest = self._discover_pgbackrest()
         self._link_patroni_to_instances(instances, patroni)
 
-        return {
+        out = {
             "schema_version": SCHEMA_VERSION,
             "node_hostname": socket.gethostname(),
             "fqdn": socket.getfqdn(),
@@ -236,6 +292,10 @@ class ClusterDiscoveryEngine:
             "running_processes": [{k: p[k] for k in ("pid", "name", "uid", "cmdline")} for p in procs],
             "warnings": self._warnings(procs, instances),
         }
+        out["findings"] = advise(out)
+        out["summary"]["findings_critical"] = sum(1 for f in out["findings"] if f["severity"] == "critical")
+        out["summary"]["findings_warning"] = sum(1 for f in out["findings"] if f["severity"] == "warning")
+        return out
 
     # ---- tooling -------------------------------------------------------
     def _toolchain(self) -> Dict[str, Optional[str]]:

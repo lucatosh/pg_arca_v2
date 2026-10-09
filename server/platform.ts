@@ -31,13 +31,32 @@ export function mountPlatformRoutes(app: any, store: Store) {
   });
 
   app.get('/api/discovery/results', (_req: Request, res: Response) => {
-    const nodes = Object.values(store.peek().nodes).map(n => ({
-      nodeId: n.id, nodeName: n.name, clusterId: n.clusterId, lastSeen: n.lastSeen, discovery: n.discovery || null,
+    const st = store.peek();
+    const cname = (id?: string) => st.clusters.find((c: any) => c.id === id)?.name;
+    const nodes = Object.values(st.nodes).map(n => ({
+      nodeId: n.id, nodeName: n.name, clusterId: n.clusterId, clusterName: cname(n.clusterId), lastSeen: n.lastSeen, discovery: n.discovery || null,
+      findings: (n.discovery as any)?.findings || [],
     }));
     const sum = (k: string) => nodes.reduce((a, n) => a + Number(n.discovery?.summary?.[k] || 0), 0);
+    // configuration drift between the members of one cluster (same setting, different value) — a classic source of failover surprises
+    const IGNORE = new Set(['port', 'data_directory', 'hba_file', 'ident_file', 'config_file', 'cluster_name', 'unix_socket_directories', 'listen_addresses', 'external_pid_file']);
+    const drift: any[] = [];
+    const byCluster = new Map<string, typeof nodes>();
+    for (const n of nodes) if (n.clusterId) (byCluster.get(n.clusterId) || byCluster.set(n.clusterId, []).get(n.clusterId)!).push(n);
+    for (const [cid, list] of byCluster) {
+      if (list.length < 2) continue;
+      const keys = new Set<string>();
+      for (const n of list) for (const k of Object.keys((n.discovery as any)?.postgres_instances?.[0]?.settings || {})) if (!IGNORE.has(k)) keys.add(k);
+      for (const k of [...keys].sort()) {
+        const vals: Record<string, string> = {};
+        for (const n of list) { const v = (n.discovery as any)?.postgres_instances?.[0]?.settings?.[k]; if (v !== undefined) vals[n.nodeName] = String(v); }
+        if (Object.keys(vals).length > 1 && new Set(Object.values(vals)).size > 1) drift.push({ clusterId: cid, clusterName: cname(cid), setting: k, values: vals });
+      }
+    }
     res.json({
-      nodes,
-      summary: { nodes: nodes.length, postgres: sum('postgres_instances_found'), patroni: sum('patroni_clusters_found'), etcd: sum('etcd_clusters_found'), pgbouncer: sum('pgbouncer_instances_found') },
+      nodes, drift,
+      summary: { nodes: nodes.length, postgres: sum('postgres_instances_found'), patroni: sum('patroni_clusters_found'), etcd: sum('etcd_clusters_found'), pgbouncer: sum('pgbouncer_instances_found'),
+                 critical: sum('findings_critical'), warnings: sum('findings_warning'), drift: drift.length },
     });
   });
 
