@@ -82,6 +82,14 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('tr:has-text("prodpg") button:has-text("Assegna")'); await p.click('label.opt:has-text("Conservazione lunga")'); await p.click('.modal button:has-text("Salva")');
   await p.waitForSelector('tr:has-text("prodpg"):has-text("Assegnata a questo cluster")');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Strategia di backup'); await p.waitForSelector('.card .badge:has-text("Conservazione lunga")'); await shot('15d-backup-strategy');
+  // a server announces itself (agent installed without a token) -> banner -> approve
+  { const fp = 'e2efingerprint0000000001', secret = 'a'.repeat(64); const sh = require('crypto').createHash('sha256').update(secret).digest('hex');
+    const r = await p.request.post(base + '/api/agent/request-join', { data: { fingerprint: fp, secret_hash: sh, node_name: 'e2e-new', agent_version: '2.0', discovery: { postgres_instances: [{ version: '16.4', data_directory: '/var/lib/postgresql/16/main', port: 5432, cluster_key: 'sysid:e2e-new-key', role: 'primary' }] } } });
+    assert.equal(r.status(), 201);
+    await p.goto(base + '/#/'); await p.waitForSelector('text=Nuovo server rilevato: e2e-new', { timeout: 15000 }); await p.click('.join-banner button:has-text("Esamina")');
+    await p.waitForSelector('text=Aggiungere e2e-new?'); await p.selectOption('.modal select', 'dev'); await shot('15a-join');
+    await p.click('.modal button:has-text("Approva e collega")'); await p.waitForSelector('text=Server approvato', { timeout: 10000 });
+    const st = await p.request.post(base + '/api/agent/join-status', { data: { fingerprint: fp, secret } }); assert.equal((await st.json()).status, 'approved'); }
   // today + settings
   await p.goto(base + '/#/today'); await p.waitForSelector('h1:has-text("Oggi")'); await p.waitForSelector('.banner', { timeout: 10000 }); await shot('16a-today');
   await p.goto(base + '/#/settings'); await p.waitForSelector('text=Aggiungi canale'); await p.click('button:has-text("Aggiungi canale")');

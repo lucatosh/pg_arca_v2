@@ -9,7 +9,7 @@ const SEV_LABEL: Record<string, string> = { critical: 'Solo urgenti', warning: '
 export function SettingsPage() {
   return <>
     <div className="pagehead"><div className="grow"><h1>Impostazioni</h1><p className="sub">Avvisi e controlli di sicurezza della console. Le impostazioni predefinite non cambiano il comportamento: attiva solo ciò che ti serve.</p></div></div>
-    <Notifications /><Approvals />
+    <Notifications /><Enrollment /><Approvals />
   </>;
 }
 
@@ -42,6 +42,16 @@ function Notifications() {
         <label className="small muted">Ricorda i problemi aperti ogni <input className="input" type="number" min={1} max={720} style={{ width: 70, display: 'inline-block' }} value={rem} onChange={e => setRem(Number(e.target.value))} aria-label="Ore tra i promemoria" /> ore</label>
         <Button kind="primary" busy={busy} onClick={save}>Salva</Button></div>
       {err ? <Banner kind="bad">{err}</Banner> : null}</div>}
+  </Card>;
+}
+
+function Enrollment() {
+  const q = useQuery<{ joinRequests: boolean }>('/api/advanced'); const [busy, setBusy] = useState(false);
+  const set = async (on: boolean) => { setBusy(true); try { await api('PUT', '/api/advanced', { joinRequests: on }); revalidate('/api/advanced'); toast(on ? 'Annuncio automatico attivo' : 'Annuncio automatico disattivato', 'ok'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
+  return <Card title="Nuovi server">
+    <p className="small muted" style={{ marginTop: 0 }}>Un agent installato senza token si annuncia alla console e resta in attesa: tu decidi se aggiungerlo. Non riceve alcun accesso finché non approvi. Le richieste senza risposta scadono dopo 48 ore.</p>
+    {!q.data ? <Skeleton h={30} /> : <label className="check"><input type="checkbox" disabled={busy} checked={q.data.joinRequests} onChange={e => set(e.target.checked)} />Accetta richieste di adesione dai server (consigliato nella rete interna)</label>}
+    <p className="small muted">Se la console è raggiungibile da reti non fidate, disattiva l’opzione e usa i token di iscrizione monouso.</p>
   </Card>;
 }
 

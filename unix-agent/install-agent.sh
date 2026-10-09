@@ -6,7 +6,7 @@
 #        PG_ARCA_URL=https://<console> PG_ARCA_ENROLL_TOKEN=arca_enr_... bash
 #
 # Idempotent: re-running upgrades the code and keeps config + credentials.
-# Env:  PG_ARCA_URL (required on first install)   PG_ARCA_ENROLL_TOKEN (required until enrolled)
+# Env:  PG_ARCA_URL (required on first install)   PG_ARCA_ENROLL_TOKEN (optional: without it the server announces itself and waits for approval in the web console)
 #       PG_ARCA_NODE_NAME   PG_ARCA_TLS_CA=/path/ca.pem   PG_ARCA_BUNDLE_SHA256=<hex>
 #       PG_ARCA_REPO=/var/lib/pgarca/repo   PG_ARCA_USER=postgres
 # ==============================================================================
@@ -70,7 +70,9 @@ fi
 if [[ -n "${PG_ARCA_ENROLL_TOKEN:-}" && ! -f "$CONF_DIR/credentials.json" ]]; then
   umask 077; printf 'PG_ARCA_ENROLL_TOKEN=%s\n' "$PG_ARCA_ENROLL_TOKEN" > "$CONF_DIR/enroll.env"; chown "$PGUSER_OS" "$CONF_DIR/enroll.env"; chmod 0600 "$CONF_DIR/enroll.env"
 fi
-if [[ ! -f "$CONF_DIR/credentials.json" && ! -f "$CONF_DIR/enroll.env" ]]; then die "no credentials yet and PG_ARCA_ENROLL_TOKEN not provided"; fi
+if [[ ! -f "$CONF_DIR/credentials.json" && ! -f "$CONF_DIR/enroll.env" ]]; then
+  echo "No enrollment token given: this server will announce itself to ${PG_ARCA_URL:-the console} and wait for an administrator to approve it in the web console (Cluster page)."
+fi
 
 # --- service -------------------------------------------------------------------------
 cat > /etc/systemd/system/pg-arca-agent.service <<UNIT

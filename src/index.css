@@ -205,3 +205,4 @@ h1 { font-size: 26px; letter-spacing: -0.02em; font-weight: 650; }
 .issue { padding: 10px 0; border-bottom: 1px solid var(--line); } .issue:last-child { border-bottom: 0; }
 .navcount { margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 10px; font-size: 11px; line-height: 18px; text-align: center; font-weight: 600; color: #fff; }
 .navcount.bad { background: var(--bad); } .navcount.warn { background: var(--warn); }
+.join-banner { margin-bottom: 14px; }

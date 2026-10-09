@@ -7,13 +7,14 @@ import { mountAgentRoutes, mountOperatorRoutes } from '../../server/agents';
 import { mountClusterRoutes, seedDemoOnFirstRun } from '../../server/clusters';
 import { mountPlatformRoutes } from '../../server/platform';
 import { mountAuthRoutes, requireAdmin } from '../../server/auth';
+import { mountJoinRoutes } from '../../server/join';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-'));
 const store = new Store(dir), app = new MiniApp(), direct = new DirectDriver(store, loadSecretKey(dir));
 const demo = () => ({ id: 'cluster-demo', name: 'DEMO', environment: 'dev', isSandbox: true, databases: [], haState: { nodes: [] } });
 app.use(requireAdmin(store));
 mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec });
-mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store);
+mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountJoinRoutes(app, store);
 seedDemoOnFirstRun(store, demo);
 const srv = http.createServer((req, res) => {
   let data = ''; req.on('data', c => (data += c));

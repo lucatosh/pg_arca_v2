@@ -15,6 +15,7 @@ import { mountHbaRoutes } from './server/hba';
 import { mountNotifyRoutes, startNotifier } from './server/notify';
 import { briefing } from './server/health';
 import { mountAdvancedRoutes } from './server/approvals';
+import { mountJoinRoutes } from './server/join';
 import { audit as auditLog } from './server/ops';
 import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv } from './server/auth';
 import { runSelfTest } from './server/selftest';
@@ -64,7 +65,8 @@ mountPolicyRoutes(app, store);
 mountHbaRoutes(app, store);
 mountNotifyRoutes(app, store);
 mountAdvancedRoutes(app, store, auditLog);
-app.get('/api/health', (_req: any, res: any) => res.json(briefing(store.peek())));
+mountJoinRoutes(app, store);
+app.get('/api/briefing', (_req: any, res: any) => res.json(briefing(store.peek())));
 mountLogRoutes(app);
 mountNetscanRoutes(app);
 
