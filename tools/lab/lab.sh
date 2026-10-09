@@ -24,6 +24,8 @@ case "${1:-help}" in
   agentlog) docker exec -it "${2:-$(leader)}" tail -f /var/log/pgarca/agent.out ;;
   console) # run the web console on this host (background), from the repo root
     cd ../..; [[ -d node_modules/express ]] || npm install; [[ -f dist/index.html ]] || npx vite build; setsid nohup npm start >/tmp/pg_arca_console.log 2>&1 < /dev/null & echo "console on :3000, log /tmp/pg_arca_console.log" ;;
+  agent-reset) # forget the console enrollment on every node and restart them one by one (then delete the old clusters in the console and approve again)
+    for n in pg1 pg2 pg3; do docker exec "$n" rm -f /etc/pg-arca/credentials.json /etc/pg-arca/join.json /etc/pg-arca/enroll.env; docker restart "$n" >/dev/null; echo "$n restarted"; sleep 20; done ;;
   switchover) l=$(leader); t=${2:?target node (pg1|pg2|pg3)}; docker exec "$l" patronictl -c /etc/patroni.yml switchover --leader "$l" --candidate "$t" --force; sleep 8; ./lab.sh status ;;
   failover) l=$(leader); echo "stopping leader $l (kill -9 style)"; docker kill "$l" >/dev/null; for _ in $(seq 40); do n=$(leader || true); [[ -n $n && $n != "$l" ]] && break; sleep 3; done; echo "new leader: ${n:-NONE}"; docker start "$l" >/dev/null; sleep 20; ./lab.sh status ;;
   smoke)   # sanity checks, exits non-zero on the first failure
@@ -40,6 +42,7 @@ case "${1:-help}" in
   *) cat <<H
 ./lab.sh up | down | reset | status | smoke
          shell [node] | psql | logs [node] | agentlog [node]
+         agent-reset        forget console enrollment on all nodes (re-announce)
          console            start the pg_arca web console on this host (npm start, :3000)
          switchover <node>  planned role change   |  failover  kill the leader and watch Patroni elect another
          bench [scale]      tools/lab/bench.sh on the leader (default scale 10)

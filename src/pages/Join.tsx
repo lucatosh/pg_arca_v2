@@ -23,7 +23,7 @@ export function JoinBanner() {
 function Review({ r, all, pick, onClose }: { r: any; all: any[]; pick: (r: any) => void; onClose: () => void }) {
   const [env, setEnv] = useState('prod'); const [name, setName] = useState(''); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
   const pg = (r.summary?.postgres || [])[0];
-  const done = (msg: string) => { toast(msg, 'ok'); revalidate('/api/join-requests'); revalidate('/api/clusters'); const next = all.find(x => x.id !== r.id); next ? pick(next) : onClose(); };
+  const done = (msg: string) => { toast(msg, 'ok'); revalidate('/api/join-requests'); revalidate('/api/clusters'); onClose(); };
   const approve = async () => { setBusy(true); setErr(null); try { const o: any = await api('POST', `/api/join-requests/${r.id}/approve`, r.matchCluster ? {} : { environment: env, name: name || undefined }); done('Server approvato: comparirà tra pochi secondi'); if (all.length === 1 && o.clusterId) go(`c/${encodeURIComponent(o.clusterId)}`); } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); } };
   const reject = async () => { setBusy(true); try { await api('POST', `/api/join-requests/${r.id}/reject`); done('Richiesta rifiutata'); } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); } };
   return <Modal title={`Aggiungere ${r.nodeName}?`} onClose={onClose} footer={<><Button onClick={reject} disabled={busy}>Rifiuta</Button><Button kind="primary" icon="check" busy={busy} disabled={r.nameInUse} onClick={approve}>Approva e collega</Button></>}>

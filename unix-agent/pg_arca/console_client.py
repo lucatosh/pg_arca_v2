@@ -103,6 +103,13 @@ class ConsoleClient(threading.Thread):
     def join_step(self):
         """One announce/poll round. Returns True once approved and credentials are saved, False while waiting (the caller sleeps)."""
         j, path = self._join_state()
+        # the agent may start before PostgreSQL does (containers, Patroni bootstrap): re-scan while nothing is found, so the console sees the instance
+        if not (self.rt.report or {}).get("postgres_instances") and time.time() - getattr(self, "_join_scan_at", 0) > 20:
+            self._join_scan_at = time.time()
+            try:
+                self.rt.refresh()
+            except Exception as e:
+                logger.warning("discovery refresh failed: %s", e)
         body = {"fingerprint": j["fingerprint"], "secret_hash": hashlib.sha256(j["secret"].encode("utf-8")).hexdigest(), "node_name": self.config["node_name"],
                 "agent_version": AGENT_VERSION, "discovery": self.rt.report}
         self._post("/api/agent/request-join", body, auth=False)
