@@ -74,6 +74,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('tr:has-text("prodpg") button:has-text("Assegna")'); await p.click('label.opt:has-text("Conservazione lunga")'); await p.click('.modal button:has-text("Salva")');
   await p.waitForSelector('tr:has-text("prodpg"):has-text("Assegnata a questo cluster")');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Strategia di backup'); await p.waitForSelector('.card .badge:has-text("Conservazione lunga")'); await shot('15d-backup-strategy');
+  // today + settings
+  await p.goto(base + '/#/today'); await p.waitForSelector('h1:has-text("Oggi")'); await p.waitForSelector('.banner', { timeout: 10000 }); await shot('16a-today');
+  await p.goto(base + '/#/settings'); await p.waitForSelector('text=Aggiungi canale'); await p.click('button:has-text("Aggiungi canale")');
+  await p.fill('input[aria-label="Nome del canale"]', 'Slack DBA'); await p.fill('input[aria-label="Indirizzo del webhook"]', 'https://hooks.example.com/services/T0/B0/abcd1234');
+  await p.click('button:has-text("Salva")'); await p.waitForSelector('text=Notifiche salvate'); await p.waitForSelector('button:has-text("Invia prova")');
+  await p.waitForSelector('text=Serve un secondo amministratore'); await shot('16b-settings');
   // users
   await p.goto(base + '/#/users'); await p.waitForSelector('text=Nuovo utente'); await p.click('button:has-text("Nuovo utente")');
   await p.fill('.modal input >> nth=0', 'operatore1'); await p.fill('.modal input[type=password]', 'operator-password-1'); await p.click('.modal button:has-text("Crea utente")');

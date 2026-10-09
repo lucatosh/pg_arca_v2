@@ -8,6 +8,8 @@ import { ClusterView, TAB_ITEMS } from './pages/ClusterView';
 import { Audit, Discovery } from './pages/Global';
 import { StrategyPage } from './pages/Strategy';
 import { UsersPage } from './pages/Users';
+import { TodayPage, useHealth } from './pages/Today';
+import { SettingsPage } from './pages/Settings';
 
 export const statusKind = (s?: string): 'ok' | 'warn' | 'bad' => (s === 'healthy' ? 'ok' : s === 'degraded' ? 'warn' : s === 'critical' || s === 'down' ? 'bad' : 'warn');
 
@@ -23,6 +25,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
   const route = useRoute();
   const { data, loading } = useQuery<{ clusters: any[]; demoAvailable: boolean }>('/api/clusters', { interval: 5000 });
   const opsQ = useQuery<{ operations: Op[] }>('/api/operations', { interval: 4000 });
+  const health = useHealth(20000); const hc = health.data?.counts; const urgent = (hc?.critical || 0) + (hc?.warning || 0);
   const [pal, setPal] = useState(false);
   const [th, setTh] = useState(theme());
   const clusters = data?.clusters || [];
@@ -38,9 +41,11 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
     <aside className="side">
       <div className="brand"><Icon n="ark" s={22} />pg_arca</div>
       <nav>
+        <button className="navbtn" aria-current={route.page === 'today' ? 'page' : undefined} onClick={() => go('today')}><Icon n="alert" />Oggi{urgent ? <span className={`navcount ${hc?.critical ? 'bad' : 'warn'}`}>{urgent}</span> : null}</button>
         <button className="navbtn" aria-current={route.page === 'clusters' ? 'page' : undefined} onClick={() => go('')}><Icon n="layers" />Cluster</button>
         <button className="navbtn" aria-current={route.page === 'strategy' ? 'page' : undefined} onClick={() => go('strategy')}><Icon n="shield" />Strategie di backup</button>
         <button className="navbtn" aria-current={route.page === 'discovery' ? 'page' : undefined} onClick={() => go('discovery')}><Icon n="search" />Rilevamento</button>
+        {role === 'admin' ? <button className="navbtn" aria-current={route.page === 'settings' ? 'page' : undefined} onClick={() => go('settings')}><Icon n="settings" />Impostazioni</button> : null}
         {role === 'admin' ? <button className="navbtn" aria-current={route.page === 'users' ? 'page' : undefined} onClick={() => go('users')}><Icon n="user" />Utenti</button> : null}
         <button className="navbtn" aria-current={route.page === 'audit' ? 'page' : undefined} onClick={() => go('audit')}><Icon n="list" />Registro attività</button>
       </nav>
@@ -63,7 +68,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
     <div className="main">
       <div className="topbar">
         <select className="input mobnav" aria-label="Vai a" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
-          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="strategy">Strategie di backup</option><option value="discovery">Rilevamento</option><option value="audit">Registro attività</option></select>
+          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Oggi</option><option value="strategy">Strategie di backup</option><option value="discovery">Rilevamento</option><option value="audit">Registro attività</option></select>
         <button className="btn" onClick={() => setPal(true)} style={{ minWidth: 260, justifyContent: 'flex-start', color: 'var(--ink-3)' }}><Icon n="search" />Cerca cluster, azioni…<span className="kbd end">Ctrl K</span></button>
         <div className="grow" />
         {running.length ? <button className="btn" onClick={() => { const o = running[0]; if (o.clusterId && o.clusterId !== 'unassigned') go(`c/${encodeURIComponent(o.clusterId)}/operations`); }}><Icon n="refresh" spin />{running.length} {running.length === 1 ? 'operazione in corso' : 'operazioni in corso'}</button> : null}
@@ -74,6 +79,8 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         {route.page === 'audit' && <Audit clusters={clusters} />}
         {route.page === 'discovery' && <Discovery />}
         {route.page === 'strategy' && <StrategyPage />}
+        {route.page === 'today' && <TodayPage me={user} role={role} />}
+        {route.page === 'settings' && (role === 'admin' ? <SettingsPage /> : <Empty icon="lock" title="Solo per gli amministratori" />)}
         {route.page === 'users' && (role === 'admin' ? <UsersPage me={user} /> : <Empty icon="lock" title="Solo per gli amministratori" />)}
       </main>
     </div>
@@ -88,7 +95,7 @@ function Palette({ onClose, clusters, route, cycle }: { onClose: () => void; clu
     for (const c of clusters) a.push({ label: c.name, hint: c.environment, icon: 'db', run: () => go(`c/${encodeURIComponent(c.id)}`) });
     const cid = route.page === 'cluster' ? route.id : clusters[0]?.id;
     if (cid) for (const t of TAB_ITEMS) if (!t.preview) a.push({ label: `${clusters.find(c => c.id === cid)?.name || ''} › ${t.label}`, icon: t.icon || 'chev', run: () => go(`c/${encodeURIComponent(cid)}/${t.id}`) });
-    a.push({ label: 'Tutti i cluster', icon: 'layers', run: () => go('') }, { label: 'Strategie di backup', icon: 'shield', run: () => go('strategy') }, { label: 'Rilevamento', icon: 'search', run: () => go('discovery') }, { label: 'Registro attività', icon: 'list', run: () => go('audit') }, { label: 'Cambia tema', icon: 'settings', run: cycle });
+    a.push({ label: 'Oggi: cosa richiede attenzione', icon: 'alert', run: () => go('today') }, { label: 'Tutti i cluster', icon: 'layers', run: () => go('') }, { label: 'Strategie di backup', icon: 'shield', run: () => go('strategy') }, { label: 'Rilevamento', icon: 'search', run: () => go('discovery') }, { label: 'Registro attività', icon: 'list', run: () => go('audit') }, { label: 'Cambia tema', icon: 'settings', run: cycle });
     const s = q.trim().toLowerCase();
     return s ? a.filter(x => x.label.toLowerCase().includes(s)) : a;
   }, [q, clusters, route, cycle]);

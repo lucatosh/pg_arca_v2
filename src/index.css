@@ -200,3 +200,8 @@ h1 { font-size: 26px; letter-spacing: -0.02em; font-weight: 650; }
 .ribbon .wal { height: 3px; margin-top: 5px; border-radius: 2px; background: var(--line); } .ribbon .wal.ok { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 25%, transparent), var(--accent)); } .ribbon .wal.bad { background: repeating-linear-gradient(90deg, var(--bad) 0 12px, transparent 12px 18px); }
 .ribbon .cap { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 13px; flex-wrap: wrap; }
 @media (prefers-reduced-motion: no-preference) { .ribbon .cells i.today { animation: nowpulse 2.4s ease-in-out infinite; } @keyframes nowpulse { 50% { box-shadow: 0 2px 0 0 transparent; } } }
+
+/* ---- Oggi / impostazioni */
+.issue { padding: 10px 0; border-bottom: 1px solid var(--line); } .issue:last-child { border-bottom: 0; }
+.navcount { margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 10px; font-size: 11px; line-height: 18px; text-align: center; font-weight: 600; color: #fff; }
+.navcount.bad { background: var(--bad); } .navcount.warn { background: var(--warn); }
