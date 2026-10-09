@@ -52,6 +52,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   // palette
   await p.keyboard.press('Control+k'); await p.waitForSelector('[role=dialog][aria-label="Ricerca rapida"]'); await p.keyboard.type('registro'); await p.keyboard.press('Enter');
   await p.waitForSelector('text=Registro attività'); await shot('15-audit');
+  // strategies
+  await p.goto(base + '/#/strategy'); await p.waitForSelector('text=cluster senza backup automatico'); await shot('15b-strategy');
+  await p.click('button:has-text("Applica i consigliati per ambiente")'); await p.waitForSelector('text=Tutti i cluster hanno una strategia attiva'); await shot('15c-strategy-applied');
+  await p.click('tr:has-text("prodpg") button:has-text("Assegna")'); await p.click('label.opt:has-text("Conservazione lunga")'); await p.click('.modal button:has-text("Salva")');
+  await p.waitForSelector('tr:has-text("prodpg"):has-text("Assegnata a questo cluster")');
+  await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Strategia di backup'); await p.waitForSelector('.card .badge:has-text("Conservazione lunga")'); await shot('15d-backup-strategy');
   // attach wizard
   await p.click('button:has-text("Cluster") >> nth=0'); await p.click('button:has-text("Collega cluster") >> nth=0'); await p.waitForSelector('text=Con agent (consigliato)'); await p.click('text=Con agent (consigliato)');
   await p.click('button:has-text("Genera comando")'); await p.waitForSelector('text=PG_ARCA_ENROLL_TOKEN'); await shot('16-attach');

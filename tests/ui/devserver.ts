@@ -11,6 +11,7 @@ import { mountAgentRoutes, mountOperatorRoutes } from '../../server/agents';
 import { mountClusterRoutes, seedDemoOnFirstRun } from '../../server/clusters';
 import { mountPlatformRoutes } from '../../server/platform';
 import { mountHbaRoutes } from '../../server/hba';
+import { mountPolicyRoutes } from '../../server/policies';
 import { mountAuthRoutes, requireAdmin } from '../../server/auth';
 
 const port = Number(process.argv[2] || 5188); const staticDir = process.argv[3] || '/tmp/claude-0/ui';
@@ -22,7 +23,7 @@ const withAgent = process.env.NO_AGENT !== '1';
   const demo = () => ({ id: 'cluster-demo', name: 'Cluster demo', environment: 'dev', isSandbox: true, status: 'healthy', pgVersion: '16', databases: [{ name: 'demo', size: 1e9 }], totalSizeBytes: 1e9, tps: 0, haState: { nodes: [{ name: 'demo-1', role: 'primary', online: true, state: 'running', host: 'demo', port: 5432, replicationLagBytes: 0, cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 100, source: 'agent' }] } });
   app.use(requireAdmin(store));
   mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec });
-  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store);
+  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store);
   await seedDemoOnFirstRun(store, demo);
 
   // --- scripted fake agent -------------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+import { StrategyCard } from './Strategy';
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Skeleton, bytes, dt, dur, ago, num } from '../ui';
@@ -49,7 +50,7 @@ export function BackupTab({ c }: { c: any }) {
     <Banner kind={v.kind} title={v.title}>{v.text}</Banner>
     {d.archiveMode === 'off' ? <ArchiveSetup /> : null}
     <RunCard c={c} hasFull={done.some(s => s.type === 'full')} running={d.running || []} refresh={q.refresh} />
-    <div className="grid g2"><PolicyCard c={c} policy={d.policy} onSaved={q.refresh} /><HealthCard c={c} d={d} refresh={q.refresh} /></div>
+    <div className="grid g2"><StrategyCard c={c} policy={d.policySource?.scope === 'none' || d.policySource?.disabled ? null : d.policy} source={d.policySource} onSaved={q.refresh} /><HealthCard c={c} d={d} refresh={q.refresh} /></div>
     <SetsCard sets={sets} d={d} />
   </div>;
 }
@@ -76,27 +77,6 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
       {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} />{r.op?.status === 'succeeded' ? <Banner kind="ok" title={`Backup ${r.op.result?.set} completato`}>{bytes(r.op.result?.bytes_logical)} letti, {bytes(r.op.result?.bytes_written)} scritti nel repository in {dur(r.op.result?.duration_sec)}{r.op.result?.chunks_dedup ? `; ${num(r.op.result.chunks_dedup)} blocchi già presenti (deduplica)` : ''}.</Banner> : null}</> : null}
       {other.map(o => <div key={o.id} className="stack"><OpPanel op={o} cancel={() => cancelOther(o.id)} /></div>)}
     </div></Card>;
-}
-
-function PolicyCard({ c, policy, onSaved }: { c: any; policy: any; onSaved: () => void }) {
-  const [p, setP] = useState(policy); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
-  useEffect(() => setP(policy), [JSON.stringify(policy)]);
-  const dirty = JSON.stringify(p) !== JSON.stringify(policy);
-  const n = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) => setP({ ...p, [k]: Number(e.target.value) });
-  const save = async () => {
-    setBusy(true); setErr(null);
-    try { await api('PUT', `/api/clusters/${encodeURIComponent(c.id)}/backup-policy`, p); toast('Pianificazione salvata', 'ok'); onSaved(); }
-    catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
-  };
-  return <Card title="Pianificazione" actions={<label className="check"><input type="checkbox" checked={!!p.enabled} onChange={e => setP({ ...p, enabled: e.target.checked })} />Attiva</label>}>
-    <div className="stack"><div className="grid g2">
-      <Field label="Backup completo ogni (ore)"><input className="input" type="number" min={6} max={720} value={p.fullEveryHours} onChange={n('fullEveryHours')} /></Field>
-      <Field label="Incrementale ogni (ore)" hint="0 = solo completi"><input className="input" type="number" min={0} max={168} value={p.incrEveryHours} onChange={n('incrEveryHours')} /></Field>
-      <Field label="Backup completi da conservare"><input className="input" type="number" min={1} max={365} value={p.retentionFull} onChange={n('retentionFull')} /></Field>
-      <Field label="Verifica ogni (ore)" hint="0 = mai. Include una prova di ripristino."><input className="input" type="number" min={0} max={720} value={p.verifyEveryHours} onChange={n('verifyEveryHours')} /></Field></div>
-      <label className="check"><input type="checkbox" checked={!!p.verifyDeep} onChange={e => setP({ ...p, verifyDeep: e.target.checked })} />Verifica approfondita (rilegge ogni blocco: più lenta)</label>
-      {err ? <Banner kind="bad">{err}</Banner> : null}
-      <div className="row"><Button kind="primary" busy={busy} disabled={!dirty} onClick={save}>Salva</Button>{!p.enabled ? <span className="small muted">Pianificazione spenta: i backup partono solo a mano.</span> : <span className="small muted">Una operazione dati alla volta; dopo un errore riprova dopo {p.retryAfterMinutes} min.</span>}</div></div></Card>;
 }
 
 function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) {

@@ -172,3 +172,8 @@ pre.out { background: var(--surface-2); border: 1px solid var(--line); padding: 
 .tpl { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--surface); display: flex; flex-direction: column; justify-content: space-between; }
 .flip { transform: rotate(180deg); }
 @media (max-width: 900px) { .g3 { grid-template-columns: 1fr; } }
+
+/* ---- strategy ---- */
+.opt { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; cursor: pointer; } .opt.on { border-color: var(--accent); background: var(--accent-soft); } .opt input { margin-top: 4px; }
+.opt-body { margin: -4px 0 4px 26px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: var(--radius); }
+.linkbtn { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline dotted; }

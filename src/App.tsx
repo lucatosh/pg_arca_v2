@@ -6,6 +6,7 @@ import { go, useRoute } from './router';
 import { Clusters } from './pages/Clusters';
 import { ClusterView, TAB_ITEMS } from './pages/ClusterView';
 import { Audit, Discovery } from './pages/Global';
+import { StrategyPage } from './pages/Strategy';
 
 export const statusKind = (s?: string): 'ok' | 'warn' | 'bad' => (s === 'healthy' ? 'ok' : s === 'degraded' ? 'warn' : s === 'critical' || s === 'down' ? 'bad' : 'warn');
 
@@ -37,6 +38,7 @@ function Shell({ user, logout }: { user: string; logout: () => void }) {
       <div className="brand"><Icon n="ark" s={22} />pg_arca</div>
       <nav>
         <button className="navbtn" aria-current={route.page === 'clusters' ? 'page' : undefined} onClick={() => go('')}><Icon n="layers" />Cluster</button>
+        <button className="navbtn" aria-current={route.page === 'strategy' ? 'page' : undefined} onClick={() => go('strategy')}><Icon n="shield" />Strategie di backup</button>
         <button className="navbtn" aria-current={route.page === 'discovery' ? 'page' : undefined} onClick={() => go('discovery')}><Icon n="search" />Rilevamento</button>
         <button className="navbtn" aria-current={route.page === 'audit' ? 'page' : undefined} onClick={() => go('audit')}><Icon n="list" />Registro attività</button>
       </nav>
@@ -59,7 +61,7 @@ function Shell({ user, logout }: { user: string; logout: () => void }) {
     <div className="main">
       <div className="topbar">
         <select className="input mobnav" aria-label="Vai a" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
-          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="discovery">Rilevamento</option><option value="audit">Registro attività</option></select>
+          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="strategy">Strategie di backup</option><option value="discovery">Rilevamento</option><option value="audit">Registro attività</option></select>
         <button className="btn" onClick={() => setPal(true)} style={{ minWidth: 260, justifyContent: 'flex-start', color: 'var(--ink-3)' }}><Icon n="search" />Cerca cluster, azioni…<span className="kbd end">Ctrl K</span></button>
         <div className="grow" />
         {running.length ? <button className="btn" onClick={() => { const o = running[0]; if (o.clusterId && o.clusterId !== 'unassigned') go(`c/${encodeURIComponent(o.clusterId)}/operations`); }}><Icon n="refresh" spin />{running.length} {running.length === 1 ? 'operazione in corso' : 'operazioni in corso'}</button> : null}
@@ -69,6 +71,7 @@ function Shell({ user, logout }: { user: string; logout: () => void }) {
         {route.page === 'cluster' && <ClusterView id={route.id!} tab={route.tab} />}
         {route.page === 'audit' && <Audit clusters={clusters} />}
         {route.page === 'discovery' && <Discovery />}
+        {route.page === 'strategy' && <StrategyPage />}
       </main>
     </div>
     {pal ? <Palette onClose={() => setPal(false)} clusters={clusters} route={route} cycle={cycle} /> : null}
@@ -82,7 +85,7 @@ function Palette({ onClose, clusters, route, cycle }: { onClose: () => void; clu
     for (const c of clusters) a.push({ label: c.name, hint: c.environment, icon: 'db', run: () => go(`c/${encodeURIComponent(c.id)}`) });
     const cid = route.page === 'cluster' ? route.id : clusters[0]?.id;
     if (cid) for (const t of TAB_ITEMS) if (!t.preview) a.push({ label: `${clusters.find(c => c.id === cid)?.name || ''} › ${t.label}`, icon: t.icon || 'chev', run: () => go(`c/${encodeURIComponent(cid)}/${t.id}`) });
-    a.push({ label: 'Tutti i cluster', icon: 'layers', run: () => go('') }, { label: 'Rilevamento', icon: 'search', run: () => go('discovery') }, { label: 'Registro attività', icon: 'list', run: () => go('audit') }, { label: 'Cambia tema', icon: 'settings', run: cycle });
+    a.push({ label: 'Tutti i cluster', icon: 'layers', run: () => go('') }, { label: 'Strategie di backup', icon: 'shield', run: () => go('strategy') }, { label: 'Rilevamento', icon: 'search', run: () => go('discovery') }, { label: 'Registro attività', icon: 'list', run: () => go('audit') }, { label: 'Cambia tema', icon: 'settings', run: cycle });
     const s = q.trim().toLowerCase();
     return s ? a.filter(x => x.label.toLowerCase().includes(s)) : a;
   }, [q, clusters, route, cycle]);
