@@ -82,6 +82,7 @@ Object.assign(OP_SPECS, {
   backup_info:   { mutating: false, target: 'any_node', lane: 'control', validate: () => null },
   backup_verify: { ...dataOp, mutating: false, validate: (p: any) => p.restore_test && p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null },
   backup_expire: { ...dataOp, cancellable: false, validate: (p: any) => p.retention_full !== undefined && !(Number(p.retention_full) >= 1 && Number(p.retention_full) <= 365) ? 'retention_full 1..365' : null },
+  backup_catalog: { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => (p.set && p.set !== 'latest' && !setId.test(String(p.set))) ? 'invalid backup set id' : (p.database && !pgName(p.database) ? 'invalid database' : null) },
   restore_plan:  { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => ['instance', 'database', 'object'].includes(p.scope) ? targetErr(p) : 'scope must be instance|database|object' },
   restore_instance: { ...dataOp, validate: (p: any) => !p.destination || !String(p.destination).startsWith('/') || !noCtl(String(p.destination)) ? 'destination must be an absolute path'
                                                        : (targetErr(p) || (p.action && !['promote', 'pause'].includes(p.action) ? 'action must be promote|pause' : null)) },

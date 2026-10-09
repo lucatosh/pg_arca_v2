@@ -74,6 +74,15 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   // audit visible
   const aud = await call('GET', '/api/audit/history?limit=50', undefined, H()); assert(aud.body.total >= 4);
   // detach is atomic + idempotent, revokes agent
+  // backup policy + read model
+  {
+    const c2 = cl;
+    {
+      const bad = await call('PUT', `/api/clusters/${c2.id}/backup-policy`, { enabled: true, fullEveryHours: 2 }, H()); assert.strictEqual(bad.status, 400);
+      const good = await call('PUT', `/api/clusters/${c2.id}/backup-policy`, { enabled: true, fullEveryHours: 168, incrEveryHours: 24, retentionFull: 3 }, H()); assert.strictEqual(good.status, 200, JSON.stringify(good.body));
+      const bk = await call('GET', `/api/clusters/${c2.id}/backups`, undefined, H()); assert.strictEqual(bk.body.policy.retentionFull, 3);
+    }
+  }
   const d1 = await call('DELETE', `/api/clusters/${cl.id}`, undefined, H()); assert.strictEqual(d1.body.ok, true);
   assert.strictEqual((await call('DELETE', `/api/clusters/${cl.id}`, undefined, H())).body.already, true);
   assert.strictEqual((await call('POST', '/api/agent/heartbeat', {}, A())).status, 401);

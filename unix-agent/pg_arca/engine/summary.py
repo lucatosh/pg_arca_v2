@@ -49,9 +49,16 @@ class RepoSummary(object):
         if last and last.get("started_ts"):
             age = round((time.time() - last["started_ts"]) / 3600.0, 1)
         failed = [s for s in sets if s.get("status") in ("FAILED", "UNRECOVERABLE")]
+        recent = []
+        for s in sets[-60:]:
+            st = s.get("stats") or {}
+            recent.append({"id": s["id"], "type": s.get("type"), "parent": s.get("parent"), "status": s.get("status"), "start_time": s.get("start_time"),
+                           "stop_time": s.get("stop_time"), "duration_sec": s.get("duration_sec"), "start_lsn": s.get("start_lsn"), "stop_lsn": s.get("stop_lsn"),
+                           "timeline": s.get("timeline"), "bytes_logical": st.get("bytes_logical", 0), "bytes_written": st.get("bytes_written", 0),
+                           "reason": s.get("reason"), "pg_version": s.get("pg_version")})
         return {"stanza": self.ctx.stanza, "configured": True, "sets": len(done), "failed_sets": len(failed),
                 "last_backup": ({k: last.get(k) for k in ("id", "type", "start_time", "stop_time", "duration_sec", "stop_lsn")} if last else None),
                 "last_backup_age_hours": age, "last_failure": ({k: failed[-1].get(k) for k in ("id", "status", "reason", "start_time")} if failed else None),
                 "full_count": len([s for s in done if s["type"] == "full"]),
                 "total_chunks": (cas or {}).get("chunks"), "stored_bytes": stored, "raw_bytes": logical,
-                "dedup_ratio": round(logical / float(stored), 2) if stored else None, "repo_path": repo.path}
+                "dedup_ratio": round(logical / float(stored), 2) if stored else None, "repo_path": repo.path, "recent_sets": recent}

@@ -6,6 +6,7 @@
  *   agent --HTTPS POST--> /api/agent/ops/:id/report
  * Identity: one-time enrollment token -> per-node secret (only its sha256 is stored).
  */
+import { validatePolicy, DEFAULT_POLICY } from './scheduler';
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { Store, NodeRecord, sha256, newSecret, newId, nowIso } from './store';
@@ -251,6 +252,39 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     }
   });
 
+  // ---- backups (read model from agent telemetry; no round-trip needed) and policy ----------------------------
+  app.get('/api/clusters/:id/backups', (req: Request, res: Response) => {
+    const st = store.peek();
+    const cluster = st.clusters.find((c: any) => c.id === req.params.id);
+    if (!cluster) return res.status(404).json({ error: 'cluster_not_found' });
+    const nodes = Object.values(st.nodes).filter(n => n.clusterId === cluster.id);
+    const withBackup = nodes.filter(n => n.snapshot?.backup?.configured).sort((a, b) => (b.snapshot.backup.sets || 0) - (a.snapshot.backup.sets || 0));
+    const primary = nodes.find(n => n.snapshot?.postgres?.is_in_recovery === false);
+    const src = withBackup[0] || primary || nodes[0];
+    const running = st.operations.filter(o => o.clusterId === cluster.id && ['backup_run', 'backup_verify', 'backup_expire', 'restore_instance', 'restore_database', 'restore_object'].includes(o.type) && !isTerminalStatus(o.status));
+    res.json({
+      agent: nodes.length > 0, node: src ? { id: src.id, name: src.name, lastSeen: src.lastSeen } : null,
+      backup: src?.snapshot?.backup || null, wal: src?.snapshot?.wal || null,
+      archiver: src?.snapshot?.postgres?.archiver || null, archiveMode: src?.snapshot?.postgres?.settings?.archive_mode || null,
+      policy: cluster.backupPolicy || { ...DEFAULT_POLICY }, running,
+    });
+  });
+
+  app.put('/api/clusters/:id/backup-policy', async (req: Request, res: Response) => {
+    const v = validatePolicy(req.body);
+    if (!v.ok) return res.status(400).json({ error: 'invalid_policy', message: v.error });
+    const ok = await store.mutate(d => {
+      const c = d.clusters.find((x: any) => x.id === req.params.id);
+      if (!c) return false;
+      if (c.isSandbox || c.source === 'direct') throw Object.assign(new Error('agent_required'), { code: 'AGENT_REQUIRED' });
+      c.backupPolicy = v.policy;
+      ops.audit(d, { clusterId: c.id, actor: actorOf(req), action: 'backup.policy', status: 'OK', details: v.policy });
+      return true;
+    }).catch((e: any) => (e.code === 'AGENT_REQUIRED' ? 'agent' : Promise.reject(e)));
+    if (ok === 'agent') return res.status(409).json({ error: 'agent_required', message: 'Scheduled backups need an agent on the cluster.' });
+    ok ? res.json({ ok: true, policy: v.policy }) : res.status(404).json({ error: 'cluster_not_found' });
+  });
+
   app.get('/api/operations', (req: Request, res: Response) => {
     const { clusterId, status } = req.query as any;
     let list = store.peek().operations;
@@ -269,3 +303,5 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     res.status(r.ok ? 200 : (r.reason === 'unknown operation' ? 404 : 409)).json(r);
   });
 }
+
+function isTerminalStatus(s: string) { return ['succeeded', 'failed', 'expired', 'cancelled'].includes(s); }

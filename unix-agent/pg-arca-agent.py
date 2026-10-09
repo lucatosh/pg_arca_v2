@@ -47,12 +47,19 @@ def main():
 
     wal = WalManager(config["wal_archive_dir"], config.get("compression", "zstd"), config.get("compression_level", 3),
                      ((inst or {}).get("control") or {}).get("wal_segment_size") or 16 * 1024 * 1024)
-    class _Summary(object):                 # rebuilt lazily: the PostgreSQL binding may change after re-discovery
+    class _Summary(object):                 # rebuilt lazily (PostgreSQL binding may change); cached 20s so heartbeats stay cheap
+        _at, _val = 0.0, None
+
         def get_stats(self_inner):
+            import time as _t
+            if self_inner._val is not None and _t.time() - self_inner._at < 20:
+                return self_inner._val
             try:
-                return RepoSummary(Ctx.from_config(config, rt)).get_stats()
+                v = RepoSummary(Ctx.from_config(config, rt)).get_stats()
             except Exception as e:
-                return {"configured": False, "error": str(e)[:200]}
+                v = {"configured": False, "error": str(e)[:200]}
+            self_inner._at, self_inner._val = _t.time(), v
+            return v
     cas = _Summary()
     ex = OperationExecutor(config, rt.db, rt.patroni, discovery=lambda: rt.refresh(), runtime=rt)
     stop = threading.Event()

@@ -10,7 +10,7 @@ export class MiniApp {
     this.routes.push({ method, re, keys, h });
   }
   get(p: string, h: H) { this.add('GET', p, h); } post(p: string, h: H) { this.add('POST', p, h); }
-  delete(p: string, h: H) { this.add('DELETE', p, h); } patch(p: string, h: H) { this.add('PATCH', p, h); }
+  delete(p: string, h: H) { this.add('DELETE', p, h); } patch(p: string, h: H) { this.add('PATCH', p, h); } put(p: string, h: H) { this.add('PUT', p, h); }
   disable() {}
   async call(method: string, url: string, opts: { body?: any; headers?: Record<string, string> } = {}) {
     const [pathname, qs] = url.split('?');

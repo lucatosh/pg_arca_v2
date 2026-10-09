@@ -267,3 +267,26 @@ def forensics(ctx, limit=20, since=None, until=None):
         last = out[-1]
         res["suggestion"] = {"target_lsn": last["lsn"], "inclusive": False, "note": "restoring with this LSN and inclusive=false stops just BEFORE the last event"}
     return res
+
+
+# --------------------------------------------------------------------------- catalog browsing (restore wizard)
+def catalog_browse(ctx, set_spec=None, database=None, search="", limit=2000):
+    """Databases of a set; or, for one database, its schemas/objects (largest first, capped)."""
+    s = ctx.repo.resolve_set(set_spec)
+    cat = ctx.repo.load_catalog(s)
+    if not database:
+        return {"set": s["id"], "captured": cat.get("captured"),
+                "databases": [{"name": n, "oid": d["oid"], "size": d["size"], "objects": len([r for r in d["relations"] if r["kind"] in ("r", "p", "m")]),
+                               "connectable": d.get("connectable", True)} for n, d in sorted(cat["databases"].items())]}
+    d = cat["databases"].get(database)
+    if not d:
+        raise EngineError("PGA-GEN-031", "database '%s' is not in backup %s" % (database, s["id"]))
+    q = (search or "").lower()
+    rels = [r for r in d["relations"] if r["kind"] in ("r", "p", "m") and r["schema"] not in ("pg_catalog", "information_schema", "pg_toast")
+            and (not q or q in r["name"].lower() or q in r["schema"].lower())]
+    rels.sort(key=lambda r: -r["size"])
+    schemas = {}
+    for r in rels[:limit]:
+        schemas.setdefault(r["schema"], []).append({"name": r["name"], "kind": r["kind"], "size": r["size"]})
+    return {"set": s["id"], "database": database, "oid": d["oid"], "schemas": [{"name": k, "objects": v} for k, v in sorted(schemas.items())],
+            "total_objects": len(rels), "truncated": len(rels) > limit}

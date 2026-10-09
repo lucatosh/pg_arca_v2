@@ -18,6 +18,7 @@ import { Store, loadSecretKey, newId } from './server/store';
 import { DirectDriver } from './server/direct';
 import { mountAgentRoutes, mountOperatorRoutes } from './server/agents';
 import { mountClusterRoutes, seedDemoOnFirstRun } from './server/clusters';
+import { startScheduler } from './server/scheduler';
 import { mountPlatformRoutes } from './server/platform';
 import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv, sessionUser } from './server/auth';
 import { runSelfTest } from './server/selftest';
@@ -2685,6 +2686,7 @@ app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true, ti
 bootstrapAdminFromEnv(store);
 seedDemoOnFirstRun(store, buildDemoCluster).catch(e => console.error('[pg_arca] demo seed failed', e));
 direct.startPolling();
+startScheduler(store);
 
 // Static / Vite
 if (process.env.NODE_ENV === 'production') {

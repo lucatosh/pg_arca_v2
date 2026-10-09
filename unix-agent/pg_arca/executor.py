@@ -68,6 +68,7 @@ class OperationExecutor:
         r("backup_info", self.h_backup_info, True)
         r("backup_verify", self.h_backup_verify, True)
         r("backup_expire", self.h_backup_expire, True)
+        r("backup_catalog", self.h_backup_catalog, True)
         r("restore_plan", self.h_restore_plan, True)
         r("restore_instance", self.h_restore_instance, False)
         r("restore_database", self.h_restore_database, False)
@@ -427,3 +428,7 @@ class OperationExecutor:
     def h_forensics(self, p):
         from pg_arca.engine.maintenance import forensics
         return forensics(self._ctx_ro(), int(p.get("limit", 20)), p.get("since"), p.get("until"))
+
+    def h_backup_catalog(self, p):
+        from pg_arca.engine.maintenance import catalog_browse
+        return catalog_browse(self._ctx_ro(), p.get("set"), p.get("database") or None, str(p.get("search", "")), int(p.get("limit", 2000)))
