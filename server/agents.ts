@@ -292,7 +292,13 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
         const pick = (pred: (n: NodeRecord) => boolean) => nodes.find(n => online(n) && pred(n));
         if (spec.target === 'primary') target = pick(n => n.snapshot?.postgres?.is_in_recovery === false);
         else if (spec.target === 'patroni_node') target = pick(n => !!n.snapshot?.patroni?.accessible);
-        else target = pick(() => true);
+        else {
+          // any_node: prefer a node whose PostgreSQL is really up (a replica still being cloned or a stopped instance cannot back up or plan a restore),
+          // the primary first so that a backup chain keeps coming from one place
+          const alive = (n: NodeRecord) => n.snapshot?.postgres?.alive === true;
+          target = pick(n => alive(n) && n.snapshot?.postgres?.is_in_recovery === false) || pick(alive) || (spec.lane === 'data' ? undefined : pick(() => true));
+          if (!target && spec.lane === 'data') return { code: 409, body: { error: 'no_suitable_node', message: 'Nessun nodo con agent ha PostgreSQL attivo in questo momento: backup e ripristini non possono partire. Controlla lo stato dei nodi (Nodi → Percorsi e rilevamento).' } };
+        }
       }
       if (!target) return { code: 409, body: { error: 'no_suitable_node', message: 'No online node can execute this operation right now.' } };
       if (!online(target)) return { code: 409, body: { error: 'node_offline', message: `Node ${target.name} is offline.` } };

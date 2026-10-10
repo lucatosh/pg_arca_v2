@@ -118,7 +118,8 @@ function HA({ c }: { c: any }) {
   const r = useOpRunner(c.id, () => revalidate(`/api/clusters/${encodeURIComponent(c.id)}`));
   if (c.isSandbox) return <Banner kind="info" title="Non disponibile sul cluster demo">Collega un cluster reale con Patroni per usare switchover e failover.</Banner>;
   if (!c.haState?.managedByPatroni) return <Card><Empty icon="swap" title="Patroni non rilevato">Le operazioni di alta affidabilità richiedono un cluster gestito da Patroni con l’agent installato (o la sua API collegata in modalità connessione).</Empty></Card>;
-  const standbys = nodes.filter(n => n.role !== 'primary' && n.online);
+  const standbys = nodes.filter(n => n.role !== 'primary' && n.online && ['running', 'streaming'].includes(String(n.state)));   // only replicas Patroni could really promote
+  const sickCount = nodes.filter(n => n.role !== 'primary').length - standbys.length;
   const start = (a: HaAct) => { setAct(a); setCand(standbys[0]?.name || ''); setTyped(''); r.reset(); };
   const exec = () => {
     if (!act) return;
@@ -138,7 +139,12 @@ function HA({ c }: { c: any }) {
         <Button icon="pause" disabled={r.busy} onClick={() => start({ kind: 'pause' })}>{c.haState.maintenanceMode ? 'Esci dalla manutenzione' : 'Entra in manutenzione'}</Button>
         <Button icon="refresh" disabled={r.busy} onClick={() => start({ kind: 'reload' })}>Ricarica Patroni</Button>
         <Button kind="danger" icon="alert" disabled={!standbys.length || r.busy} onClick={() => start({ kind: 'failover' })}>Failover forzato…</Button></div>
-      <p className="small muted" style={{ marginTop: 10 }}>Lo switchover è ordinato e senza perdita di dati. Il failover forzato si usa solo se il primario non risponde: può perdere transazioni.</p></Card>
+<dl className="kv" style={{ marginTop: 12 }}>
+        <dt>Switchover pianificato</dt><dd className="small muted">Passa il ruolo di primario a una replica in salute, in modo ordinato e senza perdere dati. Le connessioni si interrompono per qualche secondo. Si usa per manutenzione.</dd>
+        <dt>Entra in manutenzione</dt><dd className="small muted">Sospende i failover automatici di Patroni: il cluster non cambia primario da solo mentre lavori. Ricordati di uscirne.</dd>
+        <dt>Ricarica Patroni</dt><dd className="small muted">Fa rileggere a Patroni il suo file di configurazione (patroni.yml) sul nodo, senza riavviare PostgreSQL. Serve dopo averlo modificato a mano. Non cambia il primario.</dd>
+        <dt>Failover forzato</dt><dd className="small muted">Promuove una replica subito, senza aspettare il primario. Solo se il primario non risponde: le transazioni non ancora replicate vanno perse.</dd></dl>
+      {sickCount > 0 ? <p className="small" style={{ marginTop: 8, color: 'var(--warn, #d9a441)' }}>{sickCount} {sickCount === 1 ? 'replica non è' : 'repliche non sono'} in salute (stato diverso da running): non {sickCount === 1 ? 'può' : 'possono'} essere scelte{standbys.length ? '' : ', quindi lo switchover e il failover sono disattivati'}.</p> : null}</Card>
     <Card title="Membri" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Membro</th><th>Ruolo</th><th>Stato</th><th /></tr></thead><tbody>
       {nodes.map(n => <tr key={n.name}><td>{n.name}</td><td>{n.role === 'primary' ? 'Leader' : 'Replica'}</td><td>{n.online ? n.state : 'offline'}</td><td className="num"><Button sm disabled={r.busy} onClick={() => start({ kind: 'restart', member: n.name })}>Riavvia</Button></td></tr>)}</tbody></table></div></Card>
     {(r.op || r.error) ? <Card><OpPanel op={r.op} error={r.error} cancel={undefined} /><Result op={r.op} /></Card> : null}

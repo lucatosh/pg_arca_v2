@@ -326,7 +326,7 @@ class OperationExecutor:
         self._require_patroni()
         st, d = self.patroni.reload()
         if st >= 300:
-            raise OpError("Patroni reload failed (%s)" % st)
+            raise OpError("Patroni reload failed (%s): %s" % (st, json.dumps(d)[:300]))
         return {"reloaded": True}
 
     def h_pause(self, p):

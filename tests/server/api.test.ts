@@ -94,6 +94,23 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   // restart keeps state; demo is NOT re-seeded after deletion
   await call('DELETE', '/api/clusters/cluster-demo', undefined, H());
   const store2 = new Store(dir); await seedDemoOnFirstRun(store2, demo); assert.strictEqual(store2.peek().clusters.length, 0);
+  // --- node choice for backups: a node whose PostgreSQL is not up (replica being cloned) must never be picked
+  {
+    const cid = 'cl-pick'; const now = new Date().toISOString();
+    await store.mutate((d: any) => {
+      d.clusters.push({ id: cid, name: 'pick', environment: 'prod', source: 'agent', isSandbox: false, status: 'degraded', databases: [], hbaRules: [], features: {}, createdAt: now });
+      d.nodes['n-prim'] = { id: 'n-prim', name: 'zzz-prim', tokenHash: 'x', enrolledAt: now, lastSeen: now, clusterId: cid, snapshot: { postgres: { alive: true, is_in_recovery: false } } };
+      d.nodes['n-sick'] = { id: 'n-sick', name: 'aaa-sick', tokenHash: 'x', enrolledAt: now, lastSeen: now, clusterId: cid, snapshot: { postgres: { alive: false } } };
+      d.nodes['n-rep'] = { id: 'n-rep', name: 'bbb-rep', tokenHash: 'x', enrolledAt: now, lastSeen: now, clusterId: cid, snapshot: { postgres: { alive: true, is_in_recovery: true } } };
+    });
+    const b1 = await call('POST', `/api/clusters/${cid}/operations`, { type: 'backup_run', params: { type: 'full' } }, H({ 'idempotency-key': 'pick-1' }));
+    assert.strictEqual(b1.status, 202, JSON.stringify(b1.body)); assert.notStrictEqual(b1.body.operation.nodeId, 'n-sick', 'never the node without a running PostgreSQL');
+    assert.strictEqual(b1.body.operation.nodeId, 'n-prim', 'primary preferred over a replica');
+    await store.mutate((d: any) => { for (const n of Object.values(d.nodes) as any[]) if (n.clusterId === cid) n.snapshot = { postgres: { alive: false } }; });
+    const b2 = await call('POST', `/api/clusters/${cid}/operations`, { type: 'backup_run', params: { type: 'full' } }, H({ 'idempotency-key': 'pick-2' }));
+    assert.strictEqual(b2.status, 409); assert.strictEqual(b2.body.error, 'no_suitable_node');
+  }
+
   // login + brute-force throttle
   assert.strictEqual((await call('POST', '/api/auth/login', { username: 'admin', password: 'wrong-password-1' })).status, 401);
   assert.strictEqual((await call('POST', '/api/auth/login', { username: 'admin', password: 'correct-horse-battery' })).status, 429);
