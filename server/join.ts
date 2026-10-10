@@ -26,7 +26,10 @@ export const joinEnabled = (st: any) => advanced(st).joinRequests !== false;
 export function summarize(disc: any) {
   const inst = ((disc?.postgres_instances || []) as any[]).slice(0, 5).map(i => ({ version: trunc(i.version, 20), data_directory: trunc(i.data_directory, 200), port: Number(i.port) || undefined, cluster_key: trunc(i.cluster_key, 120) || undefined, patroni_scope: trunc(i.patroni?.scope, 80) || undefined, role: trunc(i.role, 20) || undefined }));
   const pat = ((disc?.patroni_clusters || []) as any[])[0]?.scope;
-  return { hostname: trunc(disc?.host?.hostname || disc?.hostname, 80), os: trunc(disc?.host?.os || disc?.os, 80), postgres: inst, patroni_scope: trunc(pat || inst[0]?.patroni_scope, 80) || undefined };
+  const procs = [...new Set(((disc?.running_processes || []) as any[]).map(p => trunc(p?.name, 20)).filter(Boolean))].slice(0, 12);
+  const warns = ((disc?.warnings || []) as any[]).slice(0, 4).map(w => trunc(w, 200));
+  const diag = { procs, warnings: warns, uid: Number.isInteger(disc?.run_as?.uid) ? disc.run_as.uid : undefined, scan_ms: Number(disc?.scan_duration_ms) || undefined };
+  return { diag, hostname: trunc(disc?.host?.hostname || disc?.hostname, 80), os: trunc(disc?.host?.os || disc?.os, 80), postgres: inst, patroni_scope: trunc(pat || inst[0]?.patroni_scope, 80) || undefined };
 }
 
 function prune(list: any[], now: number) {

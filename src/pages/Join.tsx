@@ -30,7 +30,7 @@ function Review({ r, all, pick, onClose }: { r: any; all: any[]; pick: (r: any) 
     <div className="stack">
       <dl className="kv"><dt>Nome del server</dt><dd>{r.nodeName}</dd><dt>Indirizzo di provenienza</dt><dd className="mono">{r.ip || '—'}</dd>
         {r.summary?.hostname ? <><dt>Host</dt><dd>{r.summary.hostname}</dd></> : null}
-        {pg ? <><dt>PostgreSQL</dt><dd>{pg.version || '?'}{pg.role ? ` · ${pg.role}` : ''}{pg.port ? ` · porta ${pg.port}` : ''}</dd><dt>Cartella dati</dt><dd className="mono small">{pg.data_directory || '—'}</dd></> : <><dt>PostgreSQL</dt><dd className="muted">non rilevato su questo server</dd></>}
+        {pg ? <><dt>PostgreSQL</dt><dd>{pg.version || '?'}{pg.role ? ` · ${pg.role}` : ''}{pg.port ? ` · porta ${pg.port}` : ''}</dd><dt>Cartella dati</dt><dd className="mono small">{pg.data_directory || '—'}</dd></> : <><dt>PostgreSQL</dt><dd className="muted">non rilevato su questo server</dd>{r.summary?.diag && <><dt>Diagnosi</dt><dd className="small muted">{`l’agent gira come uid ${r.summary.diag.uid ?? '?'}; processi visti: ${(r.summary.diag.procs || []).join(', ') || 'nessuno rilevante'}`}{(r.summary.diag.warnings || []).map((w: string, i: number) => <div key={i}>{w}</div>)}</dd></>}</>}
         <dt>Agent</dt><dd>{r.agentVersion || '—'}</dd><dt>Richiesta</dt><dd>{ago(r.createdAt)}</dd></dl>
       {r.nameInUse ? <Banner kind="bad" title="Nome già usato">Esiste già un server con questo nome: rinomina il nuovo (variabile PG_ARCA_NODE_NAME) e rilancia l’installazione.</Banner> : null}
       {r.matchCluster ? <Banner kind="ok" title={`Appartiene a «${r.matchCluster.name}»`}>Ha la stessa identità del database di un cluster già collegato ({r.matchCluster.environment}): verrà aggiunto come nodo.</Banner>
