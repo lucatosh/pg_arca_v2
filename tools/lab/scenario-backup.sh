@@ -33,5 +33,5 @@ $Q shop_pitr "select (select count(*) from customers), (select count(*) from ord
 step "restore_instance @T1 -> /tmp/arca-inst"; sg docker -c "true"; $A restore_instance "{\"destination\":\"/var/lib/pgarca/restore-test-$$\",\"target_time\":\"$T1\",\"action\":\"promote\"}" --wait 900 | head -15; chk ${PIPESTATUS[0]} "restore instance"
 step "drill"; $A restore_drill '{}' --wait 900 | head -20; chk ${PIPESTATUS[0]} "disaster recovery drill"
 step "expire dry-run"; $A backup_expire '{"dry_run":true,"retention_full":1}' | head -10; chk ${PIPESTATUS[0]} "expire dry-run"
-step "forensics"; $A forensics '{}' | head -12; chk ${PIPESTATUS[0]} "forensics"
+step "forensics"; $A wal_forensics '{}' | head -12; chk ${PIPESTATUS[0]} "forensics"
 echo; echo "SUMMARY pass=$ok fail=$bad"
