@@ -78,7 +78,9 @@ fi
 # No systemd (container) or PG_ARCA_NO_SERVICE=1: files are installed, the caller starts the agent:
 #   su postgres -c 'PYTHONPATH=/opt/pg-arca PG_ARCA_CONF_FILE=/etc/pg-arca/agent.conf python3 /opt/pg-arca/pg-arca-agent.py'
 if [[ -n "${PG_ARCA_NO_SERVICE:-}" || ! -d /run/systemd/system ]]; then
-  echo "pg_arca agent installed WITHOUT a systemd service (no systemd here, or PG_ARCA_NO_SERVICE set). Start it yourself, see the comment in install-agent.sh."
+  echo "pg_arca agent installed WITHOUT a systemd service (no systemd here, or PG_ARCA_NO_SERVICE set). Start it with (keeps running, restarts if it exits):"
+  echo "  su $PGUSER_OS -c 'set -a; [ -f $CONF_DIR/enroll.env ] && . $CONF_DIR/enroll.env; set +a; export PYTHONPATH=$INSTALL_DIR PG_ARCA_CONF_FILE=$CONF_DIR/agent.conf; nohup sh -c \"while true; do python3 $INSTALL_DIR/pg-arca-agent.py >>$LOG_DIR/agent.out 2>&1; sleep 5; done\" >/dev/null 2>&1 &'"
+  echo "  logs: tail -f $LOG_DIR/agent.out"
   exit 0
 fi
 cat > /etc/systemd/system/pg-arca-agent.service <<UNIT
