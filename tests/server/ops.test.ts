@@ -46,4 +46,19 @@ import * as ops from '../../server/ops';
   const before=st.peek().operations.length; await assert.rejects(st.mutate(d=>{d.operations.push({} as any); throw new Error('x');}));
   assert.strictEqual(st.peek().operations.length,before);
   console.log('ALL OPS TESTS PASSED');
+  // history retention: default 7 days, configurable, never touches running work
+  {
+    const d2 = fs.mkdtempSync(path.join(os.tmpdir(), 'st-')); const s2 = new Store(d2); const DAY = 86400000; const t = Date.now();
+    assert.strictEqual(ops.retentionDays(s2.peek().settings), 7);
+    await s2.mutate((d: any) => {
+      const mk = (id: string, status: string, ageDays: number) => ({ id, type: 'backup_run', clusterId: 'c', params: {}, status, createdAt: new Date(t - ageDays * DAY).toISOString(), updatedAt: new Date(t - ageDays * DAY).toISOString(), createdBy: 'x', attempts: 1, ttlSeconds: 1, history: [] });
+      d.operations.push(mk('old-ok', 'succeeded', 8), mk('old-fail', 'failed', 7.5), mk('edge', 'succeeded', 6.9), mk('new', 'succeeded', 0.1), mk('old-running', 'running', 30));
+    });
+    assert(ops.prunable(s2.peek(), t));
+    await s2.mutate((d: any) => { ops.pruneOps(d, t); });
+    assert.deepStrictEqual(s2.peek().operations.map((o: any) => o.id).sort(), ['edge', 'new', 'old-running']);
+    await s2.mutate((d: any) => { d.settings.activity = { retentionDays: 1 }; ops.pruneOps(d, t); });
+    assert.deepStrictEqual(s2.peek().operations.map((o: any) => o.id).sort(), ['new', 'old-running']);
+    for (const bad of [0, 91, 'x', null, 1.5]) { const x: any = { activity: { retentionDays: bad } }; assert.strictEqual(ops.retentionDays(x), bad === 1.5 ? 1 : 7); }
+  }
 })().catch(e=>{console.error(e);process.exit(1)});

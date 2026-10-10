@@ -21,6 +21,32 @@ export const MAX_ATTEMPTS = 5;
 const TERMINAL: OpStatus[] = ['succeeded', 'failed', 'expired', 'cancelled'];
 export const isTerminal = (s: OpStatus) => TERMINAL.includes(s);
 
+export const DEFAULT_RETENTION_DAYS = 7;
+export const MAX_RETENTION_DAYS = 90;
+const HARD_CAP_TERMINAL = 5000;                      // whatever the retention: the state file must stay small
+/** How long finished operations stay in the history. */
+export function retentionDays(settings: any): number {
+  const n = Number(settings?.activity?.retentionDays);
+  return Number.isFinite(n) && n >= 1 && n <= MAX_RETENTION_DAYS ? Math.floor(n) : DEFAULT_RETENTION_DAYS;
+}
+/** Drop finished operations past the retention (and beyond the hard cap). Never touches queued/leased/running ones. Returns how many were removed. */
+export function pruneOps(draft: AppState, now = Date.now()): number {
+  const cut = now - retentionDays(draft.settings) * 86_400_000;
+  const before = draft.operations.length;
+  let kept = draft.operations.filter(o => !isTerminal(o.status) || Date.parse(o.updatedAt || o.createdAt) >= cut);
+  const terms = kept.filter(o => isTerminal(o.status));
+  if (terms.length > HARD_CAP_TERMINAL) {
+    const drop = new Set(terms.slice(0, terms.length - HARD_CAP_TERMINAL).map(o => o.id));
+    kept = kept.filter(o => !drop.has(o.id));
+  }
+  if (kept.length !== before) draft.operations = kept;
+  return before - kept.length;
+}
+export const prunable = (st: AppState, now = Date.now()) => {
+  const cut = now - retentionDays(st.settings) * 86_400_000;
+  return st.operations.some(o => isTerminal(o.status) && Date.parse(o.updatedAt || o.createdAt) < cut);
+};
+
 export interface SubmitInput {
   type: string;
   clusterId: string;
@@ -65,12 +91,7 @@ export function submit(store: Store, input: SubmitInput): Promise<{ op: Operatio
     };
     draft.operations.push(op);
     audit(draft, { clusterId: op.clusterId, actor: op.createdBy, action: `op.submit:${op.type}`, status: 'queued', details: { opId: op.id, nodeId: op.nodeId } });
-    // bounded journal: drop oldest terminal operations beyond 2000
-    if (draft.operations.length > 2000) {
-      const keep = draft.operations.filter(o => !isTerminal(o.status));
-      const terms = draft.operations.filter(o => isTerminal(o.status)).slice(-1500);
-      draft.operations = [...terms, ...keep].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    }
+    pruneOps(draft);                         // bounded journal: terminal operations older than the retention (default 7 days, settings.activity.retentionDays) are dropped
     return { op, created: true };
   });
 }

@@ -386,12 +386,40 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       // activity dock / badges: only what is running plus what finished recently, without results, history or parameters (those can be large and are fetched on demand)
       const since = Date.now() - Math.min(Math.max(parseInt(recent, 10) || 3600, 60), 86400) * 1000;
       const keep = list.filter(o => !isTerminalStatus(o.status) || Date.parse(o.updatedAt || o.createdAt) >= since);
-      return res.json({ operations: keep.slice(-60).reverse().map((o: any) => ({
+      return res.json({ operations: keep.slice(-200).reverse().map((o: any) => ({
         id: o.id, type: o.type, status: o.status, clusterId: o.clusterId, nodeId: o.nodeId, createdAt: o.createdAt, updatedAt: o.updatedAt, createdBy: o.createdBy,
         cancelRequested: !!o.cancelRequested, progress: o.progress || null, subtype: o.params && typeof o.params.type === 'string' ? o.params.type : undefined,
         error: o.error ? String(o.error).slice(0, 400) : undefined })) });
     }
     res.json({ operations: list.slice(-200).reverse() });
+  });
+
+  /** Operation history (retention: settings.activity.retentionDays, default 7). ?status=all|failed|succeeded &hours=1..(retention*24) &clusterId &search &limit(≤500) &offset */
+  app.get('/api/operations/history', (req: Request, res: Response) => {
+    const q = req.query as any; const st = store.peek();
+    const days = ops.retentionDays(st.settings);
+    const hours = Math.min(Math.max(parseFloat(q.hours) || days * 24, 1), days * 24);
+    const since = Date.now() - hours * 3_600_000;
+    const names: Record<string, string> = Object.fromEntries(st.clusters.map((c: any) => [c.id, c.name]));
+    const text = String(q.search || '').toLowerCase();
+    let list = st.operations.filter(o => isTerminalStatus(o.status) && Date.parse(o.updatedAt || o.createdAt) >= since);
+    if (q.clusterId && q.clusterId !== 'all') list = list.filter(o => o.clusterId === q.clusterId);
+    if (q.status === 'failed') list = list.filter(o => o.status === 'failed' || o.status === 'expired');
+    else if (q.status === 'succeeded') list = list.filter(o => o.status === 'succeeded');
+    if (text) list = list.filter(o => o.type.toLowerCase().includes(text) || (names[o.clusterId] || '').toLowerCase().includes(text) || String(o.error || '').toLowerCase().includes(text) || String(o.createdBy || '').toLowerCase().includes(text));
+    list = list.slice().sort((a: any, b: any) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
+    const limit = Math.min(Math.max(parseInt(q.limit, 10) || 100, 1), 500), offset = Math.max(parseInt(q.offset, 10) || 0, 0);
+    res.json({ total: list.length, retentionDays: days, hours, operations: list.slice(offset, offset + limit).map((o: any) => ({
+      id: o.id, type: o.type, status: o.status, clusterId: o.clusterId, clusterName: names[o.clusterId], nodeId: o.nodeId, createdAt: o.createdAt, updatedAt: o.updatedAt, createdBy: o.createdBy,
+      subtype: o.params && typeof o.params.type === 'string' ? o.params.type : undefined, error: o.error ? String(o.error).slice(0, 600) : undefined })) });
+  });
+
+  app.get('/api/activity-settings', (_req: Request, res: Response) => res.json({ retentionDays: ops.retentionDays(store.peek().settings), defaultDays: ops.DEFAULT_RETENTION_DAYS, maxDays: ops.MAX_RETENTION_DAYS }));
+  app.put('/api/activity-settings', async (req: Request, res: Response) => {
+    const n = Number(req.body?.retentionDays);
+    if (!Number.isInteger(n) || n < 1 || n > ops.MAX_RETENTION_DAYS) return res.status(400).json({ error: 'invalid', message: `La conservazione va da 1 a ${ops.MAX_RETENTION_DAYS} giorni.` });
+    await store.mutate((d: any) => { d.settings.activity = { ...(d.settings.activity || {}), retentionDays: n }; ops.pruneOps(d); });
+    res.json({ retentionDays: ops.retentionDays(store.peek().settings), defaultDays: ops.DEFAULT_RETENTION_DAYS, maxDays: ops.MAX_RETENTION_DAYS });
   });
 
   app.get('/api/operations/:id', (req: Request, res: Response) => {

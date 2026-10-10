@@ -22,7 +22,7 @@ export function revalidate(key: string): Promise<any> {
   return e.inflight;
 }
 /** The activity dock and the operation lists must notice a new or finished operation immediately, not at the next poll. */
-export const OPS_SLIM_KEY = '/api/operations?slim=1&recent=3600';
+export const OPS_SLIM_KEY = '/api/operations?slim=1&recent=86400';
 export function revalidateOps() { return Promise.all([revalidate(OPS_SLIM_KEY), revalidate('/api/operations')]); }
 export function mutateCache(key: string, fn: (d: any) => any) { const e = entry(key); if (e.data !== undefined) { e.data = fn(e.data); e.version++; e.subs.forEach(f => f()); } }
 

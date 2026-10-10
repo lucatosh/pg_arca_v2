@@ -73,6 +73,14 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
 
 /** Temporary pg_hba rules ([until=...] in the comment): once the earliest expiry has passed, ask every online file-mode node to drop the elapsed ones.
  *  Retried every 10 minutes until an hba_expire operation succeeds after the expiry; Patroni clusters are not handled (the UI does not offer expiry there). */
+/** Apply the history retention even when nothing new is submitted. */
+export async function pruneTick(store: Store, now = Date.now()): Promise<number> {
+  if (!ops.prunable(store.peek(), now)) return 0;
+  let n = 0;
+  await store.mutate(d => { n = ops.pruneOps(d, now); });
+  return n;
+}
+
 export async function hbaExpiryTick(store: Store, now = Date.now()): Promise<string[]> {
   const submitted: string[] = [];
   const st = store.peek();
@@ -118,7 +126,7 @@ export async function standbyKickTick(store: Store, now = Date.now()): Promise<s
 }
 
 export function startScheduler(store: Store, everyMs = 30_000) {
-  const t = setInterval(() => { schedulerTick(store).catch(e => console.error('[scheduler]', e.message)); hbaExpiryTick(store).catch(e => console.error('[hba-expiry]', e.message)); }, everyMs);
+  const t = setInterval(() => { schedulerTick(store).catch(e => console.error('[scheduler]', e.message)); pruneTick(store).catch(e => console.error('[prune]', e.message)); hbaExpiryTick(store).catch(e => console.error('[hba-expiry]', e.message)); }, everyMs);
   const k = setInterval(() => { standbyKickTick(store).catch(e => console.error('[standby-kick]', e.message)); }, 10_000);
   k.unref?.();
   t.unref?.();
