@@ -271,6 +271,21 @@ def recovery_lines(restore_command, target_time=None, target_lsn=None, target_xi
     return "\n".join(lines) + "\n"
 
 
+def _free_bytes(path):
+    """Free space (for an unprivileged writer) of the filesystem that will hold `path`, looking at its nearest existing ancestor."""
+    p = os.path.abspath(path)
+    while p and not os.path.exists(p):
+        np_ = os.path.dirname(p)
+        if np_ == p:
+            break
+        p = np_
+    try:
+        st = os.statvfs(p)
+        return st.f_bavail * st.f_frsize
+    except OSError:
+        return None
+
+
 def effective_targets(chain, target_lsn, immediate):
     """'Stop as soon as consistent' means: at the END OF THE LAST SET of the chain. The backup_label is the base full's, so PostgreSQL's own notion of
     'consistent' is the end of the FULL, while the files already contain the later incremental pages: stopping there would promote a torn cluster."""
@@ -417,6 +432,15 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     plan["tablespaces"] = {str(k): (remap.get(str(k)) or v) for k, v in tbs.items()}
     if auto:
         plan["tablespaces_relocated"] = auto       # shown to the operator: these did not keep their original path
+    free = _free_bytes(dest)
+    if free is not None:
+        plan["destination_free_bytes"] = free
+        need = int(plan["bytes"] * 1.05) + 64 * 1024 * 1024
+        if not tbs and not delta and free < need:
+            raise EngineError("PGA-RST-030", "not enough free space at the destination: %.1f GiB free, about %.1f GiB needed (%.1f GiB of data)" % (free / 2.0 ** 30, need / 2.0 ** 30, plan["bytes"] / 2.0 ** 30),
+                              "choose a destination on a larger volume (the plan lists the sizes), or restore just one database / table instead of the whole cluster")
+        if (tbs or delta) and free < plan["bytes"] * 0.2:
+            plan["space_warning"] = "only %.1f GiB free at the destination for %.1f GiB of data (tablespaces / delta make an exact check impossible): the restore may run out of space" % (free / 2.0 ** 30, plan["bytes"] / 2.0 ** 30)
     if dry_run:
         plan["dry_run"] = True
         return plan

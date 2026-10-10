@@ -131,6 +131,7 @@ function PlanView({ p, scope }: { p: any; scope: Scope }) {
       <dt>Catena</dt><dd className="mono small">{(p.chain || []).join(' → ')}</dd>
       {scope === 'instance' ? <><dt>Dati da estrarre</dt><dd>{bytes(p.bytes)} in {num(p.files)} file</dd></> : <><dt>Dati da estrarre</dt><dd>{bytes(p.extract_bytes)} su {bytes(p.cluster_bytes)} del cluster{saved != null ? <> — <strong>{saved}% in meno</strong></> : null}</dd></>}
       {p.tablespaces && Object.keys(p.tablespaces).length ? <><dt>Tablespace</dt><dd className="small">{Object.entries(p.tablespaces).map(([oid, path]: any) => <div key={oid}><span className="mono">{oid}</span> → <span className="mono">{String(path)}</span>{(p.tablespaces_relocated || []).includes(oid) ? <> <Badge kind="warn" title="La cartella originale appartiene al server di origine: non viene mai sovrascritta">spostato</Badge></> : null}</div>)}</dd></> : null}
+      {p.destination_free_bytes != null ? <><dt>Spazio libero</dt><dd>{bytes(p.destination_free_bytes)} nella destinazione{p.space_warning ? <span className="small" style={{ display: 'block', color: 'var(--warn, #d9a441)' }}>{p.space_warning}</span> : null}</dd></> : null}
       {p.destination_database ? <><dt>Nuovo database</dt><dd>{p.destination_database}</dd></> : null}{p.quarantine_database ? <><dt>Quarantena</dt><dd>{p.quarantine_database}</dd></> : null}</dl></div>;
 }
 

@@ -445,6 +445,21 @@ class EngineTests(unittest.TestCase):
         finally:
             q("postgres", "ALTER SYSTEM RESET checkpoint_timeout"); q("postgres", "ALTER SYSTEM RESET checkpoint_completion_target"); q("postgres", "SELECT pg_reload_conf()")
 
+    def test_17_restore_refuses_when_destination_is_too_small(self):
+        import pg_arca.engine.restore as R
+        orig = R._free_bytes
+        try:
+            R._free_bytes = lambda path: 10 * 1024 * 1024                     # 10 MiB free
+            with self.assertRaises(EngineError) as cm:
+                restore_instance(F.ctx, dest=os.path.join(F.base, "too_small"), dry_run=True)
+            self.assertEqual(cm.exception.code, "PGA-RST-030")
+            self.assertFalse(os.path.exists(os.path.join(F.base, "too_small")), "nothing may be created before the check")
+            R._free_bytes = lambda path: 10 ** 12
+            plan = restore_instance(F.ctx, dest=os.path.join(F.base, "big_enough"), dry_run=True)
+            self.assertEqual(plan["destination_free_bytes"], 10 ** 12)
+        finally:
+            R._free_bytes = orig
+
 
 if __name__ == "__main__":
     unittest.main()
