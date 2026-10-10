@@ -103,7 +103,7 @@ export function mountPolicyRoutes(app: any, store: Store) {
 
   app.put('/api/policies/templates/:id', async (req: Request, res: Response) => {
     const id = req.params.id;
-    if (!/^[a-z0-9][a-z0-9-]{1,40}$/.test(id) || BUILTIN_TEMPLATES.some(t => t.id === id)) return res.status(400).json({ error: 'invalid_template_id', message: 'Id minuscolo (a-z, 0-9, -), diverso dai modelli predefiniti.' });
+    if (!/^[a-z0-9][a-z0-9-]{1,40}$/.test(id) || ['constructor', 'prototype', 'tostring', 'valueof'].includes(id) || BUILTIN_TEMPLATES.some(t => t.id === id)) return res.status(400).json({ error: 'invalid_template_id', message: 'Id minuscolo (a-z, 0-9, -), diverso dai modelli predefiniti.' });
     const { name, description = '' } = req.body || {};
     if (typeof name !== 'string' || !name.trim() || name.length > 60) return res.status(400).json({ error: 'name_required' });
     const v = validatePolicy({ ...req.body?.policy, enabled: true });
@@ -118,7 +118,7 @@ export function mountPolicyRoutes(app: any, store: Store) {
   app.delete('/api/policies/templates/:id', async (req: Request, res: Response) => {
     const id = req.params.id;
     const r = await store.mutate(d => {
-      if (!(d.settings.policyTemplates || {})[id]) return 'missing' as const;
+      if (!Object.prototype.hasOwnProperty.call(d.settings.policyTemplates || {}, id)) return 'missing' as const;
       if (Object.values(d.settings.policyAssignments || {}).some((a: any) => a.templateId === id)) return 'in_use' as const;
       delete d.settings.policyTemplates[id];
       audit(d, { actor: actor(req), action: 'policy.template.delete', status: 'OK', details: { id } });

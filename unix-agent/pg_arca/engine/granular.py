@@ -170,6 +170,8 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     cat = ctx.repo.load_catalog(target)
     dbentry, rel = find_object(cat, spec)
     stage = stage_db or ("pgarca_stage_" + now_utc().strftime("%Y%m%dt%H%M%S"))
+    if not stage.startswith("pgarca_stage_"):
+        raise EngineError("PGA-GEN-081", "a quarantine database name must start with pgarca_stage_ (pg_arca drops it after promotion: it must never be a user database)")
     _check_name(stage, "quarantine database name")
     merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter({dbentry["oid"], 1, 5}))
     merged_all, _ = merge_chain(ctx.repo, chain)
@@ -316,7 +318,7 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
     """
     if mode not in ("as_new", "replace"):
         raise EngineError("PGA-GEN-080", "mode must be as_new or replace")
-    if not stage_db or not stage_db.startswith("pgarca_stage_") and not stage_db.startswith("stage_"):
+    if not stage_db or not stage_db.startswith("pgarca_stage_"):
         raise EngineError("PGA-GEN-081", "only quarantine databases created by pg_arca can be promoted from (name starts with pgarca_stage_)")
     parts = spec.split(".")
     if len(parts) != 3:
@@ -474,7 +476,7 @@ def diff_object(ctx, stage_db, spec, into=None, limit=200):
     if len(parts) != 3:
         raise EngineError("PGA-GEN-082", "object must be database.schema.name")
     dbname, schema, name = parts
-    if not (stage_db or "").startswith(("pgarca_stage_", "stage_")):
+    if not (stage_db or "").startswith("pgarca_stage_"):
         raise EngineError("PGA-GEN-081", "only quarantine databases created by pg_arca can be compared (name starts with pgarca_stage_)")
     _check_name(stage_db, "quarantine database")
     admin = _dest_conn(ctx, into)
@@ -525,7 +527,7 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
     if len(parts) != 3:
         raise EngineError("PGA-GEN-082", "object must be database.schema.name")
     dbname, schema, name = parts
-    if not (stage_db or "").startswith(("pgarca_stage_", "stage_")):
+    if not (stage_db or "").startswith("pgarca_stage_"):
         raise EngineError("PGA-GEN-081", "only quarantine databases created by pg_arca can be used as source")
     _check_name(stage_db, "quarantine database")
     restore_keys, delete_keys = list(restore_keys or []), list(delete_keys or [])

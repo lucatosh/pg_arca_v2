@@ -200,6 +200,11 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note):
                 btype = "full"
             elif cand.get("system_identifier") != sysid:
                 btype = "full"
+            elif int(cand.get("timeline") or 0) != tli:
+                # after a failover/PITR the new timeline's LSNs can be LOWER than the parent's start LSN (promoted replica that lagged): the LSN page filter
+                # would silently skip pages changed since the switch. A full backup is the only safe answer.
+                log("warn", "timeline changed since the parent backup (%s -> %s): promoting %s to full" % (cand.get("timeline"), tli, btype))
+                btype = "full"
             else:
                 if not (checksums or hints):
                     raise EngineError("PGA-VRF-010", "page-level incrementals are unsafe: data_checksums=off and wal_log_hints=off "

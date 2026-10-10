@@ -24,5 +24,23 @@ class ExternalConf(unittest.TestCase):
         self.assertEqual(open(os.path.join(d, "postgresql.conf")).read(), "data_directory='/mine'\n")
 
 
+class WalChainAcrossTimelines(unittest.TestCase):
+    class _Wal:
+        def __init__(self, have): self.have = set(have)
+        def has_segment(self, n): return n in self.have
+
+    def test_failover_between_full_and_incr_is_not_a_gap(self):
+        from pg_arca.engine.util import wal_name
+        seg = 16 * 1024 * 1024
+        mk = lambda tl, n: wal_name(tl, n, seg)
+        have = [mk(1, n) for n in range(1, 5)] + [mk(2, n) for n in range(4, 8)]            # timeline 2 starts inside segment 4
+        full = {"id": "F", "timeline": 1, "start_lsn": "0/1000028", "stop_lsn": "0/2000100"}
+        incr = {"id": "I", "timeline": 2, "start_lsn": "0/5000028", "stop_lsn": "0/6000100"}
+        ctx = type("C", (), {"wal": self._Wal(have), "seg_size": seg})()
+        self.assertEqual(restore.check_wal_for_chain(ctx, [full, incr]), [])
+        ctx.wal.have.discard(mk(1, 3))                                                       # a REAL hole is still reported
+        self.assertEqual(restore.check_wal_for_chain(ctx, [full, incr]), [mk(2, 3)])
+
+
 if __name__ == "__main__":
     unittest.main()

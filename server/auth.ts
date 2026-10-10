@@ -26,13 +26,14 @@ interface UserRec { user: string; salt: string; hash: string; role: Role; disabl
 export function roleOf(store: Store, user: string): Role | null {
   const st = store.peek().settings;
   if (st.admin && st.admin.user === user) return 'admin';
-  const u: UserRec | undefined = (st.users || {})[user];
+  const u: UserRec | undefined = own(st.users, user);
   return u && !u.disabled ? u.role : null;
 }
 /**
  * Permission table. First match wins. Reads (GET) are open to every role except where listed;
  * every mutating route NOT listed here requires admin (deny by default), so a new route is never silently open.
  */
+const own = (o: any, k: string) => (o && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);   // user-controlled keys must never resolve to Object.prototype members
 const RULES: { m: RegExp; p: RegExp; min: Role }[] = [
   { m: /^(GET|HEAD)$/, p: /^\/api\/users(\/|$)/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /^\/api\/enrollment-tokens/, min: 'admin' },
@@ -149,7 +150,7 @@ export function mountAuthRoutes(app: any, store: Store) {
     if (f && f.until > Date.now()) return res.status(429).json({ error: 'too_many_attempts', retryAfterSeconds: Math.ceil((f.until - Date.now()) / 1000) });
     const st = store.peek().settings; const adm = st.admin;
     const { username, password } = req.body || {};
-    const rec: { salt: string; hash: string } | undefined = typeof username === 'string' ? (adm && username === adm.user ? adm : (st.users || {})[username]) : undefined;
+    const rec: { salt: string; hash: string } | undefined = typeof username === 'string' ? (adm && username === adm.user ? adm : own(st.users, username)) : undefined;
     const ok = !!rec && typeof password === 'string' && !!roleOf(store, username) && verifyPassword(password, rec);
     if (!ok) {
       const n = (f?.n || 0) + 1;
@@ -192,12 +193,12 @@ export function mountAuthRoutes(app: any, store: Store) {
   });
   app.post('/api/users', async (req: Request, res: Response) => {
     const { username, password, role } = req.body || {};
-    if (typeof username !== 'string' || !/^[A-Za-z0-9_.@-]{3,64}$/.test(username)) return res.status(400).json({ error: 'invalid_username' });
+    if (typeof username !== 'string' || !/^[A-Za-z0-9_.@-]{3,64}$/.test(username) || ['__proto__', 'constructor', 'prototype'].includes(username)) return res.status(400).json({ error: 'invalid_username' });
     if (typeof password !== 'string' || password.length < 12) return res.status(400).json({ error: 'weak_password', message: 'Minimo 12 caratteri.' });
     if (!ROLES.includes(role)) return res.status(400).json({ error: 'invalid_role' });
     const h = hashPassword(password);
     const r = await store.mutate(d => {
-      if (d.settings.admin?.user === username || (d.settings.users || {})[username]) return 'exists' as const;
+      if (d.settings.admin?.user === username || own(d.settings.users, username)) return 'exists' as const;
       (d.settings.users ||= {})[username] = { user: username, ...h, role, createdAt: nowIso() };
       audit(d, { actor: (req as any).actor, action: 'user.create', status: 'OK', details: { username, role } });
       return 'ok' as const;
@@ -210,7 +211,7 @@ export function mountAuthRoutes(app: any, store: Store) {
     if (role !== undefined && !ROLES.includes(role)) return res.status(400).json({ error: 'invalid_role' });
     if (password !== undefined && (typeof password !== 'string' || password.length < 12)) return res.status(400).json({ error: 'weak_password' });
     const r = await store.mutate(d => {
-      const u = (d.settings.users || {})[name];
+      const u = own(d.settings.users, name);
       if (!u) return 'missing' as const;
       const nextRole = role ?? u.role, nextDis = disabled ?? !!u.disabled;
       if (u.role === 'admin' && !u.disabled && (nextRole !== 'admin' || nextDis) && admins(d.settings) <= 1) return 'last_admin' as const;
@@ -227,7 +228,7 @@ export function mountAuthRoutes(app: any, store: Store) {
   app.delete('/api/users/:name', async (req: Request, res: Response) => {
     const name = req.params.name;
     const r = await store.mutate(d => {
-      const u = (d.settings.users || {})[name];
+      const u = own(d.settings.users, name);
       if (!u) return 'missing' as const;
       if (u.role === 'admin' && !u.disabled && admins(d.settings) <= 1) return 'last_admin' as const;
       delete d.settings.users[name];

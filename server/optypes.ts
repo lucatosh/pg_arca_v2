@@ -92,7 +92,7 @@ function targetErr(p: Record<string, any>): string | null {
   return null;
 }
 const hbaRulesErr = (p: Record<string, any>): string | null => (!Array.isArray(p.rules) || p.rules.length > 200 || p.rules.some((r: any) => !r || typeof r !== 'object')) ? 'rules must be a list of at most 200 objects' : null;
-const stageErr = (p: any) => !/^(pgarca_)?stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : null);
+const stageErr = (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : null);
 const keysErr = (p: any) => {
   for (const f of ['restore_keys', 'delete_keys']) {
     const v = p[f]; if (v === undefined) continue;
@@ -131,7 +131,7 @@ Object.assign(OP_SPECS, {
   agent_config_set: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => cfgErr(p) },
   hba_expire:   { mutating: true,  target: 'node', lane: 'control', validate: () => null },
   hba_rollback: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.backup && !/^[\w.\-]{1,100}$/.test(String(p.backup)) ? 'invalid backup name' : null) },
-  restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^(pgarca_)?stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : (p.mode && !['as_new', 'replace'].includes(p.mode) ? 'mode must be as_new|replace' : intoErr(p))) },
+  restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : (p.mode && !['as_new', 'replace'].includes(p.mode) ? 'mode must be as_new|replace' : intoErr(p))) },
   restore_drill:    { ...dataOp, mutating: false, validate: (p: any) => (p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null) },
   restore_diff:     { ...dataOp, mutating: false, cancellable: false, validate: (p: any) => stageErr(p) || intoErr(p) },
   restore_apply_rows: { ...dataOp, cancellable: false, validate: (p: any) => stageErr(p) || keysErr(p) || intoErr(p) },

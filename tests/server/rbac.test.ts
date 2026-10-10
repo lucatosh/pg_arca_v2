@@ -42,6 +42,9 @@ import { mountAuthRoutes, requireAdmin, requiredRole, can } from '../../server/a
   const SAMPLE = (r: any) => r.re.source.replace(/^\^|\$$/g, '').replace(/\(\[\^\/\]\+\)/g, 'x').replace(/\\\//g, '/');
   for (const r of app.routes) { const u = SAMPLE(r); if (!u.startsWith('/api/') || u.startsWith('/api/auth/') || u.startsWith('/api/agent/') || u === '/api/health') continue;
     const x = await call(r.method, u, r.method === 'GET' ? undefined : {}); assert.equal(x.status, 401, `${r.method} ${u} must require login (got ${x.status})`); }
+  assert.equal((await call('POST', '/api/users', { username: 'constructor', password: 'long-enough-password', role: 'viewer' }, A)).status, 400);
+  assert.equal((await call('DELETE', '/api/users/constructor', undefined, A)).status, 404);
+  assert.equal((await call('PATCH', '/api/users/constructor', { role: 'viewer' }, A)).status, 404);
   for (const u of ['/API/users', '/Api/clusters', '/api/CLUSTERS']) assert.equal((await call('GET', u)).status, 401, `${u}: upper-case paths must not bypass the gate`);   // Express routes case-insensitively
   assert.equal((await call('GET', '/api/agent/heartbeat', undefined, undefined)).status !== 200, true);
   { const f = await app.call('POST', '/api/agent/heartbeat', { body: { snapshot: {} }, headers: { 'x-arca-node': '__proto__', authorization: 'Bearer x' } }); assert.equal(f.status, 401, 'prototype keys must not resolve to a node'); }

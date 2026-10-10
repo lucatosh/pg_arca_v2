@@ -350,11 +350,14 @@ def check_wal_for_chain(ctx, chain, target_lsn=None):
             nm = wal_name(s["timeline"], n, seg)
             if not ctx.wal.has_segment(nm):
                 missing.append(nm)
-    # contiguity from the base start up to the last stop on the final timeline
+    # contiguity from the base start up to the last stop. A chain that spans a failover / PITR spans TIMELINES: the segments before the switch exist only under the
+    # old timeline, the ones after it only under the new one, so a segment number counts as present if it exists under any timeline the chain went through.
+    tls = {x["timeline"] for x in chain} | {tli}
     for n in range(lo, hi + 1):
-        nm = wal_name(tli, n, seg)
-        if not ctx.wal.has_segment(nm) and nm not in missing:
-            missing.append(nm)
+        if not any(ctx.wal.has_segment(wal_name(t, n, seg)) for t in tls):
+            nm = wal_name(tli, n, seg)
+            if nm not in missing:
+                missing.append(nm)
     return missing
 
 
