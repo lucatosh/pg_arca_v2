@@ -8,7 +8,8 @@ install -d -o postgres -g postgres /var/log/pgarca
 envsubst '${NODE} ${PG_SUPER_PASSWORD} ${PG_REPL_PASSWORD}' < /etc/patroni.yml.tpl > /etc/patroni.yml
 chown postgres:postgres /etc/patroni.yml; chmod 600 /etc/patroni.yml
 mkdir -p /var/log/patroni /var/log/pgarca; chown postgres:postgres /var/log/patroni /var/log/pgarca
-export PGPASSWORD="$PG_SUPER_PASSWORD"
+# NB: never export PGPASSWORD here. It would be inherited by Patroni and by the pg_basebackup it spawns, and PGPASSWORD wins over the pgpass file:
+# the replica would then send the superuser password for the replicator role ("password authentication failed for user replicator").
 
 if [[ -n "${ARCA_URL:-}" && -f /work/unix-agent/install-agent.sh ]]; then
   echo "[lab] installing pg_arca agent from /work/unix-agent -> console ${ARCA_URL}"
@@ -16,7 +17,7 @@ if [[ -n "${ARCA_URL:-}" && -f /work/unix-agent/install-agent.sh ]]; then
     bash /work/unix-agent/install-agent.sh || echo "[lab] agent install FAILED (Patroni still starts)"
   if [[ -f /opt/pg-arca/pg-arca-agent.py ]]; then
     gosu postgres bash -c '
-      export PYTHONPATH=/opt/pg-arca PG_ARCA_CONF_FILE=/etc/pg-arca/agent.conf PATRONI_URL=http://localhost:8008
+      export PYTHONPATH=/opt/pg-arca PG_ARCA_CONF_FILE=/etc/pg-arca/agent.conf PATRONI_URL=http://localhost:8008 PGPASSWORD="$PG_SUPER_PASSWORD"
       while true; do
         [ -f /etc/pg-arca/enroll.env ] && set -a && . /etc/pg-arca/enroll.env && set +a
         python3 /opt/pg-arca/pg-arca-agent.py >>/var/log/pgarca/agent.out 2>&1
