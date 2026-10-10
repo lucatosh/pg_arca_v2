@@ -436,16 +436,19 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
                 if nrefs:
                     result["warning"] = "%d foreign key(s) still reference the previous table (now %s): they were not rewired" % (nrefs, keep_as)
             else:
-                new_name = short(name, "_pitr_" + ts)
+                # 'replace' with nothing to replace (the table was dropped): it simply comes back under its OWN name, in its OWN schema (recreated if that was dropped too)
+                comes_back = mode == "replace" and not existing
+                new_name = name if comes_back else short(name, "_pitr_" + ts)
                 sfx = "_pitr_" + ts
-                idx, seq = dependents(work, name)
+                idx, seq = ([], []) if comes_back else dependents(work, name)
                 tg.query("BEGIN")
                 try:
                     for i in idx:
                         tg.query("ALTER INDEX %s.%s RENAME TO %s" % (quote_ident(work), quote_ident(i), quote_ident(short(i, sfx))))
                     for s_ in seq:
                         tg.query("ALTER SEQUENCE %s.%s RENAME TO %s" % (quote_ident(work), quote_ident(s_), quote_ident(short(s_, sfx))))
-                    tg.query("ALTER TABLE %s.%s RENAME TO %s" % (quote_ident(work), quote_ident(name), quote_ident(new_name)))
+                    if new_name != name:
+                        tg.query("ALTER TABLE %s.%s RENAME TO %s" % (quote_ident(work), quote_ident(name), quote_ident(new_name)))
                     tg.query("CREATE SCHEMA IF NOT EXISTS %s" % quote_ident(schema))
                     tg.query("ALTER TABLE %s.%s SET SCHEMA %s" % (quote_ident(work), quote_ident(new_name), quote_ident(schema)))
                     tg.query("COMMIT")
@@ -456,6 +459,8 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
                         pass
                     raise
                 result.update(promoted_as="%s.%s" % (schema, new_name), old_kept_as=("%s.%s" % (schema, name)) if existing else None)
+                if comes_back:
+                    result["note"] = "the table no longer existed: it came back under its original name in schema %s" % schema
             tg.query("DROP SCHEMA %s" % quote_ident(work))              # empty by now (RESTRICT): anything left means something unexpected
             created_schema = False
             result["rows"] = rows

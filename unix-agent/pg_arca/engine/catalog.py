@@ -5,8 +5,11 @@ from pg_arca.engine.util import EngineError, iso
 
 CATALOG_SQL = """
 SELECT c.oid, n.nspname, c.relname, c.relkind, COALESCE(pg_relation_filenode(c.oid),0), c.reltablespace,
-       COALESCE(pg_relation_size(c.oid), 0), COALESCE(c.reltoastrelid, 0), c.relpersistence
+       COALESCE(pg_relation_size(c.oid), 0), COALESCE(c.reltoastrelid, 0), c.relpersistence,
+       COALESCE(i.indrelid, 0), COALESCE(h.inhparent, 0)
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_index i ON i.indexrelid = c.oid
+LEFT JOIN pg_inherits h ON h.inhrelid = c.oid AND c.relispartition
 WHERE c.relkind IN ('r','i','S','t','m','p','v','f','c') ORDER BY c.oid
 """
 
@@ -34,7 +37,8 @@ def snapshot_catalog(conn, log=None):
                         if len(r) < 9:
                             continue
                         entry["relations"].append({"oid": int(r[0]), "schema": r[1], "name": r[2], "kind": r[3], "relfilenode": int(r[4] or 0),
-                                                   "tablespace": int(r[5] or 0), "size": int(r[6] or 0), "toast": int(r[7] or 0), "persistence": r[8]})
+                                                   "tablespace": int(r[5] or 0), "size": int(r[6] or 0), "toast": int(r[7] or 0), "persistence": r[8],
+                                                   "index_of": int(r[9] or 0) if len(r) > 9 else 0, "parent": int(r[10] or 0) if len(r) > 10 else 0})
                 finally:
                     s.close()
             except EngineError as e:

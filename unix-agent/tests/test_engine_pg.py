@@ -114,6 +114,11 @@ class EngineTests(unittest.TestCase):
         q("postgres", "CREATE DATABASE other")
         q("app", "CREATE TABLE orders(id serial primary key, note text); INSERT INTO orders(note) SELECT 'row ' || g FROM generate_series(1,20000) g")
         q("app", "CREATE TABLE customers(id int primary key, name text); INSERT INTO customers SELECT g, 'c' || g FROM generate_series(1,500) g")
+        q("app", "CREATE SCHEMA hr; CREATE TABLE hr.staff(id int primary key, name text, bio text); INSERT INTO hr.staff SELECT g, 'e' || g, repeat('b', 400) FROM generate_series(1,200) g; "
+                 "CREATE INDEX staff_name ON hr.staff(name)")
+        q("app", "CREATE TABLE hr.events(id int, d date) PARTITION BY RANGE (d); CREATE TABLE hr.events_a PARTITION OF hr.events FOR VALUES FROM ('2026-01-01') TO ('2026-07-01'); "
+                 "CREATE TABLE hr.events_b PARTITION OF hr.events FOR VALUES FROM ('2026-07-01') TO ('2027-01-01'); "
+                 "INSERT INTO hr.events SELECT g, '2026-01-01'::date + (g % 300) FROM generate_series(1,3000) g")
         q("other", "CREATE TABLE junk(x text); INSERT INTO junk SELECT repeat('x', 200) FROM generate_series(1,20000)")
         meta = run_backup(F.ctx, "full")
         F.full = meta
@@ -316,6 +321,43 @@ class EngineTests(unittest.TestCase):
         with self.assertRaises(EngineError):
             promote_object(F.ctx, "somedb", "app.public.customers")               # only pg_arca quarantine databases
         q("app", "DROP TABLE customers; DROP TABLE %s; DROP TABLE %s" % (r2["old_kept_as"], r["promoted_as"]))
+
+    def test_06c_catalog_counts_are_the_users_tables_and_sizes_are_real(self):
+        from pg_arca.engine.maintenance import catalog_browse
+        r = catalog_browse(F.ctx, None)
+        by = dict((d["name"], d) for d in r["databases"])
+        self.assertEqual(by["app"]["tables"], 4, by["app"])                       # orders, customers, hr.staff, hr.events (its 2 partitions are NOT counted again, nothing from pg_catalog)
+        self.assertEqual(by["app"]["schemas"], 2)                                 # public + hr
+        self.assertEqual(by["other"]["tables"], 1)
+        self.assertFalse(by["app"]["approx"])
+        self.assertLess(by["app"]["user_bytes"], by["app"]["size"])               # catalogs, WAL-free system files are not "your data"
+        o = catalog_browse(F.ctx, None, "app")
+        hr = [s for s in o["schemas"] if s["name"] == "hr"][0]
+        self.assertEqual(sorted(x["name"] for x in hr["objects"]), ["events", "staff"])
+        staff = [x for x in hr["objects"] if x["name"] == "staff"][0]
+        events = [x for x in hr["objects"] if x["name"] == "events"][0]
+        heap = int(q("app", "SELECT pg_relation_size('hr.staff')")[0][0])
+        total = int(q("app", "SELECT pg_total_relation_size('hr.staff')")[0][0])
+        self.assertGreater(staff["size"], heap)                                    # indexes + TOAST are part of the table's footprint
+        self.assertLessEqual(abs(staff["size"] - total), 3 * 8192 + 8192)         # equals PostgreSQL's own total within the FSM/VM forks we do not stat
+        self.assertEqual(events["partitions"], 2)
+        self.assertGreater(events["size"], 0)                                      # a partitioned parent has no data of its own: its size is the partitions'
+
+    def test_06d_table_comes_back_to_its_own_schema(self):
+        for mode_label in ("table dropped", "schema dropped"):
+            expect = int(q("app", "SELECT count(*) FROM hr.staff")[0][0]) if False else 200
+            restore_object(F.ctx, "app.hr.staff", target_time=F.t1, stage_db="pgarca_stage_staff")
+            q("app", "DROP TABLE hr.staff" if mode_label == "table dropped" else "DROP SCHEMA hr CASCADE")
+            r = promote_object(F.ctx, "pgarca_stage_staff", "app.hr.staff", mode="replace", drop_stage=True)
+            self.assertEqual(r["promoted_as"], "hr.staff", mode_label)               # same schema, same name: nothing was there to replace
+            self.assertEqual(int(q("app", "SELECT count(*) FROM hr.staff")[0][0]), expect, mode_label)
+            self.assertEqual(q("app", "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'pgarca_pr_%'")[0][0], "0")
+            self.assertEqual(q("app", "SELECT count(*) FROM pg_tables WHERE tablename LIKE 'staff%' AND schemaname <> 'hr'")[0][0], "0", "never lands in public or elsewhere")
+            if mode_label == "table dropped":
+                q("app", "CREATE TABLE hr.events_tmp(i int)")                       # keep the schema populated for the next round
+        r = restore_object(F.ctx, "app.hr.staff", target_time=F.t1, stage_db="pgarca_stage_staff")
+        r = promote_object(F.ctx, "pgarca_stage_staff", "app.hr.staff", mode="as_new", drop_stage=True)
+        self.assertTrue(r["promoted_as"].startswith("hr.staff_pitr_"), r)           # as_new also stays in the table's schema
 
     def test_06z_encryption_really_active(self):
         if not F.key:

@@ -270,23 +270,66 @@ def forensics(ctx, limit=20, since=None, until=None):
 
 
 # --------------------------------------------------------------------------- catalog browsing (restore wizard)
+SYSTEM_SCHEMAS = ("pg_catalog", "information_schema", "pg_toast")
+
+
+def user_objects(d):
+    """The user tables / partitioned tables / materialized views of a database catalog, with their REAL footprint.
+    total = heap + TOAST + indexes (of the table and of its TOAST) [+ all partitions for a partitioned table]. Computed from the sizes already in the catalog:
+    no extra I/O on the source. Partitions are folded into their parent (`partitions` = how many). Catalogs written by an older engine lack the index/partition
+    links: totals are then heap + TOAST only and `approx` is true."""
+    rels = d.get("relations", [])
+    by_oid = dict((r["oid"], r) for r in rels)
+    linked = any("index_of" in r for r in rels)
+    extra = {}
+    for r in rels:
+        if r.get("index_of"):
+            extra[r["index_of"]] = extra.get(r["index_of"], 0) + r["size"]
+    kids = {}
+    for r in rels:
+        if r.get("parent"):
+            kids.setdefault(r["parent"], []).append(r)
+
+    def own(r):
+        t = r["size"] + extra.get(r["oid"], 0)
+        tr = by_oid.get(r.get("toast") or 0)
+        return t + ((tr["size"] + extra.get(tr["oid"], 0)) if tr else 0)
+
+    def total(r, depth=0):
+        return own(r) + (sum(total(k, depth + 1) for k in kids.get(r["oid"], ())) if depth < 8 else 0)
+
+    out = []
+    for r in rels:
+        if r["kind"] not in ("r", "p", "m") or r["schema"] in SYSTEM_SCHEMAS or r.get("parent"):
+            continue
+        out.append({"schema": r["schema"], "name": r["name"], "kind": r["kind"], "size": total(r), "heap": r["size"],
+                    "partitions": len(kids.get(r["oid"], ())), "oid": r["oid"], "persistence": r.get("persistence")})
+    return out, (not linked)
+
+
 def catalog_browse(ctx, set_spec=None, database=None, search="", limit=2000):
-    """Databases of a set; or, for one database, its schemas/objects (largest first, capped)."""
+    """Databases of a set (with correct counts: user tables only, no system catalogs, no partitions double-counted); or, for one database, its schemas/objects
+    (largest first, capped) with their real size (heap + TOAST + indexes + partitions)."""
     s = ctx.repo.resolve_set(set_spec)
     cat = ctx.repo.load_catalog(s)
     if not database:
-        return {"set": s["id"], "captured": cat.get("captured"),
-                "databases": [{"name": n, "oid": d["oid"], "size": d["size"], "objects": len([r for r in d["relations"] if r["kind"] in ("r", "p", "m")]),
-                               "connectable": d.get("connectable", True)} for n, d in sorted(cat["databases"].items())]}
+        dbs = []
+        for n, d in sorted(cat["databases"].items()):
+            objs, approx = user_objects(d)
+            dbs.append({"name": n, "oid": d["oid"], "size": d["size"], "connectable": d.get("connectable", True),
+                        "tables": len([o for o in objs if o["kind"] in ("r", "p")]), "matviews": len([o for o in objs if o["kind"] == "m"]),
+                        "objects": len(objs), "schemas": len(set(o["schema"] for o in objs)), "user_bytes": sum(o["size"] for o in objs), "approx": approx})
+        return {"set": s["id"], "captured": cat.get("captured"), "databases": dbs}
     d = cat["databases"].get(database)
     if not d:
         raise EngineError("PGA-GEN-031", "database '%s' is not in backup %s" % (database, s["id"]))
     q = (search or "").lower()
-    rels = [r for r in d["relations"] if r["kind"] in ("r", "p", "m") and r["schema"] not in ("pg_catalog", "information_schema", "pg_toast")
-            and (not q or q in r["name"].lower() or q in r["schema"].lower())]
+    objs, approx = user_objects(d)
+    rels = [o for o in objs if not q or q in o["name"].lower() or q in o["schema"].lower()]
     rels.sort(key=lambda r: -r["size"])
     schemas = {}
     for r in rels[:limit]:
-        schemas.setdefault(r["schema"], []).append({"name": r["name"], "kind": r["kind"], "size": r["size"]})
-    return {"set": s["id"], "database": database, "oid": d["oid"], "schemas": [{"name": k, "objects": v} for k, v in sorted(schemas.items())],
+        schemas.setdefault(r["schema"], []).append({"name": r["name"], "kind": r["kind"], "size": r["size"], "partitions": r["partitions"]})
+    return {"set": s["id"], "database": database, "oid": d["oid"], "approx": approx,
+            "schemas": [{"name": k, "objects": v, "tables": len(v), "bytes": sum(o["size"] for o in v)} for k, v in sorted(schemas.items())],
             "total_objects": len(rels), "truncated": len(rels) > limit}
