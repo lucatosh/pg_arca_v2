@@ -1,6 +1,6 @@
 #!/bin/bash
 # Lab helper: last backup sets' LSN range / status as stored in the repo.  sets.sh [N]
-docker exec pg2 python3 - "${1:-4}" <<'PY'
+docker exec -i pg2 python3 - "${1:-4}" <<'PY'
 import glob, json, sys
 fs = sorted(glob.glob("/var/lib/pgarca/repo/*/*/backup/*/meta.json"))[-int(sys.argv[1]):]
 for f in fs:
