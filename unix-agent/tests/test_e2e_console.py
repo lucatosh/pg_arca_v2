@@ -85,7 +85,7 @@ class E2E(unittest.TestCase):
         st, _ = adm.call("POST", "/api/auth/login", {"username": "admin", "password": "correct-horse-battery"}); self.assertEqual(st, 200)
         t = tempfile.mkdtemp()
         os.environ["PATH"] = FAKES + os.pathsep + os.environ["PATH"]
-        cfg = load_config(); cfg.update({"web_server_url": self.base, "enrollment_token": "", "node_name": "joiner",
+        cfg = load_config(); cfg.update({"web_server_url": self.base, "enrollment_token": "", "node_name": "joiner", "rejected_retry_seconds": 0.3,
             "credentials_file": os.path.join(t, "cred.json"), "state_dir": os.path.join(t, "state"), "wal_archive_dir": os.path.join(t, "wal"),
             "repo_path": os.path.join(t, "repo"), "heartbeat_interval_seconds": 1, "pg_host": "127.0.0.1"})
         rt = Runtime(cfg)
@@ -112,6 +112,14 @@ class E2E(unittest.TestCase):
             self.assertEqual(oct(os.stat(cfg["credentials_file"]).st_mode & 0o777), "0o600")
             self.assertEqual(jc[0]["id"], o["clusterId"])         # same database identity as the first node: joined that cluster (or created it)
             self.assertFalse(os.path.exists(os.path.join(t, "join.json")), "join state removed after approval")
+            # the admin deletes the node: the agent must drop its stale credentials and announce itself again (no manual reset on the host)
+            nid = json.load(open(cfg["credentials_file"]))["node_id"]
+            self.assertEqual(adm.call("DELETE", "/api/nodes/" + nid)[0], 200)
+            for _ in range(160):
+                st, d = adm.call("GET", "/api/join-requests")
+                if [r for r in d.get("requests", []) if r["nodeName"] == "joiner"]: break
+                time.sleep(0.25)
+            else: self.fail("agent did not re-announce after its node was deleted")
         finally:
             client.stop()
 

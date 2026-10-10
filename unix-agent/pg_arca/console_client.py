@@ -147,11 +147,19 @@ class ConsoleClient(threading.Thread):
                         continue
                 interval = self.beat()
                 backoff = 1.0
+                self._rejected = 0
                 self.stop_ev.wait(interval)
             except ConsoleError as e:
                 if e.status == 401 and self.creds:
-                    logger.error("console rejected our credentials (node revoked?). Waiting 60s. Re-enroll with a new token to recover.")
-                    self.stop_ev.wait(60)
+                    # node/cluster deleted or revoked in the console: after a few consecutive rejections (not a blip) forget the stale credentials
+                    # and announce ourselves again, so an administrator can simply approve the server anew (no manual reset on the node)
+                    self._rejected = getattr(self, "_rejected", 0) + 1
+                    if self._rejected >= 3 and not self.config.get("enrollment_token"):
+                        logger.warning("console keeps rejecting our credentials (node deleted/revoked): dropping them and announcing again for approval")
+                        self.forget_credentials()
+                    else:
+                        logger.error("console rejected our credentials (node revoked?). Retrying in 20s.")
+                        self.stop_ev.wait(float(self.config.get("rejected_retry_seconds", 20)))
                 elif e.status in (401, 403) and not self.creds:
                     logger.error("enrollment refused: %s. Waiting 60s.", e.body)
                     self.stop_ev.wait(60)
@@ -163,6 +171,17 @@ class ConsoleClient(threading.Thread):
                 logger.warning("console unreachable: %s", e)
                 self.stop_ev.wait(min(60, backoff) * (0.5 + random.random()))
                 backoff = min(backoff * 2, 60)
+
+    def forget_credentials(self):
+        d = os.path.dirname(self.config["credentials_file"])
+        for f in (self.config["credentials_file"], os.path.join(d, "join.json")):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+        self.creds = None
+        self._rejected = 0
+        self.inflight.clear()
 
     def stop(self):
         self.stop_ev.set()
