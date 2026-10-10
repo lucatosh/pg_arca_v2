@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { deriveCluster, computeTps, lsnToBig } from '../../server/view';
+import { deriveCluster, computeTps, lsnToBig, sanitizeSnapshot } from '../../server/view';
 const now = Date.now(), iso = new Date(now - 5000).toISOString();
 const mk = (id: string, name: string, rec: boolean, lsn: string, extra: any = {}) => ({
   id, name, tokenHash: '', enrolledAt: iso, lastSeen: iso, remoteIp: '10.0.0.' + id.length,
@@ -25,4 +25,10 @@ const p1 = mk('n1', 'n1', false, '0/2000000'); p1.snapshot.patroni = { scope: 'l
 const pc = deriveCluster({ id: 'c', name: 'x', environment: 'prod', nodes: [p1], now });
 assert.deepStrictEqual(pc.haState.nodes.map((n: any) => [n.name, n.source, n.online]), [['n1', 'agent', true], ['n2', 'patroni', true], ['n3', 'patroni', false]]);
 assert.strictEqual(pc.haState.nodes[1].role, 'replica'); assert.strictEqual(pc.haState.nodes[1].nodeId, undefined);
+// hostile / broken telemetry must never throw
+for (const bad of [{ postgres: { databases: 5, replication: 'x', slots: [null] }, patroni: { members: [null, 3, { name: 'z' }] } }, { postgres: 'x', patroni: 7, backup: [], system: 1 }, 'str', [], null]) {
+  const sn = sanitizeSnapshot(bad); const nd: any = { ...mk('h1', 'h1', false, '0/1'), snapshot: sn };
+  deriveCluster({ id: 'c', name: 'x', environment: 'prod', nodes: sn === undefined ? [] : [nd], now });
+}
+assert.deepStrictEqual(sanitizeSnapshot({ patroni: { members: [null, { name: 'z' }] } }).patroni.members, [{ name: 'z' }]);
 console.log('ALL VIEW TESTS PASSED');

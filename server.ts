@@ -25,6 +25,8 @@ import { buildDemoCluster } from './server/demo';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+app.set('case sensitive routing', true);   // defence in depth: the auth gate also lower-cases
+process.on('unhandledRejection', (e: any) => console.error('[pg_arca] unhandled rejection (kept running):', e?.stack || e));
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const server = http.createServer(app);
 

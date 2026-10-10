@@ -1,4 +1,5 @@
 /** pg_hba management API: rule templates (customisable, with variables) and propagation of one rule set to every node of a cluster. */
+import { validateOp } from './optypes';
 import type { Request, Response } from 'express';
 import { Store } from './store';
 import * as ops from './ops';
@@ -64,7 +65,11 @@ export function mountHbaRoutes(app: any, store: Store) {
 
 /** Submit one hba_apply per target node (or one for the whole Patroni cluster) and remember temporary-rule expiries for the scheduler. */
 export async function hbaFanout(store: Store, c: any, body: any, key: string, actor: string): Promise<{ code: number; body: any }> {
-  const st = store.peek(); const { rules, baseRevs = {}, force = false, adopt = false } = body;
+  const st = store.peek(); const { rules, force = false, adopt = false } = body;
+  const baseRevs: Record<string, string> = body.baseRevs && typeof body.baseRevs === 'object' && !Array.isArray(body.baseRevs) ? body.baseRevs : {};
+  const bad = validateOp('hba_apply', { rules, force: !!force, adopt: !!adopt });                 // the same checks every other operation gets
+  if (bad) return { code: 400, body: { error: 'invalid_operation', message: bad } };
+  for (const v of Object.values(baseRevs)) if (v !== undefined && v !== null && v !== '' && !/^[0-9a-f]{16}$/.test(String(v))) return { code: 400, body: { error: 'invalid_operation', message: 'invalid base_rev' } };
   const online = Object.values(st.nodes).filter(n => n.clusterId === c.id && n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000);
   if (!online.length) return { code: 409, body: { error: 'no_suitable_node', message: 'Nessun nodo online.' } };
   const patroni = !!c.haState?.managedByPatroni;
@@ -72,7 +77,7 @@ export async function hbaFanout(store: Store, c: any, body: any, key: string, ac
   const out: any[] = [];
   try {
     for (const n of targets) {
-      const r = await ops.submit(store, { type: 'hba_apply', clusterId: c.id, nodeId: n.id, params: { rules, force: !!force, adopt: !!adopt, base_rev: baseRevs[n.id] || undefined }, idempotencyKey: `${key}:${n.id}`, createdBy: actor, ttlSeconds: 600 });
+      const r = await ops.submit(store, { type: 'hba_apply', clusterId: c.id, nodeId: n.id, params: { rules, force: !!force, adopt: !!adopt, base_rev: (Object.prototype.hasOwnProperty.call(baseRevs, n.id) && baseRevs[n.id]) || undefined }, idempotencyKey: `${key}:${n.id}`, createdBy: actor, ttlSeconds: 600 });
       out.push({ nodeId: n.id, nodeName: n.name, operation: r.op, replayed: !r.created });
     }
   } catch (e: any) {

@@ -156,7 +156,7 @@ function Modal2({ act, leader, standbys, cand, setCand, typed, setTyped, onClose
   </Confirm>;
 }
 
-const PARAMS = ['work_mem', 'maintenance_work_mem', 'shared_buffers', 'effective_cache_size', 'max_connections', 'checkpoint_timeout', 'max_wal_size', 'log_min_duration_statement', 'archive_timeout', 'wal_level', 'archive_mode', 'archive_command', 'full_page_writes', 'wal_log_hints'];
+const PARAMS = ['work_mem', 'maintenance_work_mem', 'shared_buffers', 'effective_cache_size', 'max_connections', 'checkpoint_timeout', 'max_wal_size', 'log_min_duration_statement', 'archive_timeout', 'wal_level', 'archive_mode', 'full_page_writes', 'wal_log_hints'];
 function Params({ c }: { c: any }) {
   const [name, setName] = useState(''); const [value, setValue] = useState(''); const [reset, setReset] = useState(false); const [node, setNode] = useState('');
   const [ask, setAsk] = useState(false);

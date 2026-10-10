@@ -15,6 +15,10 @@ const ident = /^[A-Za-z_][A-Za-z0-9_.]{0,62}$/;
 const paramName = /^[a-z_][a-z0-9_.]{0,62}$/;
 const noCtl = (v: string) => !/[\u0000-\u001f]/.test(v) && v.length <= 4096;
 
+/** GUCs whose value is executed or loaded by the server (or relocates its files): an operator must not be able to set these through the console. */
+export const DANGEROUS_GUCS = new Set(['archive_command', 'archive_cleanup_command', 'restore_command', 'recovery_end_command', 'ssl_passphrase_command', 'shared_preload_libraries',
+  'local_preload_libraries', 'session_preload_libraries', 'dynamic_library_path', 'hba_file', 'ident_file', 'data_directory', 'config_file', 'external_pid_file', 'unix_socket_directories',
+  'log_directory', 'krb_server_keyfile', 'ssl_cert_file', 'ssl_key_file', 'ssl_ca_file', 'ssl_crl_file', 'stats_temp_directory']);
 const CFG_KEYS = ['pg_data', 'pg_bin_dir', 'pg_port', 'pg_host', 'pg_user', 'repo_path', 'wal_archive_dir', 'scratch_dir', 'patroni_url'];
 function cfgErr(p: any): string | null {
   const c = p?.set; if (!c || typeof c !== 'object' || Array.isArray(c)) return 'set must be an object';
@@ -37,6 +41,7 @@ export const OP_SPECS: Record<string, OpSpec> = {
     mutating: true, target: 'node',
     validate: p => {
       if (!paramName.test(String(p.name ?? ''))) return 'invalid parameter name';
+      if (DANGEROUS_GUCS.has(String(p.name))) return `${p.name} cannot be changed from the console (it runs commands or relocates files): edit it on the server`;
       if (p.value !== null && (typeof p.value !== 'string' && typeof p.value !== 'number' && typeof p.value !== 'boolean')) return 'value must be scalar or null (reset)';
       if (p.value !== null && !noCtl(String(p.value))) return 'invalid value';
       return null;
@@ -56,7 +61,16 @@ export const OP_SPECS: Record<string, OpSpec> = {
   patroni_pause:    { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => typeof p.enable === 'boolean' ? null : 'enable boolean required' },
   patroni_config_patch: {
     mutating: true, target: 'patroni_node', needsPatroni: true,
-    validate: p => (p.patch && typeof p.patch === 'object' && !Array.isArray(p.patch)) ? null : 'patch object required',
+    validate: p => {
+      if (!(p.patch && typeof p.patch === 'object' && !Array.isArray(p.patch))) return 'patch object required';
+      const pg = p.patch.postgresql;
+      if (pg && typeof pg === 'object') {
+        for (const k of ['authentication', 'pg_hba', 'pg_ident', 'bin_dir', 'data_dir', 'config_dir', 'listen', 'connect_address', 'custom_conf', 'pgpass', 'callbacks', 'create_replica_methods', 'basebackup']) if (k in pg) return `postgresql.${k} cannot be changed from the console`;
+        for (const k of Object.keys(pg.parameters || {})) if (DANGEROUS_GUCS.has(k)) return `${k} cannot be changed from the console (it runs commands or relocates files)`;
+      }
+      for (const k of ['restapi', 'etcd', 'etcd3', 'consul', 'zookeeper', 'kubernetes', 'ctl', 'scope', 'name', 'namespace', 'watchdog', 'bootstrap']) if (k in p.patch) return `${k} cannot be changed from the console`;
+      return null;
+    },
   },
 };
 

@@ -17,7 +17,7 @@ import { advanced } from './approvals';
 const MAX_PENDING = 100, MAX_PER_IP = 10;
 const PENDING_TTL_MS = 48 * 3600_000, REJECTED_TTL_MS = 24 * 3600_000, DONE_TTL_MS = 24 * 3600_000;
 const FP = /^[A-Za-z0-9_-]{16,64}$/, HASH = /^[0-9a-f]{64}$/, NAME = /^[A-Za-z0-9_.-]{1,63}$/;
-const safeEq = (a: string, b: string) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const safeEq = (a: any, b: any) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const trunc = (v: any, n = 120) => String(v ?? '').slice(0, n);
 
 export const joinEnabled = (st: any) => advanced(st).joinRequests !== false;

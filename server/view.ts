@@ -4,6 +4,24 @@
  */
 import type { NodeRecord } from './store';
 
+/** Agent telemetry is untrusted input (a bug or a stolen node secret must not be able to crash the console): force the shapes the derivations rely on. */
+export function sanitizeSnapshot(snap: any): any {
+  if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return undefined;
+  const obj = (v: any) => (v && typeof v === 'object' && !Array.isArray(v) ? v : undefined);
+  const arr = (v: any) => (Array.isArray(v) ? v.filter(x => obj(x)) : []);
+  const out: any = { ...snap };
+  if (out.postgres !== undefined) {
+    const pg = obj(out.postgres) ? { ...out.postgres } : {};
+    for (const k of ['databases', 'replication', 'slots']) if (k in pg) pg[k] = arr(pg[k]);
+    if (pg.pending_restart !== undefined && !Array.isArray(pg.pending_restart)) pg.pending_restart = [];
+    out.postgres = pg;
+  }
+  if (out.patroni !== undefined) { const pt = obj(out.patroni) ? { ...out.patroni } : {}; if ('members' in pt) pt.members = arr(pt.members); out.patroni = pt; }
+  for (const k of ['backup', 'wal', 'system']) if (k in out && !obj(out[k])) delete out[k];
+  if (out.backup && 'recent_sets' in out.backup) out.backup = { ...out.backup, recent_sets: arr(out.backup.recent_sets) };
+  return out;
+}
+
 export const OFFLINE_AFTER_MS = 45_000;
 
 export function lsnToBig(lsn?: string | null): bigint | null {

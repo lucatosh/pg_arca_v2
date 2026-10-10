@@ -14,21 +14,21 @@ import * as ops from './ops';
 import { OP_SPECS, validateOp } from './optypes';
 import { requiresApproval, requestApproval } from './approvals';
 import { hbaFanout } from './hba';
-import { deriveCluster, computeTps } from './view';
+import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 
 export interface Deps {
   /** executes an operation server-side for clusters attached without an agent */
   directExec?: (cluster: any, type: string, params: any) => Promise<any>;
 }
 
-const safeEq = (a: string, b: string) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const safeEq = (a: any, b: any) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const REENROLL_WINDOW_MS = 10 * 60 * 1000;
 
 export function authNode(store: Store, req: Request): NodeRecord | null {
   const id = String(req.headers['x-arca-node'] || '');
   const auth = String(req.headers['authorization'] || '');
   if (!id || !auth.startsWith('Bearer ')) return null;
-  const node = store.peek().nodes[id];
+  const nodes = store.peek().nodes; const node = Object.prototype.hasOwnProperty.call(nodes, id) ? nodes[id] : undefined;   // 'x-arca-node: __proto__' must not resolve
   if (!node) { sha256(auth); return null; }            // constant-ish work for unknown ids
   return safeEq(sha256(auth.slice(7).trim()), node.tokenHash) ? node : null;
 }
@@ -97,7 +97,8 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
     const node = authNode(store, req);
     if (!node) return res.status(401).json({ error: 'unauthorized' });
     const b = req.body || {};
-    const snap = b.snapshot && typeof b.snapshot === 'object' ? b.snapshot : undefined;
+    const snap = sanitizeSnapshot(b.snapshot);
+    if (snap && JSON.stringify(snap).length > 1_500_000) return res.status(413).json({ error: 'snapshot_too_large' });
     await store.mutate(d => {
       const n = d.nodes[node.id];
       if (!n) return;
@@ -231,6 +232,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
   });
 
   async function execute(cluster: any, type: string, params: any, nodeId: string | undefined, ttlSeconds: number | undefined, key: string, actor: string): Promise<{ code: number; body: any }> {
+    ttlSeconds = ttlSeconds === undefined || ttlSeconds === null ? undefined : (Number.isFinite(Number(ttlSeconds)) ? Math.min(86400, Math.max(30, Math.floor(Number(ttlSeconds)))) : 600);   // NaN would mean 'never expires'
     const spec = OP_SPECS[type];
     const st = store.peek();
     try {

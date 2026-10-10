@@ -103,7 +103,7 @@ export function bootstrapAdminFromEnv(store: Store) {
 /** Gate for operator-facing /api routes. Agent routes and auth routes are exempt. */
 export function requireAdmin(store: Store) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const p = req.path;
+    const p = req.path.toLowerCase();          // Express routes case-insensitively: '/API/users' must not slip past a case-sensitive gate
     if (p.startsWith('/api/auth/') || p.startsWith('/api/agent/') || p === '/api/health' || !p.startsWith('/api/')) return next();
     if (!store.peek().settings.admin) return res.status(428).json({ error: 'setup_required', message: 'Create the administrator account first.' });
     const u = sessionUser(req);
@@ -154,7 +154,7 @@ export function mountAuthRoutes(app: any, store: Store) {
     if (!ok) {
       const n = (f?.n || 0) + 1;
       failures.set(ip, { n, until: Date.now() + Math.min(60_000, 500 * 2 ** n) });
-      await store.mutate(d => audit(d, { actor: String(username || '?'), action: 'auth.login', status: 'FAILED', details: { ip } }));
+      await store.mutate(d => audit(d, { actor: String(username || '?').slice(0, 64), action: 'auth.login', status: 'FAILED', details: { ip } }));
       return res.status(401).json({ error: 'invalid_credentials' });
     }
     failures.delete(ip);
