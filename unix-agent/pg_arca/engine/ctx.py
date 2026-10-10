@@ -52,10 +52,12 @@ class Ctx(object):
         seg = ((inst.get("control") or {}).get("wal_segment_size")) or 16 * 1024 * 1024
         here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         wal_bin = config.get("wal_bin") or (os.path.join(here, "pg-arca-wal") if os.path.exists(os.path.join(here, "pg-arca-wal")) else None)
+        # never restore into (or above/below) the repository, the WAL archive, the agent state/config or the key file
+        keep = [config.get("repo_path"), config.get("wal_archive_dir"), config.get("state_dir"), os.path.dirname(config.get("credentials_file") or ""), config.get("encryption_key_file")]
         return cls(conn, _resolve_pgdata(config, inst, log), config["repo_path"], stanza, config["wal_archive_dir"],
                    config.get("scratch_dir", "/var/tmp/pg_arca_scratch"), config.get("process_max", 4), config.get("compression", "zstd"),
                    config.get("compression_level", 3), bool(config.get("start_fast", False)), config.get("retention_full", 2),
-                   config.get("retention_days", 0), seg, log, wal_bin, key_file=config.get("encryption_key_file") or os.environ.get("PG_ARCA_KEY_FILE") or None)
+                   config.get("retention_days", 0), seg, log, wal_bin, key_file=config.get("encryption_key_file") or os.environ.get("PG_ARCA_KEY_FILE") or None, protected_extra=[k for k in keep if k])
 
 
 def _resolve_pgdata(config, inst, log=None):

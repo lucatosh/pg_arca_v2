@@ -187,8 +187,57 @@ def link_tablespaces(dest, tablespaces, remap=None):
     return out
 
 
+_UNSAFE_CONF = re.compile(r"^\s*(data_directory|hba_file|ident_file|external_pid_file|include_dir|include_if_exists|include)\b", re.I)
+
+
+def neutralize_conf(path):
+    """A postgresql.conf captured from an external layout (Debian: /etc/postgresql/NN/main) still points at the ORIGINAL data directory / hba / include dir.
+    Starting the restored copy with those lines would open the production cluster (or fail on a missing conf.d): comment them out, keep a visible note."""
+    with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+        lines = f.read().split("\n")
+    out, hit = [], 0
+    for ln in lines:
+        if _UNSAFE_CONF.match(ln):
+            out.append("#pg_arca-restore# " + ln)
+            hit += 1
+        else:
+            out.append(ln)
+    if hit:
+        out.append("# pg_arca: %d line(s) above were disabled on restore (data_directory/hba_file/ident_file/include*): they pointed at the original server." % hit)
+        tmp = path + ".pgarca-tmp"
+        with open(tmp, "w", encoding="utf-8", errors="surrogateescape") as f:
+            f.write("\n".join(out))
+        shutil.copystat(path, tmp)
+        os.rename(tmp, path)
+    return hit
+
+
+_STALE_RECOVERY = re.compile(r"^\s*(recovery_target\w*|restore_command|recovery_end_command|archive_cleanup_command)\s*=", re.I)
+
+
+def scrub_recovery_settings(dest):
+    """A backed-up postgresql.auto.conf may still hold a previous restore's recovery_target_* / restore_command block: appending ours would leave two targets
+    ('multiple recovery targets specified') or silently keep the old one. Comment the old ones out (postgresql.conf and postgresql.auto.conf)."""
+    for fn in ("postgresql.conf", "postgresql.auto.conf"):
+        path = os.path.join(dest, fn)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+            lines = f.read().split("\n")
+        changed, out = False, []
+        for ln in lines:
+            if _STALE_RECOVERY.match(ln):
+                out.append("#pg_arca-restore# " + ln)
+                changed = True
+            else:
+                out.append(ln)
+        if changed:
+            with open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
+                f.write("\n".join(out))
+
+
 def install_external_conf(dest, merged_all):
-    """Config files that lived outside PGDATA were captured as _conf/*: place missing ones at the PGDATA root."""
+    """Config files that lived outside PGDATA were captured as _conf/*: place missing ones at the PGDATA root (neutralised, see above)."""
     for rel in list(merged_all):
         if rel.startswith("_conf/"):
             name = rel[len("_conf/"):]
@@ -196,6 +245,8 @@ def install_external_conf(dest, merged_all):
             tgt = os.path.join(dest, name)
             if os.path.exists(src) and not os.path.exists(tgt):
                 shutil.copy2(src, tgt)
+                if name == "postgresql.conf":
+                    neutralize_conf(tgt)
 
 
 # --------------------------------------------------------------------------- recovery configuration
@@ -217,6 +268,14 @@ def recovery_lines(restore_command, target_time=None, target_lsn=None, target_xi
     return "\n".join(lines) + "\n"
 
 
+def effective_targets(chain, target_lsn, immediate):
+    """'Stop as soon as consistent' means: at the END OF THE LAST SET of the chain. The backup_label is the base full's, so PostgreSQL's own notion of
+    'consistent' is the end of the FULL, while the files already contain the later incremental pages: stopping there would promote a torn cluster."""
+    if immediate and len(chain) > 1:
+        return chain[-1]["stop_lsn"], False
+    return target_lsn, immediate
+
+
 def count_targets(target_time, target_lsn, target_xid, target_name, immediate=False):
     n = sum(1 for x in (target_time, target_lsn, target_xid, target_name) if x) + (1 if immediate else 0)
     if n > 1:
@@ -225,7 +284,7 @@ def count_targets(target_time, target_lsn, target_xid, target_name, immediate=Fa
 
 
 # --------------------------------------------------------------------------- choosing the base backup and checking WAL
-def choose_set(repo, spec=None, target_time=None, target_lsn=None):
+def choose_set(repo, spec=None, target_time=None, target_lsn=None, target_xid=None, target_name=None):
     """Explicit set wins. Otherwise the newest COMPLETE set that ends BEFORE the target (a set cannot recover to earlier than its stop)."""
     done = repo.complete_sets()
     if not done:
@@ -233,7 +292,16 @@ def choose_set(repo, spec=None, target_time=None, target_lsn=None):
     if spec not in (None, "", "latest"):
         s = repo.resolve_set(spec)
         _check_target_after_set(s, target_time, target_lsn)
+        if (target_xid or target_name) and s.get("type") != "full":
+            raise EngineError("PGA-PITR-004", "a transaction-id / restore-point target cannot be ordered against an incremental or differential backup (%s)" % s["id"],
+                              "choose a FULL backup as the base, or use a time / LSN target")
         return s
+    if target_xid or target_name:
+        # an xid or a named restore point cannot be compared with a backup's stop position: only a full backup is safe as the base
+        fulls = [x for x in done if x.get("type") == "full"]
+        if not fulls:
+            raise EngineError("PGA-PITR-004", "no full backup available for a transaction-id / restore-point target")
+        return fulls[-1]
     if target_time:
         t = target_time_to_dt(target_time)
         if t is not None:
@@ -292,6 +360,9 @@ def check_wal_for_chain(ctx, chain, target_lsn=None):
 
 def target_dir_check(ctx, dest, delta, what="restore destination"):
     dest = assert_writable_target(ctx, dest, what)
+    if delta and os.path.exists(dest) and os.listdir(dest) and not os.path.exists(os.path.join(dest, "PG_VERSION")):
+        raise EngineError("PGA-SEC-006", "delta restore: '%s' does not look like a PostgreSQL data directory (no PG_VERSION)" % dest,
+                          "delta deletes every file that is not in the backup; point it at the old copy of the data directory, or use an empty directory")
     if os.path.exists(dest) and os.listdir(dest) and not delta:
         raise EngineError("PGA-SEC-005", "%s '%s' is not empty" % (what, dest), "use an empty directory, or delta=true to overwrite in place (existing content will be lost)")
     return dest
@@ -306,7 +377,7 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     target_time = parse_target_time(target_time)
     if not dest:
         raise EngineError("PGA-GEN-063", "destination directory is required", "restoring over the live data directory is never allowed")
-    target = choose_set(repo, set_spec, target_time, target_lsn)
+    target = choose_set(repo, set_spec, target_time, target_lsn, target_xid, target_name)
     chain = build_chain(repo, target)
     missing = check_wal_for_chain(ctx, chain, target_lsn)
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "destination": os.path.realpath(dest), "missing_wal": missing[:20],
@@ -339,8 +410,10 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     install_external_conf(dest, merged)
     label = os.path.join(repo.sp("backup", chain[0]["id"], "backup_label"))        # ALWAYS the base full's label
     shutil.copy2(label, os.path.join(dest, "backup_label"))
+    scrub_recovery_settings(dest)
     with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
-        f.write(recovery_lines(ctx.restore_command, target_time, target_lsn, target_xid, target_name, immediate,
+        t_lsn, t_imm = effective_targets(chain, target_lsn, immediate)
+        f.write(recovery_lines(ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm,
                                "promote" if action == "promote" else "pause", inclusive, timeline))
     open(os.path.join(dest, "recovery.signal"), "w").close()
     bad = audit_symlinks(dest)

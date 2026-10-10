@@ -171,6 +171,39 @@ class EngineTests(unittest.TestCase):
         finally:
             sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
 
+    def test_04b_immediate_restore_of_an_incremental_chain_is_consistent(self):
+        """'Stop when consistent' must mean the end of the LAST set, not of the base full: the files already hold the incremental's newer pages."""
+        q("app", "CREATE TABLE incrcheck AS SELECT g AS id, repeat('y', 100) AS pad FROM generate_series(1,30000) g")
+        meta = run_backup(F.ctx, "incr")
+        self.assertEqual(meta["type"], "incr")
+        n = int(q("app", "SELECT count(*) FROM incrcheck")[0][0])
+        dest = os.path.join(F.base, "restored_immediate")
+        plan = restore_instance(F.ctx, dest=dest, immediate=True)
+        self.assertGreater(len(plan["chain"]), 1)
+        conf = open(os.path.join(dest, "postgresql.auto.conf")).read()
+        self.assertIn("recovery_target_lsn = '%s'" % meta["stop_lsn"], conf)
+        self.assertNotIn("recovery_target = 'immediate'", conf)
+        port2 = F.port + 2
+        with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
+            f.write("\nport=%d\nunix_socket_directories='%s'\nlisten_addresses=''\narchive_mode=off\narchive_command=''\n" % (port2, F.sock))
+        r = sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-l", os.path.join(F.base, "restored_immediate.log"), "-w", "-t", "120", "start")
+        self.assertEqual(r.returncode, 0, r.stderr + open(os.path.join(F.base, "restored_immediate.log")).read()[-2000:])
+        try:
+            s = PgSession(PgConn(host=F.sock, port=port2, user="postgres", bindir=BIN, dbname="app"))
+            try:
+                for _ in range(60):
+                    if s.scalar("SELECT pg_is_in_recovery()") == "f":
+                        break
+                    time.sleep(1)
+                self.assertEqual(int(s.scalar("SELECT count(*) FROM incrcheck")), n)
+                for _ in range(80):                                  # burn transaction ids: a torn restore only shows once xids pass the 'future' ones
+                    s.scalar("SELECT txid_current()")
+                self.assertEqual(int(s.scalar("SELECT count(*) FROM incrcheck")), n)
+            finally:
+                s.close()
+        finally:
+            sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
+
     def test_05_restore_database_sparse_pitr(self):
         plan = restore_database(F.ctx, "app", target_time=F.t1, new_name="app_at_t1", jobs=2)
         self.assertEqual(plan["result_database"], "app_at_t1")
@@ -296,6 +329,22 @@ class EngineTests(unittest.TestCase):
         with self.assertRaises(EngineError) as cm:
             restore_instance(F.ctx, dest=os.path.join(F.src, "sub"))
         self.assertEqual(cm.exception.code, "PGA-SEC-003")
+
+    def test_09b_delta_cannot_wipe_repo_or_wal_archive(self):
+        import tempfile
+        old = F.ctx.protected_extra
+        F.ctx.protected_extra = [F.ctx.repo.path, F.ctx.wal_dir]
+        try:
+            with self.assertRaises(EngineError) as cm:
+                restore_instance(F.ctx, dest=F.ctx.wal_dir, delta=True)
+            self.assertEqual(cm.exception.code, "PGA-SEC-003")
+        finally:
+            F.ctx.protected_extra = old
+        d = tempfile.mkdtemp(dir=F.scratch); open(os.path.join(d, "precious.txt"), "w").write("x")
+        with self.assertRaises(EngineError) as cm:                                   # delta into a directory that is not a PGDATA would delete everything in it
+            restore_instance(F.ctx, dest=d, delta=True)
+        self.assertEqual(cm.exception.code, "PGA-SEC-006")
+        self.assertTrue(os.path.exists(os.path.join(d, "precious.txt")))
 
     def test_10_verify_and_info(self):
         info = repo_info(F.ctx)

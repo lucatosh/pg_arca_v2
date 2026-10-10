@@ -40,7 +40,7 @@ def free_port():
 
 
 def read_pg_control(conn, datadir):
-    rc, out, err = run_tool(conn, "pg_controldata", ["-D", datadir], timeout=30)
+    rc, out, err = run_tool(conn, "pg_controldata", ["-D", datadir], timeout=30, extra_env={"LC_ALL": "C", "LANG": "C"})   # labels are translated otherwise
     if rc != 0:
         raise EngineError("PGA-GEN-050", "pg_controldata failed on %s: %s" % (datadir, err.strip()))
     mapping = {"max_connections setting": "max_connections", "max_worker_processes setting": "max_worker_processes",
@@ -71,7 +71,7 @@ def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=Fal
                     out.append(line)
                     continue
                 key = s.split("=")[0].split()[0].strip("'\"").lower() if "=" in s or s.split() else ""
-                if key in GUC_REMOVE:
+                if key in GUC_REMOVE or key.startswith("recovery_target"):      # stale recovery targets in the backed-up conf would clash with the one we write
                     removed.append((fn, key))
                     out.append("# [pg_arca quarantine] " + line)
                     continue
@@ -101,10 +101,11 @@ def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=Fal
         v = pgcontrol.get(key)
         if v not in (None, ""):
             forced[guc] = str(int(v))
-    with open(os.path.join(scratch, "postgresql.conf"), "a") as f:
-        f.write("\n# ==== pg_arca: forced configuration of the ephemeral instance (generated %s) ====\n" % iso())
-        for k, v in forced.items():
-            f.write("%s = %s\n" % (k, v))
+    for fn in ("postgresql.conf", "postgresql.auto.conf"):        # auto.conf is read LAST: forcing only postgresql.conf lets a backed-up auto.conf win (port, listen_addresses, archive_mode...)
+        with open(os.path.join(scratch, fn), "a") as f:
+            f.write("\n# ==== pg_arca: forced configuration of the ephemeral instance (generated %s) ====\n" % iso())
+            for k, v in forced.items():
+                f.write("%s = %s\n" % (k, v))
     with open(os.path.join(scratch, "pg_hba.conf"), "w") as f:
         f.write("# pg_arca ephemeral: unix socket only, private 0700 directory\nlocal all all trust\n")
     with open(os.path.join(scratch, "pg_ident.conf"), "w") as f:
@@ -171,7 +172,9 @@ class Ephemeral(object):
         ctl = read_pg_control(self.ctx.conn, self.dir)
         removed, forced = quarantine_config(self.dir, ctl, self.port, self.sock, self.ctx.restore_command, sparse, self.shared_buffers)
         with open(os.path.join(self.dir, "postgresql.auto.conf"), "a") as f:
-            f.write(recovery_lines(self.ctx.restore_command, target_time, target_lsn, target_xid, target_name, immediate, "pause", inclusive))
+            from pg_arca.engine.restore import effective_targets
+            t_lsn, t_imm = effective_targets(chain, target_lsn, immediate)
+            f.write(recovery_lines(self.ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm, "pause", inclusive))
         open(os.path.join(self.dir, "recovery.signal"), "w").close()
         # recovery_lines wrote restore_command again into auto.conf: harmless and identical, but keep the quarantine invariant
         bad = [b for b in audit_symlinks(self.dir)]

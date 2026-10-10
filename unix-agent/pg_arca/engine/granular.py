@@ -35,7 +35,7 @@ def _dest_conn(ctx, into):
 def _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name, immediate=False):
     count_targets(target_time, target_lsn, target_xid, target_name, immediate)
     tt = parse_target_time(target_time)
-    target = choose_set(ctx.repo, set_spec, tt, target_lsn)
+    target = choose_set(ctx.repo, set_spec, tt, target_lsn, target_xid, target_name)
     chain = build_chain(ctx.repo, target)
     missing = check_wal_for_chain(ctx, chain, target_lsn)
     if missing:

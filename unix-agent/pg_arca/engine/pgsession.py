@@ -92,6 +92,12 @@ class PgSession(object):
         if self.one("SELECT 1") != "1":
             raise EngineError("PGA-CFG-002", "cannot connect to %s: %s" % (self.dbname, self.take_errors() or "unknown reason"),
                               "check socket/port/user and pg_hba.conf")
+        # A backup session sits idle for hours while files are copied: server-side idle timeouts (PG14+ idle_session_timeout, idle_in_transaction_session_timeout)
+        # must not kill it. Error detection below needs English messages (superuser only). Each setting is optional: unknown/forbidden ones are ignored.
+        self.one("DO $$ BEGIN "
+                 "BEGIN PERFORM set_config('idle_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
+                 "BEGIN PERFORM set_config('idle_in_transaction_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
+                 "BEGIN PERFORM set_config('lc_messages','C',false); EXCEPTION WHEN OTHERS THEN NULL; END; END $$")
         self.version_num = int(self.one("SHOW server_version_num"))
         self.version = self.one("SHOW server_version")
 
