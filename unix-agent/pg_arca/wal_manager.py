@@ -314,6 +314,64 @@ class WalManager:
         self._cont_cache = (now, mt, rep)
         return rep
 
+    def _history_forks(self, tli):
+        """{ancestor timeline: LSN where it ended} from <tli>.history, or None when the file is missing/unreadable."""
+        try:
+            with open(os.path.join(self.wal_dir, "%08X.history" % tli), "r", encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except (IOError, OSError):
+            return None
+        forks = {}
+        for ln in lines:
+            parts = ln.split("\t") if "\t" in ln else ln.split(None, 2)
+            if len(parts) >= 2 and parts[0].strip().isdigit() and re.match(r"^[0-9A-Fa-f]+/[0-9A-Fa-f]+$", parts[1].strip()):
+                hi, lo = parts[1].strip().split("/")
+                forks[int(parts[0])] = (int(hi, 16) << 32) | int(lo, 16)
+        return forks
+
+    def _cross_timeline_gaps(self, timelines, per_id):
+        """Gaps that no per-timeline check can see: WAL that a failover left in NEITHER timeline (e.g. the old primary died before archiving its last segments and the
+        promoted standby never archives what it merely received). Recovery that crosses the fork needs every segment up to the fork on the OLD timeline and the rest on the NEW one."""
+        if len(timelines) < 2:
+            return []
+        latest = max(timelines)
+        forks = self._history_forks(latest)
+        if not forks:
+            return []
+        seg = self.segment_size
+        chain = sorted(forks)                                               # ancestors of `latest`, oldest first
+        if any(t >= latest for t in chain):
+            return []
+        span = {}                                                           # tli -> (first segno, last segno) it may provide
+        prev = None
+        for t in chain + [latest]:
+            first = (forks[prev] // seg) if prev is not None else 0
+            last = (forks[t] // seg) if t in forks else (1 << 62)
+            span[t] = (first, last)
+            prev = t
+        have = {t: set(timelines.get(t, [])) for t in span}
+        lo = min((min(v) for v in have.values() if v), default=None)
+        hi = max(have[latest]) if have[latest] else None
+        if lo is None or hi is None or hi < lo:
+            return []
+        nm = lambda t, n: "%08X%08X%08X" % (t, n // per_id, n % per_id)
+        out, run = [], None
+        for n in range(lo, hi + 1):
+            if any(a <= n <= b and n in have[t] for t, (a, b) in span.items()):
+                run = None
+                continue
+            owner = next((t for t, (a, b) in span.items() if a <= n <= b), latest)
+            if run and run["_end"] == n - 1 and run["timeline"] == owner:
+                run["_end"] = n
+                run["count"] += 1
+                run["missing_to"] = nm(owner, n)
+            else:
+                run = {"timeline": owner, "_end": n, "count": 1, "across_failover": True, "missing_from": nm(owner, n), "missing_to": nm(owner, n)}
+                out.append(run)
+        for r in out:
+            r.pop("_end", None)
+        return out
+
     def _compute_continuity(self):
         per_id = 0x100000000 // self.segment_size
         names, timelines, histories = [], {}, []
@@ -342,6 +400,7 @@ class WalManager:
                 if b != a + 1:
                     gaps.append({"timeline": tli, "missing_from": "%08X%08X%08X" % (tli, (a + 1) // per_id, (a + 1) % per_id),
                                  "missing_to": "%08X%08X%08X" % (tli, (b - 1) // per_id, (b - 1) % per_id), "count": b - a - 1})
+        gaps += self._cross_timeline_gaps(timelines, per_id)
         names.sort()
         return {"continuous": not gaps, "total_segments": len(names), "gaps": gaps[:50], "gap_count": len(gaps),
                 "timelines": sorted(timelines), "histories": sorted(histories), "first_segment": names[0], "last_segment": names[-1],

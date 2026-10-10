@@ -88,4 +88,29 @@ class WalTests(unittest.TestCase):
             n = seg(tl, 0, s); self.wm.archive_segment(self.mk(n), n)
         self.assertTrue(self.wm.verify_continuity(max_age=0)["continuous"])
 
+    def test_failover_hole_between_timelines_is_a_gap(self):
+        """the old primary died before archiving its last segment and the promoted standby never archives what it only received: nothing covers segment 3"""
+        for tl, s in [(1, 1), (1, 2), (2, 4), (2, 5)]:                      # timeline 1 forked exactly at the start of segment 4 (0/400000 with 1 MB segments)
+            n = seg(tl, 0, s); self.wm.archive_segment(self.mk(n), n)
+        open(os.path.join(self.wm.wal_dir, "00000002.history"), "w").write("1\t0/400000\tno recovery target specified\n")
+        rep = self.wm.verify_continuity(max_age=0)
+        self.assertFalse(rep["continuous"], rep)
+        g = rep["gaps"][0]
+        self.assertEqual((g["timeline"], g["missing_from"], g["count"]), (1, seg(1, 0, 3), 1), rep)
+        n = seg(1, 0, 3); self.wm.archive_segment(self.mk(n), n)            # the segment is rescued: hole closed
+        self.assertTrue(self.wm.verify_continuity(max_age=0)["continuous"])
+
+    def test_fork_inside_a_segment_is_covered_by_the_new_timeline(self):
+        for tl, s in [(1, 1), (2, 2), (2, 3)]:                              # fork mid-segment 2: only the NEW timeline has a complete copy of segment 2
+            n = seg(tl, 0, s); self.wm.archive_segment(self.mk(n), n)
+        open(os.path.join(self.wm.wal_dir, "00000002.history"), "w").write("1\t0/280000\tno recovery target specified\n")
+        self.assertTrue(self.wm.verify_continuity(max_age=0)["continuous"])
+
+    def test_three_timelines_chain(self):
+        for tl, s in [(1, 1), (1, 2), (2, 2), (2, 3), (3, 3), (3, 4)]:
+            n = seg(tl, 0, s); self.wm.archive_segment(self.mk(n), n)
+        open(os.path.join(self.wm.wal_dir, "00000003.history"), "w").write("1\t0/200000\tx\n2\t0/380000\ty\n")
+        self.assertTrue(self.wm.verify_continuity(max_age=0)["continuous"])
+
+
 if __name__ == "__main__": unittest.main()

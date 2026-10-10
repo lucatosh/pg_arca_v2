@@ -70,6 +70,11 @@ class FailoverTests(unittest.TestCase):
             finally:
                 s.close()
             time.sleep(1)
+        last = T.q("postgres", "SELECT pg_walfile_name(pg_switch_wal() - 1)")[0][0]
+        for _ in range(60):                                        # a HEALTHY primary has archived everything before it dies (the unarchived case is tested separately)
+            if (T.q("postgres", "SELECT COALESCE(last_archived_wal, '') FROM pg_stat_archiver")[0][0] or "") >= last:
+                break
+            time.sleep(1)
         T.sh(os.path.join(T.BIN, "pg_ctl"), "-D", T.F.src, "-m", "immediate", "stop")          # the primary dies
         r = T.sh(os.path.join(T.BIN, "pg_ctl"), "-D", S.sdir, "-w", "promote")
         self.assertEqual(r.returncode, 0, r.stderr)

@@ -72,7 +72,8 @@ def setUpModule():
     F.repo = os.path.join(base, "repo")
     F.scratch = os.path.join(base, "scratch")
     F.port = 55000 + (os.getpid() % 900)
-    r = sh(os.path.join(BIN, "initdb"), "-D", F.src, "-U", "postgres", "--auth=trust", "-k")      # -k: data checksums
+    F.seg = int(os.environ.get("PG_ARCA_TEST_WALSEG", "16")) * 1024 * 1024                      # non-default WAL segment size (initdb --wal-segsize): 1..1024 MB
+    r = sh(os.path.join(BIN, "initdb"), "-D", F.src, "-U", "postgres", "--auth=trust", "-k", "--wal-segsize=%d" % (F.seg // 1048576))      # -k: data checksums
     assert r.returncode == 0, r.stderr
     walbin = os.path.join(HERE, "pg-arca-wal")
     with open(os.path.join(F.src, "postgresql.conf"), "a") as f:
@@ -82,7 +83,7 @@ def setUpModule():
     r = sh(os.path.join(BIN, "pg_ctl"), "-D", F.src, "-l", os.path.join(base, "src.log"), "-w", "start")
     assert r.returncode == 0, r.stderr + open(os.path.join(base, "src.log")).read()
     F.conn = PgConn(host=F.sock, port=F.port, user="postgres", bindir=BIN)
-    F.ctx = Ctx(F.conn, F.src, F.repo, "main", F.wal, F.scratch, process_max=4, compression="zlib", level=3, start_fast=True,
+    F.ctx = Ctx(F.conn, F.src, F.repo, "main", F.wal, F.scratch, process_max=4, compression="zlib", level=3, start_fast=True, seg_size=F.seg,
                 log=lambda lv, m: sys.stderr.write("[%s] %s\n" % (lv, m)) if os.environ.get("V") else None, agent_path=walbin, key_file=F.key or None)
 
 
@@ -117,7 +118,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(meta["status"], "COMPLETE")
         self.assertEqual(meta["type"], "full")
         self.assertGreater(meta["stats"]["bytes_logical"], 0)
-        self.assertTrue(F.ctx.wal.has_segment(meta["start_lsn"] and __import__("pg_arca.engine.util", fromlist=["x"]).wal_name_from_lsn(1, __import__("pg_arca.engine.util", fromlist=["x"]).lsn_to_int(meta["start_lsn"]))))
+        self.assertTrue(F.ctx.wal.has_segment(meta["start_lsn"] and __import__("pg_arca.engine.util", fromlist=["x"]).wal_name_from_lsn(1, __import__("pg_arca.engine.util", fromlist=["x"]).lsn_to_int(meta["start_lsn"]), F.seg)))
 
     def test_02_incremental_is_smaller_and_chained(self):
         q("app", "INSERT INTO orders(note) SELECT 'after-full ' || g FROM generate_series(1,2000) g")

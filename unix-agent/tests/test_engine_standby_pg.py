@@ -39,7 +39,7 @@ def setUpModule():
     r = T.sh(os.path.join(T.BIN, "pg_ctl"), "-D", S.sdir, "-l", os.path.join(F.base, "standby.log"), "-w", "start")
     assert r.returncode == 0, r.stderr + open(os.path.join(F.base, "standby.log")).read()
     S.conn = PgConn(host=S.sock, port=S.port, user="postgres", bindir=T.BIN)
-    S.ctx = Ctx(S.conn, S.sdir, F.repo, "main", F.wal, F.scratch, process_max=4, compression="zlib", level=3, start_fast=True,
+    S.ctx = Ctx(S.conn, S.sdir, F.repo, "main", F.wal, F.scratch, process_max=4, compression="zlib", level=3, start_fast=True, seg_size=F.seg,
                 log=lambda lv, m: sys.stderr.write("[%s] %s\n" % (lv, m)) if os.environ.get("V") else None, agent_path=F.ctx.agent_path, key_file=F.key or None)
 
 
