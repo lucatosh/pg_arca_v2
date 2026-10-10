@@ -120,7 +120,7 @@ class Runtime(object):
             "backup": cas.get_stats() if cas else None,
             "system": self.system_metrics({"pgdata": inst.get("data_directory"), "repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir")}),
             "toolchain": self.report.get("toolchain"),
-            "cluster_key": inst.get("cluster_key"),
+            "cluster_key": inst.get("cluster_key") or (("patroni:%s" % self.patroni_info["scope"]) if (self.patroni_info or {}).get("scope") else None),
         }
 
 

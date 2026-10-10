@@ -191,7 +191,10 @@ class ConsoleClient(threading.Thread):
         # periodic re-discovery (also keeps Patroni/PG bindings fresh)
         now = time.time()
         full_discovery = None
-        if now - self.last_discovery > self.config.get("discovery_interval_seconds", 600):
+        # PostgreSQL not visible yet (replica still being cloned, Patroni bootstrapping, instance stopped): look again soon, not after 10 minutes
+        blind = not self.rt.instance or not self.rt.instance.get("running")
+        wait_s = min(self.config.get("discovery_interval_seconds", 600), 15 if not self.rt.instance else 30) if blind else self.config.get("discovery_interval_seconds", 600)
+        if now - self.last_discovery > wait_s:
             full_discovery = self.rt.refresh()
             self.last_discovery = now
         snapshot = self.rt.build_snapshot(self.wal, self.cas)

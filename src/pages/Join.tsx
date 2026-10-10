@@ -20,6 +20,20 @@ export function JoinBanner() {
   </>;
 }
 
+/** Inside a cluster's node table: a Patroni member that already asked to join gets an "Esamina" button instead of a plain "senza agent". Admin only (the list is admin-only). */
+export function PendingJoin({ name, children }: { name: string; children: React.ReactNode }) {
+  const q = useQuery<{ requests: any[] }>('/api/join-requests', { interval: 8000 });
+  const [sel, setSel] = useState<any>(null);
+  const list = q.data?.requests || [];
+  const mine = list.find(r => r.nodeName === name);
+  if (!mine) return <>{children}</>;
+  return <>
+    <Badge kind="info" title="L’agent di questo nodo ha già chiesto di unirsi: va approvato">chiede di unirsi</Badge>
+    <Button sm kind="primary" onClick={() => setSel(mine)}>Esamina</Button>
+    {sel ? <Review r={sel} all={list} pick={setSel} onClose={() => setSel(null)} /> : null}
+  </>;
+}
+
 function Review({ r, all, pick, onClose }: { r: any; all: any[]; pick: (r: any) => void; onClose: () => void }) {
   const [env, setEnv] = useState('prod'); const [name, setName] = useState(''); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
   const pg = (r.summary?.postgres || [])[0];

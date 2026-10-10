@@ -11,6 +11,7 @@ import { LogsTab } from './Logs';
 import { HbaTab } from './Hba';
 import { TuningTab } from './Tuning';
 import { AgentSettings } from './AgentSettings';
+import { PendingJoin } from './Join';
 import { ProtectionRibbon } from './Ribbon';
 
 export const TAB_ITEMS: { id: string; label: string; icon?: string; preview?: boolean; agent?: boolean }[] = [
@@ -92,7 +93,7 @@ function Nodes({ c }: { c: any }) {
   return <div className="stack-l">
     {nodes.some(n => n.source === 'patroni') ? <Banner kind="info" title={`${nodes.filter(n => n.source === 'patroni').length} nodi del cluster non hanno ancora l’agent`}>Patroni li vede, ma per gestirli (backup, ripristino, accessi) serve l’agent. Se uno solo dei nodi con agent si ferma, backup e ripristini non partono. Usa “Installa agent” accanto a ogni nodo: il comando è già legato a questo cluster.</Banner> : null}
     <Card title="Membri del cluster" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Nodo</th><th>Ruolo</th><th>Stato</th><th className="num">Ritardo</th><th className="num">CPU</th><th className="num">Memoria</th><th className="num">Connessioni</th></tr></thead>
-      <tbody>{nodes.map(n => <tr key={n.name}><td><span className="row gap-s"><Dot kind={n.online ? 'ok' : 'bad'} /><strong>{n.name}</strong>{n.source === 'patroni' ? <Badge kind="warn" title="Visto da Patroni: senza agent non si possono fare backup, ripristini o modifiche su questo nodo">senza agent</Badge> : null}{n.source === 'patroni' && !c.isSandbox && isAdmin ? <Button sm icon="plus" disabled={busy} onClick={() => mint(n.name)}>Installa agent</Button> : null}</span><div className="faint small">{n.host}:{n.port}</div></td>
+      <tbody>{nodes.map(n => <tr key={n.name}><td><span className="row gap-s"><Dot kind={n.online ? 'ok' : 'bad'} /><strong>{n.name}</strong>{n.source === 'patroni' ? (isAdmin && !c.isSandbox ? <PendingJoin name={n.name}><Badge kind="warn" title="Visto da Patroni: senza agent non si possono fare backup, ripristini o modifiche su questo nodo">senza agent</Badge><Button sm icon="plus" disabled={busy} onClick={() => mint(n.name)}>Installa agent</Button></PendingJoin> : <Badge kind="warn" title="Visto da Patroni: senza agent non si possono fare backup, ripristini o modifiche su questo nodo">senza agent</Badge>) : null}</span><div className="faint small">{n.host}:{n.port}</div></td>
         <td><Badge kind={n.role === 'primary' ? 'accent' : undefined}>{n.role === 'primary' ? 'Primario' : n.role === 'sync_standby' ? 'Standby sincrono' : n.role === 'standby_leader' ? 'Leader standby' : 'Replica'}</Badge></td>
         <td>{n.online ? n.state : 'offline'}</td><td className="num">{n.role === 'primary' ? '—' : bytes(n.replicationLagBytes)}</td>
         <td className="num">{n.source === 'agent' ? `${n.cpuPercent}%` : '—'}</td><td className="num">{n.source === 'agent' ? `${n.memoryPercent}%` : '—'}</td><td className="num">{n.connections}/{n.maxConnections || '—'}</td></tr>)}
@@ -103,7 +104,7 @@ function Nodes({ c }: { c: any }) {
           <td className="num">{isAdmin ? <Button sm icon="trash" onClick={() => setRevoke(n)}>Revoca</Button> : null}</td></tr>)}
           {!mine.length ? <tr><td colSpan={5} className="muted">Nessun agent.</td></tr> : null}</tbody></table></div></Card> : null}
     {!c.isSandbox && c.source !== 'direct' ? <AgentSettings clusterId={c.id} nodes={mine.map(n => ({ id: n.id, name: n.name, online: n.online }))} /> : null}
-    {tok ? <Card title={tok.node ? `Installa l’agent su ${tok.node}` : 'Nuovo nodo'}><div className="stack"><p>Esegui come root sul nuovo server. Il token vale per un nodo e scade tra un’ora.</p><CopyBlock text={tok.installCommand} /><Button onClick={() => setTok(null)}>Chiudi</Button></div></Card> : null}
+    {tok ? <Modal title={tok.node ? `Installa l’agent su ${tok.node}` : 'Aggiungi un nodo'} onClose={() => setTok(null)} footer={<Button onClick={() => setTok(null)}>Chiudi</Button>}><div className="stack"><p>Esegui questo comando come root sul server{tok.node ? ` ${tok.node}` : ''}. Il token vale per un solo nodo e scade tra un’ora.</p><CopyBlock text={tok.installCommand} /><p className="faint small">Alternativa senza token: installa l’agent indicando solo l’indirizzo della console. Il server si annuncia e lo approvi dal banner “Nuovo server rilevato”.</p></div></Modal> : null}
     {revoke ? <Confirm danger title={`Revocare l’agent di ${revoke.name}?`} confirmLabel="Revoca" busy={busy} onClose={() => setRevoke(null)} onConfirm={doRevoke}>
       <p>Il segreto dell’agent diventa subito non valido e le operazioni in coda per questo nodo vengono annullate. PostgreSQL sul nodo non viene toccato; per ricollegarlo serve un nuovo token.</p></Confirm> : null}
   </div>;
