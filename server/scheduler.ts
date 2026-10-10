@@ -95,8 +95,32 @@ export async function hbaExpiryTick(store: Store, now = Date.now()): Promise<str
   return submitted;
 }
 
+/**
+ * Backups taken FROM A STANDBY end by waiting for the last WAL segment of the backup to be archived. That segment belongs to the PRIMARY, which only closes
+ * it on its own when it has more WAL to write: on a quiet server the standby would wait until the timeout and the backup would fail. Only the primary can
+ * switch the segment, and only the console knows both nodes, so it does it: while a running backup_run on a standby is in its 'wal' phase, ask the primary's
+ * agent for a WAL switch (one per 20 s window, idempotent per window).
+ */
+export async function standbyKickTick(store: Store, now = Date.now()): Promise<string[]> {
+  const out: string[] = [];
+  const st = store.peek();
+  for (const o of st.operations as any[]) {
+    if (o.type !== 'backup_run' || o.status !== 'running' || o.progress?.phase !== 'wal') continue;
+    const node: NodeRecord | undefined = st.nodes[o.nodeId];
+    if (!node || node.snapshot?.postgres?.is_in_recovery !== true) continue;
+    const primary = Object.values(st.nodes).find(n => n.clusterId === o.clusterId && online(n, now) && n.snapshot?.postgres?.is_in_recovery === false);
+    if (!primary) continue;
+    const key = `standbykick:${o.id}:${Math.floor(now / 20_000)}`;
+    const r = await ops.submit(store, { type: 'wal_switch', clusterId: o.clusterId, nodeId: primary.id, params: {}, idempotencyKey: key, createdBy: 'scheduler', ttlSeconds: 120 });
+    if (r.created) out.push(key);
+  }
+  return out;
+}
+
 export function startScheduler(store: Store, everyMs = 30_000) {
   const t = setInterval(() => { schedulerTick(store).catch(e => console.error('[scheduler]', e.message)); hbaExpiryTick(store).catch(e => console.error('[hba-expiry]', e.message)); }, everyMs);
+  const k = setInterval(() => { standbyKickTick(store).catch(e => console.error('[standby-kick]', e.message)); }, 10_000);
+  k.unref?.();
   t.unref?.();
-  return () => clearInterval(t);
+  return () => { clearInterval(t); clearInterval(k); };
 }

@@ -72,7 +72,7 @@ function ArchiveSetup({ c, refresh }: { c: any; refresh: () => void }) {
 }
 
 function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; running: Op[]; refresh: () => void }) {
-  const [type, setType] = useState<'full' | 'diff' | 'incr'>(hasFull ? 'incr' : 'full'); const [fast, setFast] = useState(true);
+  const [type, setType] = useState<'full' | 'diff' | 'incr'>(hasFull ? 'incr' : 'full'); const [fast, setFast] = useState(true); const [from, setFrom] = useState(''); const reg = useQuery<{ nodes: any[] }>('/api/nodes', { interval: 10000 }); const mine = (reg.data?.nodes || []).filter(n => n.clusterId === c.id && n.online);
   useEffect(() => { if (!hasFull) setType('full'); }, [hasFull]);
   const r = useOpRunner(c.id, () => { refresh(); revalidate(`/api/operations?clusterId=${encodeURIComponent(c.id)}`); });
   const other = running.filter(o => o.id !== r.op?.id && o.type !== 'backup_info');
@@ -82,7 +82,8 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
   return <Card title="Esegui un backup">
     <div className="stack">
       <div className="row wrap"><div className="seg" role="group" aria-label="Tipo di backup">{(['full', 'diff', 'incr'] as const).map(t => <button key={t} aria-pressed={type === t} disabled={active || (t !== 'full' && !hasFull)} onClick={() => { setType(t); r.reset(); }}>{TYPE_LABEL[t]}</button>)}</div>
-        <Button kind="primary" icon="play" busy={r.busy} disabled={active} onClick={() => r.run('backup_run', { type, start_fast: fast })}>Avvia backup</Button><span className="small muted">{hint}</span></div>
+        <Button kind="primary" icon="play" busy={r.busy} disabled={active} onClick={() => r.run('backup_run', { type, start_fast: fast }, { nodeId: from || undefined })}>Avvia backup</Button><span className="small muted">{hint}</span></div>
+      {mine.length > 1 ? <label className="row small" style={{ gap: 8 }}>Esegui da <select className="input" style={{ width: 'auto' }} value={from} onChange={e => setFrom(e.target.value)}><option value="">automatico (primario)</option>{mine.map(n => <option key={n.id} value={n.id}>{n.name}{n.role ? ` — ${n.role}` : ''}</option>)}</select><span className="muted">— da una replica il primario non viene caricato; la console gli chiede da sola di chiudere il segmento WAL.</span></label> : null}
       <label className="row small" style={{ gap: 8 }}><input type="checkbox" checked={fast} onChange={e => setFast(e.target.checked)} /> Checkpoint immediato <span className="muted">— il backup parte subito; se spento PostgreSQL distribuisce il checkpoint e l’avvio può richiedere alcuni minuti (meno I/O).</span></label>
       {!hasFull ? <p className="small muted">Il primo backup deve essere completo.</p> : null}
       {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} />{r.op?.status === 'succeeded' ? <Banner kind="ok" title={`Backup ${r.op.result?.set} completato`}>{bytes(r.op.result?.bytes_logical)} letti, {bytes(r.op.result?.bytes_written)} scritti nel repository in {dur(r.op.result?.duration_sec)}{r.op.result?.chunks_dedup ? `; ${num(r.op.result.chunks_dedup)} blocchi già presenti (deduplica)` : ''}.</Banner> : null}</> : null}
