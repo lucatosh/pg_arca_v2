@@ -69,7 +69,7 @@ def setUpModule():
     if os.environ.get("PG_ARCA_TEST_ENCRYPT"):                       # whole suite against an encrypted repository + encrypted WAL archive
         from pg_arca.engine import crypt
         F.key = crypt.generate_key(os.path.join(base, "repo.key"))
-    F.repo = os.path.join(base, "repo")
+    F.repo = os.environ.get("PG_ARCA_TEST_REPO") or os.path.join(base, "repo")
     F.scratch = os.path.join(base, "scratch")
     F.port = 55000 + (os.getpid() % 900)
     F.seg = int(os.environ.get("PG_ARCA_TEST_WALSEG", "16")) * 1024 * 1024                      # non-default WAL segment size (initdb --wal-segsize): 1..1024 MB

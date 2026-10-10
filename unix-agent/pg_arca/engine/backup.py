@@ -393,9 +393,25 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                 repo.write_meta(meta)
             except Exception:
                 pass
+        if isinstance(e, OSError) and not isinstance(e, EngineError):
+            raise _storage_error(e, ctx) from e
         raise
     finally:
         sess.close()
+
+
+def _storage_error(e, ctx):
+    """A raw OSError from the repository volume becomes an actionable error instead of 'OSError: [Errno 28]'."""
+    import errno as _e
+    where = ctx.repo.path
+    if e.errno in (_e.ENOSPC, getattr(_e, "EDQUOT", -1)):
+        return EngineError("PGA-REPO-060", "the backup repository is full (%s): %s" % (where, e.strerror or e),
+                           "free space or enlarge the volume, or run 'expire' to apply retention; the failed set is discarded and chunks already stored are reused by the next attempt")
+    if e.errno == _e.EROFS:
+        return EngineError("PGA-REPO-061", "the backup repository is mounted read-only (%s)" % where, "check the mount (a filesystem error usually remounts it read-only)")
+    if e.errno in (_e.EACCES, _e.EPERM):
+        return EngineError("PGA-REPO-003", "no permission to write in the backup repository (%s): %s" % (where, e.strerror or e), "check ownership: the agent user must own the repository")
+    return EngineError("PGA-REPO-062", "I/O error on the backup repository (%s): %s" % (where, e), "check the storage (network mount, disk health, permissions)")
 
 
 def _wal_seg_size(sess):

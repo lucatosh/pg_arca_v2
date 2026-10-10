@@ -51,6 +51,15 @@ def main(argv):
         except WalArchiveError as e:
             sys.stderr.write("pg_arca archive FAILED: %s\n" % e)
             return 1
+        except OSError as e:
+            import errno
+            if e.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", -1)):
+                sys.stderr.write("pg_arca archive FAILED: PGA-WAL-098 the WAL archive volume is full (%s): free space or enlarge it; PostgreSQL keeps the WAL in pg_wal until archiving works again, so its own disk fills up too\n" % d)
+            elif e.errno == errno.EROFS:
+                sys.stderr.write("pg_arca archive FAILED: PGA-WAL-097 the WAL archive volume is mounted read-only (%s)\n" % d)
+            else:
+                sys.stderr.write("pg_arca archive FAILED: PGA-WAL-099 %s\n" % e)
+            return 1
         except Exception as e:
             sys.stderr.write("pg_arca archive FAILED: PGA-WAL-099 %s\n" % e)
             return 1
