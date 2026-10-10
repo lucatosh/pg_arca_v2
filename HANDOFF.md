@@ -56,3 +56,8 @@ Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggi
 
 ## Lab Patroni 3 nodi (tools/lab)
 Script pronti (setup-host.sh, lab.sh, docker-compose, Dockerfile, haproxy) per CentOS: etcd×3 + Patroni/PG16×3 + agent installato dal vero install-agent.sh (nuovo `PG_ARCA_NO_SERVICE` / auto-skip senza systemd) + HAProxy. **Mai eseguiti**: il sandbox non ha il daemon Docker; verificati solo sintassi bash, YAML e il ramo no-systemd dell'installer. Vedi tools/lab/README.md.
+
+## Revisione del 10/10 (lab Patroni + revisione indipendente)
+- Elenco problemi/correzioni e **backlog non fatto**: `tools/lab/NOTES.md`. Compatibilità e limiti noti: `COMPAT.md` (K8s con operatori e DB gestiti NON supportati).
+- Nuovo: scheda «Percorsi e rilevamento» (operazioni `agent_config_get/set`, `agent.local.json`), nodi Patroni senza agent visibili + avviso di salute, `lab.sh agent-update/agent-reset`.
+- Test eseguiti e verdi in questa sessione: server (12 suite), UI (hbalogic, tuning, e2e browser), agent unit (wal, crypto, discovery, hba, overrides, restore_safety, pgdata_resolve, agent_flow, e2e_console), PG16 (engine anche cifrato, hba_pg). **Mai eseguito su Docker/CentOS/Ubuntu reali**: il lab Patroni è provato solo dall'utente in VM, gli esiti sono da raccogliere.
