@@ -124,6 +124,22 @@ La differenza reale oggi è funzionale (granularità del restore, catalogo, dedu
 | Serve sempre un PostgreSQL per leggere le righe | tipi custom, visibilità, multixact | decoder diretto dei chunk: ricerca, dietro flag, validato contro il restore classico prima di essere offerto |
 | Restore oggetto = una tabella, senza dipendenze | FK, viste, sequenze, trigger non vengono ricreati | restore oggetto v2: calcolo delle dipendenze, ricreazione, modalità schema (in lavorazione: `engine/objects.py`, non ancora collegato) |
 
+## 7b. Progetto: restore di oggetti con dipendenze e di schemi (v2)
+
+Stato: **progetto**. `unix-agent/pg_arca/engine/objects.py` contiene l'analisi delle dipendenze e la costruzione dello stage; non è ancora collegato alle operazioni né coperto da test sul database del lab.
+
+Problema del restore tabella v1: ripristina *la sola tabella*. Chiavi esterne che puntano alla tabella, viste, sequenze, trigger, tipi, permessi e funzioni vengono dimenticati o restano agganciati alla vecchia tabella rinominata.
+
+Principi del v2:
+1. **Si ripristina una selezione**, non una tabella: una o più tabelle, uno o più schemi, oppure uno schema intero. La selezione si espande nella sua **chiusura di dipendenze**, calcolata sull'istanza recuperata (dove il catalogo è quello al target): tabelle referenziate dalle FK, tipi (enum, domini, composti), funzioni usate da default/trigger/vincoli, sequenze possedute, viste e viste materializzate che dipendono dagli oggetti scelti, estensioni, ruoli e permessi (ACL).
+2. **Mai distruttivo, mai a metà**: tutto viene costruito prima in un database di quarantena (`pgarca_stage_*`) con i metadati (`pgarca_meta`); la promozione avviene in una transazione, con piano visibile (dry-run) prima di toccare nulla.
+3. **Modalità di promozione**: `as_new` (accanto all'originale, suffisso), `replace` (scambio atomico: l'originale resta rinominato, le FK in ingresso e le viste dipendenti vengono *riagganciate* alla tabella nuova), `in_place` (solo righe, con la copia di sicurezza già presente in `apply_rows`).
+4. **Modalità schema**: `create` (lo schema non esiste: si ricrea con tutto il contenuto), `missing_only` (si riportano solo gli oggetti che mancano, senza toccare gli altri), `as_new` (schema accanto, con altro nome), `replace` (scambio dell'intero schema con rinomina dell'originale, con riagganciamento delle dipendenze da altri schemi).
+5. **Le FK si filtrano**: quelle verso tabelle fuori dalla selezione si ricreano solo se la tabella di destinazione esiste nel database vivo e le righe sono coerenti (altrimenti si segnala e si crea `NOT VALID`).
+6. **Ogni passaggio è verificato**: conteggi e impronta delle righe, vincoli, indici e sequenze (posizione corrente) confrontati con lo stage.
+
+Scenari di accettazione (da eseguire sul lab con `arca_restore_lab`, vedi `tools/lab/scenario-restore.py`): database cancellato, schema cancellato con CASCADE, tabella cancellata, righe cancellate, tabella con dipendenze in ingresso (`tabledeps`: oggi **fallisce di proposito**, è il test che il v2 deve far passare).
+
 ## 8. Registro delle modifiche
 
 | Data | Modifica | Provato |
