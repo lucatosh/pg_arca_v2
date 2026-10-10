@@ -19,7 +19,7 @@ if a and a[0] == "-":
     s, d = call("GET", a[1]); print(json.dumps(d, indent=1)[:int(os.environ.get("MAXC", "6000"))]); sys.exit(0)
 if a and a[0] == "last":      # op.py last [N]  -> the latest operations of the console, one line each
     s, d = call("GET", "/api/operations"); ops = d.get("operations", d)
-    for o in ops[-int(a[1] if len(a) > 1 else 5):]: print(o["id"][-6:], o["type"], o["status"], o.get("updatedAt", "")[11:19], str(o.get("error") or "")[:200])
+    for o in ops[-int(a[1] if len(a) > 1 else 5):]: print(o["id"][-6:], o["type"], o["status"], o.get("createdAt", "")[11:19], o.get("updatedAt", "")[11:19], str(o.get("error") or "")[:200])
     sys.exit(0)
 if a and a[0] == "show":      # op.py show <id-suffix> -> full record of an operation
     s, d = call("GET", "/api/operations"); ops = d.get("operations", d)
