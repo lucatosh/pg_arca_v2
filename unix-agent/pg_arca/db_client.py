@@ -29,7 +29,7 @@ SELECT json_build_object(
   'is_in_recovery', pg_is_in_recovery(),
   'role', CASE WHEN pg_is_in_recovery() THEN 'standby' ELSE 'primary' END,
   'current_lsn', CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn()::text ELSE pg_current_wal_lsn()::text END,
-  'timeline', (SELECT timeline_id FROM pg_control_checkpoint()),
+  'timeline', (CASE WHEN pg_is_in_recovery() THEN (SELECT timeline_id FROM pg_control_checkpoint()) ELSE ('x' || substr(pg_walfile_name(pg_current_wal_insert_lsn()), 1, 8))::bit(32)::int END),
   'system_identifier', (SELECT system_identifier::text FROM pg_control_system()),
   'port', current_setting('port')::int,
   'databases', (SELECT COALESCE(json_agg(json_build_object('oid', oid::int, 'name', datname, 'size', pg_database_size(oid)) ORDER BY datname), '[]'::json)

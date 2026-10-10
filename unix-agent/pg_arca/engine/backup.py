@@ -142,6 +142,18 @@ def _start_backup(ctx, sess, start_sql, fast_on, progress, cancel):
     return box.get("lsn")
 
 
+def current_timeline(sess, in_recovery):
+    """The timeline new WAL is being written on RIGHT NOW. pg_control_checkpoint() lags after a promotion (it only moves when the first checkpoint of the new timeline
+    completes), so a backup started just after a failover would be labelled with the OLD timeline: wrong WAL names to wait for and an incremental chained onto a
+    parent from another timeline. On a primary the WAL insert position says it exactly; a standby only has the control file."""
+    if not in_recovery:
+        try:
+            return int(sess.scalar("SELECT ('x' || substr(pg_walfile_name(pg_current_wal_insert_lsn()), 1, 8))::bit(32)::int"))
+        except EngineError:
+            pass
+    return int(sess.scalar("SELECT timeline_id FROM pg_control_checkpoint()"))
+
+
 def _stop_backup(sess):
     if sess.version_num >= 150000:
         fn = "pg_backup_stop(false)"
@@ -182,8 +194,8 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
     started_backup = False
     try:
         sysid = sess.scalar("SELECT system_identifier FROM pg_control_system()")
-        tli = int(sess.scalar("SELECT timeline_id FROM pg_control_checkpoint()"))
         in_recovery = sess.scalar("SELECT pg_is_in_recovery()") == "t"
+        tli = current_timeline(sess, in_recovery)
         data_dir = sess.scalar("SHOW data_directory")
         if os.path.realpath(data_dir) != ctx.pgdata:
             raise EngineError("PGA-CFG-015", "connected instance uses data_directory %s but the agent is configured for %s" % (data_dir, ctx.pgdata),
@@ -338,7 +350,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             progress({"phase": "finalize", "set": set_id})
         stop_lsn, labelfile, spcmap = _stop_backup(sess)
         started_backup = False
-        tli_stop = int(sess.scalar("SELECT timeline_id FROM pg_control_checkpoint()"))
+        tli_stop = current_timeline(sess, in_recovery)
         if tli_stop != tli:
             raise EngineError("PGA-CLU-014", "timeline changed during the backup (%d -> %d): failover happened" % (tli, tli_stop), "retry; copied chunks are reused")
         meta["stop_lsn"] = stop_lsn
