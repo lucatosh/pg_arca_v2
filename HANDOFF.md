@@ -113,3 +113,11 @@ Da fare appena la VM è raggiungibile: `git pull` + `tools/lab/deploy.sh`; legge
 
 ### Compatibilità versioni PostgreSQL (10/10 notte)
 Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unico: `unix-agent/pg_arca/pgcompat.py` (`Profile`); ogni differenza fra versioni va aggiunta LÌ, mai con `version_num >= N` sparsi. Verificata (VERIFIED) = solo 16. Prossimo passo sulla VM: `sg docker -c "tools/lab/matrix.sh"` e, solo per le major con PASS, aggiungerle a `VERIFIED`. Aperto: le major 10/11 (recovery.conf) non hanno mai girato su un server reale; PG 12 ha ancora 1 failure + 7 errori da leggere (ora `matrix.sh` salva il log completo).
+
+### Interfaccia rifatta, dock attività, log su richiesta (10/10 notte)
+- Nuovo tema e navigazione: barra laterale a gruppi e compressibile, filtro cluster se > 6, briciole di pane; le 13 schede del cluster in 4 aree (`src/tabs.ts`, barra sticky). Il test UI (`tests/ui/e2e.cjs`) usa l'helper `tab(area, pagina)`.
+- **Dock attività** (`src/Dock.tsx`, Ctrl J, anche dalla palette): in corso / terminate (1 h), Annulla, Apri, Log, toast d'esito per le proprie operazioni. Feed leggero `GET /api/operations?slim=1&recent=<s>`; ogni scrittura su `/operations` o `/approvals` lo aggiorna subito (evento `arca:ops`).
+- **Log su richiesta** (decisione: NON tenere sempre il tail con molti cluster). Console: `server/logring.ts` (buffer per cluster + policy, senza dipendenze) e `server/logs.ts` (WebSocket a pacchetti 250 ms). Agent: `LogShipper.mode` ('alerts' di default, 'full' quando la console risponde `log_mode: full` all'heartbeat/logs; 60 s di coda dopo l'ultimo spettatore). Un agent vecchio che ignora `log_mode` continua a spedire tutto: funziona, solo meno efficiente.
+- Test nuovi: `tests/server/logs.test.ts`, `tests/server/logs_ws.test.ts` (richiede il pacchetto `ws`; in locale `ln -s /opt/npm-tools/node_modules/ws node_modules/ws`), `unix-agent/tests/test_logshipper.py`.
+- Da fare sulla VM: `tsc && vite build` reale; provare il log su richiesta con più cluster/agent veri (latenza di attivazione = fino a un ciclo di heartbeat, ~8 s) e misurare il carico; verificare i colori/contrasti nei temi su schermi reali.
+

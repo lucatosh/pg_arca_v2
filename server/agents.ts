@@ -6,6 +6,7 @@
  *   agent --HTTPS POST--> /api/agent/ops/:id/report
  * Identity: one-time enrollment token -> per-node secret (only its sha256 is stored).
  */
+import { logModeFor } from './logring';
 import { validatePolicy, DEFAULT_POLICY, resolvePolicy } from './policies';
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
@@ -169,7 +170,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       await new Promise(r => setTimeout(r, 250));
       if (store.peek().operations.some(o => o.nodeId === node.id && o.status === 'queued')) todo = await ops.lease(store, node.id, max);
     }
-    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, ops: todo.map(o => ({ id: o.id, type: o.type, params: o.params, attempt: o.attempts, cluster_id: o.clusterId })) });
+    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, log_mode: logModeFor(node.clusterId), ops: todo.map(o => ({ id: o.id, type: o.type, params: o.params, attempt: o.attempts, cluster_id: o.clusterId })) });
   });
 
   // ---- log ingest (authenticated, size-bounded) -----------------------------
@@ -180,7 +181,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
     if (!logs) return res.status(400).json({ error: 'logs_array_required' });
     const cl = store.peek().clusters.find((c: any) => c.id === node.clusterId);
     hooks.onLogs?.(node, cl?.name || '', logs);
-    res.json({ ok: true, ingested: logs.length });
+    res.json({ ok: true, ingested: logs.length, log_mode: logModeFor(node.clusterId) });
   });
 
   app.post('/api/agent/ops/:id/report', async (req: Request, res: Response) => {
@@ -377,10 +378,19 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
   });
 
   app.get('/api/operations', (req: Request, res: Response) => {
-    const { clusterId, status } = req.query as any;
+    const { clusterId, status, slim, recent } = req.query as any;
     let list = store.peek().operations;
     if (clusterId) list = list.filter(o => o.clusterId === clusterId);
     if (status) list = list.filter(o => o.status === status);
+    if (slim) {
+      // activity dock / badges: only what is running plus what finished recently, without results, history or parameters (those can be large and are fetched on demand)
+      const since = Date.now() - Math.min(Math.max(parseInt(recent, 10) || 3600, 60), 86400) * 1000;
+      const keep = list.filter(o => !isTerminalStatus(o.status) || Date.parse(o.updatedAt || o.createdAt) >= since);
+      return res.json({ operations: keep.slice(-60).reverse().map((o: any) => ({
+        id: o.id, type: o.type, status: o.status, clusterId: o.clusterId, nodeId: o.nodeId, createdAt: o.createdAt, updatedAt: o.updatedAt, createdBy: o.createdBy,
+        cancelRequested: !!o.cancelRequested, progress: o.progress || null, subtype: o.params && typeof o.params.type === 'string' ? o.params.type : undefined,
+        error: o.error ? String(o.error).slice(0, 400) : undefined })) });
+    }
     res.json({ operations: list.slice(-200).reverse() });
   });
 

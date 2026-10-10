@@ -1,26 +1,21 @@
-import React, { useState } from 'react';
+import React, { Suspense, lazy, useState } from 'react';
 import { api, get } from '../api';
 import { Modal, Badge, Banner, Button, Card, Confirm, Dot, Empty, Field, Icon, Skeleton, Tabs, bytes, dt, ago, num, Preview, CopyBlock } from '../ui';
 import { Op, revalidate, toast, useOpRunner, useQuery, isTerminal, useRole } from '../hooks';
 import { go } from '../router';
 import { statusKind } from '../App';
 import { OP_LABEL, OpPanel, Result, statusBadge } from './shared';
-import { BackupTab } from './Backup';
-import { RestoreTab } from './Restore';
-import { LogsTab } from './Logs';
-import { HbaTab } from './Hba';
-import { TuningTab } from './Tuning';
+const BackupTab = lazy(() => import('./Backup').then(m => ({ default: m.BackupTab })));
+const RestoreTab = lazy(() => import('./Restore').then(m => ({ default: m.RestoreTab })));
+const LogsTab = lazy(() => import('./Logs').then(m => ({ default: m.LogsTab })));
+const HbaTab = lazy(() => import('./Hba').then(m => ({ default: m.HbaTab })));
+const TuningTab = lazy(() => import('./Tuning').then(m => ({ default: m.TuningTab })));
 import { AgentSettings } from './AgentSettings';
 import { PendingJoin } from './Join';
 import { NodePanel } from './NodePanel';
 import { ProtectionRibbon } from './Ribbon';
+import { TAB_ITEMS, TAB_GROUPS, groupOf } from '../tabs';
 
-export const TAB_ITEMS: { id: string; label: string; icon?: string; preview?: boolean; agent?: boolean }[] = [
-  { id: 'overview', label: 'Panoramica', icon: 'layers' }, { id: 'nodes', label: 'Nodi', icon: 'server' }, { id: 'ha', label: 'Alta affidabilità', icon: 'swap' },
-  { id: 'params', label: 'Parametri', icon: 'settings' }, { id: 'backup', label: 'Backup', icon: 'shield' }, { id: 'restore', label: 'Ripristino', icon: 'restore' },
-  { id: 'operations', label: 'Operazioni', icon: 'list' }, { id: 'logs', label: 'Log', icon: 'logs' },
-  { id: 'hba', label: 'Accessi (HBA)', icon: 'lock' }, { id: 'ldap', label: 'LDAP / AD', preview: true }, { id: 'rbac', label: 'Ruoli (RBAC)', preview: true }, { id: 'tuning', label: 'Tuning', icon: 'zap' }, { id: 'templates', label: 'Modelli', preview: true },
-];
 const PREVIEW_TEXT: Record<string, string> = {
   ldap: 'Sincronizzazione di utenti e gruppi da LDAP / Active Directory verso i ruoli PostgreSQL. Non ancora disponibile.',
   rbac: 'Ruoli e permessi della console. Oggi esiste un solo amministratore.',
@@ -30,7 +25,7 @@ const PREVIEW_TEXT: Record<string, string> = {
 export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const q = useQuery<{ cluster: any }>(`/api/clusters/${encodeURIComponent(id)}`, { interval: 5000 });
   const [detach, setDetach] = useState(false); const [busy, setBusy] = useState(false); const [spin, setSpin] = useState(false);
-  const c = q.data?.cluster; const cur = TAB_ITEMS.some(t => t.id === tab) ? tab! : 'overview';
+  const c = q.data?.cluster; const cur = TAB_ITEMS.some(t => t.id === tab) ? tab! : 'overview'; const grp = groupOf(cur);
   if (q.error?.status === 404) return <Empty icon="db" title="Cluster non trovato" action={<Button onClick={() => go('')}>Torna all’elenco</Button>}>Potrebbe essere stato scollegato.</Empty>;
   if (!c) return <div className="stack"><Skeleton h={30} w={260} /><Skeleton h={120} /></div>;
   const doDetach = async () => {
@@ -48,7 +43,11 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
       <Button icon="trash" onClick={() => setDetach(true)}>Scollega</Button></div>
     {c.isSandbox ? <Banner kind="info" title="Cluster demo">Dati di esempio: le operazioni non vengono eseguite. Puoi eliminarlo quando hai collegato un cluster reale.</Banner> : null}
     {agentic ? <ProtectionRibbon c={c} /> : null}
-    <Tabs value={cur} onChange={t => go(`c/${encodeURIComponent(id)}/${t}`)} items={TAB_ITEMS.map(t => ({ id: t.id, label: t.label, icon: t.icon, preview: t.preview }))} />
+    <div className="clusternav">
+      <div className="gnav" role="tablist" aria-label="Aree del cluster">{TAB_GROUPS.map(g => <button key={g.id} role="tab" aria-selected={grp.id === g.id} onClick={() => go(`c/${encodeURIComponent(id)}/${grp.id === g.id ? cur : g.tabs[0]}`)}><Icon n={g.icon} />{g.label}</button>)}</div>
+      <Tabs value={cur} onChange={t => go(`c/${encodeURIComponent(id)}/${t}`)} items={grp.tabs.map(tid => TAB_ITEMS.find(t => t.id === tid)!).map(t => ({ id: t.id, label: t.label, icon: t.icon, preview: t.preview }))} />
+    </div>
+    <Suspense fallback={<div className="stack"><Skeleton h={22} w={220} /><Skeleton h={160} /></div>}>
     {cur === 'overview' && <Overview c={c} agentic={agentic} />}
     {cur === 'nodes' && <Nodes c={c} />}
     {cur === 'ha' && <HA c={c} />}
@@ -59,6 +58,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
     {cur === 'logs' && <LogsTab c={c} />}
     {cur === 'tuning' && <TuningTab c={c} />}
     {cur === 'hba' && <HbaTab c={c} />}
+    </Suspense>
     {PREVIEW_TEXT[cur] ? <Preview title={TAB_ITEMS.find(t => t.id === cur)!.label}>{PREVIEW_TEXT[cur]}</Preview> : null}
     {detach ? <Confirm danger title={`Scollegare ${c.name}?`} confirmLabel="Scollega" requireText={c.isSandbox ? undefined : c.name} busy={busy} onClose={() => setDetach(false)} onConfirm={doDetach}>
       <p>La console smette di gestire questo cluster, revoca gli agent e annulla le operazioni in coda. <strong>I dati e i backup sul server non vengono toccati.</strong></p></Confirm> : null}

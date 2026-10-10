@@ -2,17 +2,28 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { api, ApiError, get, uid } from './api';
 
 /* ---------------- tiny stale-while-revalidate cache (deduped, pauses when the tab is hidden) ---------------- */
-type Entry = { data?: any; error?: any; at: number; inflight?: Promise<any>; subs: Set<() => void>; version: number };
+type Entry = { data?: any; error?: any; at: number; inflight?: Promise<any>; subs: Set<() => void>; version: number; bumped?: number };
 const cache = new Map<string, Entry>();
 const entry = (k: string): Entry => { let e = cache.get(k); if (!e) { e = { at: 0, subs: new Set(), version: 0 }; cache.set(k, e); } return e; };
 
 export function revalidate(key: string): Promise<any> {
   const e = entry(key);
   if (e.inflight) return e.inflight;
-  e.inflight = get(key).then(d => { e.data = d; e.error = undefined; e.at = Date.now(); }, err => { e.error = err; })
-    .finally(() => { e.inflight = undefined; e.version++; e.subs.forEach(f => f()); });
+  e.inflight = get(key).then(d => {
+    // Polling returns the same payload most of the time: keep the old object (stable identity for memo) and do not wake any subscriber.
+    let same = false;
+    if (e.data !== undefined && !e.error) { try { same = JSON.stringify(d) === JSON.stringify(e.data); } catch { same = false; } }
+    const now = Date.now(); const hadError = !!e.error;
+    if (!same) e.data = d;
+    if (!same || hadError || now - (e.bumped || 0) > 30000) { e.version++; e.bumped = now; }       // unchanged data still re-renders every 30 s so "5 min fa" labels stay fresh
+    e.error = undefined; e.at = now;
+  }, err => { e.error = err; e.version++; })
+    .finally(() => { e.inflight = undefined; e.subs.forEach(f => f()); });
   return e.inflight;
 }
+/** The activity dock and the operation lists must notice a new or finished operation immediately, not at the next poll. */
+export const OPS_SLIM_KEY = '/api/operations?slim=1&recent=3600';
+export function revalidateOps() { return Promise.all([revalidate(OPS_SLIM_KEY), revalidate('/api/operations')]); }
 export function mutateCache(key: string, fn: (d: any) => any) { const e = entry(key); if (e.data !== undefined) { e.data = fn(e.data); e.version++; e.subs.forEach(f => f()); } }
 
 export function useQuery<T = any>(key: string | null, opts: { interval?: number } = {}) {
@@ -61,7 +72,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
       const r = await get<{ operation: Op }>(`/api/operations/${id}`);
       if (!alive.current) return;
       setOp(r.operation);
-      if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; revalidate('/api/operations'); onDone?.(r.operation); return; }
+      if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; revalidateOps(); onDone?.(r.operation); return; }
     } catch (e: any) { if (!alive.current) return; setError(e.message); }
     timer.current = setTimeout(() => poll(id), 1000);
   }, [onDone]);
@@ -73,7 +84,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
     try {
       const r = await api<{ operation: Op; approval?: any }>('POST', `/api/clusters/${clusterId}/operations`, { type, params, nodeId: extra.nodeId }, { key: keyRef.current.key });
       if (r.approval) { setBusy(false); keyRef.current = null; revalidate('/api/approvals'); toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); return null; }
-      setOp(r.operation); revalidate('/api/operations');
+      setOp(r.operation); revalidateOps();
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); } else poll(r.operation.id);
       return r.operation;
     } catch (e: any) { setBusy(false); setError(e.body?.message || e.message); return null; }

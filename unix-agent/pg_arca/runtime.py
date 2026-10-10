@@ -1,5 +1,6 @@
 """Resolves what this agent manages (PostgreSQL instance, Patroni) from config + real discovery, and builds telemetry."""
 
+import collections
 import glob
 import logging
 import os
@@ -175,10 +176,27 @@ LEVEL_RE = re.compile(r"\b(DEBUG\d?|INFO|NOTICE|LOG|WARNING|WARN|ERROR|FATAL|PAN
 class LogShipper(object):
     """Tails real log files and ships new lines (never replays history on start). Offsets tracked per inode."""
 
+    ALERT_LEVELS = ("WARN", "ERROR", "FATAL")
+    BACKLOG_LINES = 200           # recent non-alert lines kept locally while nobody watches (shipped when a viewer opens the log)
+    PENDING_MAX = 5000            # bound if the console is slow or unreachable
+
     def __init__(self, config, runtime):
         self.config = config
         self.rt = runtime
         self.pos = {}
+        self.mode = "alerts"      # the console says 'full' only while someone is looking at this cluster's logs; with many clusters this keeps traffic ~0
+        self.backlog = collections.deque(maxlen=self.BACKLOG_LINES)
+        self.pending = collections.deque(maxlen=self.PENDING_MAX)
+
+    def set_mode(self, mode):
+        if mode not in ("full", "alerts") or mode == self.mode:
+            return
+        if mode == "full" and self.backlog:
+            merged = sorted(list(self.backlog) + list(self.pending), key=lambda e: e["timestamp"])      # stable: same-second lines keep their order
+            self.pending.clear()
+            self.pending.extend(merged)
+            self.backlog.clear()
+        self.mode = mode
 
     def _files(self):
         files = list(self.config.get("log_files") or [])
@@ -214,7 +232,8 @@ class LogShipper(object):
         return "patroni" if "patroni" in path else ("agent" if "pgarca" in path or "pg-arca" in path else "postgres")
 
     def collect(self, limit=200):
-        out = []
+        """Read what the files gained since last time and route every line: alerts (WARN+) always go out, the rest only in 'full' mode
+        (otherwise it waits in a small local backlog). Never loses lines beyond `limit`: they stay pending for the next call."""
         for path in self._files():
             try:
                 st = os.stat(path)
@@ -241,6 +260,8 @@ class LogShipper(object):
                     self.pos[key] = f.tell()
             except OSError:
                 continue
+            svc = self._service(path)
+            ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             for line in chunk.splitlines():
                 if not line.strip():
                     continue
@@ -248,8 +269,13 @@ class LogShipper(object):
                 lv = (m.group(1) if m else "INFO").upper()
                 lv = {"WARNING": "WARN", "LOG": "INFO", "NOTICE": "INFO", "PANIC": "FATAL", "CRITICAL": "FATAL"}.get(lv, lv)
                 lv = "DEBUG" if lv.startswith("DEBUG") else lv
-                out.append({"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "service": self._service(path),
-                            "level": lv, "message": line[:1000], "raw": line[:2000]})
-                if len(out) >= limit:
-                    return out
+                entry = {"timestamp": ts, "service": svc, "level": lv, "message": line[:1000], "raw": line[:2000]}
+                if self.mode == "full" or lv in self.ALERT_LEVELS:
+                    self.pending.append(entry)
+                else:
+                    self.backlog.append(entry)
+        out = []
+        while self.pending and len(out) < limit:
+            out.append(self.pending.popleft())
+        return out
         return out

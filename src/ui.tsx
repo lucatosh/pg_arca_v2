@@ -18,6 +18,7 @@ const P: Record<string, string> = {
   swap: 'M7 4l-4 4 4 4M3 8h14M17 20l4-4-4-4M21 16H7', search: 'M11 18a7 7 0 100-14 7 7 0 000 14zM20 20l-4-4', lock: 'M6 11h12v9H6zM8 11V8a4 4 0 118 0v3',
   chev: 'M9 6l6 6-6 6', down: 'M6 9l6 6 6-6', hdd: 'M3 14h18v6H3zM3 14l3-9h12l3 9M7 17h.01', layers: 'M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5M3 17l9 5 9-5',
   file: 'M7 3h7l5 5v13H7zM14 3v5h5', zap: 'M13 2L4 14h7l-1 8 9-12h-7l1-8z', pause: 'M8 5v14M16 5v14', eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 15a3 3 0 100-6 3 3 0 000 6z',
+  activity: 'M3 12h4l3-8 4 16 3-8h4', panel: 'M3 4h18v16H3zM9 4v16', cancel: 'M12 21a9 9 0 100-18 9 9 0 000 18zM9 9l6 6M15 9l-6 6', external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
   logout: 'M9 4H4v16h5M16 8l4 4-4 4M20 12H9', bolt: 'M11 3L5 13h6l-1 8 7-11h-6l0-7z', flask: 'M9 3h6M10 3v6l-5 9a2 2 0 002 3h10a2 2 0 002-3l-5-9V3', calendar: 'M4 6h16v14H4zM4 10h16M9 3v4M15 3v4',
 };
 export function Icon({ n, s = 16, className, spin }: { n: string; s?: number; className?: string; spin?: boolean }) {

@@ -219,6 +219,8 @@ class ConsoleClient(threading.Thread):
         wait = 0 if self.inflight or not free_slots else min(8, int(self.config.get("heartbeat_interval_seconds", 10)))
         resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "max_ops": free_slots,
                                                    "discovery": full_discovery, "wait_seconds": wait}, timeout=wait + 15)
+        if self.logs:
+            self.logs.set_mode(resp.get("log_mode"))
         for op in resp.get("ops", []):
             if op["id"] in self.inflight:
                 continue
@@ -228,7 +230,8 @@ class ConsoleClient(threading.Thread):
             try:
                 lines = self.logs.collect()
                 if lines:
-                    self._post("/api/agent/logs", {"logs": lines})
+                    r = self._post("/api/agent/logs", {"logs": lines})
+                    self.logs.set_mode(r.get("log_mode"))
             except ConsoleError:
                 raise
             except Exception as e:

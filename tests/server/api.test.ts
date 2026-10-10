@@ -47,6 +47,8 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   const snap = { postgres: { alive: true, is_in_recovery: false, role: 'primary', version: '16.4', current_lsn: '0/3000000', timeline: 2, xact_total: 1000, connections: { used: 2, max: 100 }, databases: [{ oid: 5, name: 'app', size: 1234 }] }, patroni: { accessible: true, role: 'leader', scope: 'prodpg' }, system: { load_avg_1m: 0.5, cpu_count: 2, memory_used_percent: 30 } };
   const hb1 = await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 1 }, A());
   assert.strictEqual(hb1.status, 200); assert.deepStrictEqual(hb1.body.ops, []);
+  assert.strictEqual(hb1.body.log_mode, 'alerts', 'nobody watches the logs: agents ship warnings and errors only');
+  { const lg = await call('POST', '/api/agent/logs', { logs: [{ level: 'ERROR', message: 'boom', service: 'postgres' }] }, A()); assert.strictEqual(lg.status, 200); assert.strictEqual(lg.body.log_mode, 'alerts'); }
   const cl = (await call('GET', '/api/clusters', undefined, H())).body.clusters.find((c: any) => !c.isSandbox);
   assert.strictEqual(cl.name, 'prodpg'); assert.strictEqual(cl.environment, 'prod'); assert.strictEqual(cl.pgVersion, '16.4');
   assert.strictEqual(cl.haState.nodes[0].role, 'primary'); assert.strictEqual(cl.status, 'healthy');
@@ -69,6 +71,12 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'succeeded', result: { segment: 'x' } }, A())).status, 200);  // duplicate report ok
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'failed', error: 'x' }, A())).status, 409);
   assert.strictEqual((await call('GET', `/api/operations/${rid}`, undefined, H())).body.operation.status, 'succeeded');
+  { // the activity dock's feed: slim (no result/history/params), newest first, finished operations only while recent
+    const sl = await call('GET', '/api/operations?slim=1&recent=3600', undefined, H()); assert.strictEqual(sl.status, 200);
+    const one = sl.body.operations.find((o: any) => o.id === rid); assert.ok(one, 'recently finished operation is listed');
+    for (const k of ['result', 'history', 'params']) assert.ok(!(k in one), `slim feed must not carry ${k}`);
+    assert.ok(['id', 'type', 'status', 'clusterId', 'createdAt'].every(k => k in one));
+  }
   // switchover validation
   assert.strictEqual((await call('POST', `/api/clusters/${cl.id}/operations`, { type: 'patroni_switchover', params: {} }, H({ 'idempotency-key': 's' }))).status, 400);
   // audit visible

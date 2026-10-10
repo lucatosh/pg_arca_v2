@@ -25,6 +25,8 @@ export async function api<T = any>(method: string, path: string, body?: any, opt
     if (res.status === 401 || res.status === 428) window.dispatchEvent(new CustomEvent('arca:auth', { detail: res.status }));
     throw new ApiError(res.status, data);
   }
+  // any write that may have queued an operation (or touched one): let the activity dock refresh right away instead of at its next poll
+  if (method !== 'GET' && /\/operations|\/approvals/.test(path)) window.dispatchEvent(new Event('arca:ops'));
   return data as T;
 }
 export const get = <T = any>(p: string, signal?: AbortSignal) => api<T>('GET', p, undefined, { signal });
