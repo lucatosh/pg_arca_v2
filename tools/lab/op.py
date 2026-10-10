@@ -21,6 +21,11 @@ if a and a[0] == "last":      # op.py last [N]  -> the latest operations of the 
     s, d = call("GET", "/api/operations"); ops = d.get("operations", d)
     for o in ops[-int(a[1] if len(a) > 1 else 5):]: print(o["id"][-6:], o["type"], o["status"], o.get("updatedAt", "")[11:19], str(o.get("error") or "")[:200])
     sys.exit(0)
+if a and a[0] == "show":      # op.py show <id-suffix> -> full record of an operation
+    s, d = call("GET", "/api/operations"); ops = d.get("operations", d)
+    for o in ops:
+        if o["id"].endswith(a[1]): print(json.dumps(o, indent=1)[:4000])
+    sys.exit(0)
 cl, typ = a[0], a[1]; params = json.loads(a[2]) if len(a) > 2 and not a[2].startswith("--") else {}
 node = a[a.index("--node") + 1] if "--node" in a else None; wait = int(a[a.index("--wait") + 1]) if "--wait" in a else 300
 s, d = call("GET", "/api/clusters"); cs = [c for c in d["clusters"] if c["id"] == cl or cl.lower() in c["name"].lower()]

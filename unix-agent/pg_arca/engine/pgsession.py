@@ -127,12 +127,12 @@ class PgSession(object):
                 self.p.stdin.write("\\warn %s\n" % marker)
             self.p.stdin.flush()
         except (BrokenPipeError, ValueError, OSError):
-            raise EngineError("PGA-CFG-003", "PostgreSQL session lost: %s" % self.take_errors())
+            raise EngineError("PGA-CFG-003", "PostgreSQL session lost: " + (self.take_errors() or "no error text from the server"), "the server closed the connection: restart, crash, failover or switchover while the operation was running. Check the cluster state, then run it again")
         rows = []
         while True:
             line = self.p.stdout.readline()
             if line == "":
-                raise EngineError("PGA-CFG-003", "PostgreSQL session closed unexpectedly: %s" % self.take_errors())
+                raise EngineError("PGA-CFG-003", "PostgreSQL session closed unexpectedly: " + (self.take_errors() or "no error text from the server"), "the server closed the connection: restart, crash, failover or switchover while the operation was running. Check the cluster state, then run it again")
             line = line.rstrip("\n")
             if line == marker:
                 break
