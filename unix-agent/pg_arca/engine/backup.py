@@ -51,9 +51,11 @@ def backup_file(repo, rel, full, st, prev_lsn, incremental, fadvise=True):
     try:
         fd = os.open(full, os.O_RDONLY)
     except OSError as e:
-        if e.errno in (errno.ENOENT, errno.EACCES):
+        if e.errno == errno.ENOENT:                       # dropped while we were copying: fine
             stats["skipped"] = 1
             return None, stats
+        if e.errno == errno.EACCES:                       # a file we cannot read must NOT silently vanish from a 'COMPLETE' backup
+            raise EngineError("PGA-GEN-043", "cannot read %s: permission denied" % full, "the agent user must be able to read the whole data directory (owner postgres, or ACL)")
         raise
     chunks = []
     total = 0

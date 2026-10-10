@@ -32,9 +32,8 @@ class OpError(Exception):
 class OperationExecutor:
     def __init__(self, config, db, patroni, discovery=None, runtime=None):
         self.config = config
-        self.db = db
-        self.patroni = patroni
         self.runtime = runtime               # needed by backup / restore operations (PGDATA, socket)
+        self._db, self._patroni = db, patroni
         self.discovery = discovery           # callable -> dict
         self._tl = threading.local()
         self._live = {}                      # op_id -> latest progress dict (in memory; reported with every keep-alive)
@@ -44,6 +43,23 @@ class OperationExecutor:
         self.handlers = {}                   # type -> (fn, retry_safe)
         self._register_builtin()
         self.prune()
+
+    # Runtime.refresh() REPLACES its db/patroni clients (new socket, port, Patroni URL): follow it, never keep the ones from agent start.
+    @property
+    def db(self):
+        return self.runtime.db if self.runtime is not None else self._db
+
+    @db.setter
+    def db(self, v):
+        self._db = v
+
+    @property
+    def patroni(self):
+        return self.runtime.patroni if self.runtime is not None else self._patroni
+
+    @patroni.setter
+    def patroni(self, v):
+        self._patroni = v
 
     # ------------------------------------------------------------------ registry
     def register(self, op_type, fn, retry_safe):

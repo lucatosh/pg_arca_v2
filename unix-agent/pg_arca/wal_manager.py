@@ -23,7 +23,9 @@ import gzip
 import hashlib
 import json
 import logging
+import errno
 import os
+import stat as stat_mod
 import re
 import shutil
 import subprocess
@@ -122,7 +124,13 @@ class WalManager:
         """Returns (path, codec) of the stored object for `name` or (None, None)."""
         for codec in ("", ".zst", ".lz4", ".gz"):
             p = os.path.join(self.wal_dir, name + codec)
-            if os.path.isfile(p):
+            try:
+                st = os.stat(p)
+            except OSError as e:
+                if e.errno in (errno.ENOENT, errno.ENOTDIR):
+                    continue
+                raise                                     # EACCES / EIO / ESTALE are errors, not "segment missing"
+            if stat_mod.S_ISREG(st.st_mode):
                 return p, codec.lstrip(".")
         return None, None
 
@@ -314,6 +322,8 @@ class WalManager:
             if n.endswith(".history"):
                 histories.append(n)
                 continue
+            if ".partial" in n or ".backup" in n:
+                continue                      # promotion leaves <seg>.partial (and .partial.zst): not a segment, must not look like a duplicate
             if n.endswith((".meta", ".tmp")) or n.startswith(".") or n.count(".") > 1 and not n.endswith((".zst", ".lz4", ".gz")):
                 continue                      # .backup / .partial / temp files are not segments
             m = SEG_RE.match(base)

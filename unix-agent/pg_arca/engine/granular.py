@@ -580,7 +580,7 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
                 res["safety_copy"] = "%s.%s" % (schema, safe)
             for i in range(0, len(restore_keys), 500):
                 part = restore_keys[i:i + 500]
-                doc = json.dumps([json.loads(rows[k]) for k in part])
+                doc = "[" + ",".join(rows[k] for k in part) + "]"      # rows[k] is already JSON text from to_jsonb(): re-encoding via Python floats would round numeric(38,x)
                 conflict = ("DO UPDATE SET " + setlist) if setlist else "DO NOTHING"
                 tg.query("INSERT INTO %s (%s)%s SELECT %s FROM jsonb_populate_recordset(NULL::%s, %s::jsonb) ON CONFLICT (%s) %s"
                          % (fq, collist, ovr, collist, fq, sql_lit(doc), ",".join(quote_ident(c) for c in li["pk"]), conflict))

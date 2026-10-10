@@ -100,8 +100,7 @@ NoNewPrivileges=yes
 # 'full' (not 'strict'): restores, pg_hba/postgresql.conf edits and PGDATA/tablespaces live in arbitrary paths (/var/lib/pgsql, /data, /pgdata, /mnt/...). Only /usr, /boot and /etc stay read-only, with the usual PostgreSQL config dirs re-opened.
 ProtectSystem=full
 ReadWritePaths=-/etc/postgresql -/etc/postgresql-common -/etc/patroni -/etc/pgbouncer
-ProtectHome=yes
-PrivateTmp=yes
+# no ProtectHome/PrivateTmp: PGDATA, tablespaces or restore targets may live under /home, and a PostgreSQL unix socket in /tmp (source builds, some PGDG setups) must stay reachable
 ReadWritePaths=$CONF_DIR $STATE_ROOT $REPO_DIR $LOG_DIR $SCRATCH
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
@@ -117,7 +116,8 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now pg-arca-agent.service >/dev/null
+systemctl enable pg-arca-agent.service >/dev/null
+systemctl restart pg-arca-agent.service      # restart (not just start): re-running the installer is the upgrade path, the old code must not keep running
 sleep 2
 systemctl is-active --quiet pg-arca-agent.service && echo "pg_arca agent is running." || { echo "agent failed to start:"; journalctl -u pg-arca-agent -n 20 --no-pager; exit 1; }
 echo "Check the console: this node appears under Clusters within seconds. Logs: journalctl -u pg-arca-agent -f"

@@ -84,3 +84,17 @@ class ExecutorHandlers(unittest.TestCase):
             self.assertIn("settings", ex.h_cfg_get({}))
         finally:
             del os.environ["PG_ARCA_CONF_FILE"]
+
+
+class ExecutorFollowsRuntime(unittest.TestCase):
+    def test_db_and_patroni_follow_refresh(self):
+        import types
+        from pg_arca.executor import OperationExecutor
+        t = tempfile.mkdtemp(); a, b, p1, p2 = object(), object(), object(), object()
+        rt = types.SimpleNamespace(db=a, patroni=p1, instance=None)
+        ex = OperationExecutor({"state_dir": os.path.join(t, "st")}, a, p1, runtime=rt)
+        self.assertIs(ex.db, a)
+        rt.db, rt.patroni = b, p2                      # what Runtime.refresh() does
+        self.assertIs(ex.db, b); self.assertIs(ex.patroni, p2)
+        ex2 = OperationExecutor({"state_dir": os.path.join(t, "st2")}, a, p1)      # no runtime: the given ones
+        self.assertIs(ex2.db, a)

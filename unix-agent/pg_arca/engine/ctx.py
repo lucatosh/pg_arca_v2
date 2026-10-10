@@ -38,7 +38,8 @@ class Ctx(object):
     @property
     def restore_command(self):
         """restore_command for ephemeral / restored instances (quoted for postgresql.conf by the caller)."""
-        home = os.path.dirname(os.path.realpath(self.agent_path))
+        import pg_arca
+        home = os.path.dirname(os.path.dirname(os.path.realpath(pg_arca.__file__)))      # the directory that contains the pg_arca package (/opt/pg-arca when installed): pg-arca-wal itself may live in /usr/local/bin
         kf = " PG_ARCA_KEY_FILE=%s" % _shq(self.key_file) if self.key_file else ""
         return "env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent%s %s get %%f %%p" % (_shq(self.wal_dir), _shq(home), kf, _shq(self.agent_path))
 
@@ -89,6 +90,9 @@ def _stanza_name(inst):
 
 
 def _guess_bindir(inst):
+    found = inst.get("bin_dir")                                  # discovery: the directory of the RUNNING postmaster's binary beats any naming convention
+    if found and os.path.isfile(os.path.join(found, "psql")) or found and os.path.isfile(os.path.join(found, "pg_ctl")):
+        return found
     ver = str(inst.get("version") or inst.get("major_version") or "").split(".")[0]
     for cand in ("/usr/lib/postgresql/%s/bin" % ver, "/usr/pgsql-%s/bin" % ver, "/usr/local/pgsql/bin"):
         if ver and os.path.isdir(cand):

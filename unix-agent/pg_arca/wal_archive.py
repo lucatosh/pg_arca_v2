@@ -43,7 +43,7 @@ def main(argv):
             crypto = from_settings(kf)
         except Exception as e:
             sys.stderr.write("pg_arca %s FAILED: %s\n" % (argv[1], e))
-            return 1
+            return 1 if argv[1] == "archive" else 126        # for restore_command 1 means "end of archive": a key error must ABORT recovery, not end it early
     wm = WalManager(d, comp, lvl, seg, crypto=crypto)
     if argv[1] == "archive":
         try:
@@ -55,7 +55,11 @@ def main(argv):
             sys.stderr.write("pg_arca archive FAILED: PGA-WAL-099 %s\n" % e)
             return 1
         return 0
-    code, msg = wm.retrieve_segment(argv[2], argv[3])
+    try:
+        code, msg = wm.retrieve_segment(argv[2], argv[3])
+    except Exception as e:                                # EIO/EACCES/ENOSPC/...: never answer "not found" (1) for an error
+        sys.stderr.write("pg_arca restore FAILED: PGA-WAL-098 %s\n" % e)
+        return 126
     if code not in (0, 1):
         sys.stderr.write("pg_arca restore FAILED: %s\n" % msg)
     return code

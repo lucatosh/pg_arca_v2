@@ -25,6 +25,25 @@ class WalTests(unittest.TestCase):
         out = os.path.join(self.t, "restored"); code, _ = self.wm.retrieve_segment(n, out)
         self.assertEqual(code, 0); self.assertEqual(open(out, "rb").read(), b"a" * MB)
 
+    def test_promotion_partial_segment_is_not_a_gap(self):
+        for i in (1, 2, 3):
+            n = seg(1, 0, i); self.wm.archive_segment(self.mk(n), n)
+        open(os.path.join(self.wm.wal_dir, seg(1, 0, 3) + ".partial.zst"), "wb").write(b"x")     # what a promotion leaves behind
+        open(os.path.join(self.wm.wal_dir, seg(1, 0, 3) + ".partial"), "wb").write(b"x")
+        rep = self.wm.verify_continuity(max_age=0)
+        self.assertTrue(rep["continuous"], rep)
+        self.assertEqual(self.wm.list_segments(), [seg(1, 0, i) for i in (1, 2, 3)])
+
+    def test_restore_command_errors_abort_recovery_not_end_it(self):
+        from pg_arca import wal_archive
+        env = dict(os.environ); os.environ["WAL_ARCHIVE_DIR"] = self.wm.wal_dir; os.environ["PG_ARCA_KEY_FILE"] = os.path.join(self.t, "missing.key")
+        try:
+            self.assertEqual(wal_archive.main(["x", "get", seg(1, 0, 9), os.path.join(self.t, "o")]), 126)       # exit 1 would mean 'end of archive'
+            self.assertEqual(wal_archive.main(["x", "archive", self.mk(seg(1, 0, 9)), seg(1, 0, 9)]), 1)
+        finally:
+            os.environ.clear(); os.environ.update(env)
+        self.assertEqual(wal_archive.main(["x", "get", seg(1, 0, 77), os.path.join(self.t, "o")]) , 1)           # genuinely absent -> 1
+
     def test_divergent_copy_is_refused_and_quarantined(self):
         n = seg(1, 0, 2); self.wm.archive_segment(self.mk(n, b"a"), n)
         with self.assertRaises(WalArchiveError) as cm: self.wm.archive_segment(self.mk(n, b"b"), n)
