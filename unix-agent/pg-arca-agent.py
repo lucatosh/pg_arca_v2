@@ -61,6 +61,9 @@ def main():
             self_inner._at, self_inner._val = _t.time(), v
             return v
     cas = _Summary()
+    if config.get("wal_rescue", True):
+        from pg_arca.wal_rescue import WalRescue
+        WalRescue(rt, wal, config).start()
     ex = OperationExecutor(config, rt.db, rt.patroni, discovery=lambda: rt.refresh(), runtime=rt)
     stop = threading.Event()
     client = None
