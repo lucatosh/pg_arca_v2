@@ -562,13 +562,15 @@ class OperationExecutor:
     def h_restore_object(self, p):
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
-        return granular.restore_object(ctx, str(p.get("object")), p.get("set"), into=p.get("into"), stage_db=p.get("stage_db"),
-                                       data_only=bool(p.get("data_only")), progress=self._progress, cancel=self._cancelled, **self._targets(p))
+        objs = [str(x) for x in p.get("objects")] if isinstance(p.get("objects"), list) and p.get("objects") else None
+        return granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), into=p.get("into"), stage_db=p.get("stage_db"), objects=objs,
+                                       data_only=bool(p.get("data_only")), dry_run=bool(p.get("dry_run")), progress=self._progress, cancel=self._cancelled, **self._targets(p))
 
     def h_restore_promote(self, p):
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
-        return granular.promote_object(ctx, str(p.get("stage_db")), str(p.get("object")), mode=p.get("mode", "as_new"), drop_stage=bool(p.get("drop_stage", True)), into=p.get("into"))
+        return granular.promote_object(ctx, str(p.get("stage_db")), str(p.get("object") or ""), mode=p.get("mode", "as_new"), drop_stage=bool(p.get("drop_stage", True)), into=p.get("into"),
+                                       dry_run=bool(p.get("dry_run")), progress=self._progress)
 
     def h_restore_drill(self, p):
         from pg_arca.engine import granular

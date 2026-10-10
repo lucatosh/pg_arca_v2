@@ -10,6 +10,7 @@ Here the recovered instance is asked for the complete picture and the result is 
 Promotion then puts it back into the live database (see promote()). Nothing existing is ever overwritten without a way back.
 """
 
+import datetime
 import json
 import os
 import re
@@ -41,6 +42,9 @@ def parse_selection(spec, objects=None):
         parts = str(it).split(".")
         if len(parts) not in (2, 3) or not all(parts):
             raise EngineError("PGA-GEN-030", "invalid object %r" % it, "use database.schema.object (a table, view or sequence) or database.schema (a whole schema)")
+        if parts[1] in ("pg_catalog", "information_schema", "pg_toast") or parts[1].startswith("pg_temp"):
+            raise EngineError("PGA-GEN-034", "%r is a system schema: its objects belong to PostgreSQL itself and are never restored one by one" % parts[1],
+                              "to bring back a whole database use restore_database")
         if db is None:
             db = parts[0]
         elif db != parts[0]:
@@ -136,31 +140,8 @@ FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n O
 WHERE k.contype = 'f' AND k.conparentid = 0 AND (k.conrelid = ANY(%s) OR k.confrelid = ANY(%s))
 """ % (arr(toids), arr(toids))) or []
     # ---- views: the selected ones and every view/matview that (transitively) depends on a selected relation
-    vrows = _jq(src, """
-WITH RECURSIVE dep(oid, depth) AS (
-  SELECT r.ev_class, 1 FROM pg_depend d JOIN pg_rewrite r ON r.oid = d.objid
-   WHERE d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid = ANY(%s) AND r.ev_class <> d.refobjid
-  UNION
-  SELECT r.ev_class, dep.depth + 1 FROM dep JOIN pg_depend d ON d.refobjid = dep.oid AND d.refclassid = 'pg_class'::regclass AND d.classid = 'pg_rewrite'::regclass
-         JOIN pg_rewrite r ON r.oid = d.objid WHERE r.ev_class <> dep.oid AND dep.depth < 25
-), pick AS (SELECT oid FROM dep UNION SELECT unnest(%s::oid[]))
-SELECT COALESCE(jsonb_agg(jsonb_build_object('oid', c.oid::int, 'schema', n.nspname, 'name', c.relname, 'kind', c.relkind, 'def', pg_get_viewdef(c.oid, true),
-       'owner', pg_get_userbyid(c.relowner), 'acl', %s, 'comment', obj_description(c.oid, 'pg_class'), 'opts', c.reloptions, 'selected', c.oid = ANY(%s),
-       'indexes', COALESCE((SELECT jsonb_agg(pg_get_indexdef(i.indexrelid)) FROM pg_index i WHERE i.indrelid = c.oid), '[]'::jsonb)) ORDER BY c.oid), '[]'::jsonb)::text
-FROM pick p JOIN pg_class c ON c.oid = p.oid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('v','m')
-""" % (arr(allrel), arr([v["oid"] for v in views]), ACL_SQL % "c.relacl", arr([v["oid"] for v in views]))) or []
-    voids = [v["oid"] for v in vrows]
-    order = {}
-    if voids:
-        pairs = _jq(src, """
-SELECT COALESCE(jsonb_agg(jsonb_build_object('v', r.ev_class::int, 'on', d.refobjid::int)), '[]'::jsonb)::text FROM pg_depend d JOIN pg_rewrite r ON r.oid = d.objid
-WHERE d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass AND r.ev_class = ANY(%s) AND d.refobjid = ANY(%s) AND r.ev_class <> d.refobjid
-""" % (arr(voids), arr(voids))) or []
-        order = _toposort(voids, [(p["v"], p["on"]) for p in pairs])
-    for v in vrows:
-        v["order"] = order.get(v["oid"], 0)
-        v["def"] = v["def"].rstrip().rstrip(";")
-    info["views"] = sorted(vrows, key=lambda v: v["order"])
+    info["views"] = collect_views(src, allrel, [v["oid"] for v in views])
+    vrows = info["views"]
     # ---- the objects the tables need (types, functions) and their schemas
     info.update(_prereqs(src, toids, [v["oid"] for v in vrows], tables, info))
     # ---- sequence positions (the dump of a table does not always carry them; promote sets them explicitly)
@@ -186,6 +167,39 @@ WHERE d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass
                 roles.add(a["g"])
     info["roles"] = sorted(x for x in roles if x)
     return info
+
+
+def collect_views(sess, base_oids, selected_oids=()):
+    """Views/materialized views that (transitively) depend on `base_oids` (plus `selected_oids`), with definition, owner, ACL, options and matview indexes,
+    ordered so that a view comes after the views it uses."""
+    arr = lambda xs: "ARRAY[%s]::oid[]" % ",".join(str(x) for x in xs) if xs else "ARRAY[]::oid[]"
+    if not base_oids and not selected_oids:
+        return []
+    vrows = _jq(sess, """
+WITH RECURSIVE dep(oid, depth) AS (
+  SELECT r.ev_class, 1 FROM pg_depend d JOIN pg_rewrite r ON r.oid = d.objid
+   WHERE d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid = ANY(%s) AND r.ev_class <> d.refobjid
+  UNION
+  SELECT r.ev_class, dep.depth + 1 FROM dep JOIN pg_depend d ON d.refobjid = dep.oid AND d.refclassid = 'pg_class'::regclass AND d.classid = 'pg_rewrite'::regclass
+         JOIN pg_rewrite r ON r.oid = d.objid WHERE r.ev_class <> dep.oid AND dep.depth < 25
+), pick AS (SELECT oid FROM dep UNION SELECT unnest(%s::oid[]))
+SELECT COALESCE(jsonb_agg(jsonb_build_object('oid', c.oid::int, 'schema', n.nspname, 'name', c.relname, 'kind', c.relkind, 'def', pg_get_viewdef(c.oid, true),
+       'owner', pg_get_userbyid(c.relowner), 'acl', %s, 'comment', obj_description(c.oid, 'pg_class'), 'opts', c.reloptions, 'selected', c.oid = ANY(%s),
+       'indexes', COALESCE((SELECT jsonb_agg(pg_get_indexdef(i.indexrelid)) FROM pg_index i WHERE i.indrelid = c.oid), '[]'::jsonb)) ORDER BY c.oid), '[]'::jsonb)::text
+FROM pick p JOIN pg_class c ON c.oid = p.oid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('v','m')
+""" % (arr(list(base_oids) + list(selected_oids)), arr(selected_oids), ACL_SQL % "c.relacl", arr(selected_oids))) or []
+    voids = [v["oid"] for v in vrows]
+    order = {}
+    if voids:
+        pairs = _jq(sess, """
+SELECT COALESCE(jsonb_agg(jsonb_build_object('v', r.ev_class::int, 'on', d.refobjid::int)), '[]'::jsonb)::text FROM pg_depend d JOIN pg_rewrite r ON r.oid = d.objid
+WHERE d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass AND r.ev_class = ANY(%s) AND d.refobjid = ANY(%s) AND r.ev_class <> d.refobjid
+""" % (arr(voids), arr(voids))) or []
+        order = _toposort(voids, [(p["v"], p["on"]) for p in pairs])
+    for v in vrows:
+        v["order"] = order.get(v["oid"], 0)
+        v["def"] = v["def"].rstrip().rstrip(";")
+    return sorted(vrows, key=lambda v: v["order"])
 
 
 def _toposort(nodes, edges):
@@ -398,7 +412,9 @@ def _roles_present(sess, names):
 
 def dump_for_stage(eph_conn, dbname, info, tmp, progress=None):
     """pg_dump of the selected tables and sequences (partitions included) from the recovered instance."""
-    names = [qi(t["schema"], t["name"]) for t in info["tables"]] + [qi(s["schema"], s["name"]) for s in info["sequences"]]
+    names = [qi(t["schema"], t["name"]) for t in info["tables"]] + [qi(s["schema"], s["name"]) for s in info["sequences"]] + \
+            [qi(s["schema"], s["name"]) for s in (info.get("owned_sequences") or [])]
+    names = list(dict.fromkeys(names))
     if not names:
         return None
     dumpfile = os.path.join(tmp, "sel.dump")
@@ -456,11 +472,12 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
         meta = {"version": 1, "created": now_utc().isoformat(timespec="seconds"), "database": dbname, "selection": sel, "label": spec_label,
                 "tables": [{"schema": t["schema"], "name": t["name"], "kind": t["kind"], "part": t["part"], "owner": t["owner"]} for t in info["tables"]],
                 "sequences": [{"schema": s["schema"], "name": s["name"], "owner": s["owner"], "acl": s["acl"]} for s in info["sequences"]],
+                "owned_sequences": info.get("owned_sequences") or [],
                 "views": info["views"], "fks": info["fks"], "positions": info["sequence_positions"], "roles": info["roles"],
                 "prereq": {"types": info["types"], "functions": info["functions"], "extensions": info["extensions"], "schemas": info["schemas"]},
                 "warnings": list(info["warnings"]), "counts": {}}
         create_db()
-        sess = PgSession(admin.with_db(None) if False else admin.with_db(stage))
+        sess = PgSession(admin.with_db(stage))
         try:
             roles_ok = _roles_present(sess, info["roles"])
             missing_roles = [r for r in info["roles"] if r not in roles_ok]
@@ -502,3 +519,391 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
         return meta
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ============================================================================================================== promotion (stage -> live database)
+def _short(base, suffix):
+    """base + suffix within PostgreSQL's 63-byte identifier limit. A name that has to be shortened keeps a hash of the full name, so two long names never collide."""
+    if len(base.encode("utf-8")) + len(suffix) <= 63:
+        return base + suffix
+    import hashlib
+    h = hashlib.md5(base.encode("utf-8")).hexdigest()[:6]
+    keep = 63 - len(suffix) - 7
+    b = base.encode("utf-8")[:keep].decode("utf-8", "ignore")
+    return "%s_%s%s" % (b, h, suffix)
+
+
+def _exists(sess, schema, name):
+    return sess.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit(qi(schema, name))) == "t"
+
+
+def _idx_and_seqs(sess, schema, name):
+    """Names of the indexes of a table and of the sequences it owns (identity/serial)."""
+    fq = sql_lit(qi(schema, name))
+    idx = [r[0] for r in sess.query("SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = %s::regclass ORDER BY c.relname" % fq)]
+    seq = [(r[0], r[1]) for r in sess.query("SELECT sn.nspname, s.relname FROM pg_depend d JOIN pg_class s ON s.oid = d.objid AND s.relkind = 'S' JOIN pg_namespace sn ON sn.oid = s.relnamespace "
+                                            "WHERE d.refobjid = %s::regclass AND d.refclassid = 'pg_class'::regclass AND d.classid = 'pg_class'::regclass AND d.deptype IN ('a','i') ORDER BY s.relname" % fq)]
+    return idx, seq
+
+
+def _view_ddl(v):
+    kind = "MATERIALIZED VIEW" if v["kind"] == "m" else "VIEW"
+    opts = ""
+    if v.get("opts"):
+        opts = " WITH (%s)" % ", ".join(v["opts"])
+    return kind, "CREATE %s %s%s AS %s%s" % (kind, qi(v["schema"], v["name"]), opts, v["def"], " WITH DATA" if v["kind"] == "m" else "")
+
+
+def _slim(plan):
+    """The plan for people/UI: without view definitions or ACL blobs."""
+    out = dict(plan)
+    out["live_views"] = [{k: v[k] for k in ("schema", "name", "kind")} for v in plan.get("live_views") or []]
+    out["recovered_views"] = [{k: v[k] for k in ("schema", "name", "kind")} for v in plan.get("recovered_views") or []]
+    out["inbound_fks"] = [{k: f.get(k) for k in ("name", "schema", "table", "ref_schema", "ref_table", "source")} for f in plan.get("inbound_fks") or []]
+    out["outbound_fks"] = [{k: f.get(k) for k in ("name", "schema", "table", "ref_schema", "ref_table", "source")} for f in plan.get("outbound_fks") or []]
+    out.pop("old_outbound_fks", None)
+    return out
+
+
+def _live_plan(live, meta, mode, ts):
+    """Inspect the live database and say exactly what promotion would do. Nothing is changed."""
+    sfx_new, sfx_old = "_pitr_" + ts, "_old_" + ts
+    plan = {"mode": mode, "suffix": ts, "tables": [], "inbound_fks": [], "outbound_fks": [], "views": [], "warnings": list(meta.get("warnings") or []), "blocking": [], "old_kept_as": []}
+    sel = {(t["schema"], t["name"]) for t in meta["tables"]}
+    swap_oids = []
+    for t in meta["tables"]:
+        ex = _exists(live, t["schema"], t["name"])
+        act = "copy" if mode == "as_new" else ("skip" if (mode == "missing_only" and ex) else ("swap" if ex else "create"))
+        row = {"schema": t["schema"], "name": t["name"], "kind": t["kind"], "action": act, "exists_now": ex, "rows_at_target": (meta.get("counts") or {}).get("%s.%s" % (t["schema"], t["name"]))}
+        if act == "swap":
+            row["old_kept_as"] = _short(t["name"], sfx_old)
+            plan["old_kept_as"].append("%s.%s" % (t["schema"], row["old_kept_as"]))
+            swap_oids.append(int(live.scalar("SELECT %s::regclass::oid::int" % sql_lit(qi(t["schema"], t["name"])))))
+        if act == "copy":
+            row["new_name"] = _short(t["name"], sfx_new)
+        plan["tables"].append(row)
+    acting = {(r["schema"], r["name"]) for r in plan["tables"] if r["action"] in ("swap", "create")}
+    swapping = {(r["schema"], r["name"]) for r in plan["tables"] if r["action"] == "swap"}
+    arr = lambda xs: "ARRAY[%s]::oid[]" % ",".join(str(x) for x in xs) if xs else "ARRAY[]::oid[]"
+    if swap_oids:
+        plan["inbound_fks"] = _jq(live, """
+SELECT COALESCE(jsonb_agg(jsonb_build_object('name', k.conname, 'schema', n.nspname, 'table', c.relname, 'def', pg_get_constraintdef(k.oid), 'ref_schema', rn.nspname, 'ref_table', rc.relname, 'source', 'live')), '[]'::jsonb)::text
+FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_class rc ON rc.oid = k.confrelid JOIN pg_namespace rn ON rn.oid = rc.relnamespace
+WHERE k.contype = 'f' AND k.conparentid = 0 AND k.confrelid = ANY(%s) AND NOT (k.conrelid = ANY(%s))""" % (arr(swap_oids), arr(swap_oids))) or []
+        plan["old_outbound_fks"] = _jq(live, """
+SELECT COALESCE(jsonb_agg(jsonb_build_object('name', k.conname, 'schema', n.nspname, 'table', c.relname, 'def', pg_get_constraintdef(k.oid))), '[]'::jsonb)::text
+FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE k.contype = 'f' AND k.conparentid = 0 AND k.conrelid = ANY(%s) AND NOT (k.confrelid = ANY(%s))""" % (arr(swap_oids), arr(swap_oids))) or []
+        plan["live_views"] = collect_views(live, swap_oids, [])
+    else:
+        plan["old_outbound_fks"], plan["live_views"] = [], []
+    have = {(f["schema"], f["table"], f["name"]) for f in plan["inbound_fks"]}
+    # foreign keys that belonged to the recovered tables / pointed at the recreated ones (only where the other side exists now)
+    for f in meta.get("fks") or []:
+        mine, ref = (f["schema"], f["table"]) in sel, (f["ref_schema"], f["ref_table"]) in sel
+        if mine and not ref and (f["schema"], f["table"]) in acting:                      # recovered table -> a table outside the selection
+            if _exists(live, f["ref_schema"], f["ref_table"]):
+                plan["outbound_fks"].append(dict(f, source="recovered"))
+            else:
+                plan["warnings"].append("foreign key %s not recreated: the table it references (%s.%s) does not exist" % (f["name"], f["ref_schema"], f["ref_table"]))
+        elif ref and not mine and (f["ref_schema"], f["ref_table"]) in acting and (f["ref_schema"], f["ref_table"]) not in swapping:   # a table that was gone: children lost their FK with it
+            if _exists(live, f["schema"], f["table"]) and (f["schema"], f["table"], f["name"]) not in have:
+                has = live.scalar("SELECT 1 FROM pg_constraint WHERE conname = %s AND conrelid = %s::regclass" % (sql_lit(f["name"]), sql_lit(qi(f["schema"], f["table"]))))
+                if has != "1":
+                    plan["inbound_fks"].append(dict(f, source="recovered", ref_schema=f["ref_schema"], ref_table=f["ref_table"]))
+    # views: the live ones that depend on tables being swapped are recreated against the new table; recovered views that are gone now come back too
+    live_names = {(v["schema"], v["name"]) for v in plan["live_views"]}
+    for v in plan["live_views"]:
+        plan["views"].append({"schema": v["schema"], "name": v["name"], "kind": v["kind"], "source": "live"})
+    plan["recovered_views"] = []
+    if mode != "as_new":
+        for v in meta.get("views") or []:
+            if (v["schema"], v["name"]) in live_names:
+                continue
+            if not _exists(live, v["schema"], v["name"]):
+                plan["recovered_views"].append(v)
+                plan["views"].append({"schema": v["schema"], "name": v["name"], "kind": v["kind"], "source": "recovered"})
+    # prerequisites the destination lacks
+    pq = meta["prereq"]
+    missing = {"extensions": [e for e in pq["extensions"] if not prereq_exists(live, "extension", e)],
+               "schemas": [x["name"] for x in pq["schemas"] if not prereq_exists(live, "schema", x)],
+               "types": ["%s.%s" % (t["schema"], t["name"]) for t in pq["types"] if not prereq_exists(live, "type", t)],
+               "functions": [f["sig"] for f in pq["functions"] if not prereq_exists(live, "function", f)]}
+    plan["missing_prereq"] = missing
+    present = _roles_present(live, meta.get("roles") or [])
+    plan["missing_roles"] = [r for r in (meta.get("roles") or []) if r not in present]
+    if plan["missing_roles"]:
+        plan["warnings"].append("roles not present here (%s): owners and grants of the recovered objects are NOT applied" % ", ".join(plan["missing_roles"][:6]))
+    for f in plan["inbound_fks"]:
+        f.pop("def_full", None)
+    plan["counts"] = {"tables": len(plan["tables"]), "swap": sum(1 for r in plan["tables"] if r["action"] == "swap"), "create": sum(1 for r in plan["tables"] if r["action"] == "create"),
+                      "copy": sum(1 for r in plan["tables"] if r["action"] == "copy"), "skip": sum(1 for r in plan["tables"] if r["action"] == "skip"),
+                      "inbound_fks": len(plan["inbound_fks"]), "outbound_fks": len(plan["outbound_fks"]), "views": len(plan["views"])}
+    return plan
+
+
+def _add_fk(live, f, validate_later):
+    d = f["def"]
+    partitioned = live.scalar("SELECT relkind = 'p' FROM pg_class WHERE oid = %s::regclass" % sql_lit(qi(f["schema"], f["table"]))) == "t"
+    if partitioned:                                       # PostgreSQL cannot add a NOT VALID foreign key on a partitioned table: it is validated right away
+        live.query("ALTER TABLE %s ADD CONSTRAINT %s %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"]), d.replace(" NOT VALID", "")))
+        return
+    if "NOT VALID" not in d:
+        d += " NOT VALID"
+    live.query("ALTER TABLE %s ADD CONSTRAINT %s %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"]), d))
+    validate_later.append(f)
+
+
+def _recreate_view(live, v, roles_ok):
+    kind, ddl = _view_ddl(v)
+    live.query(ddl)
+    fq = qi(v["schema"], v["name"])
+    if v.get("owner") and (roles_ok is None or v["owner"] in roles_ok):
+        live.query("ALTER %s %s OWNER TO %s" % (kind, fq, quote_ident(v["owner"])))
+    for stmt in _acl_stmts("TABLE", fq, [a for a in (v.get("acl") or []) if a["g"] == "PUBLIC" or roles_ok is None or a["g"] in roles_ok]):
+        live.query(stmt)
+    if v.get("comment"):
+        live.query("COMMENT ON %s %s IS %s" % (kind, fq, sql_lit(v["comment"])))
+    if v["kind"] == "m":
+        for ix in v.get("indexes") or []:
+            live.query(ix)
+
+
+def _compat(res):
+    """Keep the single-table answer of the first version (`promoted_as`, `old_kept_as` as strings) next to the lists."""
+    pr, ok = res.get("promoted") or [], res.get("old_kept_as") or []
+    res["promoted"], res["old_kept"] = pr, ok
+    res["promoted_as"] = pr[0] if len(pr) == 1 else None
+    res["old_kept_as"] = ok[0] if len(ok) == 1 else None
+    return res
+
+
+def promote(admin, stage_db, mode="replace", dry_run=False, progress=None):
+    """Put the objects of a v2 quarantine database back into the live database it came from (same name, on `admin`'s server).
+
+      replace      every recovered table takes the place of the live one, which is kept as <name>_old_<ts> (never dropped); foreign keys that pointed at the old table are
+                   re-attached to the new one, views that depended on it are recreated, sequences never go backwards; a table that no longer exists simply comes back
+      missing_only only what is missing now comes back; existing tables are left alone
+      as_new       the recovered tables appear next to the originals as <name>_pitr_<ts>; nothing existing is touched and nothing is re-attached
+
+    The data is first loaded under temporary names (phase 1: nothing live changes, the application keeps working); the swap itself (phase 2) is ONE transaction with a lock
+    timeout, so it either happens completely or not at all. Returns None when `stage_db` is not a v2 stage (the caller then uses the old single-table path)."""
+    if mode not in ("replace", "as_new", "missing_only"):
+        raise EngineError("PGA-GEN-080", "mode must be replace, missing_only or as_new")
+    stg = PgSession(admin.with_db(stage_db))
+    try:
+        meta = read_meta(stg)
+    finally:
+        stg.close()
+    if not meta:
+        return None
+    dbname = meta["database"]
+    adm = PgSession(admin.with_db("postgres"), read_only=True)
+    try:
+        if adm.scalar("SELECT 1 FROM pg_database WHERE datname = %s" % sql_lit(dbname)) != "1":
+            raise EngineError("PGA-GEN-086", "database '%s' does not exist on the destination server" % dbname,
+                              "create it first, or restore the whole database with restore_database; the recovered objects are kept in %s" % stage_db)
+    finally:
+        adm.close()
+    live = PgSession(admin.with_db(dbname))
+    t0 = now_utc()
+    for bump in range(120):                                   # two promotions in the same second must not meet: the suffix is the first free second
+        ts = (t0 + datetime.timedelta(seconds=bump)).strftime("%Y%m%d%H%M%S")
+        if not any(_exists(live, t["schema"], _short(t["name"], sfx)) for t in meta["tables"] for sfx in ("_pitr_" + ts, "_old_" + ts)):
+            break
+    sfx_new, sfx_old = "_pitr_" + ts, "_old_" + ts
+    result = {"mode": mode, "database": dbname, "suffix": ts}
+    created_tmp = []                                         # live objects created in phase 1 (dropped again if anything fails)
+    try:
+        plan = _live_plan(live, meta, mode, ts)
+        if dry_run:
+            plan["dry_run"] = True
+            return _slim(plan)
+        todo = [r for r in plan["tables"] if r["action"] != "skip"]
+        if not todo:
+            result.update(plan=_slim(plan), promoted=[], skipped=[("%s.%s" % (r["schema"], r["name"])) for r in plan["tables"]], note="nothing to do: every selected table exists already")
+            return _compat(result)
+        # ---- phase 0: additive prerequisites (schemas, extensions, types, functions): only what is missing
+        if progress:
+            progress({"phase": "prepare"})
+        present = _roles_present(live, meta.get("roles") or [])
+        created, problems = ensure_prereqs(live, meta, only_missing=True, roles_ok=present)
+        result["prereq_created"] = created
+        plan["warnings"] += ["prerequisite not recreated - %s" % x for x in problems]
+        # ---- phase 1: load the recovered tables into the live database under temporary names
+        if progress:
+            progress({"phase": "transfer"})
+        stage_conn = admin.with_db(stage_db)
+        ss = PgSession(stage_conn)
+        renamed = []                                          # (kind, schema, from, to) applied in the stage, reverted afterwards
+        orig_of = {}                                          # (schema, temporary name) -> real name, for phase 2 (a shortened name cannot be derived back)
+        tmp = tempfile.mkdtemp(prefix="pgarca-promote-")
+        try:
+            names = []
+            for r in todo:
+                sch, nm = r["schema"], r["name"]
+                idx, seq = _idx_and_seqs(ss, sch, nm)
+                nn = _short(nm, sfx_new)
+                for i in idx:
+                    ss.query("ALTER INDEX %s RENAME TO %s" % (qi(sch, i), quote_ident(_short(i, sfx_new))))
+                    renamed.append(("INDEX", sch, _short(i, sfx_new), i))
+                    orig_of[(sch, _short(i, sfx_new))] = i
+                for ssch, sq in seq:
+                    ss.query("ALTER SEQUENCE %s RENAME TO %s" % (qi(ssch, sq), quote_ident(_short(sq, sfx_new))))
+                    renamed.append(("SEQUENCE", ssch, _short(sq, sfx_new), sq))
+                    orig_of[(ssch, _short(sq, sfx_new))] = sq
+                    names.append(qi(ssch, _short(sq, sfx_new)))
+                ss.query("ALTER TABLE %s RENAME TO %s" % (qi(sch, nm), quote_ident(nn)))
+                renamed.append(("TABLE", sch, nn, nm))
+                names.append(qi(sch, nn))
+            for sq in meta.get("sequences") or []:        # sequences selected on their own
+                names.append(qi(sq["schema"], sq["name"]))
+            dumpfile = os.path.join(tmp, "p.dump")
+            args = stage_conn.args() + ["-Fc", "-Z", "3", "-f", dumpfile, "-d", stage_db]
+            for n in names:
+                args += ["-t", n]
+            rc, out, err = run_tool(stage_conn, "pg_dump", args, timeout=None)
+        finally:
+            try:
+                for kind, sch, cur, orig in reversed(renamed):                # leave the quarantine database exactly as we found it (it can be promoted again)
+                    ss.query("ALTER %s %s RENAME TO %s" % (kind, qi(sch, cur), quote_ident(orig)))
+            finally:
+                ss.close()
+        if rc != 0:
+            raise EngineError("PGA-GEN-084", "pg_dump of the quarantine database failed: %s" % err.strip()[:600])
+        args = admin.args() + ["-d", dbname, "--exit-on-error", "-1"]
+        if plan["missing_roles"]:
+            args += ["--no-owner", "--no-acl"]
+        for r in todo:
+            created_tmp.append((r["schema"], _short(r["name"], sfx_new)))
+        rc, out, err = run_tool(admin, "pg_restore", args + [dumpfile], timeout=None)
+        if rc != 0:
+            raise EngineError("PGA-GEN-071", "loading the recovered tables into %s failed: %s" % (dbname, (err.strip() or out.strip())[:900]), "nothing was changed in the live database")
+        # verify what arrived
+        for r in todo:
+            want = r["rows_at_target"]
+            if want is None or r["kind"] == "p":
+                continue
+            got = int(live.scalar("SELECT count(*) FROM %s" % qi(r["schema"], _short(r["name"], sfx_new))))
+            if got != want:
+                raise EngineError("PGA-VRF-040", "verification failed for %s.%s: %d rows at target, %d loaded" % (r["schema"], r["name"], want, got), "nothing was changed in the live database")
+        if mode == "as_new":
+            result.update(plan=_slim(plan), promoted=["%s.%s" % (r["schema"], r["new_name"]) for r in todo], old_kept_as=[], note="the recovered tables sit next to the originals; nothing was re-attached")
+            created_tmp = []
+            return _compat(result)
+        # ---- phase 2: the swap, atomically
+        if progress:
+            progress({"phase": "swap"})
+        validate_later = []
+        swapped = [r for r in todo if r["action"] == "swap"]
+        old_seq_pos = {}
+        live.query("BEGIN")
+        try:
+            live.query("SET LOCAL lock_timeout = '20s'")
+            for v in reversed(plan["live_views"]):
+                live.query("DROP %s %s" % ("MATERIALIZED VIEW" if v["kind"] == "m" else "VIEW", qi(v["schema"], v["name"])))
+            for f in plan["inbound_fks"]:
+                if f.get("source") == "live":
+                    live.query("ALTER TABLE %s DROP CONSTRAINT %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"])))
+            for f in plan.get("old_outbound_fks") or []:
+                live.query("ALTER TABLE %s DROP CONSTRAINT %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"])))     # the kept copy must not pin rows of other tables
+            for r in swapped:
+                sch, nm = r["schema"], r["name"]
+                idx, seq = _idx_and_seqs(live, sch, nm)
+                for ssch, sq in seq:
+                    row = live.query("SELECT last_value, is_called FROM %s" % qi(ssch, sq))
+                    if row and row[0]:
+                        old_seq_pos[(sch, nm, sq)] = (int(row[0][0]), row[0][1] == "t")
+                live.query("ALTER TABLE %s RENAME TO %s" % (qi(sch, nm), quote_ident(r["old_kept_as"])))
+                for i in idx:
+                    live.query("ALTER INDEX %s RENAME TO %s" % (qi(sch, i), quote_ident(_short(i, sfx_old))))
+                for ssch, sq in seq:
+                    live.query("ALTER SEQUENCE %s RENAME TO %s" % (qi(ssch, sq), quote_ident(_short(sq, sfx_old))))
+            for r in todo:
+                sch, nm = r["schema"], r["name"]
+                tmpn = _short(nm, sfx_new)
+                idx, seq = _idx_and_seqs(live, sch, tmpn)
+                for i in idx:
+                    orig = orig_of.get((sch, i)) or (i[:len(i) - len(sfx_new)] if i.endswith(sfx_new) else i)
+                    live.query("ALTER INDEX %s RENAME TO %s" % (qi(sch, i), quote_ident(orig)))
+                for ssch, sq in seq:
+                    orig = orig_of.get((ssch, sq)) or (sq[:len(sq) - len(sfx_new)] if sq.endswith(sfx_new) else sq)
+                    live.query("ALTER SEQUENCE %s RENAME TO %s" % (qi(ssch, sq), quote_ident(orig)))
+                live.query("ALTER TABLE %s RENAME TO %s" % (qi(sch, tmpn), quote_ident(nm)))
+            for r in todo:                                    # sequences never go backwards: ids handed out after the target may already be referenced elsewhere
+                idx, seq = _idx_and_seqs(live, r["schema"], r["name"])
+                for ssch, sq in seq:
+                    rec = live.query("SELECT last_value, is_called FROM %s" % qi(ssch, sq))
+                    cur = (int(rec[0][0]), rec[0][1] == "t") if rec and rec[0] else None
+                    old = old_seq_pos.get((r["schema"], r["name"], sq))
+                    best = max([p for p in (cur, old) if p], key=lambda p: (p[0], p[1])) if (cur or old) else None
+                    if best and best != cur:
+                        live.query("SELECT setval(%s, %d, %s)" % (sql_lit(qi(ssch, sq)), best[0], "true" if best[1] else "false"))
+            for f in plan["inbound_fks"] + plan["outbound_fks"]:
+                live.query("SAVEPOINT pgarca_fk")
+                try:
+                    _add_fk(live, f, validate_later)
+                    live.query("RELEASE SAVEPOINT pgarca_fk")
+                except EngineError as e:
+                    live.query("ROLLBACK TO SAVEPOINT pgarca_fk")
+                    plan["warnings"].append("foreign key %s on %s.%s could not be re-attached: %s" % (f["name"], f["schema"], f["table"], e.message[:160]))
+            roles_ok = _roles_present(live, meta.get("roles") or []) | _roles_present(live, [v.get("owner") for v in plan["live_views"] if v.get("owner")])
+            for v in plan["live_views"]:                      # live views must come back exactly as they were: failing here undoes the whole swap
+                _recreate_view(live, v, roles_ok)
+            for v in sorted(plan["recovered_views"], key=lambda x: x.get("order", 0)):
+                live.query("SAVEPOINT pgarca_v")
+                try:
+                    _recreate_view(live, v, roles_ok)
+                    live.query("RELEASE SAVEPOINT pgarca_v")
+                except EngineError as e:
+                    live.query("ROLLBACK TO SAVEPOINT pgarca_v")
+                    plan["warnings"].append("view %s.%s was not recreated: %s" % (v["schema"], v["name"], e.message[:160]))
+            live.query("COMMIT")
+        except BaseException as e:
+            try:
+                live.query("ROLLBACK")
+            except Exception:
+                pass
+            if isinstance(e, EngineError):
+                raise EngineError("PGA-GEN-088", "the swap was not applied (rolled back, nothing changed): %s" % e.message[:500],
+                                  "the recovered tables stay in %s; fix the cause and promote again" % stage_db)
+            raise
+        created_tmp = []
+        # ---- after the swap: validate the re-attached keys, refresh statistics, verify
+        invalid = []
+        for f in validate_later:
+            try:
+                live.query("ALTER TABLE %s VALIDATE CONSTRAINT %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"])))
+            except EngineError as e:
+                invalid.append("%s on %s.%s (%s)" % (f["name"], f["schema"], f["table"], e.message[:120]))
+        if invalid:
+            plan["warnings"].append("foreign keys re-attached but NOT validated (some rows do not match the restored table): " + "; ".join(invalid))
+        for r in todo:
+            try:
+                live.query("ANALYZE %s" % qi(r["schema"], r["name"]))
+            except EngineError:
+                pass
+        bad = []
+        for r in todo:
+            want = r["rows_at_target"]
+            if want is None or r["kind"] == "p":
+                continue
+            got = int(live.scalar("SELECT count(*) FROM %s" % qi(r["schema"], r["name"])))
+            if got != want:
+                bad.append("%s.%s: %d vs %d" % (r["schema"], r["name"], want, got))
+        if bad:
+            raise EngineError("PGA-VRF-040", "verification after the swap failed: %s" % "; ".join(bad))
+        result.update(plan=_slim(plan), promoted=["%s.%s" % (r["schema"], r["name"]) for r in todo],
+                      old_kept_as=["%s.%s" % (r["schema"], r["old_kept_as"]) for r in swapped],
+                      skipped=["%s.%s" % (r["schema"], r["name"]) for r in plan["tables"] if r["action"] == "skip"],
+                      foreign_keys_reattached=len(validate_later) - len(invalid), foreign_keys_unvalidated=len(invalid),
+                      views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]))
+        return _compat(result)
+    finally:
+        if created_tmp:                                      # phase 1 left temporary tables behind and the swap did not happen: remove them
+            try:
+                for sch, nm in created_tmp:
+                    live.query("DROP TABLE IF EXISTS %s CASCADE" % qi(sch, nm))
+            except Exception:
+                pass
+        live.close()

@@ -81,6 +81,16 @@ export const OP_SPECS: Record<string, OpSpec> = {
 const isoUtcOffset = /([+-]\d{2}(:?\d{2})?|Z|UTC)\s*$/;
 const setId = /^[0-9]{8}-[0-9]{6}[FDI](_[0-9]{8}-[0-9]{6}[FDI])?$/;
 const lsn = /^[0-9A-Fa-f]{1,8}\/[0-9A-Fa-f]{1,8}$/;
+/** restore_object: `object` = database.schema.name | database.schema, or `objects` = a list of them (all in the same database). */
+const OBJ = /^[^.\s]+\.[^.\s]+(\.[^.\s]+)?$/;
+const objectsErr = (p: any): string | null => {
+  const list: string[] = Array.isArray(p.objects) ? p.objects.map(String) : (p.object ? [String(p.object)] : []);
+  if (!list.length) return 'object (database.schema.name or database.schema) or objects[] required';
+  if (list.length > 200) return 'at most 200 objects per restore';
+  if (!list.every(o => OBJ.test(o))) return 'every object must be database.schema.name or database.schema';
+  if (new Set(list.map(o => o.split('.')[0])).size > 1) return 'all objects must belong to the same database';
+  return null;
+};
 const dbName = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/;
 const pgName = (v: any) => typeof v === 'string' && v.length > 0 && v.length <= 63 && noCtl(v);
 
@@ -126,8 +136,7 @@ Object.assign(OP_SPECS, {
   restore_instance: { ...dataOp, validate: (p: any) => !p.destination || !String(p.destination).startsWith('/') || !noCtl(String(p.destination)) ? 'destination must be an absolute path'
                                                        : (targetErr(p) || (p.action && !['promote', 'pause'].includes(p.action) ? 'action must be promote|pause' : null)) },
   restore_database: { ...dataOp, validate: (p: any) => !pgName(p.database) ? 'database required' : (p.new_name && !dbName.test(String(p.new_name)) ? 'invalid new_name' : (targetErr(p) || intoErr(p))) },
-  restore_object:   { ...dataOp, validate: (p: any) => !/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' :
-                                                       (p.stage_db && !dbName.test(String(p.stage_db)) ? 'invalid stage_db' : (targetErr(p) || intoErr(p))) },
+  restore_object:   { ...dataOp, validate: (p: any) => objectsErr(p) || (p.stage_db && !dbName.test(String(p.stage_db)) ? 'invalid stage_db' : (targetErr(p) || intoErr(p))) },
   hba_read:     { mutating: false, target: 'node', lane: 'control', validate: () => null },
   hba_plan:     { mutating: false, target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) },
   hba_apply:    { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) || (p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
@@ -135,7 +144,7 @@ Object.assign(OP_SPECS, {
   agent_config_set: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => cfgErr(p) },
   hba_expire:   { mutating: true,  target: 'node', lane: 'control', validate: () => null },
   hba_rollback: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.backup && !/^[\w.\-]{1,100}$/.test(String(p.backup)) ? 'invalid backup name' : null) },
-  restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : (p.mode && !['as_new', 'replace'].includes(p.mode) ? 'mode must be as_new|replace' : intoErr(p))) },
+  restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (p.object && !/^[^.\s]+\.[^.\s]+(\.[^.\s]+)?$/.test(String(p.object)) ? 'object must be database.schema or database.schema.name' : (p.mode && !['as_new', 'replace', 'missing_only'].includes(p.mode) ? 'mode must be as_new|replace|missing_only' : intoErr(p))) },
   restore_drill:    { ...dataOp, mutating: false, validate: (p: any) => (p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null) },
   restore_diff:     { ...dataOp, mutating: false, cancellable: false, validate: (p: any) => stageErr(p) || intoErr(p) },
   restore_apply_rows: { ...dataOp, cancellable: false, validate: (p: any) => stageErr(p) || keysErr(p) || intoErr(p) },

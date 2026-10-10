@@ -11,6 +11,7 @@ import tempfile
 import time
 
 from pg_arca.engine.backup import build_chain
+from pg_arca.engine import objects as objmod
 from pg_arca.engine.catalog import find_object
 from pg_arca.engine.ephemeral import Ephemeral, TargetNotReached
 from pg_arca.engine.pgsession import PgConn, PgSession, run_tool
@@ -324,17 +325,26 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
 
 
 def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,
-                   into=None, stage_db=None, data_only=False, dry_run=False, progress=None, cancel=None):
+                   into=None, stage_db=None, data_only=False, dry_run=False, progress=None, cancel=None, objects=None):
+    """Recover tables / views / whole schemas (a list of `db.schema.name` or `db.schema`, all in one database) with everything around them, into a quarantine database.
+    The selection is expanded to what it needs and what depends on it (foreign keys, types, functions, sequences, views, grants): see engine/objects.py.
+    `data_only` is accepted for compatibility and ignored: the quarantine copy is always complete."""
+    db, sel = objmod.parse_selection(spec, objects)
     target, chain, tt = _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
-    dbentry, rel = find_object(cat, spec)
+    if db not in cat["databases"]:
+        raise EngineError("PGA-GEN-031", "database '%s' is not in the backup catalog" % db, "available: %s" % ", ".join(sorted(cat["databases"])))
+    dbentry = cat["databases"][db]
+    nrel = objmod.selection_in_catalog(dbentry, sel)
+    label = ", ".join(("%s.%s" % (o["schema"], o["name"])) if o["kind"] == "rel" else ("schema %s" % o["schema"]) for o in sel)
     stage = stage_db or ("pgarca_stage_" + now_utc().strftime("%Y%m%dt%H%M%S"))
     if not stage.startswith("pgarca_stage_"):
         raise EngineError("PGA-GEN-081", "a quarantine database name must start with pgarca_stage_ (pg_arca drops it after promotion: it must never be a user database)")
     _check_name(stage, "quarantine database name")
     merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter({dbentry["oid"], 1, 5}))
     merged_all, _ = merge_chain(ctx.repo, chain)
-    plan = {"set": target["id"], "chain": [c["id"] for c in chain], "object": spec, "kind": rel["kind"], "size_in_backup": rel["size"],
+    size_in_backup = sum(o["size"] for o in objmod_user_sizes(dbentry, sel))
+    plan = {"set": target["id"], "chain": [c["id"] for c in chain], "object": label, "selection": sel, "relations_in_backup": nrel, "size_in_backup": size_in_backup,
             "quarantine_database": stage, "extract_bytes": estimate(merged_sel), "cluster_bytes": estimate(merged_all),
             "target": tt or target_lsn or target_xid or target_name or "end of archive"}
     plan["saved_pct"] = round(100.0 * (1 - plan["extract_bytes"] / float(max(plan["cluster_bytes"], 1))), 1)
@@ -344,59 +354,47 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     admin = _dest_conn(ctx, into)
     eph, info = _recover_db(ctx, chain, dbentry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     created = False
-    tmp = tempfile.mkdtemp(prefix="pgarca-obj-")
-    fq = "%s.%s" % (quote_ident(rel["schema"]), quote_ident(rel["name"]))
     try:
-        src = PgSession(eph.conn(dbentry["name"]), read_only=True)
+        src = PgSession(eph.conn(db), read_only=True)
         try:
-            cnt = None
-            if rel["kind"] in ("r", "p", "m"):
-                cnt = src.scalar("SELECT count(*) FROM %s" % fq)
-            info["rows_at_target"] = int(cnt) if cnt is not None else None
-        except EngineError as e:
-            raise EngineError("PGA-GEN-071", "object %s is not readable at the requested point in time: %s" % (spec, e.message),
-                              "it may not exist yet at that time; choose a later target or inspect with the catalog")
+            an = objmod.analyze(src, sel)
         finally:
             src.close()
-        if progress:
-            progress({"phase": "transfer"})
-        dumpfile = os.path.join(tmp, "obj.dump")
-        args = eph.conn().args() + ["-Fc", "-Z", "3", "-t", fq, "-f", dumpfile, "-d", dbentry["name"]]
-        if data_only:
-            args.append("--data-only")
-        rc, out, err = run_tool(eph.conn(), "pg_dump", args, timeout=None)
-        if rc != 0:
-            raise EngineError("PGA-GEN-072", "pg_dump of the object failed: %s" % err.strip()[:600])
-        info["dump_bytes"] = os.path.getsize(dumpfile)
-        _create_db(admin, stage, dbentry)
+
+        def make():
+            _create_db(admin, stage, dbentry)
         created = True
-        sc = PgSession(admin.with_db(stage))
-        try:
-            sc.query("CREATE SCHEMA IF NOT EXISTS %s" % quote_ident(rel["schema"]))
-        finally:
-            sc.close()
-        _pg_restore(admin, stage, dumpfile, 1)
-        if info["rows_at_target"] is not None:
-            v = PgSession(admin.with_db(stage), read_only=True)
-            try:
-                got = int(v.scalar("SELECT count(*) FROM %s" % fq))
-            finally:
-                v.close()
-            info["rows_restored"] = got
-            if got != info["rows_at_target"]:
-                raise EngineError("PGA-VRF-040", "verification failed: %d rows at target, %d restored" % (info["rows_at_target"], got))
+        meta = objmod.build_stage(admin, eph, dbentry, sel, label, stage, an, plan, progress, create_db=make)
+        info["rows_restored"] = sum(meta["counts"].values())
+        info["rows_at_target"] = info["rows_restored"]
+        info["dependencies"] = {"tables": len(meta["tables"]), "foreign_keys": len(meta["fks"]), "views": len(meta["views"]), "types": len(meta["prereq"]["types"]),
+                                "functions": len(meta["prereq"]["functions"]), "sequences": len(meta["owned_sequences"]) + len(meta["sequences"]), "extensions": meta["prereq"]["extensions"],
+                                "roles": meta["roles"], "missing_roles": meta.get("missing_roles_at_stage") or []}
+        info["warnings"] = meta["warnings"]
         plan.update(info)
         plan["result_database"] = stage
-        plan["inspect"] = "SELECT * FROM %s.%s LIMIT 20  (database %s)" % (rel["schema"], rel["name"], stage)
-        plan["promote_hint"] = "pg_dump -Fc -t %s.%s %s | pg_restore -d <target_db> --no-owner   -- then DROP DATABASE %s" % (rel["schema"], rel["name"], stage, stage)
+        plan["tables"] = [("%s.%s" % (t["schema"], t["name"])) for t in meta["tables"]]
+        plan["inspect"] = "database %s (schemas %s)" % (stage, ", ".join(sorted({t["schema"] for t in meta["tables"]})))
         return plan
     except BaseException:
         if created:
             _drop_db(admin, stage)
         raise
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
         eph.cleanup()
+
+
+def objmod_user_sizes(dbentry, sel):
+    """Backup-catalog footprint (heap + TOAST + indexes + partitions) of the selected objects."""
+    from pg_arca.engine.maintenance import user_objects
+    objs, _ = user_objects(dbentry)
+    out = []
+    for o in objs:
+        for s in sel:
+            if s["schema"] == o["schema"] and (s["kind"] == "schema" or s["name"] == o["name"]):
+                out.append(o)
+                break
+    return out
 
 
 def restore_test(ctx, set_spec=None, progress=None, cancel=None):
@@ -467,7 +465,7 @@ def restore_drill(ctx, set_spec=None, progress=None, cancel=None):
     return info
 
 
-def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None):
+def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None, dry_run=False, progress=None):
     """
     Move a table recovered into a quarantine database back into the real database. Never destructive:
       as_new  : the recovered table appears next to the original as <name>_pitr_<ts>
@@ -475,10 +473,21 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
     Indexes and owned sequences of the table that gets the suffix are renamed too, so nothing collides. Foreign keys, views and
     functions that referenced the original keep pointing at it (we report how many), they are not rewired.
     """
-    if mode not in ("as_new", "replace"):
-        raise EngineError("PGA-GEN-080", "mode must be as_new or replace")
+    if mode not in ("as_new", "replace", "missing_only"):
+        raise EngineError("PGA-GEN-080", "mode must be as_new, replace or missing_only")
     if not stage_db or not stage_db.startswith("pgarca_stage_"):
         raise EngineError("PGA-GEN-081", "only quarantine databases created by pg_arca can be promoted from (name starts with pgarca_stage_)")
+    _check_name(stage_db, "quarantine database")
+    v2 = objmod.promote(_dest_conn(ctx, into), stage_db, mode=mode, dry_run=dry_run, progress=progress)          # a stage built by restore_object v2 knows everything around its tables
+    if v2 is not None:
+        if drop_stage and not dry_run:
+            _drop_db(_dest_conn(ctx, into), stage_db)
+            v2["stage_dropped"] = True
+        return v2
+    if mode == "missing_only":
+        raise EngineError("PGA-GEN-080", "missing_only needs a quarantine database made by the current restore_object (this one predates it): restore the object again")
+    if dry_run:
+        raise EngineError("PGA-GEN-080", "this quarantine database predates the dependency-aware restore: no plan available, restore the object again")
     parts = spec.split(".")
     if len(parts) != 3:
         raise EngineError("PGA-GEN-082", "object must be database.schema.name")
