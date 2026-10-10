@@ -24,6 +24,9 @@ case "${1:-help}" in
   agentlog) docker exec -it "${2:-$(leader)}" tail -f /var/log/pgarca/agent.out ;;
   console) # run the web console on this host (background), from the repo root
     cd ../..; [[ -d node_modules/express ]] || npm install; [[ -f dist/index.html ]] || npx vite build; setsid nohup npm start >/tmp/pg_arca_console.log 2>&1 < /dev/null & echo "console on :3000, log /tmp/pg_arca_console.log" ;;
+  fix-pw)  # make the database roles use the passwords of .env (the nodes' patroni.yml). Needed when .env and the data volumes come from different runs: replicas then fail with "password authentication failed for user replicator"
+    need_env; set -a; . "$ENVF"; set +a; l=$(leader) || { echo "no leader"; exit 1; }
+    docker exec "$l" gosu postgres psql -XAtc "ALTER ROLE replicator PASSWORD '${PG_REPL_PASSWORD}'" -c "ALTER ROLE postgres PASSWORD '${PG_SUPER_PASSWORD}'" && echo "roles on $l now match $ENVF; the replicas retry by themselves within ~30 s" ;;
   diag)    # one-shot diagnostics: paste the whole output when something misbehaves
     echo "== patroni"; l=$(leader || true); docker exec "${l:-pg1}" patronictl -c /etc/patroni.yml list 2>&1 | tail -8
     echo "== host disk / memory"; df -h / /var/lib/docker 2>/dev/null | tail -3; free -m | head -2
@@ -70,6 +73,7 @@ case "${1:-help}" in
   *) cat <<H
 ./lab.sh up | down | reset | status | smoke
          shell [node] | psql | logs [node] | agentlog [node]
+         fix-pw             align role passwords with .env (replicas stuck on 'password authentication failed')
          diag               one-shot diagnostics of the whole lab (paste it when something misbehaves)
          agent-update       after `git pull`: reinstall + restart only the agent on all nodes
          agent-reset        forget console enrollment on all nodes (re-announce)
