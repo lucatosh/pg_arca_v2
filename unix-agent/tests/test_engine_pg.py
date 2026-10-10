@@ -145,7 +145,15 @@ class EngineTests(unittest.TestCase):
         F.n1, F.t1 = n1, t1
         # the "accident": ONE transaction (a multi-statement -c is an implicit transaction) that drops a table. Recovery stops before its commit, with the
         # DROP's ACCESS EXCLUSIVE lock already replayed: reading that table in the paused standby would block forever unless recovery is ended at the target
-        q("app", "DELETE FROM orders; DROP TABLE customers")
+        acc = PgSession(F.conn.with_db("app"))
+        try:
+            for stmt in ("BEGIN", "DELETE FROM orders", "DROP TABLE customers"):
+                acc.query(stmt)
+            q("postgres", "SELECT pg_switch_wal()")                      # make sure the lock record is archived before the commit record
+            time.sleep(1.5)
+            acc.query("COMMIT")
+        finally:
+            acc.close()
         q("postgres", "SELECT pg_switch_wal()")
         time.sleep(2)
         dest = os.path.join(F.base, "restored_instance")
