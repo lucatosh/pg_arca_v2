@@ -34,16 +34,16 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Avvia ripristino")'); await p.click('.modal button:has-text("Avvia")');
   await p.waitForSelector('text=Ripristino completato', { timeout: 15000 }); await shot('12-restore-done');
   // restore one table, then promote it back
-  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Una tabella")');
+  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Tabelle o schemi")');
   await p.waitForSelector('.card select option:has-text("appdb")', { state: 'attached', timeout: 10000 }); await p.selectOption('.card select', 'appdb');
   await p.click('.tree button:has-text("orders")'); await p.click('button:has-text("Avanti")'); await p.waitForSelector('[role=slider]'); await p.click('button:has-text("Avanti")');
   await p.waitForSelector('text=Quarantena'); await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 });
   await p.click('button:has-text("Avvia ripristino")'); await p.click('.modal button:has-text("Avvia")');
-  await p.waitForSelector('text=Riporta la tabella nel database', { timeout: 15000 }); await shot('12b-promote');
+  await p.waitForSelector('text=Riporta nel database', { timeout: 15000 }); await p.click('button:has-text("Anteprima delle modifiche")'); await p.waitForSelector('text=Chiavi esterne da ricollegare', { timeout: 10000 }); await shot('12b-promote');
   await p.click('button:has-text("Confronta riga per riga")'); await p.waitForSelector('text=Differenze trovate', { timeout: 10000 });
   await p.click('label:has-text("[200]") input'); await p.click('label:has-text("[1]") input'); await shot('12a-rows');
   await p.click('button:has-text("Applica (2)")'); await p.click('.modal button:has-text("Applica")'); await p.waitForSelector('text=Righe recuperate', { timeout: 10000 });
-  await p.click('button:has-text("Riporta la tabella")'); await p.click('.modal button:has-text("Riporta")'); await p.waitForSelector('text=Tabella riportata', { timeout: 10000 }); await shot('12c-promoted');
+  await p.getByRole('button', { name: 'Riporta', exact: true }).click(); await p.click('.modal button:has-text("Riporta")'); await p.waitForSelector('text=Riportato nel database', { timeout: 10000 }); await shot('12c-promoted');
   // ops tab, logs tab, preview tab
   await tab('Operatività', 'Operazioni'); await p.waitForSelector('text=Registro operazioni'); await shot('13-ops');
   await tab('Operatività', 'Log'); await p.waitForSelector('text=Log in tempo reale');

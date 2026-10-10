@@ -545,7 +545,8 @@ class OperationExecutor:
         from pg_arca.engine import granular
         if scope == "database":
             return granular.restore_database(ctx, str(p.get("database")), p.get("set"), dry_run=True, new_name=p.get("new_name"), **t)
-        return granular.restore_object(ctx, str(p.get("object")), p.get("set"), dry_run=True, stage_db=p.get("stage_db"), **t)
+        objs = [str(x) for x in p.get("objects")] if isinstance(p.get("objects"), list) and p.get("objects") else None
+        return granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), dry_run=True, stage_db=p.get("stage_db"), objects=objs, **t)
 
     def h_restore_instance(self, p):
         from pg_arca.engine.restore import restore_instance

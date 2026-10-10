@@ -25,11 +25,11 @@ export function RestoreTab({ c }: { c: any }) {
 function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [step, setStep] = useState(0);
   const [scope, setScope] = useState<Scope>('database');
-  const [db, setDb] = useState(''); const [obj, setObj] = useState(''); const [search, setSearch] = useState('');
+  const [db, setDb] = useState(''); const [objs, setObjs] = useState<string[]>([]); const obj = objs[0] || ''; const [search, setSearch] = useState('');
   const [tgt, setTgt] = useState<Target>({ mode: 'latest' });
   const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false);
   const [ask, setAsk] = useState(false);
-  const prom = useOpRunner(c.id); const [pmode, setPmode] = useState<'as_new' | 'replace'>('as_new'); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false);
+  const prom = useOpRunner(c.id); const prev = useOpRunner(c.id); const [pmode, setPmode] = useState<PMode>('as_new'); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false);
   const dbsR = useOpRunner(c.id); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id);
 
   const from = useMemo(() => Math.min(...sets.map(s => Date.parse(s.stop_time!))), [sets]);
@@ -43,11 +43,11 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
   const tparams = (): Record<string, any> => tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : {};
   const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { destination: dest, action, delta, ...tparams() } }
-    : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...tparams() } } : { type: 'restore_object', p: { object: obj, ...tparams() } };
+    : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
 
   const dbs: any[] = dbsR.op?.result?.databases || [];
-  const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && !!obj);
+  const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && objs.length > 0);
   const okWhere = scope === 'instance' ? dest.startsWith('/') : scope === 'database' ? /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName) : true;
   const okWhen = tgt.mode !== 'time' || (tgt.ms >= from && tgt.ms <= to + 60000);
   const next = () => { const n = step + 1; setStep(n); if (n === 3) plan.run('restore_plan', planParams()); };
@@ -64,11 +64,11 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     {step === 0 && <Card title="Cosa vuoi ripristinare?"><div className="stack">
       <div className="grid g3">
         <button className="choice" aria-pressed={scope === 'database'} onClick={() => setScope('database')}><Icon n="db" s={22} /><div><strong>Un database</strong><p className="sub">Estrae solo i file di quel database: molto più veloce del cluster intero. Arriva con un nome nuovo.</p></div></button>
-        <button className="choice" aria-pressed={scope === 'object'} onClick={() => setScope('object')}><Icon n="file" s={22} /><div><strong>Una tabella</strong><p className="sub">Recupera una singola tabella (es. cancellata per errore) in un database di quarantena.</p></div></button>
+        <button className="choice" aria-pressed={scope === 'object'} onClick={() => setScope('object')}><Icon n="file" s={22} /><div><strong>Tabelle o schemi</strong><p className="sub">Recupera una o più tabelle, o interi schemi, con chiavi esterne, viste, sequenze e permessi, in un database di quarantena.</p></div></button>
         <button className="choice" aria-pressed={scope === 'instance'} onClick={() => setScope('instance')}><Icon n="server" s={22} /><div><strong>Tutto il cluster</strong><p className="sub">Ricostruisce una copia completa in una cartella vuota. Non tocca mai l’istanza in esecuzione.</p></div></button></div>
       {scope !== 'instance' ? (dbsR.op && dbsR.op.status === 'succeeded' ? <>
-        <Field label="Database"><select className="input" value={db} onChange={e => { setDb(e.target.value); setObj(''); }}><option value="">Scegli…</option>{dbs.filter(x => x.connectable).map(x => <option key={x.name} value={x.name}>{x.name} — {bytes(x.size)} · {x.tables ?? x.objects} tabelle{x.matviews ? `, ${x.matviews} viste materializzate` : ''}{x.schemas ? ` · ${x.schemas} schemi` : ''}</option>)}</select></Field>
-        {scope === 'object' && db ? <ObjectPicker r={objR.op} busy={objR.busy} search={search} setSearch={setSearch} db={db} value={obj} onPick={setObj} /> : null}</> :
+        <Field label="Database"><select className="input" value={db} onChange={e => { setDb(e.target.value); setObjs([]); prev.reset(); }}><option value="">Scegli…</option>{dbs.filter(x => x.connectable).map(x => <option key={x.name} value={x.name}>{x.name} — {bytes(x.size)} · {x.tables ?? x.objects} tabelle{x.matviews ? `, ${x.matviews} viste materializzate` : ''}{x.schemas ? ` · ${x.schemas} schemi` : ''}</option>)}</select></Field>
+        {scope === 'object' && db ? <ObjectPicker r={objR.op} busy={objR.busy} search={search} setSearch={setSearch} db={db} value={objs} onChange={setObjs} /> : null}</> :
         <OpPanel op={dbsR.op} error={dbsR.error} label="Lettura del catalogo dei backup" />) : null}
       <div className="row"><div className="grow" /><Button kind="primary" disabled={!okWhat} onClick={() => setStep(1)}>Avanti</Button></div></div></Card>}
 
@@ -98,7 +98,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         <Field label="Al termine del recovery"><div className="seg"><button aria-pressed={action === 'promote'} onClick={() => setAction('promote')}>Diventa un’istanza normale</button><button aria-pressed={action === 'pause'} onClick={() => setAction('pause')}>Resta in pausa per controllare</button></div></Field>
         <label className="check"><input type="checkbox" checked={delta} onChange={e => setDelta(e.target.checked)} />Ripristino differenziale su una cartella già ripristinata (copia solo ciò che differisce)</label></> :
         scope === 'database' ? <Field label="Nome del nuovo database" hint="Non sovrascrive mai un database esistente: se il nome c’è già, il ripristino si ferma prima di iniziare."><input className="input" value={newName} onChange={e => setNewName(e.target.value)} /></Field> :
-        <Banner kind="info" title="Quarantena">La tabella viene ricostruita in un database temporaneo separato. Da lì la controlli e la sposti dove serve; il tuo database originale non viene toccato.</Banner>}
+        <Banner kind="info" title="Quarantena">Quanto scelto viene ricostruito, con tutto ciò da cui dipende, in un database temporaneo separato. Da lì lo controlli e lo riporti dove serve; il tuo database originale non viene toccato.</Banner>}
       <div className="row"><Button onClick={() => setStep(1)}>Indietro</Button><div className="grow" /><Button kind="primary" disabled={!okWhere} onClick={next}>Controlla piano</Button></div></div></Card>}
 
     {step === 3 && <div className="stack-l">
@@ -108,17 +108,18 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       {plan.op?.status === 'succeeded' && !exec.op ? <div className="row"><Button onClick={() => setStep(2)}>Indietro</Button><div className="grow" /><Button kind="primary" icon="restore" onClick={() => setAsk(true)}>Avvia ripristino</Button></div> : null}
       {(exec.op || exec.error) ? <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
         {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' ? <>Cartella pronta in <code>{exec.op!.result.destination}</code>. {exec.op!.result.start_hint}</> : <>Dati disponibili nel database <code>{exec.op!.result.result_database}</code>.{exec.op!.result.inspect ? <> Per controllare: <code>{exec.op!.result.inspect}</code></> : null}</>}</Banner> : null}
-        {doneOk && scope === 'object' && exec.op!.result.result_database ? <Promote stage={exec.op!.result.result_database} obj={obj} mode={pmode} setMode={setPmode} drop={pdrop} setDrop={setPdrop} runner={prom} ask={() => setAskPromote(true)} /> : null}
-        {doneOk && scope === 'object' && exec.op!.result.result_database ? <RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /> : null}
+        {doneOk ? <Notices r={exec.op!.result} /> : null}
+        {doneOk && scope === 'object' && exec.op!.result.result_database ? <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} /> : null}
+        {doneOk && scope === 'object' && objs.length === 1 && objs[0].split('.').length === 3 && exec.op!.result.result_database ? <RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /> : null}
         <Result op={exec.op} />
-        {(exec.op && !running) ? <div><Button onClick={() => { exec.reset(); plan.reset(); setStep(0); }}>Nuovo ripristino</Button></div> : null}</div></Card> : null}
+        {(exec.op && !running) ? <div><Button onClick={() => { exec.reset(); plan.reset(); prom.reset(); prev.reset(); setObjs([]); setStep(0); }}>Nuovo ripristino</Button></div> : null}</div></Card> : null}
     </div>}
 
-    {askPromote ? <Confirm title="Riportare la tabella nel database?" danger={pmode === 'replace'} confirmLabel="Riporta" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); prom.run('restore_promote', { stage_db: exec.op!.result.result_database, object: obj, mode: pmode, drop_stage: pdrop }); }}>
-      <p>{pmode === 'as_new' ? <>La tabella ripristinata compare accanto all’originale con un nome che termina in <code>_pitr_&lt;data&gt;</code>. L’originale non viene toccato.</> : <>L’originale viene rinominata <code>_old_&lt;data&gt;</code> (i dati restano) e la tabella ripristinata prende il suo nome. Chiavi esterne, viste e funzioni continuano a puntare alla vecchia.</>}</p>
+    {askPromote ? <Confirm title="Riportare nel database?" danger={pmode === 'replace'} confirmLabel="Riporta" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); prom.run('restore_promote', { stage_db: exec.op!.result.result_database, object: obj, mode: pmode, drop_stage: pdrop }); }}>
+      <p>{pmode === 'as_new' ? <>Le tabelle ripristinate compaiono accanto alle originali con un nome che termina in <code>_pitr_&lt;data&gt;</code>. Nulla di esistente viene toccato.</> : pmode === 'missing_only' ? <>Tornano solo le tabelle che oggi non esistono; quelle presenti restano com’è con i dati di adesso.</> : <>Le originali vengono rinominate <code>_old_&lt;data&gt;</code> (i dati restano) e le ripristinate prendono il loro nome in un’unica transazione: chiavi esterne e viste che dipendevano dalle vecchie vengono ricollegate alle nuove.</>}</p>
       <p className="small muted">{pdrop ? 'Il database di quarantena viene eliminato a operazione riuscita.' : 'Il database di quarantena resta disponibile.'}</p></Confirm> : null}
     {ask ? <Confirm title="Avviare il ripristino?" confirmLabel="Avvia" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); exec.run(x.type, x.p); }}>
-      <p>{scope === 'instance' ? <>Ricostruisce il cluster in <code>{dest}</code>.</> : scope === 'database' ? <>Crea il database <code>{newName}</code> da <code>{db}</code>.</> : <>Ricostruisce <code>{obj}</code> in un database di quarantena.</>} L’istanza in esecuzione e i suoi dati non vengono modificati. Se qualcosa fallisce, ciò che è stato creato viene rimosso.</p></Confirm> : null}
+      <p>{scope === 'instance' ? <>Ricostruisce il cluster in <code>{dest}</code>.</> : scope === 'database' ? <>Crea il database <code>{newName}</code> da <code>{db}</code>.</> : <>Ricostruisce {objs.length === 1 ? <code>{obj}</code> : <>{objs.length} elementi</>} in un database di quarantena.</>} L’istanza in esecuzione e i suoi dati non vengono modificati. Se qualcosa fallisce, ciò che è stato creato viene rimosso.</p></Confirm> : null}
   </div>;
 }
 
@@ -135,28 +136,63 @@ function PlanView({ p, scope }: { p: any; scope: Scope }) {
       {p.destination_database ? <><dt>Nuovo database</dt><dd>{p.destination_database}</dd></> : null}{p.quarantine_database ? <><dt>Quarantena</dt><dd>{p.quarantine_database}</dd></> : null}</dl></div>;
 }
 
-function ObjectPicker({ r, busy, search, setSearch, db, value, onPick }: { r: Op | null; busy: boolean; search: string; setSearch: (s: string) => void; db: string; value: string; onPick: (o: string) => void }) {
+function ObjectPicker({ r, busy, search, setSearch, db, value, onChange }: { r: Op | null; busy: boolean; search: string; setSearch: (s: string) => void; db: string; value: string[]; onChange: (v: string[]) => void }) {
   const schemas: any[] = r?.status === 'succeeded' ? r.result.schemas || [] : [];
-  return <div className="stack"><Field label="Tabella"><input className="input" placeholder="Cerca per nome" value={search} onChange={e => setSearch(e.target.value)} /></Field>
+  const has = (id: string) => value.includes(id);
+  const toggleTable = (sch: string, id: string) => onChange(has(id) ? value.filter(x => x !== id) : [...value, id]);
+  const toggleSchema = (sch: string, tablesIds: string[]) => { const sid = `${db}.${sch}`; onChange(has(sid) ? value.filter(x => x !== sid) : [...value.filter(x => !tablesIds.includes(x)), sid]); };
+  return <div className="stack"><Field label="Tabelle e schemi" hint="Spunta una o più tabelle, oppure l’intero schema. Le dipendenze vengono incluse da sole."><input className="input" placeholder="Cerca per nome" value={search} onChange={e => setSearch(e.target.value)} /></Field>
     <div className="tree">{busy && !schemas.length ? <div style={{ padding: 12 }} className="muted">Lettura del catalogo…</div> : null}
-      {schemas.map(s => <div key={s.name}><div className="sch">{s.name}{s.tables != null ? <span className="faint small"> — {s.tables} {s.tables === 1 ? 'tabella' : 'tabelle'}, {bytes(s.bytes)}</span> : null}</div>{s.objects.map((o: any) => { const id = `${db}.${s.name}.${o.name}`; return <button key={id} aria-pressed={value === id} onClick={() => onPick(id)}><Icon n="file" s={14} /><span className="grow">{o.name}</span><span className="faint small">{o.partitions ? `${o.partitions} partizioni · ` : ''}{bytes(o.size)}</span></button>; })}</div>)}
+      {schemas.map(s => { const sid = `${db}.${s.name}`; const whole = has(sid); const ids = s.objects.map((o: any) => `${db}.${s.name}.${o.name}`);
+        return <div key={s.name}><label className="sch"><input type="checkbox" checked={whole} onChange={() => toggleSchema(s.name, ids)} /> {s.name}{s.tables != null ? <span className="faint small"> — {s.tables} {s.tables === 1 ? 'tabella' : 'tabelle'}, {bytes(s.bytes)}{whole ? ' · schema intero' : ''}</span> : null}</label>
+          {s.objects.map((o: any) => { const id = `${db}.${s.name}.${o.name}`; const on = whole || has(id);
+            return <button key={id} aria-pressed={on} disabled={whole} onClick={() => toggleTable(s.name, id)}><input type="checkbox" readOnly checked={on} tabIndex={-1} /><span className="grow">{o.name}</span><span className="faint small">{o.partitions ? `${o.partitions} partizioni · ` : ''}{bytes(o.size)}</span></button>; })}</div>; })}
       {r?.status === 'succeeded' && !schemas.length ? <div style={{ padding: 12 }} className="muted">Nessuna tabella corrisponde.</div> : null}
       {r?.status === 'failed' ? <div style={{ padding: 12 }} className="muted">{r.error}</div> : null}</div>
     {r?.result?.truncated ? <p className="small muted">Elenco troncato: affina la ricerca.</p> : null}
-    <p className="small muted">Le dipendenze (chiavi esterne, viste, sequenze) non vengono incluse: si recupera la sola tabella.</p></div>;
+    {value.length ? <p className="small">Selezione: {value.map(v => <code key={v} style={{ marginRight: 6 }}>{v.split('.').slice(1).join('.')}{v.split('.').length === 2 ? ' (schema)' : ''}</code>)}</p> : null}
+    <p className="small muted">Si ripristina ciò che scegli più ciò che serve per farlo funzionare: chiavi esterne, tipi, funzioni, sequenze, viste e permessi.</p></div>;
 }
 
-function Promote({ stage, obj, mode, setMode, drop, setDrop, runner, ask }: { stage: string; obj: string; mode: 'as_new' | 'replace'; setMode: (m: 'as_new' | 'replace') => void; drop: boolean; setDrop: (b: boolean) => void; runner: ReturnType<typeof useOpRunner>; ask: () => void }) {
+type PMode = 'as_new' | 'replace' | 'missing_only';
+
+/** What the recovery itself found worth saying: a target past the archive, a database dropped right after the requested point. */
+function Notices({ r }: { r: any }) {
+  return <>{r.target_clamped ? <Banner kind="warn" title="Ripristinato fino alla fine dell’archivio">{r.target_clamped.message}</Banner> : null}
+    {r.stopped_before_drop ? <Banner kind="info" title="Fermato subito prima del DROP DATABASE">{r.stopped_before_drop.message}</Banner> : null}
+    {(r.warnings || []).length ? <Banner kind="warn" title="Da sapere">{(r.warnings as string[]).map((w, i) => <div key={i} className="small">{w}</div>)}</Banner> : null}</>;
+}
+
+const ACTION: Record<string, string> = { swap: 'sostituisce', create: 'viene creata', copy: 'copia accanto', skip: 'già presente: invariata' };
+
+function PromotePlan({ p }: { p: any }) {
+  return <div className="stack"><table className="t"><thead><tr><th>Tabella</th><th>Cosa succede</th><th className="num">Righe al ripristino</th></tr></thead><tbody>
+    {(p.tables || []).map((t: any) => <tr key={`${t.schema}.${t.name}`}><td><code>{t.schema}.{t.name}</code></td><td className="small">{ACTION[t.action] || t.action}{t.old_kept_as ? <> — la attuale resta come <code>{t.old_kept_as}</code></> : null}{t.new_name ? <> come <code>{t.new_name}</code></> : null}</td><td className="num">{t.rows_at_target != null ? num(t.rows_at_target) : '—'}</td></tr>)}</tbody></table>
+    <dl className="kv"><dt>Chiavi esterne da ricollegare</dt><dd>{num((p.inbound_fks || []).length + (p.outbound_fks || []).length)}{(p.inbound_fks || []).length ? <span className="small muted"> — {(p.inbound_fks as any[]).slice(0, 4).map(f => `${f.table}→${f.ref_table}`).join(', ')}{p.inbound_fks.length > 4 ? '…' : ''}</span> : null}</dd>
+      <dt>Viste da ricreare</dt><dd>{num((p.views || []).length)}{(p.views || []).length ? <span className="small muted"> — {(p.views as any[]).slice(0, 4).map(v => v.name).join(', ')}{p.views.length > 4 ? '…' : ''}</span> : null}</dd>
+      {p.missing_prereq && Object.values(p.missing_prereq).some((x: any) => x.length) ? <><dt>Da creare prima</dt><dd className="small">{Object.entries(p.missing_prereq).filter(([, v]: any) => v.length).map(([k, v]: any) => `${k}: ${v.join(', ')}`).join(' · ')}</dd></> : null}</dl>
+    {(p.warnings || []).map((w: string, i: number) => <div key={i} className="small" style={{ color: 'var(--warn, #d9a441)' }}>{w}</div>)}</div>;
+}
+
+function Promote({ stage, what, deps, warnings, mode, setMode, drop, setDrop, runner, preview, ask }: { stage: string; what: string[]; deps?: any; warnings?: string[]; mode: PMode; setMode: (m: PMode) => void; drop: boolean; setDrop: (b: boolean) => void; runner: ReturnType<typeof useOpRunner>; preview: ReturnType<typeof useOpRunner>; ask: () => void }) {
   const r = runner.op?.result; const done = runner.op?.status === 'succeeded';
-  return <div className="stack"><div className="hr" /><strong>Riporta la tabella nel database</strong>
-    <p className="small muted">Controlla prima i dati nella quarantena (<code>{stage}</code>). Poi scegli come rimetterla in <code>{obj.split('.').slice(0, 1)}</code>: non cancella mai nulla.</p>
+  const p = preview.op?.status === 'succeeded' ? preview.op.result : null;
+  return <div className="stack"><div className="hr" /><strong>Riporta nel database</strong>
+    <p className="small muted">Controlla prima i dati nella quarantena (<code>{stage}</code>){deps ? <> — {deps.tables} tabelle, {deps.foreign_keys} chiavi esterne, {deps.views} viste, {deps.sequences} sequenze, {deps.functions} funzioni</> : null}. Poi scegli come rimetterli in <code>{what[0]?.split('.')[0]}</code>: non cancella mai nulla.</p>
     {!done ? <>
-      <label className={`opt ${mode === 'as_new' ? 'on' : ''}`}><input type="radio" checked={mode === 'as_new'} onChange={() => setMode('as_new')} /><div><div>Accanto all’originale (consigliato)</div><div className="small muted">Nuova tabella con suffisso <code>_pitr_&lt;data&gt;</code>: confronti e poi decidi.</div></div></label>
-      <label className={`opt ${mode === 'replace' ? 'on' : ''}`}><input type="radio" checked={mode === 'replace'} onChange={() => setMode('replace')} /><div><div>Al posto dell’originale</div><div className="small muted">L’originale diventa <code>_old_&lt;data&gt;</code> (dati conservati); quella ripristinata prende il nome.</div></div></label>
+      <label className={`opt ${mode === 'as_new' ? 'on' : ''}`}><input type="radio" checked={mode === 'as_new'} onChange={() => setMode('as_new')} /><div><div>Accanto agli originali (consigliato)</div><div className="small muted">Nuove tabelle con suffisso <code>_pitr_&lt;data&gt;</code>: confronti e poi decidi.</div></div></label>
+      <label className={`opt ${mode === 'replace' ? 'on' : ''}`}><input type="radio" checked={mode === 'replace'} onChange={() => setMode('replace')} /><div><div>Al posto degli originali</div><div className="small muted">Le originali diventano <code>_old_&lt;data&gt;</code> (dati conservati); le ripristinate prendono il nome. Chiavi esterne e viste vengono ricollegate. Una tabella o uno schema cancellati tornano com’erano.</div></div></label>
+      <label className={`opt ${mode === 'missing_only' ? 'on' : ''}`}><input type="radio" checked={mode === 'missing_only'} onChange={() => setMode('missing_only')} /><div><div>Solo ciò che manca</div><div className="small muted">Utile dopo un DROP di schema: tornano le tabelle sparite, quelle presenti non vengono toccate.</div></div></label>
       <label className="check"><input type="checkbox" checked={drop} onChange={e => setDrop(e.target.checked)} />Elimina la quarantena dopo la riuscita</label>
-      <div><Button kind="primary" icon="restore" busy={runner.busy} disabled={runner.busy} onClick={ask}>Riporta la tabella</Button></div></> : null}
-    {(runner.op || runner.error) && !done ? <OpPanel op={runner.op} error={runner.error} label="Promozione della tabella" /> : null}
-    {done ? <Banner kind="ok" title="Tabella riportata">{r?.mode === 'replace' ? <>La tabella ripristinata è ora <code>{r.promoted_as}</code>; l’originale è conservata come <code>{r.old_kept_as}</code>.</> : <>Creata <code>{r?.promoted_as}</code> accanto all’originale.</>}{r?.rows != null ? ` ${num(r.rows)} righe.` : ''}{r?.warning ? <span className="hba-warn"> {r.warning}</span> : null}</Banner> : null}
+      <div className="row"><Button icon="search" busy={preview.busy} disabled={preview.busy || runner.busy} onClick={() => preview.run('restore_promote', { stage_db: stage, mode, dry_run: true })}>Anteprima delle modifiche</Button>
+        <Button kind="primary" icon="restore" busy={runner.busy} disabled={runner.busy} onClick={ask}>Riporta</Button></div>
+      {preview.op && !p ? <OpPanel op={preview.op} error={preview.error} label="Calcolo dell’anteprima" /> : null}
+      {p ? <PromotePlan p={p} /> : null}</> : null}
+    {(runner.op || runner.error) && !done ? <OpPanel op={runner.op} error={runner.error} label="Promozione" /> : null}
+    {done ? <Banner kind="ok" title="Riportato nel database">{(r?.promoted || []).length ? <>Ripristinate: {(r.promoted as string[]).map(x => <code key={x} style={{ marginRight: 6 }}>{x}</code>)}.</> : <>{r?.note || 'Niente da fare.'}</>}
+      {(r?.old_kept || []).length ? <> Le precedenti sono conservate come {(r.old_kept as string[]).map(x => <code key={x} style={{ marginRight: 6 }}>{x}</code>)}.</> : null}
+      {r?.foreign_keys_reattached ? <> {r.foreign_keys_reattached} chiavi esterne ricollegate.</> : null}{r?.views_recreated ? <> {r.views_recreated} viste ricreate.</> : null}
+      {(r?.plan?.warnings || warnings || []).length ? <span className="hba-warn"> {(r.plan?.warnings || warnings).join(' · ')}</span> : null}</Banner> : null}
     {done ? <Result op={runner.op} /> : null}</div>;
 }
 
