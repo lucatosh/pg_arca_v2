@@ -129,6 +129,7 @@ La differenza reale oggi è funzionale (granularità del restore, catalogo, dedu
 | Data | Modifica | Provato |
 |------|----------|---------|
 | 11/10 | Target oltre fine archivio: recupero fino a fine archivio (`target_clamped`), errore chiaro `PGA-PITR-014`, race in `wait_target` | PG16 reale + lab Patroni |
+| 11/10 | Restore di un database **cancellato** (`DROP DATABASE`): PostgreSQL lo rende invalido (in-place update, da PG15) e ne rimuove la cartella rigiocando il WAL **prima** del commit, quindi nessun target a tempo/xid basta. Il motore ora lo rileva (`pg_waldump`), si ferma con un LSN prima del DROP e lo dichiara (`stopped_before_drop`) | PG16 reale (`test_05c`); sul lab Patroni da ripetere |
 | 11/10 | Catalogo: conteggi solo tabelle utente, dimensione reale (heap+TOAST+indici+partizioni), indice→tabella e partizione→padre nel catalogo | PG16 reale (`test_06c`) |
 | 11/10 | `promote_object` in modalità replace su tabella sparita: torna con il suo nome e nel suo schema (prima prendeva il suffisso `_pitr_`) | PG16 reale (`test_06d`) |
 | 11/10 | Patroni: parametri e pg_hba solo via DCS; mai file/ALTER SYSTEM; rifiuto se l'API non risponde; DCS senza `pg_hba` inizializzato con le regole in vigore | test con Patroni simulato (`test_patroni_dcs_only`); non ancora sul lab |

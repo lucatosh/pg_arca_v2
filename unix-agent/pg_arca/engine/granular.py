@@ -6,6 +6,7 @@ Failure after the destination DB was created drops it again (all-or-nothing from
 
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 
@@ -14,7 +15,7 @@ from pg_arca.engine.catalog import find_object
 from pg_arca.engine.ephemeral import Ephemeral, TargetNotReached
 from pg_arca.engine.pgsession import PgConn, PgSession, run_tool
 from pg_arca.engine.restore import check_wal_for_chain, choose_set, count_targets, estimate, merge_chain, sparse_filter
-from pg_arca.engine.util import EngineError, human, lsn_to_int, now_utc, parse_target_time, quote_ident, sql_lit, target_time_to_dt
+from pg_arca.engine.util import EngineError, human, lsn_to_int, now_utc, parse_target_time, quote_ident, sql_lit, target_time_to_dt, wal_name, wal_segno
 
 import re as _re
 _ID_OK = _re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
@@ -139,6 +140,122 @@ def _recover(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inc
         return eph, info
 
 
+def _waldump(exe, tmp, name, *flags):
+    r = subprocess.run([exe, "-p", tmp, ] + list(flags) + [name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    return (r.stdout or "").splitlines()
+
+
+def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
+    """Where the DROP DATABASE of `dboid` begins in the WAL: returns ([candidate stop LSNs, most likely first], drop_lsn, xid) or None. Searched backwards from the segment where recovery stopped (pg_waldump).
+    PostgreSQL damages the database BEFORE the drop commits and without a timestamp: from PG15 it first marks it INVALID with an in-place update (replayed even if the
+    transaction's commit is beyond the target), then deletes its directory when redoing XLOG_DBASE_DROP. A time/xid target "just before the DROP's commit" is already too late;
+    only an LSN before the dropping transaction's FIRST record gives back a usable database."""
+    seg_size = ctx.seg_size
+    first = chain[0]
+    tli = int(chain[-1].get("timeline") or first.get("timeline") or 1)
+    lo = wal_segno(lsn_to_int(first["start_lsn"]), seg_size)
+    hi = wal_segno(lsn_to_int(reached_lsn), seg_size)
+    exe = ctx.conn.exe("pg_waldump")
+    tmp = tempfile.mkdtemp(prefix="pgarca-drop-")
+    lsn_re = _re.compile(r"lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")
+    try:
+        found = None
+        names = {}
+        for seg in range(hi, lo - 1, -1):
+            name = wal_name(tli, seg, seg_size)
+            if not ctx.wal.has_segment(name):
+                continue
+            code, msg = ctx.wal.retrieve_segment(name, os.path.join(tmp, name))
+            if code != 0:
+                continue
+            names[seg] = name
+            if found:
+                continue
+            for line in _waldump(exe, tmp, name, "-r", "Database"):
+                if "DROP" in line and any(int(m.group(2)) == int(dboid) for m in _re.finditer(r"(\d+)/(\d+)", line.split("desc:", 1)[-1])):
+                    m, x = lsn_re.search(line), _re.search(r"tx:\s*(\d+)", line)
+                    if m and x:
+                        found = (m.group(1), x.group(1), seg)          # keep scanning the segment: the LAST drop wins
+            if found:
+                break
+        if not found:
+            return None
+        drop_lsn, xid, seg_hit = found
+        dl = lsn_to_int(drop_lsn)
+        cands = []
+        for seg in range(seg_hit, max(lo, seg_hit - 1) - 1, -1):        # in-place updates of pg_database (1664/0/1262) just before the drop: they carry NO xid
+            name = names.get(seg)
+            if not name:
+                continue
+            if not os.path.exists(os.path.join(tmp, name)):
+                if ctx.wal.retrieve_segment(name, os.path.join(tmp, name))[0] != 0:
+                    continue
+            for line in _waldump(exe, tmp, name, "-r", "Heap"):
+                if "INPLACE" in line and "1664/0/1262" in line:
+                    m = lsn_re.search(line)
+                    if m and lsn_to_int(m.group(1)) < dl:
+                        cands.append(lsn_to_int(m.group(1)))
+        cands = sorted(set(cands), reverse=True)[:3]
+        lsns = []
+        for seg in range(seg_hit, lo - 1, -1):                       # the dropping transaction's first record (it has an xid once it deletes the pg_database row)
+            name = names.get(seg)
+            if not name:
+                break
+            if not os.path.exists(os.path.join(tmp, name)):
+                if ctx.wal.retrieve_segment(name, os.path.join(tmp, name))[0] != 0:
+                    break
+            got = [lsn_to_int(m.group(1)) for m in (lsn_re.search(l) for l in _waldump(exe, tmp, name, "-x", xid)) if m]
+            if not got:
+                break
+            lsns += got
+        cands.append(min(lsns) if lsns else dl)
+        fmt = lambda v: "%X/%08X" % (v >> 32, v & 0xFFFFFFFF)
+        return [fmt(c) for c in cands], drop_lsn, xid
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _db_usable(eph, entry):
+    """True when the recovered instance really holds a connectable database `entry` (not removed, not marked invalid by a DROP DATABASE that was partly replayed)."""
+    if not os.path.isdir(os.path.join(eph.dir, "base", str(entry["oid"]))):
+        eph.unusable = "directory base/%s missing" % entry["oid"]
+        return False
+    s = PgSession(eph.conn("postgres"), read_only=True)
+    try:
+        row = s.query("SELECT datconnlimit, pg_is_in_recovery(), (SELECT count(*) FROM pg_database) FROM pg_database WHERE oid = %s" % int(entry["oid"]))
+        eph.unusable = "pg_database row: %r" % (row,)
+        return bool(row) and row[0][0] != "-2"
+    finally:
+        s.close()
+
+
+def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel):
+    """_recover() for a recovery whose purpose is to read database `entry`: if that database was dropped right after the target, it is already damaged in the recovered
+    instance (see find_drop_database_lsn). We then stop BEFORE the DROP DATABASE transaction (exclusive LSN) and say so (`stopped_before_drop`)."""
+    eph, info = _recover(ctx, chain, {entry["oid"]}, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+    if _db_usable(eph, entry):
+        return eph, info
+    reached = info.get("reached_lsn")
+    eph.cleanup()
+    hit = find_drop_database_lsn(ctx, chain, entry["oid"], reached) if reached else None
+    if not hit:
+        raise EngineError("PGA-PITR-015", "database '%s' does not exist at the requested point (it is damaged or gone at %s and no DROP DATABASE was found in the WAL)" % (entry["name"], reached or "?"),
+                          "choose an earlier time, or an earlier backup set that contains it")
+    cands, drop_lsn, xid = hit
+    for n, lsn in enumerate(cands):
+        ctx.log("warning", "database '%s' was dropped right after the target: stopping just before the DROP DATABASE (xid %s) at %s" % (entry["name"], xid, lsn))
+        if progress:
+            progress({"phase": "recovery", "note": "database dropped right after the target: stopping before the DROP"})
+        eph, info = _recover(ctx, chain, {entry["oid"]}, None, lsn, None, None, False, progress, cancel)
+        if _db_usable(eph, entry):
+            info["stopped_before_drop"] = {"lsn": lsn, "xid": xid, "message": "the database was dropped right after the requested point: recovered up to just before the DROP DATABASE (%s)" % lsn}
+            return eph, info
+        why = getattr(eph, "unusable", "?")
+        eph.cleanup()
+    raise EngineError("PGA-PITR-015", "database '%s' could not be recovered: it is not usable even before the DROP DATABASE (tried %s; %s)" % (entry["name"], ", ".join(cands), why),
+                      "the base backup used does not contain the database: choose a later backup set")
+
+
 def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,
                      into=None, new_name=None, jobs=2, dry_run=False, progress=None, cancel=None):
     target, chain, tt = _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name)
@@ -165,7 +282,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
             raise EngineError("PGA-SEC-030", "destination database '%s' already exists" % new_name, "choose another name")
     finally:
         s.close()
-    eph, info = _recover(ctx, chain, {entry["oid"]}, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+    eph, info = _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     created = False
     tmp = tempfile.mkdtemp(prefix="pgarca-dump-")
     try:
@@ -225,7 +342,7 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
         plan["dry_run"] = True
         return plan
     admin = _dest_conn(ctx, into)
-    eph, info = _recover(ctx, chain, {dbentry["oid"]}, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+    eph, info = _recover_db(ctx, chain, dbentry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     created = False
     tmp = tempfile.mkdtemp(prefix="pgarca-obj-")
     fq = "%s.%s" % (quote_ident(rel["schema"]), quote_ident(rel["name"]))

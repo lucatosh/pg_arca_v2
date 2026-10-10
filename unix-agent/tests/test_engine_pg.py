@@ -252,6 +252,23 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, "PGA-PITR-014")
         self.assertEqual(q("postgres", "SELECT count(*) FROM pg_database WHERE datname = 'app_never'")[0][0], "0")
 
+    def test_05c_a_dropped_database_comes_back(self):
+        # PostgreSQL removes a dropped database's directory while REDOING the drop record, which has no timestamp: stopping "just before the commit" is too late.
+        # The field case: DROP DATABASE, then restore to the instant before it.
+        q("postgres", "CREATE DATABASE gone")
+        q("gone", "CREATE TABLE t(id int primary key, v text); INSERT INTO t SELECT g, 'x' || g FROM generate_series(1,3000) g")
+        run_backup(F.ctx, "incr")
+        time.sleep(1.2)
+        t_ok = q("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
+        time.sleep(1.2)
+        q("postgres", "DROP DATABASE gone")
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(2)
+        plan = restore_database(F.ctx, "gone", target_time=t_ok, new_name="gone_back", jobs=2)
+        self.assertEqual(int(q("gone_back", "SELECT count(*) FROM t")[0][0]), 3000)
+        self.assertTrue(plan.get("stopped_before_drop"), "the engine must say it had to stop before the DROP DATABASE record")
+        q("postgres", "DROP DATABASE gone_back")
+
     def test_06_0_user_database_named_stage_is_never_a_quarantine_target(self):
         from pg_arca.engine.granular import diff_object
         for fn in (lambda: promote_object(F.ctx, "stage_prod", "app.public.customers"), lambda: diff_object(F.ctx, "stage_prod", "app.public.customers"),

@@ -73,6 +73,7 @@ class PgSession(object):
         self.conn = conn
         self.dbname = dbname or conn.dbname
         self._err = []
+        self._cleared = ""
         self._has_warn = _psql_major(conn) >= 13          # \warn (stderr marker) exists since psql 13
         self._cond = threading.Condition()
         self._marks = set()
@@ -89,8 +90,9 @@ class PgSession(object):
             raise EngineError("PGA-CFG-001", "cannot execute psql (%s)" % e, "install the PostgreSQL client or set pg_bin_dir")
         self._t = threading.Thread(target=self._drain, daemon=True)
         self._t.start()
-        if self.one("SELECT 1") != "1":
-            raise EngineError("PGA-CFG-002", "cannot connect to %s: %s" % (self.dbname, self.take_errors() or "unknown reason"),
+        first = self.one("SELECT 1")
+        if first != "1":
+            raise EngineError("PGA-CFG-002", "cannot connect to %s: %s" % (self.dbname, self._why("no error from the server; first answer was %r, psql %s" % (first, "exited with %s" % self.p.poll() if self.p.poll() is not None else "still running"))),
                               "check socket/port/user and pg_hba.conf")
         # A backup session sits idle for hours while files are copied: server-side idle timeouts (PG14+ idle_session_timeout, idle_in_transaction_session_timeout)
         # must not kill it. Error detection below needs English messages (superuser only). Each setting is optional: unknown/forbidden ones are ignored.
@@ -113,6 +115,16 @@ class PgSession(object):
                     self._err.append(line)
                 self._cond.notify_all()
 
+    def _why(self, default="unknown reason"):
+        for _ in range(10):                        # the stderr reader is a thread: give it a moment to deliver the server's last words
+            e = self.take_errors()
+            if e:
+                self._cleared = e                  # one() swallows the first failure: remember it for the final message
+            if e or self.p.poll() is not None and not self._t.is_alive():
+                return e or self._cleared or default
+            time.sleep(0.1)
+        return self.take_errors() or self._cleared or default
+
     def take_errors(self):
         with self._cond:
             e, self._err = self._err, []
@@ -121,7 +133,9 @@ class PgSession(object):
     def query(self, sql):
         """Run one statement; returns rows (lists of str). Raises EngineError if the server reported an error."""
         marker = "PGARCAEOQ" + uuid.uuid4().hex
-        self.take_errors()
+        cleared = self.take_errors()
+        if cleared:
+            self._cleared = cleared                # keep it: on a failed connection this IS the reason (FATAL: database ... does not exist), it arrives before the first query
         try:
             self.p.stdin.write(sql.rstrip().rstrip(";") + ";\n")
             self.p.stdin.write("\\echo %s\n" % marker)
@@ -129,12 +143,12 @@ class PgSession(object):
                 self.p.stdin.write("\\warn %s\n" % marker)
             self.p.stdin.flush()
         except (BrokenPipeError, ValueError, OSError):
-            raise EngineError("PGA-CFG-003", "PostgreSQL session lost: " + (self.take_errors() or "no error text from the server"), "the server closed the connection: restart, crash, failover or switchover while the operation was running. Check the cluster state, then run it again")
+            raise EngineError("PGA-CFG-003", "PostgreSQL session lost: " + (self._why("no error text from the server")), "the server closed the connection: restart, crash, failover or switchover while the operation was running. Check the cluster state, then run it again")
         rows = []
         while True:
             line = self.p.stdout.readline()
             if line == "":
-                raise EngineError("PGA-CFG-003", "PostgreSQL session closed unexpectedly: " + (self.take_errors() or "no error text from the server"), "the server closed the connection: restart, crash, failover or switchover while the operation was running. Check the cluster state, then run it again")
+                raise EngineError("PGA-CFG-003", "PostgreSQL session closed unexpectedly: " + (self._why("no error text from the server")), "the server closed the connection: restart, crash, failover or switchover while the operation was running. Check the cluster state, then run it again")
             line = line.rstrip("\n")
             if line == marker:
                 break
