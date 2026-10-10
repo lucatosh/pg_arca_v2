@@ -8,6 +8,7 @@
  * are wanted from the console). Each call reports which of these the role actually has.
  */
 import pg from 'pg';
+import { classify, MIN_LEGACY } from './pgcompat';
 import { Store, DirectConnection, encrypt, decrypt, newId, nowIso } from './store';
 import { audit } from './ops';
 import { lsnToBig } from './view';
@@ -56,6 +57,7 @@ export async function introspect(cfg: pg.ClientConfig) {
   return withClient(cfg, async c => {
     await c.query('SET default_transaction_read_only = on');
     const [{ ver, rec, maxc }] = await q(c, `SELECT current_setting('server_version') ver, pg_is_in_recovery() rec, current_setting('max_connections')::int maxc`);
+    const cmp = classify(String(ver)); if (cmp?.tier === 'unsupported') throw new Error(`PostgreSQL ${cmp.label} non è supportato (minimo ${MIN_LEGACY}): la connessione diretta richiede funzioni di monitoraggio introdotte nella 10.`);
     const [role] = await q(c, `SELECT rolsuper, pg_has_role(current_user,'pg_monitor','member') monitor,
                                       pg_has_role(current_user,'pg_read_all_settings','member') settings FROM pg_roles WHERE rolname=current_user`);
     const lsnRow = await q(c, rec ? 'SELECT pg_last_wal_replay_lsn()::text lsn' : 'SELECT pg_current_wal_lsn()::text lsn');
