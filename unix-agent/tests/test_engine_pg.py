@@ -73,7 +73,8 @@ def setUpModule():
     F.scratch = os.path.join(base, "scratch")
     F.port = 55000 + (os.getpid() % 900)
     F.seg = int(os.environ.get("PG_ARCA_TEST_WALSEG", "16")) * 1024 * 1024                      # non-default WAL segment size (initdb --wal-segsize): 1..1024 MB
-    r = sh(os.path.join(BIN, "initdb"), "-D", F.src, "-U", "postgres", "--auth=trust", "-k", "--wal-segsize=%d" % (F.seg // 1048576),
+    r = sh(os.path.join(BIN, "initdb"), "-D", F.src, "-U", "postgres", "--auth=trust", "-k",
+           *(["--wal-segsize=%d" % (F.seg // 1048576)] if os.environ.get("PG_ARCA_TEST_WALSEG") else []),      # initdb has no --wal-segsize before PostgreSQL 11
            *(["--waldir=" + os.path.join(base, "waldisk")] if os.environ.get("PG_ARCA_TEST_WALDIR") else []))      # -k: data checksums
     assert r.returncode == 0, r.stderr
     walbin = os.path.join(HERE, "pg-arca-wal")

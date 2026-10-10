@@ -10,6 +10,7 @@ import time
 from pg_arca.db_client import PostgresClient
 from pg_arca.discovery import ClusterDiscoveryEngine
 from pg_arca.patroni_bridge import PatroniBridge
+from pg_arca.pgcompat import Profile, VersionError, check_tools
 
 logger = logging.getLogger("pg_arca.runtime")
 AGENT_VERSION = "2.0.0"
@@ -106,6 +107,17 @@ class Runtime(object):
                 view["scope"] = cl.get("scope") or view.get("scope")
         return view
 
+    def compat(self, pg, inst):
+        """Version profile of this instance for the console: what is supported, what is end-of-life, and whether the binaries in use match the server."""
+        try:
+            prof = Profile.from_text(pg.get("version")) if pg.get("alive") and pg.get("version") else Profile.from_text(inst.get("major_version") or inst.get("version") or "")
+        except VersionError:
+            return None
+        d = prof.describe()
+        bindir = self.config.get("pg_bin_dir") or inst.get("bin_dir") or ""
+        d["tool_problems"] = [{"severity": sv, "code": c, "text": t} for sv, c, t in check_tools(prof, bindir)] if bindir else []
+        return d
+
     def build_snapshot(self, wal, cas):
         inst = self.instance or {}
         pg = self.db.get_snapshot() if inst else {"alive": False, "error": "no PostgreSQL instance found on this host"}
@@ -113,6 +125,7 @@ class Runtime(object):
         pg["tablespaces"] = inst.get("tablespaces", [])
         pg["checksums"] = (inst.get("control") or {}).get("data_checksums")
         pg["archiving"] = inst.get("archiving")
+        pg["compat"] = self.compat(pg, inst)
         return {
             "node_name": self.config["node_name"], "agent_version": AGENT_VERSION,
             "postgres": pg, "patroni": self.patroni_view(),

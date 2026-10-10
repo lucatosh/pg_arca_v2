@@ -3,6 +3,7 @@
  * Pure functions: no I/O, fully unit-tested. Nothing here invents values: unknown => null/0 + explicit flag.
  */
 import type { NodeRecord } from './store';
+import { classify } from './pgcompat';
 
 /** Agent telemetry is untrusted input (a bug or a stolen node secret must not be able to crash the console): force the shapes the derivations rely on. */
 export function sanitizeSnapshot(snap: any): any {
@@ -36,6 +37,7 @@ export interface DerivedNode {
   replicationLagBytes: number; replicationLagMs: number; dcsLeader: boolean;
   cpuPercent: number; memoryPercent: number; connections: number; maxConnections: number;
   online: boolean; nodeId?: string; source: 'agent' | 'patroni' | 'direct';
+  pgVersion?: string; compat?: { label: string; tier: string; eol: boolean; eolDate: string; problems: { severity: string; code: string; text: string }[] } | null;
 }
 
 function num(v: any, d = 0): number { const n = Number(v); return Number.isFinite(n) ? n : d; }
@@ -48,7 +50,7 @@ export function deriveNodes(nodes: NodeRecord[], now = Date.now()): DerivedNode[
   const primaryLsn = lsnToBig(primarySnap?.postgres?.current_lsn);
   const patroniMembers: any[] = withSnap.flatMap(n => n.snapshot?.patroni?.members || []);
 
-  const agentNodes = nodes.map(n => {
+  const agentNodes: DerivedNode[] = nodes.map((n): DerivedNode => {
     const s = n.snapshot || {};
     const pg = s.postgres || {};
     const pt = s.patroni || {};
@@ -79,7 +81,7 @@ export function deriveNodes(nodes: NodeRecord[], now = Date.now()): DerivedNode[
       cpuPercent: Math.min(100, Math.round(num(sys.load_avg_1m) / ncpu * 100)),
       memoryPercent: Math.round(num(sys.memory_used_percent)),
       connections: num(pg.connections?.used), maxConnections: num(pg.connections?.max),
-      online, nodeId: n.id, source: 'agent',
+      online, nodeId: n.id, source: 'agent', pgVersion: pg.version ? String(pg.version) : undefined, compat: classify(pg.version),
     };
   });
   // Cluster members that Patroni reports but that have no agent enrolled yet: show them (read-only, from Patroni's own view) so the cluster looks complete.

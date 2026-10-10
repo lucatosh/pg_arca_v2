@@ -72,6 +72,7 @@ class OperationExecutor:
         r("checkpoint", self.h_checkpoint, True)
         r("wal_switch", self.h_wal_switch, False)           # switching twice would create two segments
         r("discovery_scan", self.h_discovery, True)
+        r("compat_check", self.h_compat_check, True)
         r("list_objects", self.h_list_objects, True)
         r("pg_set_param", self.h_set_param, True)           # compare-before-set: idempotent
         r("patroni_switchover", self.h_switchover, False)
@@ -234,6 +235,23 @@ class OperationExecutor:
         if not self.discovery:
             raise OpError("discovery not available")
         return self.discovery()
+
+    def h_compat_check(self, p):
+        """Which PostgreSQL this node runs, how well this product handles it, and whether the binaries in use belong to it."""
+        rt = self.runtime
+        if rt is None or not rt.instance:
+            raise OpError("no PostgreSQL instance found on this host")
+        from pg_arca.pgcompat import binary_profile
+        inst = rt.instance
+        snap = rt.db.get_snapshot()
+        comp = rt.compat(snap, inst)
+        bindir = self.config.get("pg_bin_dir") or inst.get("bin_dir") or ""
+        tools = {}
+        for t in ("postgres", "psql", "pg_ctl", "pg_controldata", "pg_waldump", "pg_basebackup", "pg_amcheck", "pg_checksums"):
+            path = os.path.join(bindir, t) if bindir else None
+            pr = binary_profile(path) if path and os.path.exists(path) else None
+            tools[t] = {"path": path if pr else None, "version": pr.label if pr else None}
+        return {"compat": comp, "bindir": bindir or None, "tools": tools, "server_version": snap.get("version"), "data_directory": inst.get("data_directory")}
 
     def h_list_objects(self, p):
         self._require_pg()

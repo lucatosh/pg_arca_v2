@@ -4,6 +4,7 @@
  * No I/O here: the same function feeds the "Oggi" page, the notification dispatcher and the tests.
  */
 import { resolvePolicy } from './policies';
+import { classify } from './pgcompat';
 
 export type Severity = 'critical' | 'warning' | 'info';
 export interface Issue {
@@ -71,6 +72,22 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     const lastDrill = drills.length ? drills[drills.length - 1] : null;
     if (isProd && sets.length && (!lastDrill || now - Date.parse(lastDrill.updatedAt) > 90 * 86400_000))
       add({ severity: 'info', code: 'drill_stale', title: lastDrill ? 'Prova di disaster recovery vecchia di oltre 90 giorni' : 'Mai provato il ripristino completo', cause: lastDrill ? 'Una prova periodica conferma che il ripristino funziona ancora e quanto tempo richiede.' : 'Non sai ancora quanto tempo servirebbe a ripristinare l’intero cluster: una prova lo misura senza toccare la produzione.', action: { label: 'Vedi i backup', page: 'backup' } });
+
+    // ---- PostgreSQL version: supported / legacy / end-of-life, and binaries of another major (the agent knows which binaries it uses)
+    const seenVer = new Set<string>();
+    for (const n of online) {
+      const pgn = n.snapshot?.postgres || {};
+      const cmp = pgn.compat || (() => { const k = classify(pgn.version); return k ? { label: k.label, problems: k.problems.map(p => ({ severity: p.severity, code: p.code, text: p.text })), tool_problems: [] } : null; })();
+      if (!cmp) continue;
+      for (const p of (cmp.problems || []) as any[]) {
+        const code = 'pg_' + p.code;
+        if (seenVer.has(code + cmp.label)) continue;                     // same major on several nodes: one issue per cluster
+        seenVer.add(code + cmp.label);
+        add({ severity: p.severity, code, detail: String(cmp.label), title: p.code === 'eol' ? `PostgreSQL ${cmp.label} è a fine vita` : p.code === 'unsupported' ? `PostgreSQL ${cmp.label} non supportato` : p.code === 'legacy' ? `PostgreSQL ${cmp.label} in modalità legacy` : `PostgreSQL ${cmp.label} non ancora verificato`, cause: String(p.text || '') });
+      }
+      for (const t of (cmp.tool_problems || []) as any[])
+        add({ severity: t.severity, code: 'pg_' + t.code, detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: binari PostgreSQL non adatti al server`, cause: String(t.text || '') });
+    }
 
     // ---- WAL / archiving
     const wal = (primary || nodes[0])?.snapshot?.wal;

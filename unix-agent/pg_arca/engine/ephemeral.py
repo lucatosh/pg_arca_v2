@@ -18,6 +18,7 @@ import uuid
 from pg_arca.engine import ENGINE_VERSION
 from pg_arca.engine.backup import _check_cancel, build_chain
 from pg_arca.engine.pgsession import PgConn, PgSession, run_tool
+from pg_arca.pgcompat import Profile, binary_profile, require_same_major, require_supported, set_profile
 from pg_arca.engine.restore import (check_wal_for_chain, choose_set, count_targets, estimate, install_external_conf, materialize, merge_chain,
                                     prepare_skeleton, recovery_lines, sparse_filter)
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
@@ -56,7 +57,7 @@ def read_pg_control(conn, datadir):
     return res
 
 
-def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=False, shared_buffers="256MB", base_conf_missing=False):
+def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=False, shared_buffers="256MB", base_conf_missing=False, profile=None):
     """Rewrite the instance configuration with an allowlist approach. Returns (removed, forced)."""
     removed = []
     for fn in ("postgresql.conf", "postgresql.auto.conf"):
@@ -92,6 +93,8 @@ def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=Fal
               "restore_command": "'%s'" % restore_cmd.replace("'", "''"), "wal_level": "replica", "shared_buffers": shared_buffers,
               "huge_pages": "off", "log_min_messages": "warning", "hba_file": "'%s'" % os.path.join(scratch, "pg_hba.conf"),
               "ident_file": "'%s'" % os.path.join(scratch, "pg_ident.conf"), "max_wal_senders": "0"}
+    if profile is not None and profile.recovery_conf_file:
+        forced.pop("restore_command")                  # before 12 restore_command is a recovery.conf setting: as a GUC it would stop the server from starting
     if sparse:
         # missing relation pages are EXPECTED in a sparse extraction: log them instead of PANICing at end of recovery
         forced["ignore_invalid_pages"] = "on"
@@ -146,6 +149,9 @@ class Ephemeral(object):
     def build(self, chain, keep_oids=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True, immediate=False,
               progress=None, cancel=None):
         repo = self.ctx.repo
+        prof = set_profile(chain[0]) or Profile(160000)
+        require_supported(prof, "recovering this backup")
+        require_same_major(prof, binary_profile(self.ctx.conn.exe("postgres")), "starting a recovery instance for this backup")
         cat = repo.load_catalog(chain[-1])
         sparse = keep_oids is not None
         include = None
@@ -170,12 +176,10 @@ class Ephemeral(object):
             if os.path.exists(p):
                 os.remove(p)
         ctl = read_pg_control(self.ctx.conn, self.dir)
-        removed, forced = quarantine_config(self.dir, ctl, self.port, self.sock, self.ctx.restore_command, sparse, self.shared_buffers)
-        with open(os.path.join(self.dir, "postgresql.auto.conf"), "a") as f:
-            from pg_arca.engine.restore import effective_targets
-            t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, self.ctx)
-            f.write(recovery_lines(self.ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm, "pause", inclusive))
-        open(os.path.join(self.dir, "recovery.signal"), "w").close()
+        removed, forced = quarantine_config(self.dir, ctl, self.port, self.sock, self.ctx.restore_command, sparse, self.shared_buffers, profile=prof)
+        from pg_arca.engine.restore import effective_targets
+        t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, self.ctx)
+        prof.install_recovery(self.dir, recovery_lines(self.ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm, "pause", inclusive))
         # recovery_lines wrote restore_command again into auto.conf: harmless and identical, but keep the quarantine invariant
         bad = [b for b in audit_symlinks(self.dir)]
         if bad:
@@ -226,10 +230,7 @@ class Ephemeral(object):
                     raise EngineError("PGA-PITR-010", "the ephemeral instance stopped while recovering:\n%s" % tail_file(os.path.join(self.dir, "pg_arca-ephemeral.log")))
                 inrec = s.scalar("SELECT pg_is_in_recovery()")
                 lsn = s.scalar("SELECT COALESCE(pg_last_wal_replay_lsn()::text,'-')")
-                if s.version_num >= 140000:
-                    paused = s.scalar("SELECT pg_get_wal_replay_pause_state()") == "paused"
-                else:
-                    paused = s.scalar("SELECT pg_is_wal_replay_paused()") == "t"
+                paused = s.scalar(s.profile.replay_paused_sql()) == "1"
                 if progress:
                     progress({"phase": "recovery", "replay_lsn": lsn})
                 if paused or inrec == "f":

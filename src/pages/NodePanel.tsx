@@ -29,6 +29,7 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
       { id: 'reinit', label: 'Ricostruisci la replica', hint: 'Cancella i dati di questo nodo e li riclona dal primario. Si usa quando una replica non riparte o è corrotta. Può richiedere molto tempo su database grandi.', danger: true, typed: true, disabled: !patroni ? noPatroni : isPrimary ? 'Mai sul primario: distruggerebbe i dati' : undefined, run: () => r.run('patroni_reinit', { member: node.name }) },
     ] },
     { group: 'Agent', items: [
+      { id: 'compat', label: 'Verifica compatibilità PostgreSQL', hint: 'Controlla la versione di PostgreSQL di questo nodo, se è supportata o a fine vita, e che i binari usati dall’agent (psql, pg_waldump…) siano quelli del server.', disabled: hasAgent ? undefined : noAgent, run: () => r.run('compat_check', {}, { nodeId: nid }) },
       { id: 'scan', label: 'Rileva di nuovo', hint: 'L’agent rifà la scansione di PostgreSQL, Patroni e percorsi su questo server.', disabled: hasAgent ? undefined : noAgent, run: () => r.run('discovery_scan', {}, { nodeId: nid }) },
     ] },
   ];
@@ -41,6 +42,7 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
         {!isPrimary ? <><dt>Ritardo di replica</dt><dd>{bytes(node.replicationLagBytes)}</dd></> : null}
         <dt>Indirizzo</dt><dd className="mono">{node.host}:{node.port}</dd>
         <dt>Timeline</dt><dd>{node.timeline ?? '—'}</dd>
+        {node.pgVersion ? <><dt>PostgreSQL</dt><dd>{String(node.pgVersion).split(' ')[0]} {node.compat && node.compat.problems.length ? <Badge kind={node.compat.problems.some((p: any) => p.severity === 'critical') ? 'bad' : 'warn'}>{node.compat.tier === 'unsupported' ? 'non supportata' : node.compat.tier === 'legacy' ? 'legacy' : node.compat.eol ? 'fine vita' : 'da verificare'}</Badge> : node.compat ? <Badge kind="ok">supportata</Badge> : null}</dd></> : null}
         <dt>Agent</dt><dd>{agent ? <>{agent.agentVersion} · ultimo contatto {ago(agent.lastSeen)} · {agent.remoteIp}</> : <span className="muted">non installato</span>}</dd>
       </dl>
       {!agent ? <Banner kind="warn" title="Questo nodo non ha l’agent">Patroni lo vede, ma per backup, ripristini, accessi e log serve l’agent.{isAdmin ? <> <Button sm icon="plus" onClick={onInstall}>Installa agent</Button></> : null}</Banner> : null}

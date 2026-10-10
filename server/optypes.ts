@@ -36,6 +36,7 @@ export const OP_SPECS: Record<string, OpSpec> = {
   wal_switch:       { mutating: true,  target: 'primary', validate: () => null },
   checkpoint:       { mutating: true,  target: 'primary', validate: () => null },
   discovery_scan:   { mutating: false, target: 'node', validate: () => null },
+  compat_check:     { mutating: false, target: 'node', validate: () => null },
   list_objects:     { mutating: false, target: 'primary', validate: p => ident.test(String(p.database ?? '')) || /^[\w .-]{1,63}$/.test(String(p.database ?? '')) ? null : 'database required' },
   pg_set_param: {
     mutating: true, target: 'node',

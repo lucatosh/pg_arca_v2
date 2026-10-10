@@ -100,6 +100,8 @@ class PgSession(object):
                  "BEGIN PERFORM set_config('lc_messages','C',false); EXCEPTION WHEN OTHERS THEN NULL; END; END $$")
         self.version_num = int(self.one("SHOW server_version_num"))
         self.version = self.one("SHOW server_version")
+        from pg_arca.pgcompat import Profile
+        self.profile = Profile(self.version_num)          # every version difference is answered by this profile
 
     def _drain(self):
         for line in self.p.stderr:

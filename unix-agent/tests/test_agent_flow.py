@@ -46,6 +46,8 @@ class AgentFlow(unittest.TestCase):
         FakePatroni.leader = "n1"; FakePatroni.posts = []; FakePatroni.paused = False; FakePatroni.params = {}
         self.t = tempfile.mkdtemp()
         self.log = os.path.join(self.t, "psql.log"); os.environ["FAKE_PSQL_LOG"] = self.log; os.environ.pop("FAKE_PSQL_DOWN", None)
+        _old_path = os.environ["PATH"]
+        self.addCleanup(lambda: os.environ.__setitem__("PATH", _old_path))      # the fake psql must not shadow the real one in other test modules
         os.environ["PATH"] = FAKES + os.pathsep + os.environ["PATH"]
         self.cfg = load_config(); self.cfg["state_dir"] = os.path.join(self.t, "state")
         self.db = PostgresClient(user="postgres", port=5432, host="127.0.0.1")

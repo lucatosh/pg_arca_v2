@@ -215,8 +215,18 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
             major = 0
         if not i.get("readable_by_agent", True):
             add("critical", "UNREADABLE", "Data directory non leggibile dall'agent", "Senza accesso ai file l'agent non può fare backup.", "Esegui l'agent come utente postgres (o root).", tgt)
-        if 0 < major < 14:
-            add("critical", "PG_EOL", "PostgreSQL %d è fuori supporto" % major, "Non riceve più correzioni di sicurezza.", "Pianifica l'aggiornamento a una versione supportata (16 o superiore).", tgt)
+        cm = i.get("compat")
+        if not cm and i.get("major_version"):
+            try:
+                from pg_arca.pgcompat import Profile
+                cm = Profile.from_text(i["major_version"]).describe()
+            except Exception:
+                cm = None
+        cm = cm or {}
+        for pr in cm.get("problems") or []:
+            title = {"unsupported": "PostgreSQL %s non supportato" % cm.get("label"), "legacy": "PostgreSQL %s in modalità legacy" % cm.get("label"),
+                     "newer": "PostgreSQL %s più recente di quelli verificati" % cm.get("label"), "eol": "PostgreSQL %s è a fine vita (EOL %s)" % (cm.get("label"), cm.get("eol_date"))}.get(pr["code"], pr["code"])
+            add(pr["severity"], "PG_" + pr["code"].upper(), title, pr["text"], "Pianifica l'aggiornamento a una versione supportata (16 o superiore)." if pr["code"] in ("unsupported", "legacy", "eol") else "Esegui un ripristino di prova (drill) prima di affidarti ai backup.", tgt)
         if not i.get("running"):
             add("warning", "NOT_RUNNING", "Istanza non in esecuzione", "I backup richiedono PostgreSQL attivo (i ripristini su cartella no).", "Avvia PostgreSQL.", tgt)
         mode = (ar.get("archive_mode") or "off").lower()
@@ -485,6 +495,11 @@ class ClusterDiscoveryEngine:
 
         ver = (_read(os.path.join(pgdata, "PG_VERSION"), 32) or "").strip()
         info["major_version"] = ver or None
+        try:
+            from pg_arca.pgcompat import Profile
+            info["compat"] = Profile.from_text(ver).describe() if ver else None
+        except Exception:
+            info["compat"] = None
         info["system_identifier"] = read_system_identifier(pgdata)
 
         # postmaster.pid: line1 pid, 2 datadir, 3 start time, 4 port, 5 socket dir, 6 listen addr

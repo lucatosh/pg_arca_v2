@@ -12,7 +12,12 @@ from pg_arca.engine.backup import run_backup
 from pg_arca.engine.util import EngineError
 
 SKIP = T.SKIP or (None if os.environ.get("PG_ARCA_TEST_REPO") else "needs PG_ARCA_TEST_REPO on a small volume")
-setUpModule = T.setUpModule
+def setUpModule():
+    if SKIP:
+        raise unittest.SkipTest(SKIP)
+    T.setUpModule()
+
+
 tearDownModule = T.tearDownModule
 
 

@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pg_arca.engine import ENGINE_VERSION
 from pg_arca.engine.catalog import snapshot_catalog
 from pg_arca.engine.pgdata import ZEROPAGE, is_main_fork, page_lsn, tablespace_links, walk_pgdata
+from pg_arca.pgcompat import check_tools, require_supported
 from pg_arca.engine.pgsession import PgSession
 from pg_arca.engine.util import (BLCKSZ, CHUNK_SIZE, Cancelled, EngineError, human, iso, lsn_to_int, now_utc, read_json, sql_lit,
                                  wal_name, wal_segno, last_wal_segno, write_file_atomic, write_json)
@@ -155,13 +156,7 @@ def current_timeline(sess, in_recovery):
 
 
 def _stop_backup(sess):
-    if sess.version_num >= 150000:
-        fn = "pg_backup_stop(false)"
-    else:
-        fn = "pg_stop_backup(false, false)"
-    q = ("SELECT lsn::text, translate(encode(convert_to(labelfile,'UTF8'),'base64'), E'\\n', ''), "
-         "translate(encode(convert_to(COALESCE(spcmapfile,''),'UTF8'),'base64'), E'\\n', '') FROM %s" % fn)
-    r = sess.query(q)
+    r = sess.query(sess.profile.backup_stop_sql())
     if not r or len(r[0]) < 3:
         raise EngineError("PGA-GEN-042", "pg_backup_stop returned nothing")
     return r[0][0], base64.b64decode(r[0][1]).decode("utf-8"), (base64.b64decode(r[0][2]).decode("utf-8") if r[0][2] else "")
@@ -193,6 +188,9 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
     meta = None
     started_backup = False
     try:
+        require_supported(sess.profile, "backup")
+        for sev, code, text in sess.profile.problems() + check_tools(sess.profile, ctx.conn.bindir):
+            log("warn", "compat: " + text)
         sysid = sess.scalar("SELECT system_identifier FROM pg_control_system()")
         in_recovery = sess.scalar("SELECT pg_is_in_recovery()") == "t"
         tli = current_timeline(sess, in_recovery)
@@ -286,10 +284,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         label = "pg_arca:%s" % set_id
         fast_on = ctx.start_fast if start_fast is None else bool(start_fast)
         fast = "true" if fast_on else "false"
-        if sess.version_num >= 150000:
-            start_sql = "SELECT pg_backup_start(%s, %s)::text" % (sql_lit(label), fast)
-        else:
-            start_sql = "SELECT pg_start_backup(%s, %s, false)::text" % (sql_lit(label), fast)
+        start_sql = sess.profile.backup_start_sql(sql_lit(label), fast_on)
         start_lsn = _start_backup(ctx, sess, start_sql, fast_on, progress, cancel)
         if not start_lsn:
             raise EngineError("PGA-GEN-040", "pg_backup_start failed", "the backup role needs pg_backup_start privileges (superuser or pg_write_all_data/EXECUTE grants)")

@@ -127,6 +127,16 @@ class PostgresClient:
         """Full telemetry for the console. Never raises; on failure returns {'alive': False, 'error': ...}."""
         snap, err = self.query_json(SNAPSHOT_SQL, variables={"keys": ",".join(SNAPSHOT_SETTINGS)})
         if not isinstance(snap, dict):
+            ok, out, _ = self.run_psql("SHOW server_version;", read_only=True)
+            if ok and out.strip():                       # the server answers but the telemetry query failed: say WHY when the version is the reason
+                try:
+                    from pg_arca.pgcompat import Profile
+                    prof = Profile.from_text(out.strip())
+                    if prof.tier == "unsupported":
+                        return {"alive": True, "version": out.strip(), "error": "PostgreSQL %s is not supported (minimum 10): telemetry, backup and restore are disabled" % prof.label,
+                                "unsupported_version": True}
+                except Exception:
+                    pass
             return {"alive": False, "error": err or "no data"}
         snap["alive"] = True
         snap["replication"] = []

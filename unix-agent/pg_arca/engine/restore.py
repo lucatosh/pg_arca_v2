@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from pg_arca.engine.backup import _check_cancel, build_chain
+from pg_arca.pgcompat import Profile, require_supported, set_profile
 from pg_arca.engine.pgdata import list_directories
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
 from pg_arca.engine.util import (last_wal_segno, EngineError, chunk_hash, human, iso, lsn_to_int, parse_target_time, safe_relpath, target_time_to_dt, wal_name,
@@ -445,8 +446,12 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
         raise EngineError("PGA-GEN-063", "destination directory is required", "restoring over the live data directory is never allowed")
     target = choose_set(repo, set_spec, target_time, target_lsn, target_xid, target_name)
     chain = build_chain(repo, target)
+    sp = set_profile(chain[0])
+    if sp is not None:
+        require_supported(sp, "restoring this backup")
     missing = check_wal_for_chain(ctx, chain, target_lsn)
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "destination": os.path.realpath(dest), "missing_wal": missing[:20],
+            "pg_version": sp.label if sp else None,
             "target": target_time or target_lsn or target_xid or target_name or ("immediate" if immediate else "end of archive")}
     merged, tbs = merge_chain(repo, chain)
     plan["bytes"] = estimate(merged)
@@ -501,11 +506,10 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     label = os.path.join(repo.sp("backup", chain[0]["id"], "backup_label"))        # ALWAYS the base full's label
     shutil.copy2(label, os.path.join(dest, "backup_label"))
     scrub_recovery_settings(dest)
-    with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
-        t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, ctx)
-        f.write(recovery_lines(ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm,
-                               "promote" if action == "promote" else "pause", inclusive, timeline))
-    open(os.path.join(dest, "recovery.signal"), "w").close()
+    t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, ctx)
+    prof = set_profile(chain[0]) or Profile(16 * 10000)
+    prof.install_recovery(dest, recovery_lines(ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm,
+                                               "promote" if action == "promote" else "pause", inclusive, timeline))       # recovery.signal + auto.conf (>=12) or recovery.conf (<12)
     bad = audit_symlinks(dest)
     bad = [b for b in bad if not b[0].startswith(os.path.join(dest, "pg_tblspc") + os.sep)]
     if bad:
