@@ -45,7 +45,7 @@ export { dur };
 
 
 /** Plain-language next step for the most common refusals (the raw message stays visible above). */
-export function hintFor(msg?: string): string {
+export function hintFor(msg?: string | null): string {
   const m = String(msg || '');
   if (/is not healthy/.test(m)) return 'La replica scelta non è in salute (non sta replicando). Scegline un’altra con stato “running”, oppure sistema prima quella replica: Patroni non può promuoverla.';
   if (/no healthy replica/.test(m)) return 'Nessuna replica è in salute: finché una replica non torna “running” non c’è un nodo su cui spostare il primario. Controlla i log di Patroni dei nodi in errore.';
