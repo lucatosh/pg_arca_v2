@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pg_arca.engine.backup import _check_cancel, build_chain
 from pg_arca.engine.pgdata import list_directories
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
-from pg_arca.engine.util import (EngineError, chunk_hash, human, iso, lsn_to_int, parse_target_time, safe_relpath, target_time_to_dt, wal_name,
+from pg_arca.engine.util import (last_wal_segno, EngineError, chunk_hash, human, iso, lsn_to_int, parse_target_time, safe_relpath, target_time_to_dt, wal_name,
                                  wal_segno)
 
 
@@ -357,13 +357,13 @@ def check_wal_for_chain(ctx, chain, target_lsn=None):
     seg = last.get("wal_segment_size") or ctx.seg_size
     tli = last["timeline"]
     lo = wal_segno(lsn_to_int(first["start_lsn"]), seg)
-    hi = wal_segno(lsn_to_int(last["stop_lsn"]), seg)
+    hi = last_wal_segno(last, seg)
     if target_lsn:
         hi = max(hi, wal_segno(lsn_to_int(target_lsn), seg))
     missing = []
     # a set may span a timeline switch only through its own tli; segments of ancestors are looked up per set
     for s in chain:
-        a, b = wal_segno(lsn_to_int(s["start_lsn"]), seg), wal_segno(lsn_to_int(s["stop_lsn"]), seg)
+        a, b = wal_segno(lsn_to_int(s["start_lsn"]), seg), last_wal_segno(s, seg)
         for n in range(a, b + 1):
             nm = wal_name(s["timeline"], n, seg)
             if not ctx.wal.has_segment(nm):

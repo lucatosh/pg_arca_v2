@@ -182,6 +182,15 @@ def wal_segno(lsn, seg_size):
     return lsn // seg_size
 
 
+def last_wal_segno(meta, seg_size):
+    """Last WAL segment a backup set needs. The stop LSN of a backup taken on a STANDBY is the END (exclusive) of the last record it needed; when that falls exactly on a
+    segment boundary the next segment is EMPTY (the primary has not written into it): demanding it would make the set wait for the archive forever."""
+    stop = lsn_to_int(meta["stop_lsn"])
+    if meta.get("from_standby") and stop > 0 and stop % seg_size == 0:
+        stop -= 1
+    return stop // seg_size
+
+
 def wal_name(tli, segno, seg_size):
     per_id = 0x100000000 // seg_size
     return "%08X%08X%08X" % (tli, segno // per_id, segno % per_id)

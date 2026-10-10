@@ -9,7 +9,7 @@ import time
 
 from pg_arca.engine.backup import build_chain
 from pg_arca.engine.repo import GC_GRACE
-from pg_arca.engine.util import EngineError, lsn_to_int, parse_wal_name, read_json, wal_name, wal_segno
+from pg_arca.engine.util import EngineError, last_wal_segno, lsn_to_int, parse_wal_name, read_json, wal_name, wal_segno
 
 
 # --------------------------------------------------------------------------- info
@@ -93,7 +93,7 @@ def verify(ctx, deep=False, progress=None, cancel=None):
         entry["problems"] += missing + bad
         # WAL needed for this set
         seg = s.get("wal_segment_size") or ctx.seg_size
-        miss = [wal_name(s["timeline"], n, seg) for n in range(wal_segno(lsn_to_int(s["start_lsn"]), seg), wal_segno(lsn_to_int(s["stop_lsn"]), seg) + 1)
+        miss = [wal_name(s["timeline"], n, seg) for n in range(wal_segno(lsn_to_int(s["start_lsn"]), seg), last_wal_segno(s, seg) + 1)
                 if not ctx.wal.has_segment(wal_name(s["timeline"], n, seg))]
         if miss:
             problems.append("%s: %d WAL segment(s) between start and stop are not archived (first %s)" % (s["id"], len(miss), miss[0]))

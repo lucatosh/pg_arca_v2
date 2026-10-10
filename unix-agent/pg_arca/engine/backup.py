@@ -14,7 +14,7 @@ from pg_arca.engine.catalog import snapshot_catalog
 from pg_arca.engine.pgdata import ZEROPAGE, is_main_fork, page_lsn, tablespace_links, walk_pgdata
 from pg_arca.engine.pgsession import PgSession
 from pg_arca.engine.util import (BLCKSZ, CHUNK_SIZE, Cancelled, EngineError, human, iso, lsn_to_int, now_utc, read_json, sql_lit,
-                                 wal_name, wal_segno, write_file_atomic, write_json)
+                                 wal_name, wal_segno, last_wal_segno, write_file_atomic, write_json)
 
 READ_BLOCK = 4 * 1024 * 1024
 TYPE_LETTER = {"full": "F", "diff": "D", "incr": "I"}
@@ -394,7 +394,7 @@ def _wal_seg_size(sess):
 
 
 def _wait_for_wal(ctx, sess, tli, start_lsn, stop_lsn, seg_size, in_recovery, timeout, cancel):
-    first, last = wal_segno(lsn_to_int(start_lsn), seg_size), wal_segno(lsn_to_int(stop_lsn), seg_size)
+    first, last = wal_segno(lsn_to_int(start_lsn), seg_size), last_wal_segno({"stop_lsn": stop_lsn, "from_standby": in_recovery}, seg_size)
     need = [wal_name(tli, n, seg_size) for n in range(first, last + 1)]
     if not in_recovery:
         try:
