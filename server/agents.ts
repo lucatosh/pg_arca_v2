@@ -43,6 +43,38 @@ export function refreshCluster(draft: any, clusterId: string) {
   draft.clusters[idx] = { ...view, clusterKey: prior.clusterKey };
 }
 
+const KEY_RE = /^(patroni|sysid):[A-Za-z0-9_.:\/-]{1,120}$/;
+
+/**
+ * A node that was approved before PostgreSQL was visible has no cluster identity yet. Once its heartbeat carries one (patroni scope or system
+ * identifier) the cluster adopts it, and clusters that turn out to be the same database are merged: nodes, operations, direct connection and policy
+ * assignment move to the keeper (the one with more history, else the older). Runs inside a mutate. Never touches sandbox clusters.
+ */
+export function reconcileCluster(d: any, nodeId: string) {
+  const n = d.nodes[nodeId]; const key = n?.snapshot?.cluster_key;
+  if (!n?.clusterId || typeof key !== 'string' || !KEY_RE.test(key)) return;
+  const mine = d.clusters.find((c: any) => c.id === n.clusterId);
+  if (!mine || mine.isSandbox) return;
+  n.clusterKey = key;
+  if (!mine.clusterKey) mine.clusterKey = key;
+  if (mine.clusterKey !== key) return;                // an unrelated database now answers on this node: leave it to the operator
+  const dups = d.clusters.filter((c: any) => c.id !== mine.id && !c.isSandbox && c.clusterKey === key);
+  if (!dups.length) return;
+  const hist = (c: any) => d.operations.filter((o: any) => o.clusterId === c.id).length;
+  const all = [mine, ...dups].sort((a: any, b: any) => hist(b) - hist(a) || Date.parse(a.createdAt || '') - Date.parse(b.createdAt || ''));
+  const keep = all[0];
+  for (const lose of all.slice(1)) {
+    for (const x of Object.values(d.nodes as Record<string, NodeRecord>)) if (x.clusterId === lose.id) { x.clusterId = keep.id; x.clusterKey = key; }
+    for (const o of d.operations) if (o.clusterId === lose.id) o.clusterId = keep.id;
+    for (const a of d.audit) if (a.clusterId === lose.id) a.clusterId = keep.id;
+    if (d.directConnections?.[lose.id]) { if (!d.directConnections[keep.id]) d.directConnections[keep.id] = { ...d.directConnections[lose.id], clusterId: keep.id }; delete d.directConnections[lose.id]; }
+    const pa = d.settings.policyAssignments; if (pa && pa['cluster:' + lose.id]) { if (!pa['cluster:' + keep.id]) pa['cluster:' + keep.id] = pa['cluster:' + lose.id]; delete pa['cluster:' + lose.id]; }
+    d.clusters = d.clusters.filter((c: any) => c.id !== lose.id);
+    ops.audit(d, { clusterId: keep.id, actor: 'system', action: 'cluster.merge', status: 'OK', details: { merged: lose.id, key } });
+  }
+  refreshCluster(d, keep.id);
+}
+
 export interface AgentHooks {
   onLogs?: (node: NodeRecord, clusterName: string, logs: any[]) => void;
 }
@@ -116,6 +148,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
         }
       }
       if (b.discovery) n.discovery = b.discovery;
+      reconcileCluster(d, node.id);
       if (n.clusterId) refreshCluster(d, n.clusterId);
     });
     const max = Math.max(0, Math.min(Number(b.max_ops ?? 1) || 1, 5));
