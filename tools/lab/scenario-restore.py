@@ -5,7 +5,7 @@
   database : DROP DATABASE                    -> restore_database (side database)
   schema   : DROP SCHEMA hr CASCADE           -> restore_database (side db), then the schema is compared (schema-level restore = object restore v2)
   table    : DELETE rows + DROP TABLE         -> restore_object + restore_promote (replace)
-Run on the VM (docker access + tools/lab/.env):   python3 tools/lab/scenario-restore.py [database|schema|table|all]"""
+Run on the VM (docker access + tools/lab/.env):   python3 tools/lab/scenario-restore.py [database|schema|table|tabledeps|all]"""
 import http.cookiejar, json, os, subprocess, sys, time, urllib.request, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -105,22 +105,41 @@ def sc_schema():
     sql("postgres", "DROP DATABASE IF EXISTS arca_rl_s2 WITH (FORCE)")
 
 
+def promote(scn, obj, stage, mode="replace"):
+    o = op("restore_object", {"object": obj, "stage_db": stage, "target_time": TOK[0]}); check(scn, "restore_object %s" % obj, o["status"] == "succeeded", str(o.get("error") or ""))
+    if o["status"] != "succeeded": return None
+    o = op("restore_promote", {"stage_db": stage, "object": obj, "mode": mode}); check(scn, "restore_promote %s (%s)" % (obj, mode), o["status"] == "succeeded", str(o.get("error") or ""))
+    return o.get("result")
+
+
+TOK = [None]
+
+
 def sc_table():
-    print("== TABLE: delete the latest rows of shop.orders and drop hr.timesheets, restore both"); base, t_ok = fresh()
-    sql(DB, "DELETE FROM shop.orders WHERE id > 60"); sql(DB, "DROP TABLE hr.timesheets CASCADE"); damage_done()
-    check("table", "damage in place", fp(DB, "shop", "orders") != base["shop.orders"] and fp(DB, "hr", "timesheets") == "MISSING")
-    for obj, stage in (("%s.shop.orders" % DB, "pgarca_stage_s3a"), ("%s.hr.timesheets" % DB, "pgarca_stage_s3b")):
-        o = op("restore_object", {"object": obj, "stage_db": stage, "target_time": t_ok}); check("table", "restore_object %s" % obj, o["status"] == "succeeded", str(o.get("error") or ""))
-        if o["status"] != "succeeded": continue
-        o = op("restore_promote", {"stage_db": stage, "object": obj, "mode": "replace"}); check("table", "restore_promote %s" % obj, o["status"] == "succeeded", str(o.get("error") or ""))
-    compare("table", base, DB, ["shop.orders", "hr.timesheets"])
+    print("== TABLE: drop hr.timesheets, delete the latest rows of shop.order_items; both are brought back to their own schema"); base, t_ok = fresh(); TOK[0] = t_ok
+    sql(DB, "DROP TABLE hr.timesheets"); sql(DB, "DELETE FROM shop.order_items WHERE order_id > 60"); damage_done()
+    check("table", "damage in place", fp(DB, "shop", "order_items") != base["shop.order_items"] and fp(DB, "hr", "timesheets") == "MISSING")
+    r1 = promote("table", "%s.hr.timesheets" % DB, "pgarca_stage_s3a")
+    r2 = promote("table", "%s.shop.order_items" % DB, "pgarca_stage_s3b")
+    compare("table", base, DB, ["shop.order_items", "hr.timesheets"])
+    check("table", "timesheets came back as hr.timesheets (own schema, own name)", bool(r1) and r1.get("promoted_as") == "hr.timesheets", str((r1 or {}).get("promoted_as")))
+    check("table", "order_items stayed in schema shop", bool(r2) and (r2.get("promoted_as") or "").startswith("shop.order_items"), str((r2 or {}).get("promoted_as")))
+
+
+def sc_table_deps():
+    print("== TABLE WITH DEPENDENCIES: shop.orders (foreign keys point to it) - known gap of object restore v1"); base, t_ok = fresh(); TOK[0] = t_ok
+    fk0 = sql(DB, "SELECT count(*) FROM pg_constraint WHERE contype='f' AND confrelid='shop.orders'::regclass")
+    sql(DB, "TRUNCATE shop.orders CASCADE"); damage_done()
+    promote("tabledeps", "%s.shop.orders" % DB, "pgarca_stage_s4", "replace")
+    compare("tabledeps", base, DB, ["shop.orders"])
     fk = sql(DB, "SELECT count(*) FROM pg_constraint WHERE contype='f' AND confrelid='shop.orders'::regclass")
-    check("table", "foreign keys pointing to shop.orders survived the replace", fk != "0", "(inbound FKs now: %s; before: 1+)" % fk)
+    check("tabledeps", "foreign keys pointing to shop.orders are intact", fk == fk0, "(before: %s, now: %s) - object restore v2" % (fk0, fk))
+    check("tabledeps", "child rows (order_items, payments) are back", fp(DB, "shop", "order_items") == base["shop.order_items"], "(TRUNCATE ... CASCADE emptied them)")
 
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
-    for name, fn in (("database", sc_database), ("schema", sc_schema), ("table", sc_table)):
+    for name, fn in (("database", sc_database), ("schema", sc_schema), ("table", sc_table), ("tabledeps", sc_table_deps)):
         if which in ("all", name):
             try: fn()
             except Exception as e: check(name, "scenario ran", False, repr(e)[:300])
