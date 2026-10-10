@@ -154,7 +154,8 @@ class ConsoleClient(threading.Thread):
                     # node/cluster deleted or revoked in the console: after a few consecutive rejections (not a blip) forget the stale credentials
                     # and announce ourselves again, so an administrator can simply approve the server anew (no manual reset on the node)
                     self._rejected = getattr(self, "_rejected", 0) + 1
-                    if self._rejected >= 3 and not self.config.get("enrollment_token"):
+                    unknown = "node_unknown" in str(e.body)       # the console says this node id no longer exists: definitive, no need to wait
+                    if (unknown or self._rejected >= 3) and not self.config.get("enrollment_token"):
                         logger.warning("console keeps rejecting our credentials (node deleted/revoked): dropping them and announcing again for approval")
                         self.forget_credentials()
                     else:

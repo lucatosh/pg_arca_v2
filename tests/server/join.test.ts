@@ -1,3 +1,4 @@
+import { summarize } from '../../server/join';
 import fs from 'fs'; import os from 'os'; import path from 'path'; import assert from 'assert'; import crypto from 'crypto';
 import { MiniApp } from './mini-express';
 import { Store, sha256 } from '../../server/store';
@@ -64,5 +65,9 @@ import { requiredRole } from '../../server/auth';
   await call('PUT', '/api/advanced', { joinRequests: true });
   await store.mutate(d => { for (const r of d.settings.joinRequests) if (r.status === 'pending') r.lastSeenAt = new Date(Date.now() - 49 * 3600_000).toISOString(); });
   assert.strictEqual((await call('GET', '/api/join-requests')).body.requests.length, 0, 'silent requests disappear');
+  // PostgreSQL not visible yet but Patroni is: the cluster identity still comes from the Patroni scope, so the 3 nodes group into one cluster
+  assert.strictEqual(summarize({ postgres_instances: [], patroni_clusters: [{ scope: 'arca-lab' }] }).clusterKey, 'patroni:arca-lab');
+  assert.strictEqual(summarize({ postgres_instances: [{ cluster_key: 'sysid:9', port: 5432 }] }).clusterKey, 'sysid:9');
+  assert.strictEqual(summarize({}).clusterKey, undefined);
   console.log('join tests OK');
 })().catch(e => { console.error(e); process.exit(1); });

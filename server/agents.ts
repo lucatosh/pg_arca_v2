@@ -33,6 +33,14 @@ export function authNode(store: Store, req: Request): NodeRecord | null {
   return safeEq(sha256(auth.slice(7).trim()), node.tokenHash) ? node : null;
 }
 
+/** 401 for agent calls. 'node_unknown' (the node id is not registered: deleted in the console) tells the agent to announce itself again right away;
+ *  'unauthorized' (known node, wrong secret) is retried a few times before the agent gives up its credentials. */
+function deny(store: Store, req: Request, res: Response) {
+  const id = String(req.headers['x-arca-node'] || '');
+  const known = Object.prototype.hasOwnProperty.call(store.peek().nodes, id);
+  return res.status(401).json({ error: id && !known ? 'node_unknown' : 'unauthorized' });
+}
+
 /** Recompute the persisted cluster view from the nodes that belong to it (called inside a mutate). */
 export function refreshCluster(draft: any, clusterId: string) {
   const idx = draft.clusters.findIndex((c: any) => c.id === clusterId);
@@ -127,7 +135,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
   // ---- heartbeat: telemetry up, operations down -----------------------------
   app.post('/api/agent/heartbeat', async (req: Request, res: Response) => {
     const node = authNode(store, req);
-    if (!node) return res.status(401).json({ error: 'unauthorized' });
+    if (!node) return deny(store, req, res);
     const b = req.body || {};
     const snap = sanitizeSnapshot(b.snapshot);
     if (snap && JSON.stringify(snap).length > 1_500_000) return res.status(413).json({ error: 'snapshot_too_large' });
@@ -167,7 +175,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
   // ---- log ingest (authenticated, size-bounded) -----------------------------
   app.post('/api/agent/logs', (req: Request, res: Response) => {
     const node = authNode(store, req);
-    if (!node) return res.status(401).json({ error: 'unauthorized' });
+    if (!node) return deny(store, req, res);
     const logs = Array.isArray(req.body?.logs) ? req.body.logs.slice(0, 500) : null;
     if (!logs) return res.status(400).json({ error: 'logs_array_required' });
     const cl = store.peek().clusters.find((c: any) => c.id === node.clusterId);
@@ -177,7 +185,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
 
   app.post('/api/agent/ops/:id/report', async (req: Request, res: Response) => {
     const node = authNode(store, req);
-    if (!node) return res.status(401).json({ error: 'unauthorized' });
+    if (!node) return deny(store, req, res);
     const { status, result, error, progress } = req.body || {};
     if (!['running', 'succeeded', 'failed'].includes(status)) return res.status(400).json({ error: 'invalid_status' });
     const r = await ops.report(store, node.id, req.params.id, status, result, error ? String(error).slice(0, 4000) : undefined, 120,

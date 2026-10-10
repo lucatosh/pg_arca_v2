@@ -29,7 +29,8 @@ export function summarize(disc: any) {
   const procs = [...new Set(((disc?.running_processes || []) as any[]).map(p => trunc(p?.name, 20)).filter(Boolean))].slice(0, 12);
   const warns = ((disc?.warnings || []) as any[]).slice(0, 4).map(w => trunc(w, 200));
   const diag = { procs, warnings: warns, uid: Number.isInteger(disc?.run_as?.uid) ? disc.run_as.uid : undefined, scan_ms: Number(disc?.scan_duration_ms) || undefined };
-  return { diag, hostname: trunc(disc?.host?.hostname || disc?.hostname, 80), os: trunc(disc?.host?.os || disc?.os, 80), postgres: inst, patroni_scope: trunc(pat || inst[0]?.patroni_scope, 80) || undefined };
+  const clusterKey = inst.find(i => i.cluster_key)?.cluster_key || (pat ? 'patroni:' + trunc(pat, 80) : undefined);
+  return { clusterKey, diag, hostname: trunc(disc?.host?.hostname || disc?.hostname, 80), os: trunc(disc?.host?.os || disc?.os, 80), postgres: inst, patroni_scope: trunc(pat || inst[0]?.patroni_scope, 80) || undefined };
 }
 
 function prune(list: any[], now: number) {
@@ -74,7 +75,7 @@ export function mountJoinRoutes(app: any, store: Store) {
   const view = () => {
     const st = store.peek(); const now = Date.now();
     return (st.settings.joinRequests || []).filter((r: any) => r.status === 'pending' && now - Date.parse(r.lastSeenAt) < PENDING_TTL_MS).map((r: any) => {
-      const key = r.summary?.postgres?.find((i: any) => i.cluster_key)?.cluster_key;
+      const key = r.summary?.clusterKey;
       const match = key ? (st.clusters as any[]).find(c => c.clusterKey === key) : undefined;
       const known = Object.values(st.nodes).some((n: any) => n.name === r.nodeName);
       return { id: r.id, nodeName: r.nodeName, ip: r.ip, createdAt: r.createdAt, lastSeenAt: r.lastSeenAt, agentVersion: r.agentVersion, summary: r.summary, matchCluster: match ? { id: match.id, name: match.name, environment: match.environment } : null, nameInUse: known };
@@ -89,7 +90,7 @@ export function mountJoinRoutes(app: any, store: Store) {
       if (!r) return { code: 404, body: { error: 'not_found' } };
       if (r.status !== 'pending') return { code: 409, body: { error: 'not_pending', message: 'Richiesta già gestita.' } };
       if (Object.values(d.nodes).some((n: any) => n.name === r.nodeName)) return { code: 409, body: { error: 'name_in_use', message: `Esiste già un server chiamato ${r.nodeName}.` } };
-      const key = r.summary?.postgres?.find((i: any) => i.cluster_key)?.cluster_key as string | undefined;
+      const key = r.summary?.clusterKey as string | undefined;
       let cluster: any = b.clusterId ? d.clusters.find((c: any) => c.id === b.clusterId && !c.isSandbox) : (key ? d.clusters.find((c: any) => c.clusterKey === key) : undefined);
       if (b.clusterId && !cluster) return { code: 404, body: { error: 'cluster_not_found' } };
       if (!cluster) {
