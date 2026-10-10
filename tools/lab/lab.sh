@@ -25,7 +25,9 @@ case "${1:-help}" in
   console) # run the web console on this host (background), from the repo root
     cd ../..; [[ -d node_modules/express ]] || npm install; [[ -f dist/index.html ]] || npx vite build; setsid nohup npm start >/tmp/pg_arca_console.log 2>&1 < /dev/null & echo "console on :3000, log /tmp/pg_arca_console.log" ;;
   agent-update) # reinstall the agent code from /work on every node and restart only the agent (Patroni/PostgreSQL untouched, credentials kept)
-    for n in pg1 pg2 pg3; do docker exec -e PG_ARCA_NO_SERVICE=1 "$n" bash /work/unix-agent/install-agent.sh >/dev/null && docker exec "$n" pkill -f pg-arca-agent.py || true; echo "$n agent updated"; done ;;
+    for n in pg1 pg2 pg3; do docker exec -e PG_ARCA_NO_SERVICE=1 "$n" bash /work/unix-agent/install-agent.sh >/dev/null && docker exec "$n" pkill -f pg-arca-agent.py || true; echo "$n agent updated"; done
+    echo "waiting for the agents to restart (they respawn within ~6 s, then re-announce within ~30 s if the console forgot them) ..."; sleep 12
+    for n in pg1 pg2 pg3; do echo "-- $n"; docker exec "$n" tail -n 3 /var/log/pgarca/agent.out; done ;;
   agent-reset) # forget the console enrollment on every node and restart them one by one (then delete the old clusters in the console and approve again)
     for n in pg1 pg2 pg3; do docker exec "$n" rm -f /etc/pg-arca/credentials.json /etc/pg-arca/join.json /etc/pg-arca/enroll.env; docker restart "$n" >/dev/null; echo "$n restarted"; sleep 20; done ;;
   switchover) l=$(leader); t=${2:?target node (pg1|pg2|pg3)}; docker exec "$l" patronictl -c /etc/patroni.yml switchover --leader "$l" --candidate "$t" --force; sleep 8; ./lab.sh status ;;
