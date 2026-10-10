@@ -83,3 +83,9 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
   const reset = useCallback(() => { setOp(null); setError(null); setBusy(false); keyRef.current = null; clearTimeout(timer.current); }, []);
   return { op, error, busy, run, cancel, reset };
 }
+
+/** Role of the logged-in user ('admin' | 'operator' | 'viewer' | null while loading). The server enforces it; this only hides actions that would be refused. */
+export function useRole(): string | null {
+  const q = useQuery<{ role: string | null }>('/api/auth/status');
+  return q.data?.role ?? null;
+}

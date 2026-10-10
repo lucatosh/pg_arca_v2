@@ -11,7 +11,8 @@ type Order = 'specific' | 'wide' | 'manual';
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 async function runOp(clusterId: string, type: string, params: any, nodeId?: string): Promise<Op> {
-  const r = await api<{ operation: Op }>('POST', `/api/clusters/${encodeURIComponent(clusterId)}/operations`, { type, params, nodeId }, { key: uid('op') });
+  const r = await api<{ operation?: Op; approval?: any }>('POST', `/api/clusters/${encodeURIComponent(clusterId)}/operations`, { type, params, nodeId }, { key: uid('op') });
+  if (!r.operation) throw new Error('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).');
   return waitOp(r.operation);
 }
 async function waitOp(first: Op): Promise<Op> {

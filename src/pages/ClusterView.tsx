@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { api, get } from '../api';
 import { Modal, Badge, Banner, Button, Card, Confirm, Dot, Empty, Field, Icon, Skeleton, Tabs, bytes, dt, ago, num, Preview, CopyBlock } from '../ui';
-import { Op, revalidate, toast, useOpRunner, useQuery, isTerminal } from '../hooks';
+import { Op, revalidate, toast, useOpRunner, useQuery, isTerminal, useRole } from '../hooks';
 import { go } from '../router';
 import { statusKind } from '../App';
 import { OP_LABEL, OpPanel, Result, statusBadge } from './shared';
@@ -85,21 +85,22 @@ function Nodes({ c }: { c: any }) {
   const nodes: any[] = c.haState?.nodes || [];
   const reg = useQuery<{ nodes: any[] }>('/api/nodes', { interval: 8000 });
   const mine = (reg.data?.nodes || []).filter(n => n.clusterId === c.id);
+  const isAdmin = useRole() === 'admin';
   const [revoke, setRevoke] = useState<any>(null); const [tok, setTok] = useState<any>(null); const [busy, setBusy] = useState(false);
   const doRevoke = async () => { setBusy(true); try { await api('DELETE', `/api/nodes/${revoke.id}`); toast(`Agent di ${revoke.name} revocato`, 'ok'); revalidate('/api/nodes'); revalidate(`/api/clusters/${encodeURIComponent(c.id)}`); setRevoke(null); } catch (e: any) { toast(e.message, 'bad'); } finally { setBusy(false); } };
   const mint = async (nodeName?: string) => { setBusy(true); try { const t: any = await api('POST', '/api/enrollment-tokens', { label: `${c.name} +${nodeName || 'nodo'}`, clusterId: c.id, ttlMinutes: 60 }, { key: 'tok-' + Date.now() }); setTok(nodeName ? { ...t, node: nodeName, installCommand: t.installCommand.replace('sudo PG_ARCA_URL=', `sudo PG_ARCA_NODE_NAME=${nodeName} PG_ARCA_URL=`) } : t); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
   return <div className="stack-l">
     {nodes.some(n => n.source === 'patroni') ? <Banner kind="info" title={`${nodes.filter(n => n.source === 'patroni').length} nodi del cluster non hanno ancora l’agent`}>Patroni li vede, ma per gestirli (backup, ripristino, accessi) serve l’agent. Se uno solo dei nodi con agent si ferma, backup e ripristini non partono. Usa “Installa agent” accanto a ogni nodo: il comando è già legato a questo cluster.</Banner> : null}
     <Card title="Membri del cluster" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Nodo</th><th>Ruolo</th><th>Stato</th><th className="num">Ritardo</th><th className="num">CPU</th><th className="num">Memoria</th><th className="num">Connessioni</th></tr></thead>
-      <tbody>{nodes.map(n => <tr key={n.name}><td><span className="row gap-s"><Dot kind={n.online ? 'ok' : 'bad'} /><strong>{n.name}</strong>{n.source === 'patroni' ? <Badge kind="warn" title="Visto da Patroni: senza agent non si possono fare backup, ripristini o modifiche su questo nodo">senza agent</Badge> : null}{n.source === 'patroni' && !c.isSandbox ? <Button sm icon="plus" disabled={busy} onClick={() => mint(n.name)}>Installa agent</Button> : null}</span><div className="faint small">{n.host}:{n.port}</div></td>
+      <tbody>{nodes.map(n => <tr key={n.name}><td><span className="row gap-s"><Dot kind={n.online ? 'ok' : 'bad'} /><strong>{n.name}</strong>{n.source === 'patroni' ? <Badge kind="warn" title="Visto da Patroni: senza agent non si possono fare backup, ripristini o modifiche su questo nodo">senza agent</Badge> : null}{n.source === 'patroni' && !c.isSandbox && isAdmin ? <Button sm icon="plus" disabled={busy} onClick={() => mint(n.name)}>Installa agent</Button> : null}</span><div className="faint small">{n.host}:{n.port}</div></td>
         <td><Badge kind={n.role === 'primary' ? 'accent' : undefined}>{n.role === 'primary' ? 'Primario' : n.role === 'sync_standby' ? 'Standby sincrono' : n.role === 'standby_leader' ? 'Leader standby' : 'Replica'}</Badge></td>
         <td>{n.online ? n.state : 'offline'}</td><td className="num">{n.role === 'primary' ? '—' : bytes(n.replicationLagBytes)}</td>
         <td className="num">{n.source === 'agent' ? `${n.cpuPercent}%` : '—'}</td><td className="num">{n.source === 'agent' ? `${n.memoryPercent}%` : '—'}</td><td className="num">{n.connections}/{n.maxConnections || '—'}</td></tr>)}
         {!nodes.length ? <tr><td colSpan={7} className="muted">Nessun nodo rilevato.</td></tr> : null}</tbody></table></div></Card>
-    {c.source !== 'direct' && !c.isSandbox ? <Card title="Agent installati" actions={<Button sm icon="plus" busy={busy && !revoke} onClick={() => mint()}>Aggiungi nodo</Button>} pad={false}>
+    {c.source !== 'direct' && !c.isSandbox ? <Card title="Agent installati" actions={isAdmin ? <Button sm icon="plus" busy={busy && !revoke} onClick={() => mint()}>Aggiungi nodo</Button> : undefined} pad={false}>
       <div className="tablewrap"><table className="t"><thead><tr><th>Nodo</th><th>Versione agent</th><th>Ultimo contatto</th><th>Indirizzo</th><th /></tr></thead>
         <tbody>{mine.map(n => <tr key={n.id}><td><span className="row gap-s"><Dot kind={n.online ? 'ok' : 'bad'} />{n.name}</span></td><td>{n.agentVersion}</td><td>{ago(n.lastSeen)}</td><td className="mono">{n.remoteIp}</td>
-          <td className="num"><Button sm icon="trash" onClick={() => setRevoke(n)}>Revoca</Button></td></tr>)}
+          <td className="num">{isAdmin ? <Button sm icon="trash" onClick={() => setRevoke(n)}>Revoca</Button> : null}</td></tr>)}
           {!mine.length ? <tr><td colSpan={5} className="muted">Nessun agent.</td></tr> : null}</tbody></table></div></Card> : null}
     {!c.isSandbox && c.source !== 'direct' ? <AgentSettings clusterId={c.id} nodes={mine.map(n => ({ id: n.id, name: n.name, online: n.online }))} /> : null}
     {tok ? <Card title={tok.node ? `Installa l’agent su ${tok.node}` : 'Nuovo nodo'}><div className="stack"><p>Esegui come root sul nuovo server. Il token vale per un nodo e scade tra un’ora.</p><CopyBlock text={tok.installCommand} /><Button onClick={() => setTok(null)}>Chiudi</Button></div></Card> : null}
