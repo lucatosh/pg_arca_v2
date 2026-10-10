@@ -57,6 +57,7 @@ export const OP_SPECS: Record<string, OpSpec> = {
     validate: p => !p.candidate ? 'candidate required' : (p.confirm !== 'FAILOVER' ? 'type FAILOVER to confirm' : null),
   },
   patroni_restart:  { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => (p.member && !ident.test(String(p.member).replace(/-/g, '_'))) ? 'invalid member' : null },
+  archive_enable:   { mutating: true, target: 'primary', validate: p => (p.archive_timeout !== undefined && !(Number(p.archive_timeout) >= 10 && Number(p.archive_timeout) <= 3600)) ? 'archive_timeout 10..3600' : null },
   patroni_reinit:   { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => (p.member && ident.test(String(p.member).replace(/-/g, '_'))) ? null : 'member required' },
   patroni_reload:   { mutating: true, target: 'patroni_node', needsPatroni: true, validate: () => null },
   patroni_pause:    { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => typeof p.enable === 'boolean' ? null : 'enable boolean required' },

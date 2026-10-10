@@ -48,17 +48,27 @@ export function BackupTab({ c }: { c: any }) {
   const done = sets.filter(s => s.status === 'COMPLETE');
   return <div className="stack-l">
     <Banner kind={v.kind} title={v.title}>{v.text}</Banner>
-    {d.archiveMode === 'off' ? <ArchiveSetup /> : null}
+    {d.archiveMode === 'off' ? <ArchiveSetup c={c} refresh={q.refresh} /> : null}
     <RunCard c={c} hasFull={done.some(s => s.type === 'full')} running={d.running || []} refresh={q.refresh} />
     <div className="grid g2"><StrategyCard c={c} policy={d.policySource?.scope === 'none' || d.policySource?.disabled ? null : d.policy} source={d.policySource} onSaved={q.refresh} /><HealthCard c={c} d={d} refresh={q.refresh} /></div>
     <SetsCard sets={sets} d={d} />
   </div>;
 }
 
-function ArchiveSetup() {
-  return <Card title="Attiva l’archiviazione WAL"><div className="stack"><p>Aggiungi queste righe a <code>postgresql.conf</code> sul primario e riavvia PostgreSQL (è l’unico passo che richiede un riavvio):</p>
-    <CopyBlock text={`wal_level = replica\narchive_mode = on\narchive_command = '/usr/local/bin/pg-arca-wal archive %p %f'\nfull_page_writes = on`} />
-    <p className="small muted">Con Patroni, applica le stesse impostazioni con <code>patronictl edit-config</code>. Per gli incrementali serve anche <code>data_checksums</code> o <code>wal_log_hints = on</code>.</p></div></Card>;
+function ArchiveSetup({ c, refresh }: { c: any; refresh: () => void }) {
+  const r = useOpRunner(c.id, refresh); const [ask, setAsk] = useState(false); const [manual, setManual] = useState(false);
+  const res = r.op?.status === 'succeeded' ? r.op.result : null;
+  return <Card title="Attiva l’archiviazione WAL"><div className="stack">
+    <p>Serve per il ripristino a un istante preciso (PITR) e per backup consistenti. L’agent imposta <code>archive_mode</code>, <code>archive_command</code> e, se servono, <code>wal_level</code> e <code>wal_log_hints</code>{!!c.haState ? ' attraverso la configurazione Patroni (tutti i membri)' : ' con ALTER SYSTEM'}. Il riavvio resta un’azione tua: non viene mai fatto in automatico.</p>
+    <div className="row wrap"><Button kind="primary" icon="play" busy={r.busy} onClick={() => setAsk(true)}>Attiva archiviazione WAL</Button><Button sm onClick={() => setManual(m => !m)}>{manual ? 'Nascondi' : 'Preferisco farlo a mano'}</Button></div>
+    {(r.op || r.error) ? <OpPanel op={r.op} error={r.error} cancel={r.cancel} label="Attivazione archiviazione WAL" /> : null}
+    {res ? <Banner kind={res.restart_required ? 'warn' : 'ok'} title={res.already_enabled ? 'Già attiva' : res.restart_required ? 'Impostazioni salvate: serve un riavvio' : 'Archiviazione attiva'}>{res.next || 'Nessuna modifica necessaria.'}{!!c.haState && res.restart_required ? ' Dalla scheda Nodi usa “Gestisci” su ogni nodo → Riavvia (prima le repliche, poi il primario).' : ''}</Banner> : null}
+    {manual ? <><p className="small muted">Aggiungi a <code>postgresql.conf</code> sul primario e riavvia PostgreSQL:</p>
+      <CopyBlock text={`wal_level = replica\narchive_mode = on\narchive_command = '/usr/local/bin/pg-arca-wal archive %p %f'\nfull_page_writes = on`} />
+      <p className="small muted">Con Patroni, applica le stesse impostazioni con <code>patronictl edit-config</code>. Per gli incrementali serve anche <code>data_checksums</code> o <code>wal_log_hints = on</code>.</p></> : null}
+    {ask ? <Confirm title="Attivare l’archiviazione WAL?" confirmLabel="Attiva" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); r.run('archive_enable', {}); }}>
+      <p>Verranno modificati i parametri di PostgreSQL elencati sopra. Se è già configurato un altro strumento di archiviazione l’operazione si ferma senza toccarlo. Dopo l’attivazione serve un riavvio.</p></Confirm> : null}
+  </div></Card>;
 }
 
 function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; running: Op[]; refresh: () => void }) {

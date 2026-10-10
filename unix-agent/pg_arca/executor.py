@@ -11,6 +11,7 @@ The console delivers operations AT-LEAST-ONCE (lease + redelivery). Safety comes
 """
 
 import json
+import shutil
 import logging
 import os
 import re
@@ -75,6 +76,7 @@ class OperationExecutor:
         r("pg_set_param", self.h_set_param, True)           # compare-before-set: idempotent
         r("patroni_switchover", self.h_switchover, False)
         r("patroni_failover", self.h_failover, False)
+        r("archive_enable", self.h_archive_enable, True)       # idempotent: compares before it sets
         r("patroni_restart", self.h_restart, False)
         r("patroni_reinit", self.h_reinit, False)
         r("patroni_reload", self.h_patroni_reload, True)
@@ -263,6 +265,52 @@ class OperationExecutor:
             raise OpError(str(e))
         r["via"] = "alter_system"
         return r
+
+    def h_archive_enable(self, p):
+        """One step to continuous WAL archiving for PITR: archive_mode=on, archive_command = this agent's own tool, wal_level>=replica, wal_log_hints when
+        checksums are off (needed by incremental backups). The command is built HERE, never taken from the console. Under Patroni the change goes through the DCS
+        (every member gets it); otherwise ALTER SYSTEM. archive_mode/wal_level need a restart: it is reported, never done silently."""
+        self._require_pg()
+        tool = shutil.which("pg-arca-wal") or "/usr/local/bin/pg-arca-wal"
+        want = {"archive_mode": "on", "archive_command": "%s archive %%p %%f" % tool, "archive_timeout": str(int(p.get("archive_timeout") or 60))}
+        cur, err = self.db.query_json("SELECT json_object_agg(name, setting) FROM pg_settings WHERE name IN ('archive_mode','archive_command','archive_timeout','wal_level','wal_log_hints','data_checksums')")
+        if not isinstance(cur, dict):
+            raise OpError("cannot read the current settings: %s" % err)
+        if cur.get("wal_level") == "minimal":
+            want["wal_level"] = "replica"
+        if cur.get("data_checksums") == "off" and cur.get("wal_log_hints") != "on":
+            want["wal_log_hints"] = "on"
+        existing = cur.get("archive_command") or ""
+        if existing.strip() in ("(disabled)", "false", ":", "/bin/true", "true"):
+            existing = ""   # unset / no-op placeholder, not a foreign tool
+        if existing and "pg-arca-wal" not in existing and "pg_arca" not in existing and not p.get("replace_foreign"):
+            raise OpError("archive_command is already set to another tool (%s). Replacing it would break that tool's archive; confirm with replace_foreign=true if that is intended." % existing[:120])
+        todo = {k: v for k, v in want.items() if str(cur.get(k)) != v}
+        if not todo:
+            return {"changed": {}, "restart_required": False, "already_enabled": True}
+        restart = False
+        if self.patroni.configured and self._patroni_accessible():
+            st, d = self.patroni.patch_config({"postgresql": {"parameters": todo}})
+            if st >= 300:
+                raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
+            st2, cfg = self.patroni.get_config()
+            got = ((cfg.get("postgresql") or {}).get("parameters") or {}) if st2 == 200 else {}
+            bad = {k: got.get(k) for k, v in todo.items() if str(got.get(k)) != v}
+            if bad:
+                raise OpError("verification failed: the DCS does not hold %s" % bad)
+            restart = any(k in ("archive_mode", "wal_level") for k in todo)
+            via = "patroni"
+        else:
+            for k, v in todo.items():
+                try:
+                    r = self.db.alter_system(k, v)
+                except (ValueError, RuntimeError) as e:
+                    raise OpError("%s: %s" % (k, e))
+                restart = restart or bool(r.get("restart_required"))
+            via = "alter_system"
+        return {"changed": todo, "via": via, "restart_required": restart,
+                "next": ("Restart each member (Patroni: replicas first, then the leader) for archive_mode/wal_level to take effect." if via == "patroni" and restart else
+                         "Restart PostgreSQL (systemctl restart <service>, or pg_ctl restart) for archive_mode/wal_level to take effect." if restart else "Applied with a reload; archiving is active.")}
 
     def _patroni_accessible(self):
         st, d = self.patroni.get_node_status()
