@@ -173,7 +173,7 @@ class Ephemeral(object):
         removed, forced = quarantine_config(self.dir, ctl, self.port, self.sock, self.ctx.restore_command, sparse, self.shared_buffers)
         with open(os.path.join(self.dir, "postgresql.auto.conf"), "a") as f:
             from pg_arca.engine.restore import effective_targets
-            t_lsn, t_imm = effective_targets(chain, target_lsn, immediate)
+            t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, self.ctx)
             f.write(recovery_lines(self.ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm, "pause", inclusive))
         open(os.path.join(self.dir, "recovery.signal"), "w").close()
         # recovery_lines wrote restore_command again into auto.conf: harmless and identical, but keep the quarantine invariant

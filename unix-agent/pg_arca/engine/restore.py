@@ -286,12 +286,57 @@ def _free_bytes(path):
         return None
 
 
-def effective_targets(chain, target_lsn, immediate):
+def effective_targets(chain, target_lsn, immediate, ctx=None):
     """'Stop as soon as consistent' means: at the END OF THE LAST SET of the chain. The backup_label is the base full's, so PostgreSQL's own notion of
     'consistent' is the end of the FULL, while the files already contain the later incremental pages: stopping there would promote a torn cluster."""
     if immediate and len(chain) > 1:
-        return chain[-1]["stop_lsn"], False
+        return _end_of_set_target(ctx, chain[-1]), False
     return target_lsn, immediate
+
+
+def _end_of_set_target(ctx, meta):
+    """recovery_target_lsn that stops exactly after the last record a set needs. PostgreSQL stops after the first record whose START is >= the target, so a stop LSN
+    that is the END of the final record (a standby's minimum recovery point, typically right after a WAL switch: exactly a segment boundary) would never be reached
+    when nothing follows it in the archive: 'recovery ended before configured recovery target was reached'. In that case aim at the start of the last record."""
+    stop = meta["stop_lsn"]
+    if ctx is None or not meta.get("from_standby"):
+        return stop
+    seg = int(meta.get("wal_segment_size") or ctx.seg_size)
+    v = lsn_to_int(stop)
+    if v <= 0 or v % seg != 0:
+        return stop
+    try:
+        last = _last_record_start(ctx, int(meta.get("timeline") or 1), (v - 1) // seg, seg)
+    except Exception as e:                                                      # best effort: keep the previous behaviour rather than fail the restore here
+        ctx.log("warning", "cannot locate the last WAL record of the set (%s): using its stop LSN" % e)
+        return stop
+    return last or stop
+
+
+def _last_record_start(ctx, tli, segno, seg):
+    """Start LSN of the last record of one archived WAL segment, found with pg_waldump on a temporary copy. None when pg_waldump is unavailable."""
+    import subprocess
+    import tempfile
+    exe = ctx.conn.exe("pg_waldump")
+    if os.path.sep in exe and not os.path.exists(exe):
+        return None
+    name = wal_name(tli, segno, seg)
+    tmp = tempfile.mkdtemp(prefix="pgarca-wd-", dir=ctx.scratch_dir if os.path.isdir(ctx.scratch_dir) else None)
+    try:
+        f = os.path.join(tmp, name)
+        rc, msg = ctx.wal.retrieve_segment(name, f)
+        if rc != 0:
+            raise EngineError("PGA-WAL-022", "segment %s not available: %s" % (name, msg))
+        p = subprocess.Popen([exe, f], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        last = None
+        for line in p.stdout:
+            m = re.search(r"\blsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)", line)
+            if m:
+                last = m.group(1)
+        p.wait()
+        return last
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def count_targets(target_time, target_lsn, target_xid, target_name, immediate=False):
@@ -457,7 +502,7 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     shutil.copy2(label, os.path.join(dest, "backup_label"))
     scrub_recovery_settings(dest)
     with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
-        t_lsn, t_imm = effective_targets(chain, target_lsn, immediate)
+        t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, ctx)
         f.write(recovery_lines(ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm,
                                "promote" if action == "promote" else "pause", inclusive, timeline))
     open(os.path.join(dest, "recovery.signal"), "w").close()
