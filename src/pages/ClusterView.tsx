@@ -29,7 +29,7 @@ const PREVIEW_TEXT: Record<string, string> = {
 
 export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const q = useQuery<{ cluster: any }>(`/api/clusters/${encodeURIComponent(id)}`, { interval: 5000 });
-  const [detach, setDetach] = useState(false); const [busy, setBusy] = useState(false);
+  const [detach, setDetach] = useState(false); const [busy, setBusy] = useState(false); const [spin, setSpin] = useState(false);
   const c = q.data?.cluster; const cur = TAB_ITEMS.some(t => t.id === tab) ? tab! : 'overview';
   if (q.error?.status === 404) return <Empty icon="db" title="Cluster non trovato" action={<Button onClick={() => go('')}>Torna all’elenco</Button>}>Potrebbe essere stato scollegato.</Empty>;
   if (!c) return <div className="stack"><Skeleton h={30} w={260} /><Skeleton h={120} /></div>;
@@ -44,6 +44,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
       <div className="grow"><div className="row wrap"><h1>{c.name}</h1><Badge kind={statusKind(c.status)}>{c.status === 'healthy' ? 'In salute' : c.status === 'degraded' ? 'Degradato' : c.status}</Badge>
         {c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Solo connessione</Badge> : <Badge kind="accent">Agent</Badge>}</div>
         <p className="sub">{c.environment} · PostgreSQL {c.pgVersion || '—'} · timeline {c.activeTimeline || '—'}</p></div>
+      <Button icon="refresh" busy={spin} title="Rilegge subito lo stato del cluster, dei nodi, dei backup e delle operazioni" onClick={async () => { setSpin(true); const k = encodeURIComponent(id); await Promise.all([revalidate(`/api/clusters/${k}`), revalidate('/api/clusters'), revalidate('/api/nodes'), revalidate(`/api/clusters/${k}/backups`), revalidate(`/api/operations?clusterId=${k}`)]); setSpin(false); toast('Stato aggiornato', 'ok'); }}>Aggiorna</Button>
       <Button icon="trash" onClick={() => setDetach(true)}>Scollega</Button></div>
     {c.isSandbox ? <Banner kind="info" title="Cluster demo">Dati di esempio: le operazioni non vengono eseguite. Puoi eliminarlo quando hai collegato un cluster reale.</Banner> : null}
     {agentic ? <ProtectionRibbon c={c} /> : null}

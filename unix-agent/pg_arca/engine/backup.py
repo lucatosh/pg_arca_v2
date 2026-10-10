@@ -101,6 +101,47 @@ def backup_file(repo, rel, full, st, prev_lsn, incremental, fadvise=True):
     return {"size": total, "mode": stat.S_IMODE(st.st_mode), "mtime": int(st.st_mtime), "kind": "pages" if paged else "whole", "chunks": chunks}, stats
 
 
+def _start_backup(ctx, sess, start_sql, fast_on, progress, cancel):
+    """pg_backup_start() waits for a checkpoint. A spread checkpoint (fast=false) lasts up to checkpoint_timeout * checkpoint_completion_target, i.e. MINUTES on a
+    busy server, and the call blocks. It runs in a worker thread so that (a) the operator sees what is going on and (b) a cancel request really stops it: the
+    checkpoint wait is interrupted from a second connection with pg_cancel_backend()."""
+    pid = sess.scalar("SELECT pg_backend_pid()")
+    box = {}
+
+    def work():
+        try:
+            box["lsn"] = sess.scalar(start_sql)
+        except BaseException as e:                       # EngineError, session errors...
+            box["err"] = e
+    th = threading.Thread(target=work, daemon=True)
+    t0 = time.time()
+    th.start()
+    cancelled = False
+    while th.is_alive():
+        th.join(1.0)
+        if not th.is_alive():
+            break
+        if progress:
+            progress({"phase": "checkpoint", "elapsed_sec": int(time.time() - t0), "fast": fast_on})
+        if not cancelled and cancel and cancel():
+            cancelled = True
+            try:
+                killer = PgSession(ctx.conn)
+                try:
+                    killer.scalar("SELECT pg_cancel_backend(%s)" % int(pid))
+                finally:
+                    killer.close()
+            except Exception:
+                pass
+    if "err" in box:
+        if cancelled:
+            raise Cancelled()
+        raise box["err"]
+    if cancelled:
+        raise Cancelled()
+    return box.get("lsn")
+
+
 def _stop_backup(sess):
     if sess.version_num >= 150000:
         fn = "pg_backup_stop(false)"
@@ -124,17 +165,17 @@ def _external_conf(sess, pgdata):
     return out
 
 
-def run_backup(ctx, btype="incr", archive_timeout=120, progress=None, cancel=None, owner="", note=""):
+def run_backup(ctx, btype="incr", archive_timeout=120, progress=None, cancel=None, owner="", note="", start_fast=None):
     repo = ctx.repo
     repo.init()
     repo.check_writable()
     if not ctx.pgdata or not os.path.exists(os.path.join(ctx.pgdata, "PG_VERSION")):
         raise EngineError("PGA-CFG-014", "%s is not a PGDATA (PG_VERSION missing)" % ctx.pgdata)
     with repo.lock("stanza", owner or "backup"):
-        return _run_locked(ctx, btype, archive_timeout, progress, cancel, note)
+        return _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast)
 
 
-def _run_locked(ctx, btype, archive_timeout, progress, cancel, note):
+def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=None):
     repo, log = ctx.repo, ctx.log
     sess = PgSession(ctx.conn)
     meta = None
@@ -231,11 +272,13 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note):
         _check_cancel(cancel)
 
         label = "pg_arca:%s" % set_id
-        fast = "true" if ctx.start_fast else "false"
+        fast_on = ctx.start_fast if start_fast is None else bool(start_fast)
+        fast = "true" if fast_on else "false"
         if sess.version_num >= 150000:
-            start_lsn = sess.scalar("SELECT pg_backup_start(%s, %s)::text" % (sql_lit(label), fast))
+            start_sql = "SELECT pg_backup_start(%s, %s)::text" % (sql_lit(label), fast)
         else:
-            start_lsn = sess.scalar("SELECT pg_start_backup(%s, %s, false)::text" % (sql_lit(label), fast))
+            start_sql = "SELECT pg_start_backup(%s, %s, false)::text" % (sql_lit(label), fast)
+        start_lsn = _start_backup(ctx, sess, start_sql, fast_on, progress, cancel)
         if not start_lsn:
             raise EngineError("PGA-GEN-040", "pg_backup_start failed", "the backup role needs pg_backup_start privileges (superuser or pg_write_all_data/EXECUTE grants)")
         started_backup = True

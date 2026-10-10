@@ -418,6 +418,33 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len([s for s in left if s["type"] == "full"]), 1)
         self.assertTrue(verify(F.ctx, deep=True)["ok"])
 
+    def test_16_cancel_during_spread_checkpoint(self):
+        """A backup that waits for a SPREAD checkpoint (minutes on a busy server) must report it and must be cancellable at once, not after the checkpoint."""
+        from pg_arca.engine.util import Cancelled
+        import threading
+        q("postgres", "ALTER SYSTEM SET checkpoint_timeout='1h'"); q("postgres", "ALTER SYSTEM SET checkpoint_completion_target=0.9"); q("postgres", "SELECT pg_reload_conf()")
+        try:
+            q("app", "INSERT INTO orders(note) SELECT 'dirty ' || g FROM generate_series(1,20000) g")          # dirty buffers: the checkpoint now has real work to spread
+            flag, phases, out = {"c": False}, [], {}
+            old = F.ctx.start_fast; F.ctx.start_fast = False
+            def run():
+                try:
+                    run_backup(F.ctx, "full", progress=lambda p: phases.append(p.get("phase")), cancel=lambda: flag["c"])
+                except BaseException as e:
+                    out["e"] = e
+            t0 = time.time(); th = threading.Thread(target=run); th.start()
+            time.sleep(4); flag["c"] = True; th.join(30)
+            self.assertFalse(th.is_alive(), "cancel did not interrupt the checkpoint wait")
+            self.assertIsInstance(out.get("e"), Cancelled, out)
+            self.assertLess(time.time() - t0, 25)
+            self.assertIn("checkpoint", phases)
+            F.ctx.start_fast = old
+            # and with an immediate checkpoint the very same backup completes
+            meta = run_backup(F.ctx, "full", start_fast=True)
+            self.assertEqual(meta["status"], "COMPLETE")
+        finally:
+            q("postgres", "ALTER SYSTEM RESET checkpoint_timeout"); q("postgres", "ALTER SYSTEM RESET checkpoint_completion_target"); q("postgres", "SELECT pg_reload_conf()")
+
 
 if __name__ == "__main__":
     unittest.main()

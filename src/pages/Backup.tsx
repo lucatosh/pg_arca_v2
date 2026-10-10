@@ -72,7 +72,7 @@ function ArchiveSetup({ c, refresh }: { c: any; refresh: () => void }) {
 }
 
 function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; running: Op[]; refresh: () => void }) {
-  const [type, setType] = useState<'full' | 'diff' | 'incr'>(hasFull ? 'incr' : 'full');
+  const [type, setType] = useState<'full' | 'diff' | 'incr'>(hasFull ? 'incr' : 'full'); const [fast, setFast] = useState(true);
   useEffect(() => { if (!hasFull) setType('full'); }, [hasFull]);
   const r = useOpRunner(c.id, () => { refresh(); revalidate(`/api/operations?clusterId=${encodeURIComponent(c.id)}`); });
   const other = running.filter(o => o.id !== r.op?.id && o.type !== 'backup_info');
@@ -82,7 +82,8 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
   return <Card title="Esegui un backup">
     <div className="stack">
       <div className="row wrap"><div className="seg" role="group" aria-label="Tipo di backup">{(['full', 'diff', 'incr'] as const).map(t => <button key={t} aria-pressed={type === t} disabled={active || (t !== 'full' && !hasFull)} onClick={() => { setType(t); r.reset(); }}>{TYPE_LABEL[t]}</button>)}</div>
-        <Button kind="primary" icon="play" busy={r.busy} disabled={active} onClick={() => r.run('backup_run', { type })}>Avvia backup</Button><span className="small muted">{hint}</span></div>
+        <Button kind="primary" icon="play" busy={r.busy} disabled={active} onClick={() => r.run('backup_run', { type, start_fast: fast })}>Avvia backup</Button><span className="small muted">{hint}</span></div>
+      <label className="row small" style={{ gap: 8 }}><input type="checkbox" checked={fast} onChange={e => setFast(e.target.checked)} /> Checkpoint immediato <span className="muted">— il backup parte subito; se spento PostgreSQL distribuisce il checkpoint e l’avvio può richiedere alcuni minuti (meno I/O).</span></label>
       {!hasFull ? <p className="small muted">Il primo backup deve essere completo.</p> : null}
       {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} />{r.op?.status === 'succeeded' ? <Banner kind="ok" title={`Backup ${r.op.result?.set} completato`}>{bytes(r.op.result?.bytes_logical)} letti, {bytes(r.op.result?.bytes_written)} scritti nel repository in {dur(r.op.result?.duration_sec)}{r.op.result?.chunks_dedup ? `; ${num(r.op.result.chunks_dedup)} blocchi già presenti (deduplica)` : ''}.</Banner> : null}</> : null}
       {other.map(o => <div key={o.id} className="stack"><OpPanel op={o} cancel={() => cancelOther(o.id)} /></div>)}
