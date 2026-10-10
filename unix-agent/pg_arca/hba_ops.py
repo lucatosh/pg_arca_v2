@@ -38,14 +38,25 @@ class _Src(object):
         self.path = out.strip()
         self.patroni = False
         self.dcs_list = None
-        if ex.patroni.configured and ex._patroni_accessible():
+        self.seed = False
+        if ex.patroni.configured:
+            # Patroni owns pg_hba.conf: a hand-edited file is overwritten on the next reload and can break the cluster. NEVER write the file on such a node:
+            # the only path is the DCS (same call as `patronictl edit-config`). If the DCS cannot be reached we refuse instead of falling back to the file.
+            if not ex._patroni_accessible():
+                raise err("this node is managed by Patroni but its REST API is not reachable: pg_hba is only changed through the DCS (patronictl edit-config), "
+                          "never by editing pg_hba.conf. Restore the Patroni API access and retry")
             st, cfg = ex.patroni.get_config()
-            if st == 200 and isinstance((cfg.get("postgresql") or {}).get("pg_hba"), list):
-                self.patroni = True
-                self.dcs_list = [str(x) for x in cfg["postgresql"]["pg_hba"]]
+            if st != 200 or not isinstance(cfg, dict):
+                raise err("cannot read the Patroni DCS configuration (HTTP %s): refusing to touch pg_hba.conf" % st)
+            self.patroni = True
+            cur = (cfg.get("postgresql") or {}).get("pg_hba")
+            if isinstance(cur, list):
+                self.dcs_list = [str(x) for x in cur]
+            else:
+                self.seed = True      # the DCS has no pg_hba yet: the first change copies the rules in force today into it (nothing is lost), then edits them
 
     def text(self):
-        if self.patroni:
+        if self.patroni and not self.seed:
             return "\n".join(self.dcs_list) + "\n"
         with open(self.path, "r", encoding="utf-8") as f:
             return f.read()
@@ -110,7 +121,7 @@ def read(ex, p, err):
     rules, includes = hba.parse_file(text)
     managed = hba.extract_block(text)
     eff = _json(ex, SQL_RULES, err, [])
-    return {"hba_file": src.path, "mode": "patroni" if src.patroni else "file", "rev": hba.file_rev(text), "raw": text[:200000], "truncated": len(text) > 200000,
+    return {"hba_file": src.path, "mode": "patroni" if src.patroni else "file", "dcs_seed": src.seed, "rev": hba.file_rev(text), "raw": text[:200000], "truncated": len(text) > 200000,
             "managed": {"present": managed is not None, "rules": managed or [], "rev": hba.rules_rev(managed) if managed else None},
             "effective": eff, "errors": hard_errors(eff), "ssl": _ssl_on(ex), "has_includes": includes, "rule_count": len(rules),
             "suggest": {"replication_clients": _json(ex, SQL_REPL, err, []), "roles": _json(ex, SQL_ROLES, err, []), "databases": _json(ex, SQL_DBS, err, [])},
@@ -150,7 +161,7 @@ def plan(ex, p, err):
     if not _ssl_on(ex) and any(r["type"] in ("hostssl", "hostgssenc") for r in clean):
         warnings.append({"index": -1, "message": "PostgreSQL has ssl=off on this node: hostssl rules will NOT match until TLS is enabled"})
     diff = list(difflib.unified_diff(old.split("\n"), new.split("\n"), "pg_hba (attuale)", "pg_hba (nuovo)", lineterm="", n=1))
-    return {"valid": True, "errors": [], "warnings": warnings, "changed": old != new, "mode": "patroni" if src.patroni else "file", "base_rev": hba.file_rev(old),
+    return {"valid": True, "errors": [], "warnings": warnings, "changed": old != new, "mode": "patroni" if src.patroni else "file", "dcs_seed": src.seed, "base_rev": hba.file_rev(old),
             "diff": diff[:300], "simulation": rows, "would_lock_out": [r["label"] for r in lock if r["critical"]], "has_includes": hba.parse_file(old)[1]}
 
 
@@ -234,7 +245,7 @@ def _apply_patroni(ex, src, clean, new_text, cur_rev, err):
     while time.time() < deadline:                       # Patroni rewrites pg_hba.conf and reloads on its next cycle
         try:
             if hba.extract_block(src.file_text()) == (clean or None) and not hard_errors(_json(ex, SQL_RULES, err, [])):
-                return {"changed": True, "mode": "patroni", "rev": hba.file_rev(new_text), "rules": len(clean), "note": "propagated to every member through the DCS"}
+                return {"changed": True, "mode": "patroni", "rev": hba.file_rev(new_text), "rules": len(clean), "note": "propagated to every member through the DCS" + (" (the DCS had no pg_hba: the rules in force were copied into it first)" if src.seed else ""), "dcs_seed": src.seed}
         except IOError:
             pass
         time.sleep(2)

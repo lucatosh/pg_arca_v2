@@ -264,7 +264,7 @@ class OperationExecutor:
         name, value = str(p.get("name", "")), p.get("value")
         if name in DENY_PARAMS or not re.match(r"^[a-z_][a-z0-9_.]{0,62}$", name):
             raise OpError("parameter '%s' cannot be changed from the console" % name)
-        if self.patroni.configured and self._patroni_accessible():
+        if self._patroni_managed():
             # Under Patroni the DCS owns parameters: ALTER SYSTEM would silently diverge / be reverted.
             st, d = self.patroni.patch_config({"postgresql": {"parameters": {name: (None if value is None else str(value))}}})
             if st >= 300:
@@ -307,7 +307,7 @@ class OperationExecutor:
         if not todo:
             return {"changed": {}, "restart_required": False, "already_enabled": True}
         restart = False
-        if self.patroni.configured and self._patroni_accessible():
+        if self._patroni_managed():
             st, d = self.patroni.patch_config({"postgresql": {"parameters": todo}})
             if st >= 300:
                 raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
@@ -329,6 +329,16 @@ class OperationExecutor:
         return {"changed": todo, "via": via, "restart_required": restart,
                 "next": ("Restart each member (Patroni: replicas first, then the leader) for archive_mode/wal_level to take effect." if via == "patroni" and restart else
                          "Restart PostgreSQL (systemctl restart <service>, or pg_ctl restart) for archive_mode/wal_level to take effect." if restart else "Applied with a reload; archiving is active.")}
+
+    def _patroni_managed(self):
+        """True when this node is managed by Patroni. Then parameters live in the DCS (same call as `patronictl edit-config`) and ONLY there: ALTER SYSTEM,
+        postgresql.conf, postgresql.auto.conf and patroni.yml are never touched. If the Patroni API cannot be reached we refuse instead of falling back."""
+        if not self.patroni.configured:
+            return False
+        if not self._patroni_accessible():
+            raise OpError("this node is managed by Patroni but its REST API is not reachable: parameters are only changed through the DCS (patronictl edit-config), "
+                          "never through postgresql.conf / ALTER SYSTEM / patroni.yml. Restore the Patroni API access and retry")
+        return True
 
     def _patroni_accessible(self):
         st, d = self.patroni.get_node_status()
