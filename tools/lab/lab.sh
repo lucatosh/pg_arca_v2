@@ -25,8 +25,20 @@ case "${1:-help}" in
   console) # run the web console on this host (background), from the repo root
     cd ../..; [[ -d node_modules/express ]] || npm install; [[ -f dist/index.html ]] || npx vite build; setsid nohup npm start >/tmp/pg_arca_console.log 2>&1 < /dev/null & echo "console on :3000, log /tmp/pg_arca_console.log" ;;
   agent-update) # reinstall the agent code from /work on every node and restart only the agent (Patroni/PostgreSQL untouched, credentials kept)
-    for n in pg1 pg2 pg3; do docker exec -e PG_ARCA_NO_SERVICE=1 "$n" bash /work/unix-agent/install-agent.sh >/dev/null && docker exec "$n" pkill -f pg-arca-agent.py || true; echo "$n agent updated"; done
-    echo "waiting for the agents to restart (they respawn within ~6 s, then re-announce within ~30 s if the console forgot them) ..."; sleep 12
+    # NB: the anchored pattern matches only the python process. A plain `pkill -f pg-arca-agent.py` also killed the supervising shell loop (its command line contains that name) and nothing restarted the agent.
+    for n in pg1 pg2 pg3; do
+      docker exec -e PG_ARCA_NO_SERVICE=1 "$n" bash /work/unix-agent/install-agent.sh >/dev/null
+      docker exec "$n" pkill -f '^python3 /opt/pg-arca/pg-arca-agent.py' || true
+      echo "$n agent code updated"
+    done
+    sleep 10
+    for n in pg1 pg2 pg3; do
+      if ! docker exec "$n" pgrep -f '^python3 /opt/pg-arca/pg-arca-agent.py' >/dev/null; then   # no supervisor left (older lab containers): start one
+        echo "$n: agent not running, starting it"
+        docker exec -d -u postgres "$n" bash -c 'export PYTHONPATH=/opt/pg-arca PG_ARCA_CONF_FILE=/etc/pg-arca/agent.conf PATRONI_URL=http://localhost:8008; while true; do [ -f /etc/pg-arca/enroll.env ] && set -a && . /etc/pg-arca/enroll.env && set +a; python3 /opt/pg-arca/pg-arca-agent.py >>/var/log/pgarca/agent.out 2>&1; sleep 5; done'
+      fi
+    done
+    sleep 6
     for n in pg1 pg2 pg3; do echo "-- $n"; docker exec "$n" tail -n 3 /var/log/pgarca/agent.out; done ;;
   agent-reset) # forget the console enrollment on every node and restart them one by one (then delete the old clusters in the console and approve again)
     for n in pg1 pg2 pg3; do docker exec "$n" rm -f /etc/pg-arca/credentials.json /etc/pg-arca/join.json /etc/pg-arca/enroll.env; docker restart "$n" >/dev/null; echo "$n restarted"; sleep 20; done ;;
