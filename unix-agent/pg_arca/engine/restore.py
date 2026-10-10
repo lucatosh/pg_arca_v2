@@ -393,12 +393,27 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
                           "restore is impossible past the gap; pick another set or fix the archive")
     dest = target_dir_check(ctx, dest, delta)
     remap = {str(k): v for k, v in (tablespace_remap or {}).items()}
+    auto = []
     for oid, loc in list(tbs.items()):
         tgt = remap.get(str(oid)) or loc
+        if str(oid) not in remap:
+            # No explicit mapping: the original location normally belongs to the LIVE source server (or is not empty). Never write there; relocate next to the
+            # restored data directory instead, so a restore from the web console works without the operator knowing the tablespace oids.
+            try:
+                assert_writable_target(ctx, tgt, "tablespace %s location" % oid)
+                busy = os.path.exists(tgt) and bool(os.listdir(tgt)) and not delta
+            except EngineError:
+                busy = True
+            if busy:
+                tgt = os.path.join(os.path.realpath(dest) + "_tblspc", str(oid))
+                remap[str(oid)] = tgt
+                auto.append(str(oid))
         assert_writable_target(ctx, tgt, "tablespace %s location" % oid)
         if os.path.exists(tgt) and os.listdir(tgt) and not delta:
             raise EngineError("PGA-SEC-005", "tablespace location '%s' is not empty" % tgt, "provide tablespace_remap for it")
     plan["tablespaces"] = {str(k): (remap.get(str(k)) or v) for k, v in tbs.items()}
+    if auto:
+        plan["tablespaces_relocated"] = auto       # shown to the operator: these did not keep their original path
     if dry_run:
         plan["dry_run"] = True
         return plan
