@@ -117,5 +117,11 @@ class FailoverTests(unittest.TestCase):
         self.assertGreaterEqual(tli, 2)
 
 
+    def test_06_wal_archive_has_no_false_gap_after_failover(self):
+        v = T.F.ctx.wal._compute_continuity()
+        sys.stderr.write("continuity after failover: %s\n" % {k: v.get(k) for k in v if k != "segments"})
+        self.assertEqual(v.get("gap_count"), 0, v)
+
+
 if __name__ == "__main__":
     unittest.main()
