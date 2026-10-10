@@ -11,10 +11,10 @@ import time
 
 from pg_arca.engine.backup import build_chain
 from pg_arca.engine.catalog import find_object
-from pg_arca.engine.ephemeral import Ephemeral
+from pg_arca.engine.ephemeral import Ephemeral, TargetNotReached
 from pg_arca.engine.pgsession import PgConn, PgSession, run_tool
 from pg_arca.engine.restore import check_wal_for_chain, choose_set, count_targets, estimate, merge_chain, sparse_filter
-from pg_arca.engine.util import EngineError, human, now_utc, parse_target_time, quote_ident, sql_lit
+from pg_arca.engine.util import EngineError, human, lsn_to_int, now_utc, parse_target_time, quote_ident, sql_lit, target_time_to_dt
 
 import re as _re
 _ID_OK = _re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
@@ -79,7 +79,7 @@ def _pg_restore(admin, dbname, dumpfile, jobs, extra=()):
         raise EngineError("PGA-GEN-071", "pg_restore failed: %s" % (err.strip() or out.strip())[:800])
 
 
-def _recover(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel, name=None, immediate=False):
+def _recover_once(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel, name=None, immediate=False):
     eph = Ephemeral(ctx, name=name)
     t0 = time.time()
     try:
@@ -95,6 +95,48 @@ def _recover(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inc
     except BaseException:
         eph.cleanup()
         raise
+
+
+def _recover(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel, name=None, immediate=False):
+    """Recover to the requested target. A time/LSN target beyond the last archived WAL (typically "now" when the last segment is still being filled) is not an error
+    of the user's choice worth failing a long restore for: when the archive is continuous we recover up to its end instead and SAY SO (`target_clamped`).
+    A transaction id / restore point that is not in the archive, or an archive with holes, is reported precisely and never papered over."""
+    try:
+        return _recover_once(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel, name, immediate)
+    except TargetNotReached as e:
+        reached = e.redo_lsn or "?"
+        if not (tt or target_lsn):
+            raise EngineError("PGA-PITR-014", "the requested %s is not in the archived WAL (the archive ends at %s)" % ("transaction id" if target_xid else "restore point", reached),
+                              "it may have happened after the last archived segment or never on this timeline; check the value, or restore to a time instead")
+        try:
+            cont = ctx.wal.verify_continuity()
+        except Exception:
+            cont = {"continuous": True}
+        if not cont.get("continuous", True):
+            g = (cont.get("gaps") or [{}])[0]
+            raise EngineError("PGA-PITR-014", "recovery stopped at %s before the requested target and the WAL archive has %s gap(s) (first missing: %s)" % (reached, cont.get("gap_count", "some"), g.get("missing_from", "?")),
+                              "the data after the gap cannot be recovered; choose an earlier target, or repair the archive (WAL rescue / the primary's pg_wal)")
+        requested = tt or target_lsn
+        ctx.log("warning", "target %s is beyond the end of the archive (replayed up to %s): recovering to the end of the archive instead" % (requested, reached))
+        if progress:
+            progress({"phase": "recovery", "note": "target beyond the archive: recovering to its end"})
+        eph, info = _recover_once(ctx, chain, keep_oids, None, None, None, None, inclusive, progress, cancel, name, False)
+        bad = False
+        try:                                  # the end must really be BEFORE the request, otherwise the first failure had another cause
+            if tt and info.get("last_replayed_xact_time"):
+                got = target_time_to_dt(info["last_replayed_xact_time"])
+                want = target_time_to_dt(tt)
+                bad = bool(got and want and got >= want)
+            elif target_lsn:
+                bad = lsn_to_int(info["reached_lsn"]) >= lsn_to_int(target_lsn)
+        except Exception:
+            bad = False
+        if bad:
+            eph.cleanup()
+            raise e
+        info["target_clamped"] = {"requested": requested, "reached_lsn": info["reached_lsn"], "last_replayed_xact_time": info.get("last_replayed_xact_time"),
+                                  "message": "the requested point is after the last archived WAL: recovered up to the end of the archive (%s)" % (info.get("last_replayed_xact_time") or info["reached_lsn"])}
+        return eph, info
 
 
 def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,

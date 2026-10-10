@@ -32,6 +32,29 @@ GUC_REMOVE = ["data_directory", "hba_file", "ident_file", "config_file", "extern
 GUC_BLOCKED_LIBS = {"pg_cron", "pglogical", "pg_partman_bgw", "pgagent", "pg_bulkload", "anon", "pg_background", "pgactive", "bdr", "pg_squeeze"}
 
 
+class TargetNotReached(EngineError):
+    """The archive ends before the requested recovery target. Carries what the instance DID reach, so callers can decide (clamp to the end of the archive, or explain)."""
+
+    def __init__(self, tail, redo_lsn=None, last_xact=None):
+        msg = ("the requested recovery target is beyond the last archived WAL%s: PostgreSQL replayed everything available and stopped.\n%s"
+               % (" (replayed up to %s)" % redo_lsn if redo_lsn else "", tail))
+        EngineError.__init__(self, "PGA-PITR-014", msg, "choose a point inside the recoverable window (the timeline shows it), use 'last available instant', or wait for the next WAL segment to be archived")
+        self.redo_lsn, self.last_xact, self.tail = redo_lsn, last_xact, tail
+
+
+_NOT_REACHED = "recovery ended before configured recovery target was reached"
+
+
+def death_error(logfile, where):
+    """The instance exited while recovering: say WHY in terms the user can act on."""
+    tail = tail_file(logfile, 60)
+    if _NOT_REACHED in tail:
+        m = re.search(r"redo done at ([0-9A-Fa-f]+/[0-9A-Fa-f]+)(?:.*?last completed transaction was at log time ([^\n]+))?", tail, re.S)
+        return TargetNotReached(tail_file(logfile, 12), m.group(1) if m else None, m.group(2).strip() if m and m.group(2) else None)
+    return EngineError("PGA-PITR-010", "the ephemeral instance stopped %s:\n%s" % (where, tail_file(logfile, 40)),
+                       "common causes: WAL gap, target before consistency, missing extension library; see the log tail above")
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -205,10 +228,9 @@ class Ephemeral(object):
         while time.time() - t0 < wait:
             _check_cancel(cancel)
             if self.proc.poll() is not None:
-                tail = tail_file(logfile)
+                err = death_error(logfile, "during recovery")
                 self.cleanup()
-                raise EngineError("PGA-PITR-010", "the ephemeral instance stopped during recovery:\n%s" % tail,
-                                  "common causes: WAL gap, target before consistency, missing extension library; see the log tail above")
+                raise err
             if os.path.exists(sockpath):
                 try:
                     s = PgSession(self.conn("postgres"), read_only=True)
@@ -227,10 +249,17 @@ class Ephemeral(object):
             while time.time() - t0 < timeout:
                 _check_cancel(cancel)
                 if self.proc is not None and self.proc.poll() is not None:
-                    raise EngineError("PGA-PITR-010", "the ephemeral instance stopped while recovering:\n%s" % tail_file(os.path.join(self.dir, "pg_arca-ephemeral.log")))
+                    raise death_error(os.path.join(self.dir, "pg_arca-ephemeral.log"), "while recovering")
                 inrec = s.scalar("SELECT pg_is_in_recovery()")
                 lsn = s.scalar("SELECT COALESCE(pg_last_wal_replay_lsn()::text,'-')")
-                paused = s.scalar(s.profile.replay_paused_sql()) == "1"
+                try:
+                    paused = inrec != "f" and s.scalar(s.profile.replay_paused_sql()) == "1"
+                except EngineError as e:
+                    # with no target the instance finishes recovery and promotes ITSELF between the two queries above: the pause-state function then
+                    # raises "recovery is not in progress". That is the success path, not an error: look again.
+                    if "not in progress" in (e.message or ""):
+                        continue
+                    raise
                 if progress:
                     progress({"phase": "recovery", "replay_lsn": lsn})
                 if paused or inrec == "f":
@@ -251,7 +280,7 @@ class Ephemeral(object):
         s.scalar("SELECT pg_wal_replay_resume()")
         while time.time() < deadline:
             if self.proc is not None and self.proc.poll() is not None:
-                raise EngineError("PGA-PITR-010", "the ephemeral instance stopped while ending recovery:\n%s" % tail_file(os.path.join(self.dir, "pg_arca-ephemeral.log")))
+                raise death_error(os.path.join(self.dir, "pg_arca-ephemeral.log"), "while ending recovery")
             if s.scalar("SELECT pg_is_in_recovery()") == "f":
                 return
             time.sleep(0.5)

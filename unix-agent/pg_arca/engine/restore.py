@@ -11,7 +11,7 @@ from pg_arca.engine.backup import _check_cancel, build_chain
 from pg_arca.pgcompat import Profile, require_supported, set_profile
 from pg_arca.engine.pgdata import list_directories
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
-from pg_arca.engine.util import (last_wal_segno, EngineError, chunk_hash, human, iso, lsn_to_int, parse_target_time, safe_relpath, target_time_to_dt, wal_name,
+from pg_arca.engine.util import (parse_wal_name, last_wal_segno, EngineError, chunk_hash, human, iso, lsn_to_int, parse_target_time, safe_relpath, target_time_to_dt, wal_name,
                                  wal_segno)
 
 
@@ -405,7 +405,16 @@ def check_wal_for_chain(ctx, chain, target_lsn=None):
     lo = wal_segno(lsn_to_int(first["start_lsn"]), seg)
     hi = last_wal_segno(last, seg)
     if target_lsn:
-        hi = max(hi, wal_segno(lsn_to_int(target_lsn), seg))
+        want = wal_segno(lsn_to_int(target_lsn), seg)
+        if want > hi:
+            # a target past the END of the archive is not a hole in it: only what exists up to the last archived segment has to be contiguous (the rest is clamped by the recovery)
+            try:
+                lastname = (ctx.wal.verify_continuity() or {}).get("last_segment")
+                p = parse_wal_name(lastname, seg) if lastname else None
+                want = min(want, p[1]) if p else hi
+            except Exception:
+                want = hi
+        hi = max(hi, want)
     missing = []
     # a set may span a timeline switch only through its own tli; segments of ancestors are looked up per set
     for s in chain:

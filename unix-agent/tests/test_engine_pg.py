@@ -226,6 +226,27 @@ class EngineTests(unittest.TestCase):
             restore_database(F.ctx, "app", target_time=F.t1, new_name="app_at_t1")
         self.assertEqual(cm.exception.code, "PGA-SEC-030")
 
+    def test_05b_target_beyond_the_archive_recovers_to_its_end_and_says_so(self):
+        # field report: "now"/a time after the last archived WAL made the ephemeral instance die with 'recovery ended before configured recovery target was reached'
+        import datetime
+        future = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        plan = restore_database(F.ctx, "app", target_time=future, new_name="app_clamped", jobs=2)
+        c = plan.get("target_clamped")
+        self.assertTrue(c, "the restore must succeed and report the clamp")
+        self.assertEqual(c["requested"][:10], future[:10])
+        self.assertIn("end of the archive", c["message"])
+        # it recovered to the END of the archive, i.e. AFTER the committed "accident" (orders emptied, customers dropped)
+        self.assertEqual(int(q("app_clamped", "SELECT count(*) FROM orders")[0][0]), 0)
+        self.assertEqual(q("app_clamped", "SELECT to_regclass('public.customers') IS NULL")[0][0], "t")
+        # an LSN beyond the archive is handled the same way
+        plan = restore_database(F.ctx, "app", target_lsn="FF/00000000", new_name="app_clamped_lsn", jobs=2)
+        self.assertTrue(plan.get("target_clamped"))
+        # a transaction id that never happened cannot be "clamped": it is explained, and nothing is left behind
+        with self.assertRaises(EngineError) as cm:
+            restore_database(F.ctx, "app", target_xid="4000000000", new_name="app_never")
+        self.assertEqual(cm.exception.code, "PGA-PITR-014")
+        self.assertEqual(q("postgres", "SELECT count(*) FROM pg_database WHERE datname = 'app_never'")[0][0], "0")
+
     def test_06_0_user_database_named_stage_is_never_a_quarantine_target(self):
         from pg_arca.engine.granular import diff_object
         for fn in (lambda: promote_object(F.ctx, "stage_prod", "app.public.customers"), lambda: diff_object(F.ctx, "stage_prod", "app.public.customers"),
