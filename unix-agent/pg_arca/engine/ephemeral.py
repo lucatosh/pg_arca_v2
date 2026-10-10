@@ -233,11 +233,28 @@ class Ephemeral(object):
                 if progress:
                     progress({"phase": "recovery", "replay_lsn": lsn})
                 if paused or inrec == "f":
-                    return time.time() - t0, lsn, s.scalar("SELECT COALESCE(pg_last_xact_replay_timestamp()::text,'')")
+                    last_xact = s.scalar("SELECT COALESCE(pg_last_xact_replay_timestamp()::text,'')")
+                    if paused and inrec != "f":
+                        self._promote(s, deadline=t0 + timeout)
+                    return time.time() - t0, lsn, last_xact
                 time.sleep(1)
         finally:
             s.close()
         raise EngineError("PGA-PITR-012", "recovery did not reach the target within %ds" % timeout, "check WAL availability in the archive")
+
+    def _promote(self, s, deadline):
+        """End recovery at the target. Stopping at the target leaves every transaction that was still open there 'in progress', and its locks too: a DROP / TRUNCATE /
+        ALTER TABLE that committed just AFTER the target holds an ACCESS EXCLUSIVE lock on the table in the paused standby, so reading exactly the table we want to
+        recover (the usual reason for a restore) would block forever. Promoting aborts those transactions and releases the locks. The instance is a throw-away copy
+        with archiving and replication stripped (quarantine_config), so nothing leaves it."""
+        s.scalar("SELECT pg_wal_replay_resume()")
+        while time.time() < deadline:
+            if self.proc is not None and self.proc.poll() is not None:
+                raise EngineError("PGA-PITR-010", "the ephemeral instance stopped while ending recovery:\n%s" % tail_file(os.path.join(self.dir, "pg_arca-ephemeral.log")))
+            if s.scalar("SELECT pg_is_in_recovery()") == "f":
+                return
+            time.sleep(0.5)
+        raise EngineError("PGA-PITR-013", "the ephemeral instance did not leave recovery in time")
 
     def stop(self):
         if self.proc and self.proc.poll() is None:

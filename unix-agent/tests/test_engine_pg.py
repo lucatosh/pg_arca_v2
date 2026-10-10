@@ -143,8 +143,9 @@ class EngineTests(unittest.TestCase):
         t1 = q("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
         time.sleep(1.2)
         F.n1, F.t1 = n1, t1
-        q("app", "DELETE FROM orders")                                   # the "accident"
-        q("app", "DROP TABLE customers")
+        # the "accident": ONE transaction (a multi-statement -c is an implicit transaction) that drops a table. Recovery stops before its commit, with the
+        # DROP's ACCESS EXCLUSIVE lock already replayed: reading that table in the paused standby would block forever unless recovery is ended at the target
+        q("app", "DELETE FROM orders; DROP TABLE customers")
         q("postgres", "SELECT pg_switch_wal()")
         time.sleep(2)
         dest = os.path.join(F.base, "restored_instance")
