@@ -120,8 +120,40 @@ class Runtime(object):
             "backup": cas.get_stats() if cas else None,
             "system": self.system_metrics({"pgdata": inst.get("data_directory"), "repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir")}),
             "toolchain": self.report.get("toolchain"),
+            "storage": {"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))},
             "cluster_key": inst.get("cluster_key") or (("patroni:%s" % self.patroni_info["scope"]) if (self.patroni_info or {}).get("scope") else None),
         }
+
+
+def storage_id(path):
+    """Identity of a storage area, proven rather than guessed: a random id stored IN the directory. Nodes that report the same id see the SAME files (NFS, CephFS,
+    a shared volume, a bind mount...); different ids mean each node has its own copy, so after a switchover/failover the WAL archive and the backups would be
+    split between nodes and point-in-time recovery would silently break. None when the directory does not exist yet or cannot be written."""
+    if not path or not os.path.isdir(path):
+        return None
+    f = os.path.join(path, ".pgarca-id")
+    try:
+        with open(f) as h:
+            v = h.read().strip()
+            if v:
+                return v[:64]
+    except (IOError, OSError):
+        pass
+    try:
+        import uuid
+        v = uuid.uuid4().hex
+        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)      # O_EXCL: two nodes racing on a shared directory end up with ONE id
+        with os.fdopen(fd, "w") as h:
+            h.write(v + "\n")
+        return v
+    except FileExistsError:
+        try:
+            with open(f) as h:
+                return h.read().strip()[:64] or None
+        except (IOError, OSError):
+            return None
+    except (IOError, OSError):
+        return None
 
 
 LEVEL_RE = re.compile(r"\b(DEBUG\d?|INFO|NOTICE|LOG|WARNING|WARN|ERROR|FATAL|PANIC|CRITICAL)\b")

@@ -81,6 +81,15 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       add({ severity: 'critical', code: 'archiver_failing', title: 'L’archiviazione dei WAL sta fallendo', cause: `Ultimo segmento fallito: ${arch.last_failed_wal || '?'}. Finché non si risolve i WAL si accumulano sul server e il disco si riempie.`, action: { label: 'Vedi i backup', page: 'backup' } });
     if (pol?.enabled && pg.settings && pg.settings.archive_mode === 'off') add({ severity: 'warning', code: 'archive_off', title: 'archive_mode è spento', cause: 'La strategia di backup è attiva ma PostgreSQL non archivia i WAL: nessun recupero a un istante preciso.', action: { label: 'Vedi i backup', page: 'backup' } });
 
+    // ---- shared storage: a switchover/failover moves archiving to another node. If every node writes to ITS OWN local repo / WAL archive, the archive splits and PITR breaks silently.
+    if (online.length >= 2) {
+      for (const [field, what] of [['wal_id', 'L’archivio WAL'], ['repo_id', 'Il repository dei backup']] as const) {
+        const ids = new Map<string, string[]>();
+        for (const n of online) { const v = n.snapshot?.storage?.[field]; if (v) ids.set(v, [...(ids.get(v) || []), n.name]); }
+        if (ids.size >= 2) add({ severity: 'warning', code: field === 'wal_id' ? 'wal_not_shared' : 'repo_not_shared', title: `${what} non è condiviso tra i nodi`, cause: `Ogni nodo scrive nella propria cartella (${[...ids.values()].map(v => v.join(', ')).join(' | ')}). Dopo uno switchover o un failover i WAL e i backup finiscono su un altro nodo e il ripristino a un istante preciso si spezza senza avvisi. Monta lo stesso storage condiviso (NFS, CephFS, volume condiviso…) sullo stesso percorso su ogni nodo e indicalo nelle impostazioni dell’agent.`, action: { label: 'Percorsi dell’agent', page: 'nodes' } });
+      }
+    }
+
     // ---- replication / slots / connections / disk
     for (const n of online) {
       const dn = (n.snapshot?.postgres?.replication || []) as any[];

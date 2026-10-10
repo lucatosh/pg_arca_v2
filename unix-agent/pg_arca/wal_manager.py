@@ -318,6 +318,8 @@ class WalManager:
         per_id = 0x100000000 // self.segment_size
         names, timelines, histories = [], {}, []
         for n in os.listdir(self.wal_dir):
+            if n.startswith("."):
+                continue                      # .pgarca-id (storage identity) and other hidden bookkeeping
             base = n.split(".")[0]
             if n.endswith(".history"):
                 histories.append(n)

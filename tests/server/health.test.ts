@@ -30,6 +30,14 @@ import { requiredRole } from '../../server/auth';
     const w = evaluate(st, now).filter(i => i.clusterId === 'q' && i.code === 'node_without_agent');
     assert.deepStrictEqual(w.map(i => i.nodeName).sort(), ['q2', 'q3']); assert(w.every(i => i.severity === 'warning'));
   }
+  { // two online nodes with DIFFERENT storage ids (each writes its own local archive) -> warning; same ids -> nothing
+    const base = store.peek(); const g1: any = base.nodes.n3;
+    const mk = (idA: string, idB: string): any => ({ ...base, clusters: [...base.clusters, { id: 's', name: 's-db', environment: 'dev', source: 'agent' }],
+      nodes: { ...base.nodes, s1: { ...g1, id: 's1', name: 's1', clusterId: 's', snapshot: { ...g1.snapshot, storage: { wal_id: idA, repo_id: 'R' } } }, s2: { ...g1, id: 's2', name: 's2', clusterId: 's', snapshot: { ...g1.snapshot, postgres: { ...g1.snapshot.postgres, is_in_recovery: true }, storage: { wal_id: idB, repo_id: 'R' } } } } });
+    const split = evaluate(mk('A', 'B'), now).filter(i => i.clusterId === 's').map(i => i.code);
+    assert.deepStrictEqual(split, ['wal_not_shared'], JSON.stringify(split));
+    assert.deepStrictEqual(evaluate(mk('A', 'A'), now).filter(i => i.clusterId === 's').map(i => i.code), []);
+  }
   assert(evaluate(store.peek(), now).every(i => i.clusterId !== 'demo'), 'demo cluster is not monitored');
   const slot = evaluate(store.peek(), now).find(i => i.code === 'slot_stale')!; assert.strictEqual(slot.severity, 'critical'); assert(/old_slot/.test(slot.title)); assert(!evaluate(store.peek(), now).some(i => /live/.test(i.title)), 'active slots are fine');
   const b = briefing(store.peek(), now); assert.strictEqual(b.status, 'critical'); assert(b.counts.critical >= 3); assert.strictEqual(b.issues[0].severity, 'critical');
