@@ -90,3 +90,11 @@ Script pronti (setup-host.sh, lab.sh, docker-compose, Dockerfile, haproxy) per C
 - FATTO: `archive_enable` (agent + server + UI nella scheda Backup, con fallback manuale). Test PG16 reale verde, suite TS/Python/UI verdi.
 - DA FARE sulla VM (serve shell): `git pull --ff-only`, `./lab.sh up`, `./lab.sh agent-update`, `./lab.sh diag`, `sudo systemctl restart pg-arca-console`; verificare repliche pg1/pg3 sane.
 - DA FARE: secondo cluster di test (istanza singola senza Patroni, versione/porta/data dir diverse) e prova di ogni funzione; poi TODO elencati sopra (strategia backup/RPO, wizard restore, doctor agent, update agent da console).
+
+### Sessione pomeriggio 10/10 (ssh alla VM: sudo senza password attivo, utente console `claude-test`)
+- Strumenti lab nuovi (tools/lab): `mkuser.ts`, `api.sh`, `op.py` (esegue un'operazione via API e attende; `op.py last N`; `op.py - /api/...`), `q.sh` (SQL sul leader), `where.sh`, `eph.sh <nodo>` (ispeziona un'istanza di restore bloccata), `scenario-ha.sh`, `scenario-backup.sh`.
+- Da PowerShell non passare comandi con virgolette/`$` a `ssh "..."`: mettere la logica in uno script del repo e lanciare `ssh lab@192.168.1.179 "cd /opt/pg_arca_v2 && git pull -q --ff-only && sg docker -c 'tools/lab/<script>'"`. `read_process_output` senza offset rilegge tutto lo storico: usare `offset:-15`.
+- Il tool del dispositivo smette di funzionare dopo molti minuti di turno: vedi sopra, rilanciare dopo un nuovo messaggio utente.
+- FATTO e verificato sul lab: HA 8/8 (vedi NOTES 25), backup full/incr/diff/verify/deep, restore object/diff/apply/promote, restore instance, drill, expire dry-run, PITR con orario ISO (NOTES 26).
+- DA VERIFICARE SUL LAB (fix scritto e testato solo in locale): restore di tabella eliminata + restore database (NOTES 27). Procedura: `git pull`, `sg docker -c "./lab.sh agent-update"` (dentro tools/lab), poi `sg docker -c ./scenario-backup.sh > /tmp/scn.log` e `grep -E "^(PASS|FAIL|SUMMARY)" /tmp/scn.log`. Se un'operazione resta bloccata: `eph.sh pg2`, poi `docker exec pg2 pkill -f eph-`.
+- PROSSIMI PASSI: secondo cluster di test (istanza singola senza Patroni, porta/dir/versione diverse), prova da UI reale di switchover/backup/restore (ricompilare: `npm run build` sulla VM, già fatto per archive_enable), failover (kill leader), HBA, log, PITR dalla UI, test di carico ridotto.
