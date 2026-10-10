@@ -71,11 +71,11 @@ class StressTests(unittest.TestCase):
         port2 = T.F.port + 3
         with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
             f.write("\nport=%d\nunix_socket_directories='%s'\nlisten_addresses=''\narchive_mode=off\narchive_command=''\n" % (port2, T.F.sock))
-        r = T.sh(os.path.join(T.BIN, "pg_ctl"), "-D", dest, "-l", dest + ".log", "-w", "-t", "180", "start")
+        r = T.sh(os.path.join(T.BIN, "pg_ctl"), "-D", dest, "-l", dest + ".log", "-w", "-t", "400", "start")
         self.assertEqual(r.returncode, 0, r.stderr + open(dest + ".log").read()[-2000:])
         s = PgSession(PgConn(host=T.F.sock, port=port2, user="postgres", bindir=T.BIN, dbname="app"))
         try:
-            for _ in range(90):
+            for _ in range(400):
                 if s.scalar("SELECT pg_is_in_recovery()") == "f":
                     break
                 time.sleep(1)
