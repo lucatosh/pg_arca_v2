@@ -21,7 +21,7 @@ import { mountHbaRoutes } from '../../server/hba';
   const login = async (u: string, p: string) => (await call('POST', '/api/auth/login', { username: u, password: p })).headers['set-cookie'].split(';')[0];
   await store.mutate(d => {
     d.clusters.push({ id: 'prod1', name: 'prod1', environment: 'prod', source: 'agent' } as any, { id: 'dev1', name: 'dev1', environment: 'dev', source: 'agent' } as any);
-    for (const [id, cl] of [['np', 'prod1'], ['nd', 'dev1']]) d.nodes[id] = { id, name: id, clusterId: cl, lastSeen: new Date().toISOString(), snapshot: { postgres: { is_in_recovery: false } } } as any;
+    for (const [id, cl] of [['np', 'prod1'], ['nd', 'dev1']]) d.nodes[id] = { id, name: id, clusterId: cl, lastSeen: new Date().toISOString(), snapshot: { postgres: { alive: true, is_in_recovery: false } } } as any;
   });
   assert(isRisky('hba_apply') && isRisky('restore_promote', { mode: 'replace' }) && !isRisky('restore_promote', { mode: 'as_new' }) && !isRisky('backup_run'));
   // one admin only -> cannot switch four-eyes on (nobody could approve)

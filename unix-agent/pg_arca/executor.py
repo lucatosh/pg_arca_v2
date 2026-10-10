@@ -76,6 +76,7 @@ class OperationExecutor:
         r("patroni_switchover", self.h_switchover, False)
         r("patroni_failover", self.h_failover, False)
         r("patroni_restart", self.h_restart, False)
+        r("patroni_reinit", self.h_reinit, False)
         r("patroni_reload", self.h_patroni_reload, True)
         r("patroni_pause", self.h_pause, True)
         r("patroni_config_patch", self.h_config_patch, True)
@@ -309,18 +310,52 @@ class OperationExecutor:
             raise OpError("failover requested but NOT confirmed within 90s (leader is '%s')" % lead)
         return {"old_leader": old, "new_leader": lead, "confirmed": True}
 
+    def _bridge_for(self, member):
+        """(bridge, member_record) for the named member. The local Patroni when it is this node, else the member's own REST API from the DCS list:
+        so a member can be handled from any node with an agent, and also when the member itself has no agent."""
+        st, cl = self.patroni.get_cluster_topology()
+        members = cl.get("members", []) if st == 200 and isinstance(cl, dict) else []
+        if not member:
+            return self.patroni, None
+        m = next((x for x in members if x.get("name") == member), None)
+        if not m:
+            raise OpError("member '%s' is not part of this Patroni cluster (members: %s)" % (member, ", ".join(str(x.get("name")) for x in members) or "unknown"))
+        local = ((self.runtime.patroni_info or {}).get("node_name") if self.runtime else None)
+        if member == local or not m.get("api_url"):
+            return self.patroni, m
+        return self.patroni.for_member(m["api_url"]), m
+
     def h_restart(self, p):
-        d = self._require_patroni()
-        st, resp = self.patroni.restart(p.get("role"))
+        self._require_patroni()
+        bridge, m = self._bridge_for(p.get("member"))
+        st, resp = bridge.restart(p.get("role"))
         if st >= 300:
-            raise OpError("Patroni refused the restart (%s): %s" % (st, json.dumps(resp)[:300]))
+            raise OpError("Patroni refused the restart of %s (%s): %s" % (p.get("member") or "this node", st, json.dumps(resp)[:300]))
         deadline = time.time() + 120
         while time.time() < deadline:
             time.sleep(2)
-            s2, n = self.patroni.get_node_status()
+            s2, n = bridge.get_node_status()
             if s2 in (200, 503) and isinstance(n, dict) and n.get("state") == "running" and not n.get("pending_restart"):
-                return {"restarted": True, "state": n.get("state")}
+                return {"restarted": True, "member": p.get("member"), "state": n.get("state")}
         raise OpError("restart requested but the node did not return to 'running' within 120s")
+
+    def h_reinit(self, p):
+        """Rebuild a replica from the leader (Patroni 'reinitialize'). Destroys the replica's data directory: never on the leader."""
+        self._require_patroni()
+        member = p.get("member")
+        if not member:
+            raise OpError("member required")
+        lead, members = self.patroni.leader()
+        if member == lead:
+            raise OpError("'%s' is the leader: reinitialize would destroy the primary's data. Refused." % member)
+        bridge, m = self._bridge_for(member)
+        st, resp = bridge.reinitialize(bool(p.get("force")))
+        if st >= 300:
+            raise OpError("Patroni refused to reinitialize %s (%s): %s" % (member, st, json.dumps(resp)[:300]))
+        time.sleep(3)
+        s2, n = bridge.get_node_status()
+        return {"requested": True, "member": member, "state": (n or {}).get("state") if isinstance(n, dict) else None,
+                "note": "Patroni is re-cloning the replica from the leader; follow the state in the cluster view"}
 
     def h_patroni_reload(self, p):
         self._require_patroni()

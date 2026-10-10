@@ -24,6 +24,18 @@ case "${1:-help}" in
   agentlog) docker exec -it "${2:-$(leader)}" tail -f /var/log/pgarca/agent.out ;;
   console) # run the web console on this host (background), from the repo root
     cd ../..; [[ -d node_modules/express ]] || npm install; [[ -f dist/index.html ]] || npx vite build; setsid nohup npm start >/tmp/pg_arca_console.log 2>&1 < /dev/null & echo "console on :3000, log /tmp/pg_arca_console.log" ;;
+  diag)    # one-shot diagnostics: paste the whole output when something misbehaves
+    echo "== patroni"; l=$(leader || true); docker exec "${l:-pg1}" patronictl -c /etc/patroni.yml list 2>&1 | tail -8
+    echo "== host disk / memory"; df -h / /var/lib/docker 2>/dev/null | tail -3; free -m | head -2
+    echo "== leader: replication / archiver / slots"
+    if [[ -n $l ]]; then
+      docker exec "$l" gosu postgres psql -XAtc "select application_name,state,sync_state,pg_wal_lsn_diff(sent_lsn,replay_lsn) as lag from pg_stat_replication" 2>&1
+      docker exec "$l" gosu postgres psql -XAtc "select 'archived='||archived_count||' failed='||failed_count||' last_failed='||coalesce(last_failed_wal,'-')||' at='||coalesce(last_failed_time::text,'-') from pg_stat_archiver" 2>&1
+      docker exec "$l" gosu postgres psql -XAtc "select slot_name,active,wal_status from pg_replication_slots" 2>&1
+    fi
+    for n in pg1 pg2 pg3; do echo "== $n: patroni/postgres log (last 25)"; docker logs --tail 25 "$n" 2>&1 | cut -c1-220; echo "-- $n postgres file log"; docker exec "$n" bash -c 'tail -n 15 /var/lib/postgresql/data/pgdata/log/*.log 2>/dev/null | cut -c1-220' ; done
+    echo "== agent logs"; for n in pg1 pg2 pg3; do echo "-- $n"; docker exec "$n" tail -n 4 /var/log/pgarca/agent.out 2>&1; done
+    echo "== wal archive dir"; docker exec "${l:-pg1}" bash -c 'ls -ld /var/lib/pgarca/wal /var/lib/pgarca/repo; ls /var/lib/pgarca/wal | tail -3; /usr/local/bin/pg-arca-wal --help 2>&1 | head -2' ;;
   agent-update) # reinstall the agent code from /work on every node and restart only the agent (Patroni/PostgreSQL untouched, credentials kept)
     # NB: the anchored pattern matches only the python process. A plain `pkill -f pg-arca-agent.py` also killed the supervising shell loop (its command line contains that name) and nothing restarted the agent.
     for n in pg1 pg2 pg3; do
@@ -58,6 +70,7 @@ case "${1:-help}" in
   *) cat <<H
 ./lab.sh up | down | reset | status | smoke
          shell [node] | psql | logs [node] | agentlog [node]
+         diag               one-shot diagnostics of the whole lab (paste it when something misbehaves)
          agent-update       after `git pull`: reinstall + restart only the agent on all nodes
          agent-reset        forget console enrollment on all nodes (re-announce)
          console            start the pg_arca web console on this host (npm start, :3000)

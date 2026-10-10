@@ -20,12 +20,21 @@ class PatroniBridge:
         self.patroni_url = (patroni_url or "").rstrip("/")
         self.user = user
         self.password = password
+        self._ca, self._insecure = ca_file, insecure
         self.ctx = None
         if self.patroni_url.startswith("https://"):
             self.ctx = ssl.create_default_context(cafile=ca_file or None)
             if insecure:
                 self.ctx.check_hostname = False
                 self.ctx.verify_mode = ssl.CERT_NONE
+
+    def for_member(self, api_url):
+        """Bridge to another member of the same Patroni cluster (its REST API as published in the DCS), same credentials and TLS settings."""
+        base = (api_url or "").rstrip("/")
+        for suffix in ("/patroni", "/"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+        return PatroniBridge(base, self.user, self.password, self._ca, self._insecure)
 
     @property
     def configured(self):
@@ -91,6 +100,9 @@ class PatroniBridge:
 
     def restart(self, role=None):
         return self.request("/restart", "POST", {"role": role} if role else {}, timeout=30)
+
+    def reinitialize(self, force=False):
+        return self.request("/reinitialize", "POST", {"force": True} if force else {}, timeout=30)
 
     def patch_config(self, patch):
         return self.request("/config", "PATCH", patch)

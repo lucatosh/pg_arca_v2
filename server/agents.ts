@@ -290,7 +290,11 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       if (nodeId && !target) return { code: 404, body: { error: 'node_not_found' } };
       if (!target) {
         const pick = (pred: (n: NodeRecord) => boolean) => nodes.find(n => online(n) && pred(n));
-        if (spec.target === 'primary') target = pick(n => n.snapshot?.postgres?.is_in_recovery === false);
+        // Patroni ops about a named member run on that member's own agent when it has one (the rest is reached through its REST API by any other node)
+        const member = typeof params?.member === 'string' ? params.member : '';
+        if (member && ['patroni_restart', 'patroni_reinit'].includes(type)) target = pick(n => n.name === member && !!n.snapshot?.patroni?.accessible);
+        if (target) { /* chosen by member */ }
+        else if (spec.target === 'primary') target = pick(n => n.snapshot?.postgres?.is_in_recovery === false);
         else if (spec.target === 'patroni_node') target = pick(n => !!n.snapshot?.patroni?.accessible);
         else {
           // any_node: prefer a node whose PostgreSQL is really up (a replica still being cloned or a stopped instance cannot back up or plan a restore),

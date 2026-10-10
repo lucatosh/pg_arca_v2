@@ -4,7 +4,7 @@ import { Badge, Banner, Button, Progress, bytes, dur, num } from '../ui';
 
 export const OP_LABEL: Record<string, string> = {
   pg_reload: 'Ricarica configurazione', wal_switch: 'Cambio segmento WAL', checkpoint: 'Checkpoint', discovery_scan: 'Rilevamento', agent_config_get: 'Lettura impostazioni agent', agent_config_set: 'Impostazioni agent', list_objects: 'Elenco oggetti',
-  pg_set_param: 'Modifica parametro', patroni_switchover: 'Switchover', patroni_failover: 'Failover', patroni_restart: 'Riavvio membro', patroni_reload: 'Ricarica Patroni',
+  pg_set_param: 'Modifica parametro', patroni_switchover: 'Switchover', patroni_failover: 'Failover', patroni_restart: 'Riavvio membro', patroni_reinit: 'Ricostruzione replica', patroni_reload: 'Ricarica Patroni',
   patroni_pause: 'Modalità manutenzione', patroni_config_patch: 'Modifica config Patroni', backup_run: 'Backup', backup_info: 'Info repository', backup_verify: 'Verifica backup',
   backup_expire: 'Scadenza e pulizia', backup_catalog: 'Catalogo backup', restore_plan: 'Piano di ripristino', restore_instance: 'Ripristino istanza', restore_database: 'Ripristino database',
   restore_object: 'Ripristino oggetto', wal_forensics: 'Analisi WAL', hba_read: 'Lettura pg_hba', hba_plan: 'Verifica pg_hba', hba_apply: 'Modifica pg_hba', hba_rollback: 'Ripristino pg_hba', restore_promote: 'Riporta tabella nel database',

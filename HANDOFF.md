@@ -1,6 +1,6 @@
 # HANDOFF — stato del lavoro (aggiornato a ogni commit)
 
-Branch di lavoro: `claude/enterprise-overhaul` (mai toccare `main`). Ultimo aggiornamento: vedi `git log`.
+Branch di lavoro: **`main`** (decisione dell'utente: si scrive sempre direttamente su main, niente branch/PR). Dopo ogni push: `git update-ref refs/remotes/origin/main HEAD`. Ultimo aggiornamento: vedi `git log`.
 
 ## Regole del progetto (decise con l'utente)
 - Un solo cluster demo (`isSandbox`, id `cluster-demo`), eliminabile. Nessun altro dato fittizio.
@@ -61,3 +61,21 @@ Script pronti (setup-host.sh, lab.sh, docker-compose, Dockerfile, haproxy) per C
 - Elenco problemi/correzioni e **backlog non fatto**: `tools/lab/NOTES.md`. Compatibilità e limiti noti: `COMPAT.md` (K8s con operatori e DB gestiti NON supportati).
 - Nuovo: scheda «Percorsi e rilevamento» (operazioni `agent_config_get/set`, `agent.local.json`), nodi Patroni senza agent visibili + avviso di salute, `lab.sh agent-update/agent-reset`.
 - Test eseguiti e verdi in questa sessione: server (12 suite), UI (hbalogic, tuning, e2e browser), agent unit (wal, crypto, discovery, hba, overrides, restore_safety, pgdata_resolve, agent_flow, e2e_console), PG16 (engine anche cifrato, hba_pg). **Mai eseguito su Docker/CentOS/Ubuntu reali**: il lab Patroni è provato solo dall'utente in VM, gli esiti sono da raccogliere.
+
+## STATO e PIANO (aggiornato 10/10 notte) — leggere per primo se si riparte da zero
+**Obiettivo dell'utente:** pg_arca = prodotto enterprise per amministrazione avanzata di cluster PostgreSQL (Patroni) **e istanze singole**. Priorità: (1) schedulazione backup con i nostri standard, (2) restore vari e PITR, (3) UI web fluida/ordinata, (4) agent lato macchina robusto. Ogni soluzione deve valere per QUALSIASI infrastruttura (VM, container, K8s con Patroni), mai solo per il lab. Mai dichiarare "testato" ciò che non è stato eseguito.
+
+**Ambiente:** il sandbox non ha Docker né rete npm. Il lab Patroni (VirtualBox Ubuntu, IP 192.168.1.179, `/opt/pg_arca_v2/tools/lab`) è eseguito solo dall'utente: si lavora incollando output (`./lab.sh diag` raccoglie tutto). Collegamento SSH alla VM dall'app desktop richiesto dall'utente ma **in questa sessione non c'è alcuno strumento di shell remota** (solo controllo schermo): se compare `mcp__remote-devices__device_bash`, usarlo (`ssh lab@192.168.1.179`).
+
+**Fatto in questa tornata (vedi `tools/lab/NOTES.md` righe 12–20):** riannuncio automatico dell'agent dopo cancellazione (`node_unknown`), identità cluster da Patroni scope + fusione automatica dei duplicati (`reconcileCluster`), diagnosi nel modale di approvazione, ricerca PG ogni 15 s quando non visibile, scelta del nodo con PG attivo per backup/ripristino, HBA che salta i nodi irraggiungibili, log da `log_directory`/patroni dir, finestre per "Installa agent"/"Aggiungi nodo", azioni HA spiegate, **bug corretto: `patroni_restart` ignorava `member`**, nuove azioni per nodo (`NodePanel.tsx`: riavvia, ricarica, checkpoint, WAL switch, promuovi, ricostruisci replica `patroni_reinit`, rileva di nuovo, revoca), badge "Istanza singola / Cluster Patroni".
+
+**Aperto adesso (lab):** le repliche pg1/pg3 alternano `creating replica` ↔ `stopped`. Causa non nota. Ipotesi principale: `pg_basebackup`/Patroni resta in attesa dell'archiviazione WAL perché `archive_command` (`pg-arca-wal archive`) fallisce o è lento; altre: spazio disco, permessi, slot. Azione: far lanciare `./lab.sh diag` e leggere `pg_stat_archiver`, log di pg1/pg3. Se è l'archive_command, rendere l'archiviazione non bloccante/diagnosticata (e mostrare l'errore nella UI Backup).
+
+**DA FARE, in ordine (backup/restore/PITR prima):**
+1. Backup: UI strategie con prova di restore automatica periodica (DR drill pianificata), retention e policy visibili per cluster/nodo, avvisi quando l'archiviazione WAL è ferma (RPO), stima spazio/tempo prima del backup, scelta del nodo sorgente (primario/replica) esplicita.
+2. Restore: procedura guidata (istanza intera / database / oggetto / PITR con selettore data+ora e LSN), anteprima "cosa verrà fatto", ripristino su nuovo nodo/cluster, verifica post-restore (checksum, connessione, conteggi). Test su PG16 reale per ogni scenario.
+3. PITR: grafico della finestra recuperabile (WAL continui, timeline dopo failover), conferma esplicita del punto di arrivo, `archive_mode` del cluster ripristinato (decisione utente aperta: lasciarlo spento?).
+4. Agent: journald/stderr dei container come sorgente log, `pg-arca-cli doctor`, installazione via SSH dalla console (decisione utente aperta), aggiornamento dell'agent dalla console, supporto K8s (pod con Patroni) documentato in `COMPAT.md`.
+5. UI generale: tema/ordine, navigazione per nodo, pagina nodo dedicata, stati vuoti utili, notifiche email, ricerca globale.
+6. Storage: S3/oggetti, pack file, WAL asincrono, riepiloghi PG17 (roadmap M2–M6); benchmark `tools/lab/bench.sh` (mai eseguito: nessun claim di prestazioni).
+7. Test mancanti: `direct.ts` contro PG reale, `/ws/logs`, `/api/network/*`, avvio di `server.ts` (richiedono `npm install`).
