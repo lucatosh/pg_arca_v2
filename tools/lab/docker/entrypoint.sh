@@ -7,6 +7,7 @@ install -d -m 0700 -o postgres -g postgres /var/lib/postgresql/data
 install -d -o postgres -g postgres /var/log/pgarca
 envsubst '${NODE} ${PG_SUPER_PASSWORD} ${PG_REPL_PASSWORD}' < /etc/patroni.yml.tpl > /etc/patroni.yml
 chown postgres:postgres /etc/patroni.yml; chmod 600 /etc/patroni.yml
+mkdir -p /var/log/patroni /var/log/pgarca; chown postgres:postgres /var/log/patroni /var/log/pgarca
 export PGPASSWORD="$PG_SUPER_PASSWORD"
 
 if [[ -n "${ARCA_URL:-}" && -f /work/unix-agent/install-agent.sh ]]; then

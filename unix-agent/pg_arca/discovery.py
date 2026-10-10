@@ -42,7 +42,7 @@ PG_INTERESTING_PARAMS = (
     "archive_command", "archive_timeout", "max_wal_senders", "max_connections",
     "wal_log_hints", "data_checksums", "shared_preload_libraries", "hot_standby",
     "primary_conninfo", "restore_command", "max_wal_size", "data_directory",
-    "hba_file", "ident_file", "cluster_name", "ssl",
+    "hba_file", "ident_file", "cluster_name", "ssl", "log_directory", "logging_collector",
 )
 
 EXTRA_CONFIG_GLOBS = [

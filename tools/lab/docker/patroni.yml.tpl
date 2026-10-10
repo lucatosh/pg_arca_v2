@@ -1,4 +1,5 @@
 scope: arca-lab
+log: {level: INFO, dir: /var/log/patroni, file_num: 3, file_size: 10485760}
 name: ${NODE}
 restapi: {listen: 0.0.0.0:8008, connect_address: "${NODE}:8008"}
 etcd3: {hosts: "etcd1:2379,etcd2:2379,etcd3:2379"}
@@ -31,6 +32,7 @@ postgresql:
   connect_address: "${NODE}:5432"
   data_dir: /var/lib/postgresql/data/pgdata
   bin_dir: /usr/lib/postgresql/16/bin
+  parameters: {logging_collector: "on", log_directory: log, log_filename: postgresql.log, log_line_prefix: "%m [%p] %q%u@%d "}
   authentication:
     superuser: {username: postgres, password: "${PG_SUPER_PASSWORD}"}
     replication: {username: replicator, password: "${PG_REPL_PASSWORD}"}

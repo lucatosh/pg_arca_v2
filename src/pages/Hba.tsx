@@ -57,11 +57,16 @@ function useHbaState(c: any) {
     try {
       const fresh = (c.agentNodes || []).filter((n: any) => n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000);
       if (!fresh.length) throw new Error('Nessun agent online su questo cluster.');
-      const pick = c.haState?.managedByPatroni ? fresh.slice(0, 1) : fresh;
-      const out = await Promise.all(pick.map(async (n: any): Promise<NodeRead> => {
+      const readOne = async (n: any): Promise<NodeRead> => {
         try { const op = await runOp(c.id, 'hba_read', {}, n.id); return { nodeId: n.id, nodeName: n.name, ok: true, data: op.result }; }
         catch (e: any) { return { nodeId: n.id, nodeName: n.name, ok: false, error: e.message }; }
-      }));
+      };
+      let out: NodeRead[];
+      if (c.haState?.managedByPatroni) {
+        // the rule list is shared through the DCS: one readable node is enough. A node whose PostgreSQL is down (replica being cloned, stopped) is skipped, not fatal.
+        out = [];
+        for (const n of fresh) { const r = await readOne(n); out = [r]; if (r.ok) break; }
+      } else out = await Promise.all(fresh.map(readOne));    // single instance or independent servers: each has its own pg_hba.conf
       setReads(out);
     } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
   }, [c.id, c.agentNodes, c.haState?.managedByPatroni]);

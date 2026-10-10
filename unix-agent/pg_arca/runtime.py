@@ -140,11 +140,27 @@ class LogShipper(object):
         if not files:
             inst = self.rt.instance or {}
             pgdata = inst.get("data_directory")
+            st = inst.get("settings") or {}
             cands = []
+            dirs = []
+            ld = st.get("log_directory")
+            if ld and pgdata:
+                dirs.append(ld if os.path.isabs(ld) else os.path.join(pgdata, ld))      # the instance's own setting wins (relative paths are inside PGDATA)
             if pgdata:
-                cands += sorted(glob.glob(os.path.join(pgdata, "log", "*.log")), key=os.path.getmtime)[-1:]
-            cands += sorted(glob.glob("/var/log/postgresql/*.log"), key=os.path.getmtime)[-1:]
-            cands += [p for p in ("/var/log/patroni/patroni.log", "/var/log/pgarca/agent.log") if os.path.exists(p)]
+                dirs.append(os.path.join(pgdata, "log"))
+            dirs += ["/var/log/postgresql", "/var/log/pgsql"]
+            for d in dict.fromkeys(dirs):
+                found = [f for f in glob.glob(os.path.join(d, "*.log")) if os.path.isfile(f)]
+                if found:
+                    cands.append(max(found, key=os.path.getmtime))
+                    break
+            pat = self.rt.patroni_info or {}
+            pdirs = ["/var/log/patroni"]
+            for d in pdirs:
+                found = [f for f in glob.glob(os.path.join(d, "*.log*")) if os.path.isfile(f) and not f.endswith((".gz", ".zst"))]
+                if found:
+                    cands.append(max(found, key=os.path.getmtime))
+            cands += [p for p in ("/var/log/pgarca/agent.log", "/var/log/pgarca/agent.out") if os.path.exists(p)]
             files = cands
         return files
 
@@ -161,8 +177,14 @@ class LogShipper(object):
                 continue
             key = (path, st.st_ino)
             if key not in self.pos:
-                self.pos[key] = st.st_size            # start at end: only new lines
-                continue
+                # first sight: show the recent tail (so the Logs page is useful immediately), then follow
+                self.pos[key] = max(0, st.st_size - 16 * 1024)
+                if self.pos[key]:
+                    try:
+                        with open(path, "rb") as f:
+                            f.seek(self.pos[key]); f.readline(); self.pos[key] = f.tell()      # start on a line boundary
+                    except OSError:
+                        pass
             if st.st_size < self.pos[key]:
                 self.pos[key] = 0                     # truncated / rotated in place
             if st.st_size == self.pos[key]:
