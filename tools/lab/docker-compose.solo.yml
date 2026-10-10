@@ -1,0 +1,24 @@
+# Second lab target: ONE standalone PostgreSQL 15 with an unusual layout (see solo/Dockerfile). Driven by `lab.sh solo-up`.
+name: arca-solo
+services:
+  solo1:
+    build: ./solo
+    image: pg-arca-lab-solo:15
+    hostname: solo1
+    container_name: solo1
+    init: true
+    environment:
+      NODE: solo1
+      PG_SUPER_PASSWORD: ${PG_SUPER_PASSWORD:-solo-secret}
+      ARCA_URL: ${ARCA_URL:-}
+      ARCA_ENROLL_TOKEN: ${ARCA_ENROLL_TOKEN:-}
+    volumes:
+      - solodata:/srv
+      - soloconf:/etc/pg15
+      - soloagent:/etc/pg-arca
+      - solorepo:/var/lib/pgarca
+      - ../..:/work:ro,z
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["5433:5433"]
+    restart: unless-stopped
+volumes: { solodata: {}, soloconf: {}, soloagent: {}, solorepo: {} }

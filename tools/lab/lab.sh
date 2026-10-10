@@ -39,6 +39,11 @@ case "${1:-help}" in
     for n in pg1 pg2 pg3; do echo "== $n: patroni/postgres log (last 25)"; docker logs --tail 25 "$n" 2>&1 | cut -c1-220; echo "-- $n postgres file log"; docker exec "$n" bash -c 'tail -n 15 /var/lib/postgresql/data/pgdata/log/*.log 2>/dev/null | cut -c1-220' ; done
     echo "== agent logs"; for n in pg1 pg2 pg3; do echo "-- $n"; docker exec "$n" tail -n 4 /var/log/pgarca/agent.out 2>&1; done
     echo "== wal archive dir"; docker exec "${l:-pg1}" bash -c 'ls -ld /var/lib/pgarca/wal /var/lib/pgarca/repo; ls /var/lib/pgarca/wal | tail -3; /usr/local/bin/pg-arca-wal --help 2>&1 | head -2' ;;
+  solo-up)  need_env; docker compose -f docker-compose.solo.yml --env-file .env up -d --build; sleep 12; docker logs --tail 6 solo1 2>&1 | cut -c1-200 ;;
+  solo-down) docker compose -f docker-compose.solo.yml --env-file .env down ;;
+  solo-reset) docker compose -f docker-compose.solo.yml --env-file .env down -v ;;
+  solo-agent-update) docker exec -e PG_ARCA_NO_SERVICE=1 solo1 bash /work/unix-agent/install-agent.sh >/dev/null; docker exec solo1 pkill -f '^python3 /opt/pg-arca/pg-arca-agent.py' || true; sleep 12; docker exec solo1 tail -n 5 /var/log/pgarca/agent.out ;;
+  solo-diag) docker exec solo1 bash -c 'ps -eo pid,args | grep -E "postgres|agent" | grep -v grep | cut -c1-200; tail -n 5 /var/log/pgarca/agent.out; ls /var/log/pg15' ;;
   agent-update) # reinstall the agent code from /work on every node and restart only the agent (Patroni/PostgreSQL untouched, credentials kept)
     # NB: the anchored pattern matches only the python process. A plain `pkill -f pg-arca-agent.py` also killed the supervising shell loop (its command line contains that name) and nothing restarted the agent.
     for n in pg1 pg2 pg3; do
