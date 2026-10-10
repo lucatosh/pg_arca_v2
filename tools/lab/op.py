@@ -29,7 +29,7 @@ if node:
 s, d = call("POST", "/api/clusters/%s/operations" % cid, body, {"Idempotency-Key": str(uuid.uuid4())})
 if s >= 300 or "operation" not in d: print("HTTP", s, json.dumps(d)[:800]); sys.exit(1)
 o = d["operation"]; t0 = time.time()
-while o["status"] in ("queued", "pending", "running", "dispatched", "claimed") and time.time() - t0 < wait:
+while o["status"] not in ("succeeded", "failed", "cancelled", "canceled", "expired", "rejected") and time.time() - t0 < wait:
     time.sleep(2); s, d = call("GET", "/api/operations/" + o["id"]); o = d.get("operation", d)
 print("STATUS", o["status"], "(%ds)" % (time.time() - t0))
 if o.get("error"): print("ERROR", json.dumps(o["error"])[:1500])

@@ -6,6 +6,7 @@ happened, not what Patroni promised): leader change, pause flag, restart complet
 
 import base64
 import json
+import socket
 import logging
 import ssl
 import time
@@ -55,14 +56,26 @@ class PatroniBridge:
         try:
             with urllib.request.urlopen(req, timeout=timeout, context=self.ctx) as r:
                 raw = r.read().decode("utf-8", "replace")
-                return r.status, (json.loads(raw) if raw.strip() else {})
+                if not raw.strip():
+                    return r.status, {}
+                try:
+                    return r.status, json.loads(raw)
+                except ValueError:
+                    # several Patroni endpoints answer a successful write with PLAIN TEXT ("Successfully switched over to ...", "reload scheduled",
+                    # "restart scheduled"...): that is a success, not an unreachable Patroni
+                    return r.status, {"message": raw.strip()[:500]}
         except urllib.error.HTTPError as e:
             raw = e.read().decode("utf-8", "replace")
             try:
                 return e.code, json.loads(raw)
             except ValueError:
                 return e.code, {"error": raw[:500]}
+        except (socket.timeout, TimeoutError) as e:
+            # a write that Patroni was still carrying out when we stopped waiting: the CALLER must verify the outcome, this is not "unreachable"
+            return 504, {"error": "Patroni did not answer %s within %ss" % (path, timeout), "timeout": True}
         except Exception as e:
+            if "timed out" in str(e):
+                return 504, {"error": "Patroni did not answer %s within %ss" % (path, timeout), "timeout": True}
             return 503, {"error": "Patroni unreachable at %s: %s" % (url, e)}
 
     # --- reads ---
@@ -93,16 +106,16 @@ class PatroniBridge:
             body["candidate"] = candidate
         if scheduled_at:
             body["scheduled_at"] = scheduled_at
-        return self.request("/switchover", "POST", body, timeout=15)
+        return self.request("/switchover", "POST", body, timeout=60)
 
     def failover(self, candidate):
-        return self.request("/failover", "POST", {"candidate": candidate}, timeout=15)
+        return self.request("/failover", "POST", {"candidate": candidate}, timeout=60)
 
     def restart(self, role=None):
-        return self.request("/restart", "POST", {"role": role} if role else {}, timeout=30)
+        return self.request("/restart", "POST", {"role": role} if role else {}, timeout=90)
 
     def reinitialize(self, force=False):
-        return self.request("/reinitialize", "POST", {"force": True} if force else {}, timeout=30)
+        return self.request("/reinitialize", "POST", {"force": True} if force else {}, timeout=60)
 
     def patch_config(self, patch):
         return self.request("/config", "PATCH", patch)

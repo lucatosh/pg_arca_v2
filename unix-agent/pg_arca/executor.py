@@ -335,7 +335,7 @@ class OperationExecutor:
             if not [x for x in members if x.get("name") != old and x.get("state") in ("running", "streaming")]:
                 raise OpError("no healthy replica available to take over")
         st, d = self.patroni.switchover(old, cand, p.get("scheduled_at"))
-        if st >= 300:
+        if st >= 300 and not (st == 504 and isinstance(d, dict) and d.get("timeout")):      # a timeout is verified below, not reported as a refusal
             raise OpError("Patroni refused the switchover (%s): %s" % (st, json.dumps(d)[:300]))
         if p.get("scheduled_at"):
             return {"scheduled": True, "response": d}
@@ -351,7 +351,7 @@ class OperationExecutor:
         if not any(x.get("name") == cand for x in members):
             raise OpError("candidate '%s' is not a member of this cluster" % cand)
         st, d = self.patroni.failover(cand)
-        if st >= 300:
+        if st >= 300 and not (st == 504 and isinstance(d, dict) and d.get("timeout")):      # a timeout is verified below, not reported as a refusal
             raise OpError("Patroni refused the failover (%s): %s" % (st, json.dumps(d)[:300]))
         ok, lead, _ = self.patroni.wait_for(lambda l, ms: l == cand, timeout=90)
         if not ok:
@@ -377,7 +377,7 @@ class OperationExecutor:
         self._require_patroni()
         bridge, m = self._bridge_for(p.get("member"))
         st, resp = bridge.restart(p.get("role"))
-        if st >= 300:
+        if st >= 300 and not (st == 504 and isinstance(resp, dict) and resp.get("timeout")):
             raise OpError("Patroni refused the restart of %s (%s): %s" % (p.get("member") or "this node", st, json.dumps(resp)[:300]))
         deadline = time.time() + 120
         while time.time() < deadline:
@@ -398,7 +398,7 @@ class OperationExecutor:
             raise OpError("'%s' is the leader: reinitialize would destroy the primary's data. Refused." % member)
         bridge, m = self._bridge_for(member)
         st, resp = bridge.reinitialize(bool(p.get("force")))
-        if st >= 300:
+        if st >= 300 and not (st == 504 and isinstance(resp, dict) and resp.get("timeout")):
             raise OpError("Patroni refused to reinitialize %s (%s): %s" % (member, st, json.dumps(resp)[:300]))
         time.sleep(3)
         s2, n = bridge.get_node_status()
