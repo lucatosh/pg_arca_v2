@@ -223,7 +223,9 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(cm.exception.code, "PGA-GEN-081")
 
     def test_06_restore_object(self):
-        plan = restore_object(F.ctx, "app.public.customers", target_time=F.t1, stage_db="pgarca_stage_customers")
+        # the web UI sends a browser toISOString() ('T' separator, 'Z' suffix): PostgreSQL refuses that form in postgresql.auto.conf, so the engine must normalise it
+        iso_z = F.t1[:10] + "T" + F.t1[11:-3] + "Z"
+        plan = restore_object(F.ctx, "app.public.customers", target_time=iso_z, stage_db="pgarca_stage_customers")
         self.assertEqual(plan["rows_restored"], 500)
         self.assertEqual(int(q("pgarca_stage_customers", "SELECT count(*) FROM public.customers")[0][0]), 500)
 

@@ -253,6 +253,9 @@ def install_external_conf(dest, merged_all):
 def recovery_lines(restore_command, target_time=None, target_lsn=None, target_xid=None, target_name=None, immediate=False,
                    action="promote", inclusive=True, timeline="latest"):
     q = lambda v: "'%s'" % str(v).replace("'", "''")
+    if target_time:
+        from pg_arca.engine.util import _pg_time
+        target_time = _pg_time(str(target_time).strip())
     lines = ["", "# ==== pg_arca recovery (generated %s) ====" % iso(), "restore_command = %s" % q(restore_command),
              "recovery_target_timeline = %s" % q(timeline)]
     targets = [(k, v) for k, v in (("recovery_target_time", target_time), ("recovery_target_lsn", target_lsn),

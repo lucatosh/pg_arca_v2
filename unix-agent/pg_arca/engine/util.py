@@ -224,7 +224,15 @@ def parse_target_time(s):
     if not _TZ_RE.search(str(s).strip()):
         raise EngineError("PGA-PITR-001", "target time must contain a UTC offset: %r" % s,
                           "valid examples: '2026-07-26 18:34:11+02'  '2026-07-26 16:34:11Z'")
-    return str(s).strip()
+    return _pg_time(str(s).strip())
+
+
+def _pg_time(s):
+    """Canonical form PostgreSQL accepts while it reads postgresql.auto.conf at startup: 'YYYY-MM-DD HH:MM:SS[.f]+HH[:MM]'.
+    A 'T' separator or a 'Z'/'UTC' suffix is valid SQL but the GUC check runs before the timezone abbreviations are loaded, so the server then refuses to start
+    ("invalid value for parameter recovery_target_time"). A browser's toISOString() produces exactly that form, so normalise it here."""
+    t = re.sub(r"(?i)\s*(z|utc)$", "+00", s)
+    return re.sub(r"^(\d{4}-\d{2}-\d{2})[Tt]", r"\1 ", t)
 
 
 def target_time_to_dt(s):
