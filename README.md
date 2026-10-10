@@ -68,6 +68,9 @@ npm install
 npm test                 # suite TypeScript + test Python dell’agent
 npm run dev              # http://localhost:3000 — il primo accesso crea l’amministratore
 # produzione: npm run build && NODE_ENV=production tsx server.ts
+
+> Come funzionano backup e restore (formato, algoritmi, limiti, confronto onesto con pgBackRest): vedi [ARCHITETTURA-BACKUP-RESTORE.md](ARCHITETTURA-BACKUP-RESTORE.md) — da aggiornare a ogni modifica del motore.
+
 ```
 
 Variabili: `PORT`, `PG_ARCA_DATA_DIR` (stato persistente, default `./data`), `PG_ARCA_ADMIN_USER` / `PG_ARCA_ADMIN_PASSWORD` (creazione non interattiva dell’amministratore). Metti la console dietro un reverse proxy TLS.

@@ -1,5 +1,8 @@
 # HANDOFF — stato del lavoro (aggiornato a ogni commit)
 
+> Come funzionano backup e restore (formato, algoritmi, limiti, confronto onesto con pgBackRest): vedi [ARCHITETTURA-BACKUP-RESTORE.md](ARCHITETTURA-BACKUP-RESTORE.md) — da aggiornare a ogni modifica del motore.
+
+
 Branch di lavoro: **`main`** (decisione dell'utente: si scrive sempre direttamente su main, niente branch/PR). Dopo ogni push: `git update-ref refs/remotes/origin/main HEAD`. Ultimo aggiornamento: vedi `git log`.
 
 ## Regole del progetto (decise con l'utente)
