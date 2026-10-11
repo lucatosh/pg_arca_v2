@@ -13,7 +13,7 @@ for v in $VERS; do
   docker run --rm -v "$ROOT":/work:ro,z -e LC_ALL=C.UTF-8 "postgres:$tag" bash -c '
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends python3 python3-cryptography procps >/dev/null 2>&1
-    cp -r /work/unix-agent /tmp/agent && chown -R postgres:postgres /tmp/agent
+    mkdir -p /tmp/tools/lab && cp -r /work/unix-agent /tmp/agent && cp /work/tools/lab/*.sql /tmp/tools/lab/ && chown -R postgres:postgres /tmp/agent /tmp/tools
     su postgres -s /bin/bash -c "cd /tmp/agent && python3 -W ignore -m unittest '"$SUITES"' 2>&1"' > /tmp/matrix-$v.log 2>&1
   res=$(grep -E "^(Ran|OK|FAILED)" /tmp/matrix-$v.log | tr '\n' ' ')
   if grep -q "^OK" /tmp/matrix-$v.log; then st=PASS; else st=FAIL; fi
