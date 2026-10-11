@@ -60,9 +60,9 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
     if (prev.current) for (const o of q.data.operations) {
       const was = prev.current[o.id];
       if (!was || isTerminal(was) || !isTerminal(o.status) || o.createdBy !== me || QUIET.includes(o.type) || o.background) continue;
-      if (o.status === 'succeeded') toast(`${label(o)} completato`, 'ok');
-      else if (o.status === 'failed') toast(`${label(o)} non riuscito: ${(o.error || '').split('\n')[0].slice(0, 140)}`, 'bad', 9000);
-      else if (o.status === 'cancelled') toast(`${label(o)} annullato`, 'info');
+      if (o.status === 'succeeded') toast(`${label(o)}: operazione completata`, 'ok');
+      else if (o.status === 'failed') toast(`${label(o)}: operazione non riuscita — ${(o.error || '').split('\n')[0].slice(0, 140)}`, 'bad', 9000);
+      else if (o.status === 'cancelled') toast(`${label(o)}: operazione annullata`, 'info');
     }
     prev.current = cur;
   }, [q.data, me]);

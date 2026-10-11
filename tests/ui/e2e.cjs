@@ -17,7 +17,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   assert(await p.locator('text=Cluster demo').count() >= 1, 'demo present');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Protezione dei dati'); await shot('03-overview');
   // backup tab
-  await tab('Protezione', 'Backup'); await p.waitForSelector('text=Esegui un backup'); await shot('04-backup');
+  await tab('Protezione', 'Backup'); await p.waitForSelector('text=Esegui un backup'); await p.waitForSelector('.placement code:has-text("/mnt/backup/repo/prodpg")'); await shot('04-backup');
   { const b = p.locator('button:has-text("Prova di disaster recovery")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster ripristinato in 13 minuti', { timeout: 10000 }); await shot('04b-drill'); } }
   await p.click('button:has-text("Avvia backup")'); await p.waitForSelector('text=Copia dei dati'); await shot('05-backup-running');
   // the dock's Log opens a floating window with THIS operation's log (not the database log): movable, minimisable, closable
@@ -42,7 +42,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.mouse.click(tr.x + tr.width * 0.55, tr.y + 30); await p.waitForTimeout(200); await shot('09-timeline-picked');
   await p.click('summary:has-text("Hai cancellato")'); await p.click('button:has-text("Avvia analisi")'); await p.waitForSelector('text=appdb.public.orders', { timeout: 10000 }); await shot('10-forensics');
   await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=Nome del nuovo database');
-  await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 }); await p.waitForSelector('.preflight.warn'); await p.waitForSelector('.spacebars .vol'); await shot('11-plan');
+  await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 }); await p.waitForSelector('.preflight.warn'); await p.waitForSelector('.spacebars .vol'); await p.waitForSelector('.placement code:has-text("/var/tmp/pg_arca_scratch")'); await shot('11-plan');
   // a taken destination name is a blocker: the start button stays disabled
   const nameIn = p.locator('.field:has-text("Nome del nuovo database") input');
   await p.click('button:has-text("Indietro")'); const keep = await nameIn.inputValue(); await nameIn.fill('taken'); await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('.preflight.bad');

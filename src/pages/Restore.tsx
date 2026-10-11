@@ -1,3 +1,4 @@
+import { RecoveryPlacement } from './Placement';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Skeleton, bytes, dt, num, ago } from '../ui';
 import { Op, useOpRunner, useQuery } from '../hooks';
@@ -139,6 +140,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     {step === 3 && <div className="stack-l">
       <Card title="Piano di ripristino"><div className="stack">
         {plan.op?.status === 'succeeded' ? <PlanView p={plan.op.result} scope={scope} /> : <OpPanel op={plan.op} error={plan.error} label="Verifica del piano" />}
+        {scope !== 'instance' && plan.op ? <RecoveryPlacement clusterId={c.id} /> : null}
         {plan.op?.status === 'failed' ? <div><Button onClick={() => setStep(1)}>Cambia istante</Button></div> : null}</div></Card>
       {plan.op?.status === 'succeeded' && !exec.op ? <div className="row"><Button onClick={() => setStep(2)}>Indietro</Button><div className="grow" />{blocked ? <span className="small" style={{ color: 'var(--bad)' }}>Risolvi i punti in rosso per procedere</span> : null}<Button kind="primary" icon="restore" disabled={blocked} onClick={() => setAsk(true)}>Avvia ripristino</Button></div> : null}
       {(exec.op || exec.error) ? <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />

@@ -216,3 +216,20 @@ export function InfraPage({ tab }: { tab?: string }) {
     <Tabs value={t} onChange={v => go(`infra/${v}`)} items={[{ id: 'ephemeral', label: 'Istanza di recupero', icon: 'restore' }, { id: 'destination', label: 'Destinazione dei backup', icon: 'server' }]} />
     <div style={{ marginTop: 16 }}><ScopedTab kind={t} key={t} /></div></>;
 }
+
+/* ---------------------------------------------------------------------------------------------------------------------- in-context editors (restore plan, backup page) */
+/** The same dialogs as this page, opened from another screen for ONE cluster: change where it recovers / where it writes backups without losing the wizard. */
+function WithCluster({ kind, clusterId, onClose, children }: { kind: 'ephemeral' | 'destination'; clusterId: string; onClose: () => void; children: (v: SView, c: SCluster) => React.ReactNode }) {
+  const q = useQuery<SView>(`/api/scoped/${kind}`);
+  const c = q.data?.clusters.find(x => x.id === clusterId);
+  if (!q.data || !c) return <Modal title="Caricamento…" onClose={onClose}><Skeleton h={120} /></Modal>;
+  return <>{children(q.data, c)}</>;
+}
+const closeAnd = (clusterId: string, onClose: () => void) => () => { revalidate(`/api/clusters/${clusterId}/placement`); onClose(); };
+export const ClusterScopeEditor = ({ kind, clusterId, onClose }: { kind: 'ephemeral' | 'destination'; clusterId: string; onClose: () => void }) =>
+  <WithCluster kind={kind} clusterId={clusterId} onClose={onClose}>{(v, c) => <ScopeDialog kind={kind} scope="cluster" k={c.id} label={c.name} view={v} onClose={closeAnd(clusterId, onClose)} />}</WithCluster>;
+export const ClusterDestinationCheck = ({ clusterId, onClose }: { clusterId: string; onClose: () => void }) =>
+  <WithCluster kind="destination" clusterId={clusterId} onClose={onClose}>{(_v, c) => <DestinationModal cluster={c} onClose={closeAnd(clusterId, onClose)} />}</WithCluster>;
+export const ClusterEphemeralCheck = ({ clusterId, onClose }: { clusterId: string; onClose: () => void }) =>
+  <WithCluster kind="ephemeral" clusterId={clusterId} onClose={onClose}>{(_v, c) => <PreflightModal cluster={c} onClose={closeAnd(clusterId, onClose)} />}</WithCluster>;
+export { srcText as scopeSourceText };

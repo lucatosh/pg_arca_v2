@@ -113,6 +113,41 @@ export function mountDestinationRoutes(app: any, store: Store) {
     res.json({ destination: dest, effective: resolved, nodes, checks: dest ? checksFor(st, c, dest) : {}, applied: (st.settings.destinationApplied || {})[c.id] || null, previewTypes: PREVIEW_TYPES });
   });
 
+  /**
+   * WHERE things happen for this cluster, in one answer for the screens that need it (restore plan, backup page): the node and scratch directory of the
+   * recovery instance, the repository and WAL archive in use, the free space of each as last reported by the agents, and which level of the configuration
+   * each value comes from (so the screen can say "set for environment prod" and link to the right place to change it).
+   */
+  app.get('/api/clusters/:id/placement', (req: Request, res: Response) => {
+    const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
+    if (!c) return res.status(404).json({ error: 'cluster_not_found' });
+    const nodes = nodesOf(st, c.id);
+    const prim = nodes.find(n => online(n) && n.snapshot?.postgres?.is_in_recovery === false) || nodes.find(n => online(n) && n.snapshot?.postgres?.alive) || nodes.find(online) || nodes[0];
+    const eph = resolveScoped(st, 'ephemeral', c);
+    const central = eph.value.placement === 'central' ? (st.nodes as any)[eph.value.centralNode] as NodeRecord | undefined : undefined;
+    const runNode = eph.value.placement === 'central' ? central : prim;
+    const disks = (n?: NodeRecord) => (n?.snapshot?.system?.disks || {}) as Record<string, { path: string; free_bytes: number; total_bytes: number; dev?: number }>;
+    const rd = disks(runNode); const pd = disks(prim);
+    const scratchPath = eph.value.scratchDir || rd.scratch?.path || '/var/tmp/pg_arca_scratch';
+    const scratchDisk = rd.scratch && rd.scratch.path === scratchPath ? rd.scratch : null;
+    const { dest, resolved } = destinationFor(st, c);
+    const applied = (st.settings.destinationApplied || {})[c.id] || null;
+    const node = (n?: NodeRecord) => (n ? { id: n.id, name: n.name, online: online(n), role: n.snapshot?.postgres?.is_in_recovery === false ? 'primary' : n.snapshot?.postgres?.is_in_recovery === true ? 'replica' : null } : null);
+    res.json({
+      ephemeral: {
+        placement: eph.value.placement || 'node', node: node(runNode), centralMissing: eph.value.placement === 'central' && !central,
+        scratchDir: scratchPath, scratchDisk, scratchSharesData: !!(scratchDisk && rd.pgdata && scratchDisk.dev !== undefined && scratchDisk.dev === rd.pgdata.dev),
+        binDir: eph.value.binDir || null, sharedBuffersMb: eph.value.sharedBuffersMb, keepOnFailure: !!eph.value.keepOnFailure, sources: eph.sources,
+      },
+      backup: {
+        repoPath: pd.repo?.path || applied?.repo_path || null, walPath: pd.wal_archive?.path || applied?.wal_path || null,
+        repoDisk: pd.repo || null, walDisk: pd.wal_archive || null, dataDisk: pd.pgdata || null,
+        configured: dest, pending: !!(dest && ((dest.repo_path && dest.repo_path !== pd.repo?.path) || (dest.wal_path && dest.wal_path !== pd.wal_archive?.path))),
+        type: dest?.type || applied?.type || 'local', sources: resolved.sources, node: node(prim),
+      },
+    });
+  });
+
   // check on every online node: the destination must work from each of them (a standby may take over)
   app.post('/api/clusters/:id/destination/check', async (req: Request, res: Response) => {
     const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);

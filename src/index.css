@@ -356,3 +356,8 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .spacebars .vol { display: grid; gap: 4px; } .spacebars .bar { position: relative; display: flex; height: 10px; border-radius: 6px; background: color-mix(in srgb, var(--ok) 14%, var(--surface-2)); overflow: hidden; }
 .spacebars .bar i { display: block; height: 100%; } .spacebars .bar .used { background: var(--line-strong); } .spacebars .bar .need { background: var(--accent); } .spacebars .bar .over { background: var(--bad); }
 .spacebars .vol.warn .bar .need { background: var(--warn); } .spacebars .vol.bad .bar .need { background: var(--bad); } .spacebars .vol.bad strong { color: var(--bad); }
+.placement { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px; display: grid; gap: 8px; background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); }
+.placement .ph { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; } .placement .kv { font-size: 13px; }
+.diskline { display: inline-flex; align-items: center; gap: 8px; } .diskline .db { display: inline-block; width: 90px; height: 6px; border-radius: 4px; overflow: hidden; background: color-mix(in srgb, var(--ok) 18%, var(--surface-3)); }
+.diskline .db i { display: block; height: 100%; background: var(--ink-3); }
+.diskline.warn i { background: var(--warn); } .diskline.bad i { background: var(--bad); }

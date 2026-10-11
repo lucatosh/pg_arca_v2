@@ -85,7 +85,7 @@ class Runtime(object):
             if p and os.path.exists(p):
                 try:
                     st = os.statvfs(p)
-                    disks[label] = {"path": p, "total_bytes": st.f_blocks * st.f_frsize, "free_bytes": st.f_bavail * st.f_frsize}
+                    disks[label] = {"path": p, "total_bytes": st.f_blocks * st.f_frsize, "free_bytes": st.f_bavail * st.f_frsize, "dev": os.stat(p).st_dev}   # dev: same number = same filesystem
                 except OSError:
                     pass
         out["disks"] = disks
@@ -134,7 +134,8 @@ class Runtime(object):
             "postgres": pg, "patroni": self.patroni_view(),
             "wal": wal.verify_continuity() if wal else None,
             "backup": cas.get_stats() if cas else None,
-            "system": self.system_metrics({"pgdata": inst.get("data_directory"), "repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir")}),
+            "system": self.system_metrics({"pgdata": inst.get("data_directory"), "repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir"),
+                                           "scratch": self.config.get("scratch_dir")}),
             "toolchain": self.report.get("toolchain"),
             "storage": {"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))},
             "cluster_key": inst.get("cluster_key") or (("patroni:%s" % self.patroni_info["scope"]) if (self.patroni_info or {}).get("scope") else None),

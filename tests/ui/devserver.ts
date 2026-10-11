@@ -56,7 +56,7 @@ const withAgent = process.env.NO_AGENT !== '1';
         archiver: { archived_count: 120, failed_count: 0, last_archived_time: new Date().toISOString() } },
       wal: { continuous: true, total_segments: 64, gaps: [] },
       backup: { configured: true, sets: sets.filter(s => s.status === 'COMPLETE').length, failed_sets: 0, last_backup: sets[sets.length - 1], last_backup_age_hours: (Date.now() - Date.parse(sets[sets.length - 1].stop_time)) / 3.6e6, stored_bytes: 2.1e9, dedup_ratio: 5.6, recent_sets: sets.slice(-60) },
-      system: { load_avg_1m: 0.4, cpu_count: 4, memory_used_percent: 38, memory_total_bytes: 16 * 1024 ** 3 }, patroni: { accessible: false },
+      system: { load_avg_1m: 0.4, cpu_count: 4, memory_used_percent: 38, memory_total_bytes: 16 * 1024 ** 3, disks: { pgdata: { path: '/var/lib/postgresql/16/main', total_bytes: 2e11, free_bytes: 4.3e10, dev: 2049 }, scratch: { path: '/var/tmp/pg_arca_scratch', total_bytes: 2e11, free_bytes: 4.3e10, dev: 2049 }, repo: { path: '/mnt/backup/repo/prodpg', total_bytes: 4e12, free_bytes: 2.6e12, dev: 77 }, wal_archive: { path: '/mnt/backup/wal/prodpg', total_bytes: 4e12, free_bytes: 2.6e12, dev: 77 } } }, patroni: { accessible: false },
     });
     const report = (id: string, body: any) => app.call('POST', `/api/agent/ops/${id}/report`, { body, headers: agent.h });
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));

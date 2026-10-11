@@ -1,3 +1,4 @@
+import { BackupPlacement } from './Placement';
 import { StrategyCard } from './Strategy';
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
@@ -98,6 +99,7 @@ function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) 
   const bk = d.backup; const res = r.op?.result;
   return <Card title="Salute del repository">
     <div className="stack">
+      {c.source !== 'direct' && !c.isSandbox ? <BackupPlacement clusterId={c.id} /> : null}
       <dl className="kv small"><dt>Backup validi</dt><dd>{bk?.sets ?? 0}{bk?.failed_sets ? ` (+${bk.failed_sets} falliti)` : ''}</dd><dt>Spazio usato</dt><dd>{bytes(bk?.stored_bytes)} {bk?.dedup_ratio ? <span className="muted">— {bk.dedup_ratio}× di deduplica e compressione</span> : null}</dd>
         <dt>WAL archiviati</dt><dd>{num(d.wal?.total_segments)} segmenti, {d.wal?.continuous === false ? <Badge kind="bad">con buchi</Badge> : <Badge kind="ok">continui</Badge>}</dd>
         <dt>Cifratura</dt><dd>{bk?.encryption ? <><Badge kind="ok">Attiva</Badge> <span className="muted">AES-256-GCM · chiave {bk.encryption.key_id.slice(0, 8)}</span></> : <span className="muted">Non attiva — imposta <code>encryption_key_file</code> per un nuovo repository</span>}</dd>
