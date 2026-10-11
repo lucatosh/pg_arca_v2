@@ -55,6 +55,17 @@ app.use((_req, res, next) => {
   }
   next();
 });
+// Diagnostics: requests that take long and event-loop stalls are logged with what was in flight (an agent heartbeat that times out
+// is otherwise invisible on the console side). Long-poll heartbeats are expected to last up to their wait_seconds.
+const inflight = new Map<number, { m: string; u: string; t: number }>(); let reqSeq = 0;
+app.use((req, res, next) => {
+  const id = ++reqSeq; const t = Date.now(); inflight.set(id, { m: req.method, u: req.path, t });
+  res.on('close', () => { inflight.delete(id); const ms = Date.now() - t; const limit = req.path === '/api/agent/heartbeat' ? 25_000 : 5_000;
+    if (ms > limit) console.warn(`[slow] ${req.method} ${req.path} ${ms} ms (status ${res.statusCode})`); });
+  next();
+});
+{ let last = Date.now(); setInterval(() => { const now = Date.now(); const lag = now - last - 500; last = now;
+  if (lag > 2000) console.warn(`[stall] event loop blocked ~${lag} ms; in flight: ${[...inflight.values()].slice(0, 8).map(r => `${r.m} ${r.u} (${now - r.t} ms)`).join(', ') || 'none'}`); }, 500).unref(); }
 app.use(express.json({ limit: '4mb' }));
 app.use(requireAdmin(store));
 attachLogSocket(server);
