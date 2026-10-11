@@ -74,6 +74,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && objs.length > 0);
   const okWhere = scope === 'instance' ? dest.startsWith('/') : scope === 'database' ? /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName) : true;
   const okWhen = tgt.mode !== 'time' || (tgt.ms >= from && tgt.ms <= to + 60000);
+  const blocked = plan.op?.status === 'succeeded' && (!!plan.op.result?.missing_wal?.length || plan.op.result?.preflight?.ok === false);
   const next = () => { const n = step + 1; setStep(n); if (n === 3) plan.run('restore_plan', planParams()); };
   const baseSet = useMemo(() => {
     const t = tgt.mode === 'time' ? tgt.ms : Infinity; const ok = sets.filter(s => Date.parse(s.stop_time!) <= t);
@@ -139,7 +140,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       <Card title="Piano di ripristino"><div className="stack">
         {plan.op?.status === 'succeeded' ? <PlanView p={plan.op.result} scope={scope} /> : <OpPanel op={plan.op} error={plan.error} label="Verifica del piano" />}
         {plan.op?.status === 'failed' ? <div><Button onClick={() => setStep(1)}>Cambia istante</Button></div> : null}</div></Card>
-      {plan.op?.status === 'succeeded' && !exec.op ? <div className="row"><Button onClick={() => setStep(2)}>Indietro</Button><div className="grow" /><Button kind="primary" icon="restore" onClick={() => setAsk(true)}>Avvia ripristino</Button></div> : null}
+      {plan.op?.status === 'succeeded' && !exec.op ? <div className="row"><Button onClick={() => setStep(2)}>Indietro</Button><div className="grow" />{blocked ? <span className="small" style={{ color: 'var(--bad)' }}>Risolvi i punti in rosso per procedere</span> : null}<Button kind="primary" icon="restore" disabled={blocked} onClick={() => setAsk(true)}>Avvia ripristino</Button></div> : null}
       {(exec.op || exec.error) ? <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
         {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' ? <>Cartella pronta in <code>{exec.op!.result.destination}</code>. {exec.op!.result.start_hint}</> : <>Dati disponibili nel database <code>{exec.op!.result.result_database}</code>.{exec.op!.result.inspect ? <> Per controllare: <code>{exec.op!.result.inspect}</code></> : null}</>}</Banner> : null}
         {doneOk ? <Notices r={exec.op!.result} /> : null}
@@ -157,10 +158,23 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   </div>;
 }
 
+/** The checks the agent ran before the long recovery: what is fine, what deserves attention, what blocks (with the way out). */
+function Preflight({ pf }: { pf: { level: string; ok: boolean; checks: { id: string; level: string; text: string; fix?: string }[] } }) {
+  const order: Record<string, number> = { bad: 0, warn: 1, ok: 2 };
+  const list = [...pf.checks].sort((a, b) => order[a.level] - order[b.level]);
+  const n = (l: string) => pf.checks.filter(c => c.level === l).length;
+  return <div className={`preflight ${pf.level}`} role="group" aria-label="Controlli prima di partire">
+    <div className="ph"><strong>Controlli prima di partire</strong><span className="small faint">{n('ok')} ok{n('warn') ? ` · ${n('warn')} da vedere` : ''}{n('bad') ? ` · ${n('bad')} bloccanti` : ''}</span></div>
+    <ul>{list.map(c => <li key={c.id} className={c.level}><Icon n={c.level === 'ok' ? 'check' : 'alert'} s={14} /><span><span>{c.text}</span>{c.fix && c.level !== 'ok' ? <span className="fix small">{c.fix}</span> : null}</span></li>)}</ul></div>;
+}
+
 function PlanView({ p, scope }: { p: any; scope: Scope }) {
   const saved = p.saved_pct;
   return <div className="stack">
-    <Banner kind={p.missing_wal?.length ? 'bad' : 'ok'} title={p.missing_wal?.length ? 'Mancano dei WAL' : 'Ripristino possibile'}>{p.missing_wal?.length ? `Servono ${p.missing_wal.length} segmenti non archiviati.` : 'Il backup di partenza e i WAL necessari sono presenti.'}</Banner>
+    {p.missing_wal?.length ? <Banner kind="bad" title="Mancano dei WAL">{`Servono ${p.missing_wal.length} segmenti non archiviati.`}</Banner>
+      : p.preflight?.ok === false ? <Banner kind="bad" title="Non si può ancora avviare">Il backup e i WAL ci sono, ma un controllo preliminare blocca il ripristino: vedi sotto cosa fare.</Banner>
+        : <Banner kind="ok" title="Ripristino possibile">Il backup di partenza e i WAL necessari sono presenti.</Banner>}
+    {p.preflight?.checks?.length ? <Preflight pf={p.preflight} /> : null}
     <dl className="kv"><dt>Istante</dt><dd>{p.target === 'end of archive' ? 'ultimo disponibile' : Number.isFinite(Date.parse(p.target)) ? new Date(p.target).toLocaleString('it-CH') : p.target}</dd>
       <dt>Backup di partenza</dt><dd><span className="mono">{p.set}</span></dd>
       <dt>Catena</dt><dd className="mono small">{(p.chain || []).join(' → ')}</dd>

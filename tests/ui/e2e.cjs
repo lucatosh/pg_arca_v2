@@ -42,7 +42,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.mouse.click(tr.x + tr.width * 0.55, tr.y + 30); await p.waitForTimeout(200); await shot('09-timeline-picked');
   await p.click('summary:has-text("Hai cancellato")'); await p.click('button:has-text("Avvia analisi")'); await p.waitForSelector('text=appdb.public.orders', { timeout: 10000 }); await shot('10-forensics');
   await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=Nome del nuovo database');
-  await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 }); await shot('11-plan');
+  await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 }); await p.waitForSelector('.preflight.warn'); await shot('11-plan');
+  // a taken destination name is a blocker: the start button stays disabled
+  const nameIn = p.locator('.field:has-text("Nome del nuovo database") input');
+  await p.click('button:has-text("Indietro")'); const keep = await nameIn.inputValue(); await nameIn.fill('taken'); await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('.preflight.bad');
+  if (!(await p.locator('button:has-text("Avvia ripristino")').isDisabled())) throw new Error('start must be blocked by a failing pre-flight');
+  await shot('11b-plan-blocked'); await p.click('button:has-text("Indietro")'); await nameIn.fill(keep); await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('.preflight.warn');
   await p.click('button:has-text("Avvia ripristino")'); await p.click('.modal button:has-text("Avvia")');
   await p.waitForSelector('text=Ripristino completato', { timeout: 15000 }); await shot('12-restore-done');
   // restore one table, then promote it back

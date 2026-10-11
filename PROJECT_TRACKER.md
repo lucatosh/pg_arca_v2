@@ -14,6 +14,8 @@ Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguit
 | Inventario cluster, demo unico eliminabile | `server/clusters.ts`, `server/demo.ts` | Reale | `api.test.ts` |
 | Collegamento senza agent | `server/direct.ts` | **Mai eseguito contro PostgreSQL reale** | solo stub |
 | Scheduler backup | `server/scheduler.ts` | Reale | `scheduler.test.ts` |
+| Forense WAL veloce (DROP/TRUNCATE, cache per segmento, corsia `analysis`) | `unix-agent/pg_arca/engine/walscan.py` | Reale su PG16 locale: 18 s → 2,1 s → 0,02 s (cache); lab 97 s → 8 s (misurati) | `test_walscan.py`, `bench_forensics.py` |
+| Restore: read-ahead WAL, dump zstd:1, pre-flight (chunk, spazio, nome) | `walprefetch.py`, `engine/restorecheck.py`, `pgsession.run_dump` | Reale su PG16 locale: recovery −38 %, dump 3,5 → 1,1 s (misurati); **lab non ancora** | `test_walprefetch.py`, `test_restorecheck.py`, `bench_restore.py` |
 | Restore oggetti v2 (dipendenze, schemi, replace/missing_only/as_new, dry-run) | `unix-agent/pg_arca/engine/objects.py`, `src/pages/Restore.tsx` | Reale su PG16 locale; **lab Patroni non ancora** | `test_objects_v2.py` (10) |
 | Configurazione istanza di recupero a più livelli, preflight e installazione PG | `engine/ephcfg.py`, `server/scoped.ts` | Config + preflight reali; installazione apt/dnf e posizionamento centrale **non provati su rete reale** | `test_ephcfg.py` (15), `scoped.test.ts` |
 | Indipendenza dal layout (psql, ruolo, archiviatore, Patroni REST, cgroup, validazione parametri) | `unix-agent/pg_arca/pgaccess.py`, `sysres.py`, `wal_archive.py`, `discovery.py` | Reale; provato su PG16 locale e sul lab (Patroni + nodo con layout insolito) | `test_universal.py` (22), `test_params_pg.py` (5) |

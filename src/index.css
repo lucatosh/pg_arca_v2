@@ -341,3 +341,7 @@ details.dbgroup > summary.gh { cursor: pointer; } details.dbgroup > summary.gh::
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
 .gonechip { display: inline-flex; align-items: center; gap: 8px; margin-left: 10px; font-weight: 400; } .gonechip .dropped { background: var(--bad); color: #fff; font-weight: 800; letter-spacing: .08em; font-size: 10.5px; padding: 1px 7px; border-radius: 5px; } .gonechip .when { color: var(--ink-3); }
 .tree .sch.gone strong, .tree button.gone .grow { color: var(--bad); } .tree .here { color: var(--ok); font-weight: 600; margin-left: 10px; }
+.preflight { border: 1px solid var(--line, #d8dbe0); border-radius: var(--r); padding: 10px 14px; } .preflight.bad { border-color: var(--bad); background: var(--bad-soft); } .preflight.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line, #d8dbe0)); }
+.preflight .ph { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; } .preflight ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.preflight li { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; } .preflight li svg { flex: none; margin-top: 2px; } .preflight li.ok svg { color: var(--ok); } .preflight li.warn svg { color: var(--warn); } .preflight li.bad svg { color: var(--bad); }
+.preflight li.bad { font-weight: 600; } .preflight .fix { display: block; font-weight: 400; color: var(--ink-3); }
