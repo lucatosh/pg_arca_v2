@@ -75,7 +75,7 @@ import { isRisky } from '../../server/approvals';
   const now = new Date().toISOString();
   await store2.mutate(d => {
     d.clusters.push({ id: 'c1', name: 'prod', environment: 'prod', folder: '', source: 'agent' } as any);
-    d.nodes.p1 = { id: 'p1', name: 'p1', clusterId: 'c1', remoteIp: '10.1.1.1', lastSeen: now, snapshot: { postgres: { alive: true, is_in_recovery: false, port: 5432 } } } as any;
+    d.nodes.p1 = { id: 'p1', name: 'p1', clusterId: 'c1', remoteIp: '10.1.1.1', lastSeen: now, snapshot: { postgres: { alive: true, is_in_recovery: false, port: 5432 }, backup: { stanza: 'erp-main' } } } as any;
     d.nodes.rh = { id: 'rh', name: 'restore-host', clusterId: 'c9', remoteIp: '10.1.1.9', lastSeen: now, snapshot: { postgres: { alive: true, is_in_recovery: false } } } as any;
   });
   const call = (m: string, u: string, body?: any, key?: string) => app.call(m, u, { body, headers: key ? { 'idempotency-key': key } : {} });
@@ -91,7 +91,11 @@ import { isRisky } from '../../server/approvals';
   assert.equal((await call('PUT', '/api/scoped/ephemeral/assignments', { scope: 'cluster', key: 'c1', value: { placement: 'central', centralNode: 'rh' } })).status, 200);
   r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_object', params: { object: 'db.public.t' } }, 'k2'); assert.equal(r.status, 202, JSON.stringify(r.body));
   assert.equal(r.body.operation.nodeId, 'rh'); assert.deepEqual(r.body.operation.params.into, { host: '10.1.1.1', port: 5432, user: 'postgres' });
+  assert.equal(r.body.operation.params.stanza, 'erp-main', 'the central node is told whose catalogue (it serves many clusters)');
   r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_drill', params: {} }, 'k3'); assert.equal(r.body.operation.nodeId, 'rh'); assert.equal(r.body.operation.params.into, undefined, 'a drill delivers nothing');
+  assert.equal(r.body.operation.params.stanza, 'erp-main');
+  r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_plan', params: { scope: 'database', database: 'db' } }, 'k3b'); assert.equal(r.body.operation.nodeId, 'rh', 'the plan is checked where the recovery will run');
+  r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_plan', params: { scope: 'instance', destination: '/x' } }, 'k3c'); assert.equal(r.body.operation.nodeId, 'p1', 'an instance restore runs on the cluster node');
   r = await call('POST', '/api/clusters/c1/operations', { type: 'backup_run', params: { type: 'incr' } }, 'k4'); assert.equal(r.body.operation.nodeId, 'p1', 'backups always run on the cluster itself');
   r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_object', params: { object: 'db.public.t', into: { host: 'other', port: 5432 } } }, 'k5'); assert.equal(r.body.operation.params.into.host, 'other', 'an explicit target is respected');
   // the central node vanishes -> a clear refusal, nothing queued

@@ -162,6 +162,9 @@ class OperationExecutor:
         atomic_write_json(self._path(op_id), {"id": op_id, "type": op_type, "status": "running", "started": time.time(), "attempt": (prior or {}).get("attempt", 0) + 1})
         self._tl.op_id = op_id
         self._tl.eph = params.get("ephemeral") if isinstance(params.get("ephemeral"), dict) else None
+        # an operational machine (backup server / recovery host) serves many clusters: the console says whose backup catalogue (stanza) an operation is about
+        st_ = params.get("stanza")
+        self._tl.stanza = st_ if isinstance(st_, str) and re.match(r"^[A-Za-z0-9_.-]{1,60}$", st_) else None
         try:
             result = fn(params)
             return self._finish(op_id, op_type, "succeeded", result, None)
@@ -608,7 +611,7 @@ class OperationExecutor:
             raise OpError("no PostgreSQL instance found on this host")
         if not self.runtime.instance.get("running"):
             raise OpError("PostgreSQL is not running on this host (backups need a running instance; restores can still target a directory)")
-        return self._with_eph(Ctx.from_config(self.config, self.runtime, log=lambda lv, m: logger.log({"warn": logging.WARNING, "error": logging.ERROR}.get(lv, logging.INFO), "[engine] %s", m)))
+        return self._with_eph(Ctx.from_config(self._cfg(), self.runtime, log=lambda lv, m: logger.log({"warn": logging.WARNING, "error": logging.ERROR}.get(lv, logging.INFO), "[engine] %s", m)))
 
     def _with_eph(self, ctx):
         """Ephemeral-instance settings: agent.conf `ephemeral` first, then what the console resolved for this operation (global < environment < folder < cluster)."""
@@ -647,7 +650,15 @@ class OperationExecutor:
             raise OpError("executor has no runtime binding")
         if not self.runtime.instance:
             self.runtime.refresh()
-        return self._with_eph(Ctx.from_config(self.config, self.runtime))
+        return self._with_eph(Ctx.from_config(self._cfg(), self.runtime))
+
+    def _cfg(self):
+        """The agent configuration for this operation: on an operational machine the stanza comes from the operation (the cluster it works for);
+        on a database node it is always the node's own (a parameter can never point a backup of this database into another catalogue)."""
+        stz = getattr(self._tl, "stanza", None)
+        if stz and self.runtime is not None and getattr(self.runtime, "worker", False):
+            return dict(self.config, stanza=stz)
+        return self.config
 
     def h_backup_verify(self, p):
         from pg_arca.engine.maintenance import verify
@@ -680,10 +691,11 @@ class OperationExecutor:
             from pg_arca.engine.restore import restore_instance
             return restore_instance(ctx, p.get("set"), p.get("destination") or "/nonexistent-plan-only", dry_run=True, **{k: v for k, v in t.items()})
         from pg_arca.engine import granular
+        into = p.get("into") if isinstance(p.get("into"), dict) else None      # central recovery host: the plan is checked where the instance will really run
         if scope == "database":
-            return granular.restore_database(ctx, str(p.get("database")), p.get("set"), dry_run=True, new_name=p.get("new_name"), **t)
+            return granular.restore_database(ctx, str(p.get("database")), p.get("set"), dry_run=True, new_name=p.get("new_name"), into=into, **t)
         objs = [str(x) for x in p.get("objects")] if isinstance(p.get("objects"), list) and p.get("objects") else None
-        return granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), dry_run=True, stage_db=p.get("stage_db"), objects=objs, **t)
+        return granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), dry_run=True, stage_db=p.get("stage_db"), objects=objs, into=into, **t)
 
     def h_restore_instance(self, p):
         from pg_arca.engine.restore import restore_instance

@@ -346,10 +346,13 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       if (nodeId && !target) return { code: 404, body: { error: 'node_not_found' } };
       // central ephemeral recovery: the instance runs on the chosen node, the recovered data is delivered to this cluster's primary
       const eph = resolveScoped(st, 'ephemeral', cluster).value;
-      if (!target && eph.placement === 'central' && CENTRAL_OPS.includes(type)) {
+      if (!target && eph.placement === 'central' && (CENTRAL_OPS.includes(type) || (type === 'restore_plan' && params?.scope !== 'instance'))) {
         const cn = eph.centralNode ? st.nodes[eph.centralNode] : undefined;
         if (!cn) return { code: 409, body: { error: 'central_node_missing', message: 'Il ripristino è configurato su un nodo centrale, ma quel nodo non esiste più: scegline un altro nelle impostazioni dell’istanza effimera.' } };
         target = cn;
+        // the central node serves many clusters: tell it whose backup catalogue this is (the stanza the cluster's agents report, or the shared geo one)
+        const stanza = cluster.geoStanza || nodes.map(n => (n.snapshot as any)?.backup?.stanza).find(Boolean);
+        if (stanza && params?.stanza === undefined) params = { ...params, stanza };
         if (type !== 'restore_drill' && params?.into === undefined) {
           const into = centralInto(st, cluster, eph);
           if (!into) return { code: 409, body: { error: 'central_no_primary', message: 'Non conosco l’indirizzo del primario di questo cluster: indicalo nelle impostazioni (consegna del risultato).' } };

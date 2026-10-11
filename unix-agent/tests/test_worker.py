@@ -69,3 +69,16 @@ class WorkerRuntime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StanzaForCentralOps(unittest.TestCase):
+    """A backup server serves many clusters: its operations carry the cluster's stanza (lab: a DR drill on bk1 looked in stanza 'main'). A database node ignores it."""
+    def test_worker_uses_the_operation_stanza_db_node_never(self):
+        from pg_arca.executor import OperationExecutor
+        class RT(object):
+            worker = True
+        ex = OperationExecutor({"state_dir": tempfile.mkdtemp(), "stanza": None}, None, None, None, RT())
+        ex._tl.stanza = "patroni-geo-dc1"
+        self.assertEqual(ex._cfg()["stanza"], "patroni-geo-dc1")
+        RT.worker = False
+        self.assertIsNone(ex._cfg()["stanza"])
