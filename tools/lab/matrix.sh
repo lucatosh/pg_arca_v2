@@ -10,7 +10,9 @@ SUITES="tests.test_pgcompat tests.test_engine_pg tests.test_objects_v2 tests.tes
 for v in $VERS; do
   case $v in 10|11) tag="$v-bullseye";; *) tag="$v-bookworm";; esac
   echo "=== PostgreSQL $v ($tag)"
-  docker run --rm -v "$ROOT":/work:ro,z -e LC_ALL=C.UTF-8 "postgres:$tag" bash -c '
+  # pull first, with a time limit and retries: a stalled pull (slow VM disk) must not block the whole matrix silently
+  for try in 1 2 3; do timeout 900 docker pull -q "postgres:$tag" >/dev/null 2>&1 && break; echo "   pull of postgres:$tag failed/stalled (try $try)"; sleep 10; done
+  timeout ${MATRIX_TIMEOUT:-5400} docker run --rm -v "$ROOT":/work:ro,z -e LC_ALL=C.UTF-8 "postgres:$tag" bash -c '
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends python3 python3-cryptography procps >/dev/null 2>&1
     mkdir -p /tmp/tools/lab && cp -r /work/unix-agent /tmp/agent && cp /work/tools/lab/*.sql /tmp/tools/lab/ && chown -R postgres:postgres /tmp/agent /tmp/tools
