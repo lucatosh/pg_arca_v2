@@ -8,6 +8,8 @@
  * Agent endpoints use a different mechanism (per-node bearer secret) — see agents.ts.
  */
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import type { Request, Response, NextFunction } from 'express';
 import { Store, sha256, nowIso } from './store';
 import { audit } from './ops';
@@ -105,6 +107,26 @@ function startSession(req: Request, res: Response, user: string) {
   res.setHeader('Set-Cookie', `${COOKIE}=${sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1000}${isSecure(req) ? '; Secure' : ''}`);
 }
 
+/**
+ * First-run takeover protection: before the administrator exists, whoever reaches the console first could create it. From anywhere but the machine itself
+ * (loopback) the setup therefore needs a one-time code that only someone with access to the server can read: printed in the console's log at start and
+ * written to <data dir>/setup-code (0600). Active in production (NODE_ENV=production) or with PG_ARCA_SETUP_CODE=on; PG_ARCA_SETUP_CODE=off disables it.
+ */
+let SETUP_CODE: string | null = null;
+const loopback = (req: Request) => /^(127\.|::1$|::ffff:127\.)/.test(String(req.socket?.remoteAddress || ''));
+export function setupCodeNeeded(req: Request) {
+  const mode = process.env.PG_ARCA_SETUP_CODE;
+  if (mode === 'off') return false;
+  return (process.env.NODE_ENV === 'production' || mode === 'on') && !loopback(req);
+}
+export function initSetupCode(store: Store) {
+  if (store.peek().settings.admin) return null;
+  SETUP_CODE = crypto.randomBytes(6).toString('hex');
+  try { fs.writeFileSync(path.join(store.dir, 'setup-code'), SETUP_CODE + '\n', { mode: 0o600 }); } catch { /* the log line is enough */ }
+  console.log(`[pg_arca] first run: setup code for the administrator account = ${SETUP_CODE} (also in ${store.dir}/setup-code)`);
+  return SETUP_CODE;
+}
+
 export function bootstrapAdminFromEnv(store: Store) {
   const u = process.env.PG_ARCA_ADMIN_USER, p = process.env.PG_ARCA_ADMIN_PASSWORD;
   if (u && p && p.length >= 12 && !store.peek().settings.admin) {
@@ -137,11 +159,13 @@ export function requireAdmin(store: Store) {
 export function mountAuthRoutes(app: any, store: Store) {
   app.get('/api/auth/status', (req: Request, res: Response) => {
     const adm = store.peek().settings.admin;
-    const u = sessionUser(req); res.json({ setupRequired: !adm, authenticated: !!u, user: u, role: u ? roleOf(store, u) : null });
+    const u = sessionUser(req); res.json({ setupRequired: !adm, setupCodeRequired: !adm && setupCodeNeeded(req), authenticated: !!u, user: u, role: u ? roleOf(store, u) : null });
   });
 
   app.post('/api/auth/setup', async (req: Request, res: Response) => {
-    const { username, password } = req.body || {};
+    const { username, password, setupCode } = req.body || {};
+    if (setupCodeNeeded(req) && !(SETUP_CODE && typeof setupCode === 'string' && setupCode.trim().length === SETUP_CODE.length && crypto.timingSafeEqual(Buffer.from(setupCode.trim()), Buffer.from(SETUP_CODE))))
+      return res.status(403).json({ error: 'setup_code_required', message: 'Serve il codice di prima configurazione: lo trovi nel log della console o nel file setup-code della sua cartella dati.' });
     if (typeof username !== 'string' || !/^[A-Za-z0-9_.@-]{3,64}$/.test(username)) return res.status(400).json({ error: 'invalid_username' });
     if (typeof password !== 'string' || password.length < 12) return res.status(400).json({ error: 'weak_password', message: 'Minimum 12 characters.' });
     const h = hashPassword(password);
@@ -152,6 +176,7 @@ export function mountAuthRoutes(app: any, store: Store) {
       return true;
     });
     if (!created) return res.status(409).json({ error: 'already_configured' });
+    SETUP_CODE = null; try { fs.unlinkSync(path.join(store.dir, 'setup-code')); } catch { /* not there */ }
     startSession(req, res, username);
     res.status(201).json({ ok: true, user: username });
   });

@@ -19,7 +19,7 @@ import { briefing } from './server/health';
 import { mountAdvancedRoutes } from './server/approvals';
 import { mountJoinRoutes } from './server/join';
 import { audit as auditLog, setResultsDir } from './server/ops';
-import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv } from './server/auth';
+import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv, initSetupCode } from './server/auth';
 import { runSelfTest } from './server/selftest';
 import { attachLogSocket, broadcastLiveLog, mountLogRoutes } from './server/logs';
 import { mountNetscanRoutes } from './server/netscan';
@@ -102,6 +102,7 @@ app.get('/agent/pg-arca-agent.tar.gz', (_req: Request, res: Response) => {
 app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true, time: new Date().toISOString() }));
 
 bootstrapAdminFromEnv(store);
+initSetupCode(store);
 seedDemoOnFirstRun(store, buildDemoCluster).catch(e => console.error('[pg_arca] demo seed failed', e));
 direct.startPolling();
 startScheduler(store);
