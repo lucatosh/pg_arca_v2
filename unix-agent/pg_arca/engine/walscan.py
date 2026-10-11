@@ -314,8 +314,11 @@ def _catalog_names(ctx, sets=4):
     return rel, dbs
 
 
-def window_start(ctx, hours=None, since_backup=False):
+def window_start(ctx, hours=None, since_backup=False, since_iso=None):
     """Epoch seconds from which segments are considered. since_backup: the start of the latest complete backup (a database that exists in it and not today was dropped after it)."""
+    t = _parse_iso(since_iso) if since_iso else None
+    if t:
+        return t - 900
     if since_backup:
         try:
             s = ctx.repo.resolve_set("latest")
@@ -329,7 +332,7 @@ def window_start(ctx, hours=None, since_backup=False):
     return 0
 
 
-def scan(ctx, mode="events", hours=24, since_backup=False, since=None, until=None, limit=20, cache_dir=None, progress=None, cancel=None, budget_sec=900, workers=None):
+def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since=None, until=None, limit=20, cache_dir=None, progress=None, cancel=None, budget_sec=900, workers=None):
     """Returns {"events": [...ascending...], "segments_scanned", "segments_cached", "segments_total", "complete", "window": {...}, "elapsed_sec", ["suggestion"]}.
     mode "events": DROP / TRUNCATE / DROP DATABASE; mode "databases": only DROP DATABASE (the cheap one: no Transaction records are printed)."""
     if mode not in KINDS:
@@ -347,7 +350,7 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since=None, until=Non
         allsegs = [s for s in allsegs if s <= until]
     times = _seg_times(ctx, allsegs)
     allsegs = [s for s in allsegs if s in times]
-    cut = window_start(ctx, hours, since_backup)
+    cut = window_start(ctx, hours, since_backup, since_iso)
     segs = [s for s in allsegs if times[s][0] >= cut]
     if not segs:
         raise EngineError("PGA-WAL-002", "no archived WAL segment in the requested window", "widen the window")

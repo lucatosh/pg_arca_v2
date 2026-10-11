@@ -132,7 +132,7 @@ Object.assign(OP_SPECS, {
   backup_info:   { mutating: false, target: 'any_node', lane: 'control', validate: () => null },
   backup_verify: { ...dataOp, mutating: false, validate: (p: any) => p.restore_test && p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null },
   backup_expire: { ...dataOp, cancellable: false, validate: (p: any) => p.retention_full !== undefined && !(Number(p.retention_full) >= 1 && Number(p.retention_full) <= 365) ? 'retention_full 1..365' : null },
-  backup_catalog: { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => (p.set && p.set !== 'latest' && !setId.test(String(p.set))) ? 'invalid backup set id' : (p.database && !pgName(p.database) ? 'invalid database' : null) },
+  backup_catalog: { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => (p.set && p.set !== 'latest' && p.set !== 'all' && !setId.test(String(p.set))) ? 'invalid backup set id' : (p.database && !pgName(p.database) ? 'invalid database' : null) },
   restore_plan:  { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => ['instance', 'database', 'object'].includes(p.scope) ? targetErr(p) : 'scope must be instance|database|object' },
   restore_instance: { ...dataOp, validate: (p: any) => !p.destination || !String(p.destination).startsWith('/') || !noCtl(String(p.destination)) ? 'destination must be an absolute path'
                                                        : (targetErr(p) || (p.action && !['promote', 'pause'].includes(p.action) ? 'action must be promote|pause' : null)) },
@@ -152,7 +152,8 @@ Object.assign(OP_SPECS, {
   wal_forensics:    { ...dataOp, mutating: false, laneKey: 'analysis', validate: (p: any) => (p.mode !== undefined && !['events', 'databases'].includes(p.mode) ? 'mode must be events|databases'
                       : (p.hours !== undefined && !(Number(p.hours) >= 0 && Number(p.hours) <= 87600) ? 'hours must be 0 (whole archive) to 87600'
                       : (p.limit !== undefined && !(Number.isInteger(Number(p.limit)) && Number(p.limit) >= 1 && Number(p.limit) <= 200) ? 'limit must be 1-200'
-                      : (p.budget_sec !== undefined && !(Number(p.budget_sec) >= 30 && Number(p.budget_sec) <= 7200) ? 'budget_sec must be 30-7200' : null)))) },
+                      : (p.budget_sec !== undefined && !(Number(p.budget_sec) >= 30 && Number(p.budget_sec) <= 7200) ? 'budget_sec must be 30-7200'
+                      : (p.since_iso !== undefined && !(typeof p.since_iso === 'string' && p.since_iso.length <= 40 && !isNaN(Date.parse(p.since_iso))) ? 'since_iso must be a date' : null))))) },
   destination_check:   { mutating: false, target: 'node', lane: 'control', validate: (p: any) => !['local', 'nfs', 'smb'].includes(p.type ?? 'local') ? 'type must be local|nfs|smb (object storage is not supported by the engine yet)'
                                 : (!p.repo_path && !p.wal_path ? 'repo_path and/or wal_path required' : ([p.repo_path, p.wal_path].some((x: any) => x !== undefined && x !== null && (typeof x !== 'string' || !x.startsWith('/') || !noCtl(x) || x.split('/').includes('..'))) ? 'paths must be absolute, without ..' : null)) },
   ephemeral_preflight: { mutating: false, target: 'node', lane: 'control', validate: (p: any) => (p.major !== undefined && !(Number.isInteger(Number(p.major)) && Number(p.major) >= 10 && Number(p.major) <= 40) ? 'major must be a PostgreSQL major version' : (p.need_bytes !== undefined && !(Number(p.need_bytes) >= 0) ? 'need_bytes must be a number' : intoErr(p))) },

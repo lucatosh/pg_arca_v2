@@ -102,7 +102,8 @@ const withAgent = process.env.NO_AGENT !== '1';
         return report(op.id, { status: 'succeeded', result: { set: id, type: p.type, bytes_logical: 5e9, bytes_written: 9e7, duration_sec: 3, chunks_dedup: 70000 } });
       }
       if (op.type === 'backup_catalog') {
-        if (!p.database) return report(op.id, { status: 'succeeded', result: { set: 'x', databases: [{ name: 'appdb', oid: 16384, size: 4e9, objects: 42, connectable: true }, { name: 'billing', oid: 16385, size: 1e9, objects: 8, connectable: true }] } });
+        if (!p.database) return report(op.id, { status: 'succeeded', result: { set: p.set || 'x', databases: [{ name: 'appdb', oid: 16384, size: 4e9, objects: 42, tables: 40, schemas: 3, connectable: true, in_latest: true, last_set: 'x', last_stop: new Date(Date.now() - 3600e3).toISOString() }, { name: 'billing', oid: 16385, size: 1e9, objects: 8, tables: 8, schemas: 1, connectable: true, in_latest: true, last_set: 'x', last_stop: new Date(Date.now() - 3600e3).toISOString() },
+          ...(p.set === 'all' ? [{ name: 'reports', oid: 16390, size: 6e8, objects: 12, tables: 12, schemas: 2, connectable: true, in_latest: true, last_set: 'x', last_stop: new Date(Date.now() - 3600e3).toISOString() }, { name: 'arca_rl_20261010', oid: 16399, size: 1e6, objects: 1, tables: 1, schemas: 1, connectable: true, in_latest: false, last_set: 'x', last_stop: new Date(Date.now() - 3600e3).toISOString() }] : [])] } });
         return report(op.id, { status: 'succeeded', result: { set: 'x', database: p.database, schemas: [{ name: 'public', objects: [{ name: 'orders', kind: 'r', size: 3e9 }, { name: 'customers', kind: 'r', size: 4e8 }].filter(o => !p.search || o.name.includes(p.search)) }], total_objects: 2, truncated: false } });
       }
       if (op.type === 'restore_plan') {
@@ -113,7 +114,8 @@ const withAgent = process.env.NO_AGENT !== '1';
         for (let i = 1; i <= 3; i++) { await sleep(500); await report(op.id, { status: 'running', progress: { phase: 'extract', files: i * 40, files_total: 120, bytes: i * 1e8, bytes_total: 3e8 } }); }
         return report(op.id, { status: 'succeeded', result: { result_database: p.new_name || 'pgarca_stage_1', destination: p.destination, start_hint: 'pg_ctl -D ' + p.destination + ' start', inspect: 'SELECT 1' } });
       }
-      if (op.type === 'wal_forensics') { await sleep(600); return report(op.id, { status: 'succeeded', result: { segments_scanned: 64, events: [{ lsn: '0/4A000028', kind: 'DROP', time: new Date(Date.now() - 3 * 3600e3).toISOString(), xid: '812', names: ['appdb.public.orders'], rels: [] }] } }); }
+      if (op.type === 'wal_forensics' && p.mode === 'databases') { await sleep(1500); return report(op.id, { status: 'succeeded', result: { mode: 'databases', events: [], dropped: [{ oid: '16390', name: 'reports', time: new Date(Date.now() - 25 * 60e3).toISOString().replace('T', ' ').replace('Z', ' UTC'), time_exact: true, xid: '900', lsn: '0/4A000100' }], segments_scanned: 12, complete: true, elapsed_sec: 0.4 } }); }
+      if (op.type === 'wal_forensics') { await sleep(600); return report(op.id, { status: 'succeeded', result: { segments_scanned: 64, elapsed_sec: 2.1, complete: true, window: { from: '2026-10-10 03:00:00 UTC' }, events: [{ lsn: '0/4A000028', kind: 'DROP', time: new Date(Date.now() - 3 * 3600e3).toISOString().replace('T', ' ').replace('Z', ' UTC'), time_exact: true, xid: '812', names: ['appdb.public.orders'], rels: [] }] } }); }
       if (op.type === 'backup_verify') { await sleep(800); return report(op.id, { status: 'succeeded', result: { ok: true, problems: [], chunks_checked: p.deep ? 90000 : 0, restore_test: p.restore_test ? { ok: true } : undefined } }); }
       if (op.type === 'backup_expire') return report(op.id, { status: 'succeeded', result: { delete_sets: [], keep_sets: sets.map(s => s.id), retention_full: p.retention_full || 2, dry_run: !!p.dry_run } });
       return report(op.id, { status: 'succeeded', result: {} });

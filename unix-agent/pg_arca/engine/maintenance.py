@@ -314,9 +314,37 @@ def user_objects(d):
     return out, (not linked)
 
 
+def catalog_all(ctx, max_sets=12):
+    """Databases of the newest backups merged: every database that was in ANY of them, described by the newest set that holds it (`last_set`, `last_stop`) and flagged
+    `in_latest`. A database that is in older backups but not in the latest one was dropped before the latest backup: it can still be restored from the older one."""
+    sets = ctx.repo.complete_sets()
+    if not sets:
+        raise EngineError("PGA-REPO-020", "no complete backup in stanza '%s'" % ctx.repo.stanza, "run a full backup first")
+    sets = sets[-max_sets:]
+    out, latest = {}, sets[-1]
+    for s in reversed(sets):
+        try:
+            cat = ctx.repo.load_catalog(s)
+        except EngineError:
+            continue
+        for n, d in cat["databases"].items():
+            if n in out:
+                out[n]["sets"] += 1
+                out[n]["first_stop"] = s.get("stop_time")
+                continue
+            objs, approx = user_objects(d)
+            out[n] = {"name": n, "oid": d["oid"], "size": d["size"], "connectable": d.get("connectable", True),
+                      "tables": len([o for o in objs if o["kind"] in ("r", "p")]), "matviews": len([o for o in objs if o["kind"] == "m"]),
+                      "objects": len(objs), "schemas": len(set(o["schema"] for o in objs)), "user_bytes": sum(o["size"] for o in objs), "approx": approx,
+                      "in_latest": s["id"] == latest["id"], "last_set": s["id"], "last_stop": s.get("stop_time"), "first_stop": s.get("stop_time"), "sets": 1}
+    return {"set": "all", "latest": latest["id"], "latest_stop": latest.get("stop_time"), "captured": latest.get("stop_time"), "databases": [out[k] for k in sorted(out)]}
+
+
 def catalog_browse(ctx, set_spec=None, database=None, search="", limit=2000):
     """Databases of a set (with correct counts: user tables only, no system catalogs, no partitions double-counted); or, for one database, its schemas/objects
     (largest first, capped) with their real size (heap + TOAST + indexes + partitions)."""
+    if set_spec == "all" and not database:
+        return catalog_all(ctx)
     s = ctx.repo.resolve_set(set_spec)
     cat = ctx.repo.load_catalog(s)
     if not database:

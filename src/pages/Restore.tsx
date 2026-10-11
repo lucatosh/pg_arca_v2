@@ -4,10 +4,12 @@ import { Op, useOpRunner, useQuery } from '../hooks';
 import { OpPanel, Result } from './shared';
 import { RecoveryTimeline, TlEvent } from './Timeline';
 import { SetRow, TYPE_LABEL, chains } from './Backup';
+import { CatDb, DbPicker, DroppedNote, DropInfo, kindOf, parseWalTime, fmtWhen } from './DbPicker';
 
 type Scope = 'instance' | 'database' | 'object';
 type Target = { mode: 'latest' } | { mode: 'time'; ms: number } | { mode: 'lsn'; lsn: string; label: string };
 const STEPS = ['Cosa', 'Quando', 'Dove', 'Conferma'];
+const KIND_LABEL: Record<string, string> = { DROP: 'Oggetto eliminato o riscritto', TRUNCATE: 'Tabella svuotata', 'DROP DATABASE': 'Database eliminato' };
 const tzName = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return 'locale'; } };
 const localInput = (ms: number) => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 19); };
 
@@ -30,15 +32,15 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false);
   const [ask, setAsk] = useState(false);
   const prom = useOpRunner(c.id); const prev = useOpRunner(c.id); const [pmode, setPmode] = useState<PMode>('as_new'); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false);
-  const dbsR = useOpRunner(c.id); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id);
+  const dbsR = useOpRunner(c.id); const dropsR = useOpRunner(c.id); const [fxHours, setFxHours] = useState(24); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id);
 
   const from = useMemo(() => Math.min(...sets.map(s => Date.parse(s.stop_time!))), [sets]);
   const to = Math.max(Date.now(), d.archiver?.last_archived_time ? Date.parse(d.archiver.last_archived_time) : 0);
-  const events: (TlEvent & { raw: any })[] = useMemo(() => (fx.op?.result?.events || []).map((e: any) => ({ at: Date.parse(e.time), label: `${e.kind}: ${(e.names || []).join(', ')}`, raw: e })).filter((e: any) => Number.isFinite(e.at)), [fx.op]);
+  const events: (TlEvent & { raw: any })[] = useMemo(() => (fx.op?.result?.events || []).map((e: any) => ({ at: parseWalTime(e.time), label: `${e.kind}: ${(e.names || []).join(', ')}`, raw: e })).filter((e: any) => Number.isFinite(e.at)), [fx.op]);
 
   // catalogue pickers: run once per scope entry, through the agent (the catalogue lives next to the repository)
-  useEffect(() => { if ((scope === 'database' || scope === 'object') && !dbsR.op && !dbsR.busy) dbsR.run('backup_catalog', { set: 'latest' }); }, [scope]);
-  useEffect(() => { if (scope === 'object' && db) { const t = setTimeout(() => objR.run('backup_catalog', { set: 'latest', database: db, search, limit: 400 }), search ? 350 : 0); return () => clearTimeout(t); } }, [scope, db, search]);
+  useEffect(() => { if ((scope === 'database' || scope === 'object') && !dbsR.op && !dbsR.busy) dbsR.run('backup_catalog', { set: 'all' }); }, [scope]);
+  useEffect(() => { if (scope === 'object' && db) { const t = setTimeout(() => objR.run('backup_catalog', { set: dbs.find(x => x.name === db)?.last_set || 'latest', database: db, search, limit: 400 }), search ? 350 : 0); return () => clearTimeout(t); } }, [scope, db, search]);
   useEffect(() => { if (!newName && db) setNewName(`${db}_restored`.slice(0, 63)); }, [db]);
 
   const tparams = (): Record<string, any> => tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : {};
@@ -46,7 +48,18 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
 
-  const dbs: any[] = dbsR.op?.result?.databases || [];
+  const dbs: CatDb[] = dbsR.op?.result?.databases || [];
+  // what exists NOW (agent snapshot): a database in the backups and not here was DROPPED
+  const live: Set<string> | null = Array.isArray(c.databases) && c.databases.length ? new Set<string>(c.databases.map((x: any) => x.name)) : null;
+  const droppedDbs = useMemo(() => (live ? dbs.filter(x => !live.has(x.name) && kindOf(x.name) === 'app') : []), [dbs, live]);
+  const drops: Record<string, DropInfo> = useMemo(() => { const m: Record<string, DropInfo> = {}; for (const x of dropsR.op?.result?.dropped || []) m[String(x.oid)] = { time: x.time, time_exact: !!x.time_exact }; return m; }, [dropsR.op]);
+  // when did they disappear? one cheap WAL scan (Database records only, cached, own queue: it never blocks a backup or a restore); looks back at most 14 days
+  useEffect(() => {
+    if (!droppedDbs.length || dropsR.op || dropsR.busy) return;
+    const oldest = Math.min(...droppedDbs.map(x => Date.parse(x.last_stop || '') || Date.now())); const since = Math.max(oldest - 3600e3, Date.now() - 14 * 86400e3);
+    dropsR.run('wal_forensics', { mode: 'databases', since_iso: new Date(since).toISOString(), limit: 100, budget_sec: 300 });
+  }, [droppedDbs.length]);
+  const selDb = dbs.find(x => x.name === db); const selDropped = !!selDb && droppedDbs.some(x => x.name === db);
   const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && objs.length > 0);
   const okWhere = scope === 'instance' ? dest.startsWith('/') : scope === 'database' ? /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName) : true;
   const okWhen = tgt.mode !== 'time' || (tgt.ms >= from && tgt.ms <= to + 60000);
@@ -67,7 +80,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         <button className="choice" aria-pressed={scope === 'object'} onClick={() => setScope('object')}><Icon n="file" s={22} /><div><strong>Tabelle o schemi</strong><p className="sub">Recupera una o più tabelle, o interi schemi, con chiavi esterne, viste, sequenze e permessi, in un database di quarantena.</p></div></button>
         <button className="choice" aria-pressed={scope === 'instance'} onClick={() => setScope('instance')}><Icon n="server" s={22} /><div><strong>Tutto il cluster</strong><p className="sub">Ricostruisce una copia completa in una cartella vuota. Non tocca mai l’istanza in esecuzione.</p></div></button></div>
       {scope !== 'instance' ? (dbsR.op && dbsR.op.status === 'succeeded' ? <>
-        <Field label="Database"><select className="input" value={db} onChange={e => { setDb(e.target.value); setObjs([]); prev.reset(); }}><option value="">Scegli…</option>{dbs.filter(x => x.connectable).map(x => <option key={x.name} value={x.name}>{x.name} — {bytes(x.size)} · {x.tables ?? x.objects} tabelle{x.matviews ? `, ${x.matviews} viste materializzate` : ''}{x.schemas ? ` · ${x.schemas} schemi` : ''}</option>)}</select></Field>
+        <Field label="Database"><DbPicker dbs={dbs} live={live} drops={drops} dropsState={dropsR.busy ? 'running' : dropsR.op?.status === 'succeeded' ? 'done' : dropsR.op ? 'failed' : 'idle'} value={db} onChange={n => { setDb(n); setObjs([]); prev.reset(); }} /></Field>
+        {selDropped && selDb ? <DroppedNote db={db} info={drops[String(selDb.oid)]} lastStop={selDb.last_stop} /> : null}
         {scope === 'object' && db ? <ObjectPicker r={objR.op} busy={objR.busy} search={search} setSearch={setSearch} db={db} value={objs} onChange={setObjs} /> : null}</> :
         <OpPanel op={dbsR.op} error={dbsR.error} label="Lettura del catalogo dei backup" />) : null}
       <div className="row"><div className="grow" /><Button kind="primary" disabled={!okWhat} onClick={() => setStep(1)}>Avanti</Button></div></div></Card>}
@@ -82,13 +96,21 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
           <div>{tgt.mode === 'latest' ? <strong>Ultimo istante disponibile</strong> : tgt.mode === 'time' ? <strong>{new Date(tgt.ms).toLocaleString('it-CH')}</strong> : <strong>Subito prima di {tgt.label}</strong>}</div>
           {tgt.mode !== 'latest' ? <Button sm onClick={() => setTgt({ mode: 'latest' })}>Usa l’ultimo istante</Button> : null}
           <div className="small muted">Backup di partenza: {baseSet ? <><span className="mono">{baseSet.id}</span> ({TYPE_LABEL[baseSet.type]})</> : <span style={{ color: 'var(--bad)' }}>nessuno prima di questo istante</span>}</div></div></div>
-      <details open={!!events.length || !!fx.op}><summary style={{ cursor: 'pointer', fontWeight: 500 }}>Hai cancellato qualcosa? Cerca DROP e TRUNCATE nei WAL</summary>
+      {selDropped && tgt.mode === 'latest' ? <Banner kind="info" title="Database eliminato: l’ultimo istante utile è subito prima del DROP">Per <strong>{db}</strong> “ultimo istante disponibile” significa un attimo prima che venisse eliminato: pg_arca lo individua da solo nei WAL. Scegli un istante diverso solo se ti serve una versione più vecchia.</Banner> : null}
+      <details open={!!events.length || !!fx.op}><summary style={{ cursor: 'pointer', fontWeight: 500 }}>Hai cancellato qualcosa? Cerca eliminazioni e svuotamenti nei WAL</summary>
         <div className="stack" style={{ marginTop: 10 }}>
-          <div className="row"><Button sm icon="search" busy={fx.busy} onClick={() => fx.run('wal_forensics', { limit: 20 })}>Cerca eventi distruttivi</Button><span className="small muted">Legge i WAL archiviati con pg_waldump; può richiedere qualche minuto.</span></div>
+          <p className="small muted">Individua i comandi che hanno eliminato o svuotato tabelle e database, con data e ora, così puoi tornare a un attimo prima. L’analisi gira in parallelo e non rallenta backup e ripristini; i risultati restano in memoria, quindi la ricerca successiva è quasi immediata.</p>
+          <div className="row wrap"><span className="seg" role="group" aria-label="Quanto indietro cercare">{[[24, 'Ultime 24 ore'], [168, '7 giorni'], [720, '30 giorni'], [0, 'Tutto l’archivio']].map(([h, t]) => <button key={h} aria-pressed={fxHours === h} onClick={() => setFxHours(h as number)}>{t}</button>)}</span>
+            <Button sm icon="search" busy={fx.busy} onClick={() => fx.run('wal_forensics', { mode: 'events', hours: fxHours, limit: 30 })}>Cerca</Button></div>
           {fx.op && fx.op.status !== 'succeeded' ? <OpPanel op={fx.op} error={fx.error} cancel={fx.cancel} /> : null}
-          {fx.op?.status === 'succeeded' ? (fx.op.result.events.length ? <table className="t"><thead><tr><th>Evento</th><th>Oggetti</th><th>Quando</th><th /></tr></thead><tbody>
-            {[...fx.op.result.events].reverse().map((e: any, i: number) => <tr key={i}><td><Badge kind="bad">{e.kind}</Badge></td><td className="small">{(e.names || []).join(', ') || '—'}</td><td className="small nowrap">{e.time}</td>
-              <td className="num"><Button sm onClick={() => setTgt({ mode: 'lsn', lsn: e.lsn, label: `${e.kind} ${(e.names || [])[0] || ''} (${e.lsn})` })}>Ripristina subito prima</Button></td></tr>)}</tbody></table> : <p className="muted">Nessun DROP o TRUNCATE trovato nei WAL esaminati ({num(fx.op.result.segments_scanned)} segmenti).</p>) : null}
+          {fx.op?.status === 'succeeded' ? <>
+            <div className="small muted">{num(fx.op.result.segments_scanned)} segmenti analizzati{fx.op.result.segments_cached ? ` (${num(fx.op.result.segments_cached)} già in memoria)` : ''} in {fx.op.result.elapsed_sec} s · dal {fx.op.result.window?.from}</div>
+            {fx.op.result.complete === false ? <Banner kind="warn" title="Analisi parziale">È stato raggiunto il tempo massimo: ho analizzato i segmenti più recenti. Rilancia la ricerca per continuare: riparte da dove si era fermata.</Banner> : null}
+            {fx.op.result.events.length ? <table className="t"><thead><tr><th>Evento</th><th>Oggetti</th><th>Quando</th><th /></tr></thead><tbody>
+              {[...fx.op.result.events].reverse().map((e: any, i: number) => { const t = parseWalTime(e.time); return <tr key={i}><td><Badge kind="bad">{KIND_LABEL[e.kind] || e.kind}</Badge></td><td className="small">{(e.names || []).join(', ') || '—'}{e.nrels > (e.names || []).length ? ` e altri ${e.nrels - e.names.length}` : ''}</td>
+                <td className="small nowrap">{Number.isFinite(t) ? `${e.time_exact === false ? 'circa ' : ''}${fmtWhen(t)}` : e.time}</td>
+                <td className="num"><Button sm onClick={() => setTgt(Number.isFinite(t) && e.time_exact !== false ? { mode: 'lsn', lsn: e.lsn, label: `${KIND_LABEL[e.kind] || e.kind} ${(e.names || [])[0] || ''} (${fmtWhen(t)})` } : { mode: 'lsn', lsn: e.lsn, label: `${KIND_LABEL[e.kind] || e.kind} ${(e.names || [])[0] || ''} (${e.lsn})` })}>Ripristina subito prima</Button></td></tr>; })}</tbody></table>
+              : <p className="muted">Nessuna eliminazione o svuotamento trovato nel periodo analizzato. Prova con un periodo più lungo.</p>}</> : null}
         </div></details>
       <div className="row"><Button onClick={() => setStep(0)}>Indietro</Button><div className="grow" /><Button kind="primary" disabled={!okWhen || !baseSet && tgt.mode === 'time'} onClick={() => setStep(2)}>Avanti</Button></div></div></Card>}
 

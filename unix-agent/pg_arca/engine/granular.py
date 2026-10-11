@@ -46,6 +46,29 @@ def _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name, immed
     return target, chain, tt
 
 
+def _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name, immediate=False):
+    """_plan() for a restore that is about ONE database. When nothing pins the point in time and the database is not in the newest backup (it was dropped before that backup
+    was taken), the newest backup that still contains it is used and recovery runs to the end of the archive: _recover_db stops just before the DROP DATABASE. Returns (target, chain, tt, note)."""
+    target, chain, tt = _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name, immediate)
+    if set_spec or target_time or target_lsn or target_xid or target_name or immediate:
+        return target, chain, tt, None
+    try:
+        if db in ctx.repo.load_catalog(target)["databases"]:
+            return target, chain, tt, None
+    except EngineError:
+        return target, chain, tt, None
+    for s in reversed(ctx.repo.complete_sets()):
+        if s["id"] == target["id"]:
+            continue
+        try:
+            if db in ctx.repo.load_catalog(s)["databases"]:
+                t2, c2, tt2 = _plan(ctx, s["id"], None, None, None, None)
+                return t2, c2, tt2, "database '%s' is not in the newest backup (it was dropped earlier): restored from %s, up to just before it was dropped" % (db, s["id"])
+        except EngineError:
+            continue
+    return target, chain, tt, None
+
+
 def _create_db(admin, name, entry):
     s = PgSession(admin.with_db("postgres"))
     try:
@@ -259,7 +282,7 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
 
 def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,
                      into=None, new_name=None, jobs=2, dry_run=False, progress=None, cancel=None):
-    target, chain, tt = _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name)
+    target, chain, tt, note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
     if db not in cat["databases"]:
         raise EngineError("PGA-GEN-031", "database '%s' is not in backup %s" % (db, target["id"]), "available: %s" % ", ".join(sorted(cat["databases"])))
@@ -271,6 +294,8 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "database": db, "destination_database": new_name,
             "extract_bytes": estimate(merged_sel), "cluster_bytes": estimate(merged_all),
             "target": tt or target_lsn or target_xid or target_name or "end of archive"}
+    if note:
+        plan["note"] = note
     plan["saved_pct"] = round(100.0 * (1 - plan["extract_bytes"] / float(max(plan["cluster_bytes"], 1))), 1)
     if dry_run:
         plan["dry_run"] = True
@@ -330,7 +355,7 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     The selection is expanded to what it needs and what depends on it (foreign keys, types, functions, sequences, views, grants): see engine/objects.py.
     `data_only` is accepted for compatibility and ignored: the quarantine copy is always complete."""
     db, sel = objmod.parse_selection(spec, objects)
-    target, chain, tt = _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name)
+    target, chain, tt, _note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
     if db not in cat["databases"]:
         raise EngineError("PGA-GEN-031", "database '%s' is not in the backup catalog" % db, "available: %s" % ", ".join(sorted(cat["databases"])))

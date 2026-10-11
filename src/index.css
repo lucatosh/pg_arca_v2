@@ -315,3 +315,24 @@ pre.out { background: var(--surface-2); border: 1px solid var(--line); padding: 
 .oplog-body .ln .t { color: var(--ink-3); } .oplog-body .ln .x { overflow-wrap: anywhere; white-space: pre-wrap; }
 .oplog-body .ln.status .x { color: var(--info); } .oplog-body .ln.err .x { color: var(--bad); }
 @media (max-width: 520px) { .oplog { left: 8px !important; right: 8px; width: auto !important; } }
+
+/* ---------- restore: database picker ---------- */
+.dbpicker { display: grid; gap: 10px; }
+.dbtop { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .dbtop .search { position: relative; flex: 1; min-width: 200px; max-width: 360px; } .dbtop .search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--ink-3); } .dbtop .search input { padding-left: 34px; }
+.dropsum { color: var(--bad); font-weight: 600; font-size: 12.5px; }
+.dblist { border: 1px solid var(--line-strong); border-radius: var(--r); background: var(--surface); max-height: 360px; overflow: auto; overscroll-behavior: contain; }
+.dbgroup .gh { display: flex; align-items: baseline; gap: 8px; padding: 8px 14px; font-size: 12px; font-weight: 650; color: var(--ink-2); background: var(--surface-2); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; cursor: default; list-style: none; }
+details.dbgroup > summary.gh { cursor: pointer; } details.dbgroup > summary.gh::before { content: "▸"; color: var(--ink-3); } details.dbgroup[open] > summary.gh::before { content: "▾"; }
+.dbgroup .gh .n { color: var(--ink-3); font-weight: 500; } .dbgroup .gh .hint { color: var(--ink-3); font-weight: 400; margin-left: auto; text-align: right; }
+.dbgroup.bad .gh { color: var(--bad); background: var(--bad-soft); }
+.dbrow { display: grid; grid-template-columns: 18px 1fr auto; gap: 12px; align-items: center; width: 100%; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+.dbrow:last-child { border-bottom: 0; } .dbrow:hover { background: var(--surface-2); } .dbrow.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.dbrow.gone { box-shadow: inset 3px 0 0 var(--bad); } .dbrow.gone.on { background: var(--bad-soft); }
+.dbrow .rb { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line-strong); background: var(--surface); } .dbrow.on .rb { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--surface), inset 0 0 0 9px var(--accent); } .dbrow.gone.on .rb { border-color: var(--bad); box-shadow: inset 0 0 0 3px var(--surface), inset 0 0 0 9px var(--bad); }
+.dbrow .nm { display: grid; gap: 1px; min-width: 0; } .dbrow .nm strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .dbrow .meta { color: var(--ink-3); font-size: 12px; }
+.dbrow .st { display: grid; justify-items: end; gap: 2px; font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.dbrow .dropped { background: var(--bad); color: #fff; font-weight: 800; letter-spacing: .08em; font-size: 11px; padding: 2px 8px; border-radius: 5px; }
+.dbrow .here { color: var(--ok); font-weight: 600; } .dbrow .when { display: inline-flex; gap: 5px; align-items: center; }
+.dbrow:focus-visible { outline: 2px solid var(--accent-2); outline-offset: -2px; }
+.dropnote { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--bad); border-radius: var(--r); background: var(--bad-soft); font-size: 13px; } .dropnote .badge { flex: none; font-weight: 800; letter-spacing: .06em; }
+@media (max-width: 560px) { .dbrow { grid-template-columns: 18px 1fr; } .dbrow .st { grid-column: 2; justify-items: start; } }
