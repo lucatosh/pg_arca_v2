@@ -140,6 +140,25 @@ Principi del v2:
 
 Scenari di accettazione (da eseguire sul lab con `arca_restore_lab`, vedi `tools/lab/scenario-restore.py`): database cancellato, schema cancellato con CASCADE, tabella cancellata, righe cancellate, tabella con dipendenze in ingresso (`tabledeps`, ora gestito dal v2), più `modes` (replace / missing_only / as_new). Gli scenari girano in locale su PG16 reale; sul lab Patroni vanno ancora rieseguiti con `tools/lab/run-scn.sh`.
 
+## 7c. Ricerca: dove va il tempo di un restore (misure del 11/10 notte, PG16 locale)
+
+Metodo: strumenti in `unix-agent/tests/` (`bench_restore.py`, `bench_forensics.py`), un cluster di prova locale, una sola macchina, **nessun confronto con altri prodotti**. I numeri sono quelli misurati in quel contesto e non si trasferiscono automaticamente a database da 1 TB o a storage di rete.
+
+| Fase | Che cosa si è visto | Cosa è stato fatto | Misura |
+|------|--------------------|--------------------|--------|
+| Ricerca di DROP/TRUNCATE nel WAL | un solo `pg_waldump` seriale su tutto il periodo | `walscan.py`: piano per segmenti, filtro per rmgr, scansione parallela sulla corsia `analysis`, cache per segmento | 18 s → 2,1 s (freddo) → 0,02 s (cache); lab Patroni 97 s → 8 s |
+| Recovery di una PITR «sparsa» (un database su molti, poco WAL da rigiocare) | il `restore_command` valeva circa il 93 % della fase (14,0 s su 15,1 s in una prova da 105 segmenti): avvio di python, decompressione, sha256, fsync ≈ 133 ms/segmento contro 53 ms della sola decompressione | read-ahead (`walprefetch.py`): spool decompresso e verificato da più worker, segmento servito con `rename` | recovery −38 % |
+| Dump dall'istanza recuperata | `pg_dump` con compressione di default | `zstd:1` (solo PG ≥ 16, `pgsession.run_dump`; sulle versioni precedenti nessun cambiamento) | 3,5 s → 1,1 s |
+| `pg_restore` | il tempo è caricamento dati + costruzione indici | nulla da guadagnare dal formato: il lavoro è nel server di destinazione | non ottimizzato; `jobs` configurabile |
+
+Sicurezza e successo (blindatura):
+- **Pre-flight prima della fase lunga** (`engine/restorecheck.py`): catena di chunk completa, spazio di scratch e del volume dati del cluster vivo, nome di destinazione libero, ambiente dell'istanza effimera. Il piano lo mostra (blocca «Avvia» se bloccante) e l'avvio lo rivaluta, perché il disco può essere cambiato dopo il piano.
+- **Mai sovrascrivere**: un database di destinazione esistente è un errore (`PGA-SEC-030`) *prima* del recupero; la modalità `replace` per oggetti conserva gli originali come `_old_<data>` e, nella UI, chiede la conferma digitata `SOSTITUISCI`.
+- **Verifica a fine ripristino**: numero di tabelle all'istante di recupero = numero di tabelle ripristinate (`PGA-VRF-040`).
+- **Pulizia**: stage, spool WAL e istanza effimera sono rimossi anche in caso di errore; lo spool viene fermato prima di essere cancellato.
+
+Da fare (ipotesi, **non** ancora implementate né misurate): estrazione per relazione invece che per database; verifica a campione dei chunk contro il hash prima di estrarre; ripresa di un restore interrotto; conteggio righe di controllo sulle tabelle piccole; misura delle stesse fasi sul lab Patroni e su un database da ≥ 100 GB.
+
 ## 8. Registro delle modifiche
 
 | Data | Modifica | Provato |
@@ -151,4 +170,5 @@ Scenari di accettazione (da eseguire sul lab con `arca_restore_lab`, vedi `tools
 | 11/10 | Restore di un database **cancellato** (`DROP DATABASE`): PostgreSQL lo rende invalido (in-place update, da PG15) e ne rimuove la cartella rigiocando il WAL **prima** del commit, quindi nessun target a tempo/xid basta. Il motore ora lo rileva (`pg_waldump`), si ferma con un LSN prima del DROP e lo dichiara (`stopped_before_drop`) | PG16 reale (`test_05c`); sul lab Patroni da ripetere |
 | 11/10 | Catalogo: conteggi solo tabelle utente, dimensione reale (heap+TOAST+indici+partizioni), indice→tabella e partizione→padre nel catalogo | PG16 reale (`test_06c`) |
 | 11/10 | `promote_object` in modalità replace su tabella sparita: torna con il suo nome e nel suo schema (prima prendeva il suffisso `_pitr_`) | PG16 reale (`test_06d`) |
+| 11/10 | **Forense WAL veloce** (`walscan.py`), **read-ahead del restore_command** (`walprefetch.py`), `pg_dump` zstd:1, **pre-flight del restore** (`restorecheck.py`), conferma digitata per `replace`, finestra log dell'operazione, elenco database con DROPPED | PG16 locale, misure in §7c; lab Patroni da rieseguire |
 | 11/10 | Patroni: parametri e pg_hba solo via DCS; mai file/ALTER SYSTEM; rifiuto se l'API non risponde; DCS senza `pg_hba` inizializzato con le regole in vigore | test con Patroni simulato (`test_patroni_dcs_only`); non ancora sul lab |
