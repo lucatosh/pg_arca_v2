@@ -36,3 +36,4 @@ Un solo modulo conosce le differenze tra versioni: `unix-agent/pg_arca/pgcompat.
 - L'agent controlla ogni valore sul server prima di salvarlo (PGDATA deve contenere PG_VERSION e global/pg_control; i percorsi di scrittura non possono essere cartelle di sistema; niente `..`; URL senza credenziali). Salvataggio tutto-o-niente su `agent.local.json` (0640), applicato subito.
 - Precedenza: default < agent.conf < agent.local.json < variabili d'ambiente del servizio.
 - Provato: validazione, salvataggio, precedenza, handler dell'agent (unit test), operazioni lato console. **Non provato nel browser** con un agent reale.
+- Restore oggetti v2, istanza di recupero configurabile e destinazione backup: provati solo su PostgreSQL 16 reale; l'installazione dei binari di altre major (`ephemeral_install`) usa apt/dnf e non è mai stata eseguita su un sistema reale.

@@ -14,6 +14,9 @@ Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguit
 | Inventario cluster, demo unico eliminabile | `server/clusters.ts`, `server/demo.ts` | Reale | `api.test.ts` |
 | Collegamento senza agent | `server/direct.ts` | **Mai eseguito contro PostgreSQL reale** | solo stub |
 | Scheduler backup | `server/scheduler.ts` | Reale | `scheduler.test.ts` |
+| Restore oggetti v2 (dipendenze, schemi, replace/missing_only/as_new, dry-run) | `unix-agent/pg_arca/engine/objects.py`, `src/pages/Restore.tsx` | Reale su PG16 locale; **lab Patroni non ancora** | `test_objects_v2.py` (10) |
+| Configurazione istanza di recupero a più livelli, preflight e installazione PG | `engine/ephcfg.py`, `server/scoped.ts` | Config + preflight reali; installazione apt/dnf e posizionamento centrale **non provati su rete reale** | `test_ephcfg.py` (15), `scoped.test.ts` |
+| Destinazione backup (local/NFS/SMB montati) con controllo per nodo | `engine/destcheck.py`, `server/destinations.ts` | Controllo reale su filesystem locale; **mount NFS/SMB non provati**; oggetti = Anteprima | `test_destcheck.py` (11), `destinations.test.ts` |
 | Audit e rilevamento aggregato | `server/platform.ts` | Reale | `api.test.ts` |
 | Log in tempo reale (WebSocket), scansione di rete | `server/logs.ts`, `server/netscan.ts` | Scritti; **non eseguiti** (mancano `ws`/`express` nell’ambiente di sviluppo): solo controllo sintattico | — |
 | Agent: rilevamento, esecutore, Patroni, WAL, CLI | `unix-agent/pg_arca/*` | Reale | `unix-agent/tests` |
@@ -43,6 +46,7 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 - `server.ts` ridotto da ~2700 a ~90 righe: le rotte simulate (HA, HBA, LDAP, RBAC, PITR, stanze, politiche, parametri, tuning) sono state eliminate; HA e parametri passano dal motore operazioni.
 
 ## Da fare
+00. Dal 11/10: provare sul lab Patroni i restore oggetti v2 (`tools/lab/run-scn.sh`), l'istanza di recupero configurabile (preflight/installazione/posizionamento centrale) e la destinazione backup (NFS/SMB reali). Dettagli in HANDOFF «Sessione 11/10».
 0. Ancora da progettare/misurare (richiedono il lab): interfaccia di storage e S3/GCS/Azure, pack file per ridurre i file piccoli, archiviazione WAL asincrona, riassunti WAL di PG17, benchmark contro pgBackRest (`tools/lab/bench.sh`, mai eseguito).
 1. Provare `direct.ts`, `logs.ts` e `netscan.ts` con `npm install` su una macchina con rete.
 2. Provare HA e parametri su un cluster Patroni reale.

@@ -122,11 +122,11 @@ La differenza reale oggi è funzionale (granularità del restore, catalogo, dedu
 | Il redo rigioca tutto il WAL del periodo | tempo | indice WAL per blocco costruito in archiviazione, redo limitato ai blocchi dell'oggetto |
 | L'istanza effimera gira sul nodo | carico sul cluster | istanza effimera centralizzata e configurabile (globale/cluster) |
 | Serve sempre un PostgreSQL per leggere le righe | tipi custom, visibilità, multixact | decoder diretto dei chunk: ricerca, dietro flag, validato contro il restore classico prima di essere offerto |
-| Restore oggetto = una tabella, senza dipendenze | FK, viste, sequenze, trigger non vengono ricreati | restore oggetto v2: calcolo delle dipendenze, ricreazione, modalità schema (in lavorazione: `engine/objects.py`, non ancora collegato) |
+| Restore oggetto = una tabella, senza dipendenze | FK, viste, sequenze, trigger non vengono ricreati | restore oggetto v2: calcolo delle dipendenze, ricreazione, modalità schema (implementato, provato su PG16 locale) |
 
 ## 7b. Progetto: restore di oggetti con dipendenze e di schemi (v2)
 
-Stato: **progetto**. `unix-agent/pg_arca/engine/objects.py` contiene l'analisi delle dipendenze e la costruzione dello stage; non è ancora collegato alle operazioni né coperto da test sul database del lab.
+Stato: **implementato e provato su PostgreSQL 16 reale** (`unix-agent/tests/test_objects_v2.py`, 10 test: FK in ingresso e in uscita, partizioni, viste, sequenze, tipi, ACL, schema intero, tre modalità di promozione, rifiuto degli schemi di sistema). Collegato alle operazioni `restore_plan` (oggetti) / `restore_object` / `restore_promote` (anche `dry_run`) e alla pagina Restore. **Non ancora eseguito sul lab Patroni** (vedi HANDOFF).
 
 Problema del restore tabella v1: ripristina *la sola tabella*. Chiavi esterne che puntano alla tabella, viste, sequenze, trigger, tipi, permessi e funzioni vengono dimenticati o restano agganciati alla vecchia tabella rinominata.
 
@@ -138,12 +138,15 @@ Principi del v2:
 5. **Le FK si filtrano**: quelle verso tabelle fuori dalla selezione si ricreano solo se la tabella di destinazione esiste nel database vivo e le righe sono coerenti (altrimenti si segnala e si crea `NOT VALID`).
 6. **Ogni passaggio è verificato**: conteggi e impronta delle righe, vincoli, indici e sequenze (posizione corrente) confrontati con lo stage.
 
-Scenari di accettazione (da eseguire sul lab con `arca_restore_lab`, vedi `tools/lab/scenario-restore.py`): database cancellato, schema cancellato con CASCADE, tabella cancellata, righe cancellate, tabella con dipendenze in ingresso (`tabledeps`: oggi **fallisce di proposito**, è il test che il v2 deve far passare).
+Scenari di accettazione (da eseguire sul lab con `arca_restore_lab`, vedi `tools/lab/scenario-restore.py`): database cancellato, schema cancellato con CASCADE, tabella cancellata, righe cancellate, tabella con dipendenze in ingresso (`tabledeps`, ora gestito dal v2), più `modes` (replace / missing_only / as_new). Gli scenari girano in locale su PG16 reale; sul lab Patroni vanno ancora rieseguiti con `tools/lab/run-scn.sh`.
 
 ## 8. Registro delle modifiche
 
 | Data | Modifica | Provato |
 |------|----------|---------|
+| 11/10 | **Restore oggetti v2** (selezione multipla di tabelle/schemi, chiusura delle dipendenze, promozione `replace` atomica con FK in ingresso e viste riagganciate, `missing_only`, `as_new`, dry-run) | PG16 reale (`test_objects_v2.py`, 10 test); lab Patroni da rieseguire |
+| 11/10 | **Istanza di recupero configurabile** (globale/ambiente/cartella/cluster; sul nodo del target o centralizzata; binari per versione; scratch, porte, memoria; preflight; installazione PG privata o di sistema) | unit (`test_ephcfg.py` 15, `scoped.test.ts`) + `test_05a` su PG16; installazione apt/dnf e posizionamento centrale su rete **non provati** |
+| 11/10 | **Destinazione dei backup** (local / NFS / SMB montati; controllo reale per nodo: filesystem, scrittura O_EXCL+fsync+rename, spazio; applicazione solo dopo controllo riuscito su ogni nodo) | unit (`test_destcheck.py` 11, `destinations.test.ts`); mount NFS/SMB reali **non provati**; S3/Azure/GCS/SFTP = Anteprima |
 | 11/10 | Target oltre fine archivio: recupero fino a fine archivio (`target_clamped`), errore chiaro `PGA-PITR-014`, race in `wait_target` | PG16 reale + lab Patroni |
 | 11/10 | Restore di un database **cancellato** (`DROP DATABASE`): PostgreSQL lo rende invalido (in-place update, da PG15) e ne rimuove la cartella rigiocando il WAL **prima** del commit, quindi nessun target a tempo/xid basta. Il motore ora lo rileva (`pg_waldump`), si ferma con un LSN prima del DROP e lo dichiara (`stopped_before_drop`) | PG16 reale (`test_05c`); sul lab Patroni da ripetere |
 | 11/10 | Catalogo: conteggi solo tabelle utente, dimensione reale (heap+TOAST+indici+partizioni), indice→tabella e partizione→padre nel catalogo | PG16 reale (`test_06c`) |
