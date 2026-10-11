@@ -1,9 +1,10 @@
 #!/bin/bash
 # "versions" lab target (docker-compose.vers.yml): s14 (PG14 standalone, Debian layout) + p18a/p18b (Patroni on PG18). See vers/prep.sh.
-#   vers.sh up | prep | status | logs <host> | down | reset
+#   vers.sh all | up | prep | status | logs <host> | down | reset      (all = up + prep + status)
 cd "$(dirname "$0")"
 D="sg docker -c"
 case $1 in
+  all)    "$0" up && "$0" prep && "$0" status ;;
   up)     $D "docker compose -f docker-compose.vers.yml up -d --build" ;;
   prep)   for h in s14 p18a p18b; do $D "docker cp vers/prep.sh $h:/root/prep.sh"; done
           $D "docker exec s14 bash /root/prep.sh s14" 2>&1 | tail -3
