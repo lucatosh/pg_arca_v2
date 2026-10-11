@@ -1,10 +1,12 @@
 #!/bin/bash
 # Lab helper: what the console sees of the geo sites + what Patroni has in each site's DCS. Run from tools/lab.  (bash geo-diag.sh)
-cd "$(dirname "$0")" 2>/dev/null || true; API=${API:-./api.sh}
+cd "$(dirname "$0")" 2>/dev/null || true; API=${API:-$( [ -x ./api.sh ] && echo ./api.sh || echo /opt/pg_arca_v2/tools/lab/api.sh)}
 echo "== console clusters"
 $API GET /api/clusters | jq -r '.clusters[] | select(.name|test("geo|dc")) | "\(.id) \(.name) env=\(.environment) folder=\(.folder) status=\(.status) geo=\(.geo.role // "-")/\(.geo.health // "-") lag=\(.geo.lagBytes) agents=\([.agentNodes[]|.name+":"+(.lastSeen//"-")]|join(","))"'
+echo "== console nodes of the geo clusters"
+$API GET /api/clusters | jq -c '.clusters[] | select(.name|test("geo")) | {name, ha: [.haState.nodes[]? | {name, role, state, agent: (.agentNodeId // .hasAgent // null)}]}'
 echo "== recent ops on geo nodes"
-$API GET '/api/operations?limit=40' | jq -r '(.operations // .)[]? | select((.nodeName // "")|test("dc|bk")) | "\(.createdAt) \(.nodeName) \(.type) \(.status) \(.error // .result.error // "" | tostring | .[0:160])"' | tail -15
+$API GET '/api/operations?limit=60' | jq -r '(.operations // .)[]? | select(.type|test("agent_config|hba|geo|ephemeral")) | "\(.createdAt) \(.nodeId) \(.clusterId) \(.type) \(.status) \((.error // .result.error // "") | tostring | .[0:200])"' | tail -15
 for s in dc1 dc2; do for n in $s-pg1 $s-pg2; do
   echo "== $n patroni"; docker exec $n curl -s localhost:8008/patroni | jq -c '{role, state, sysid: .database_system_identifier, replication_state}'
   echo "-- agent log"; docker exec $n tail -n 4 /var/log/pgarca/agent.out
