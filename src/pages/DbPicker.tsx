@@ -40,7 +40,7 @@ export function DbPicker({ dbs, live, drops, dropsState, value, onChange }: { db
         <span className="when">{Number.isFinite(t) ? `${info!.time_exact ? '' : 'circa '}${fmtWhen(t)}` : dropsState === 'running' ? <><Icon n="refresh" s={12} spin /> data in calcolo…</> : d.last_stop ? `esisteva al backup del ${fmtWhen(Date.parse(d.last_stop))}` : 'data non rilevata'}</span></>
         : live ? <span className="here">Presente</span> : null}</span>
     </button>;
-  });
+  };
   const group = (title: string, hint: string | null, list: typeof rows, tone?: string) => list.length ? <div className={`dbgroup ${tone || ''}`} key={title}><div className="gh"><span>{title}</span><span className="n">{list.length}</span>{hint ? <span className="hint">{hint}</span> : null}</div>{list.map(row)}</div> : null;
 
   return <div className="dbpicker">
