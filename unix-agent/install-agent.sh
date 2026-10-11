@@ -10,6 +10,8 @@
 #       PG_ARCA_NODE_NAME   PG_ARCA_TLS_CA=/path/ca.pem   PG_ARCA_BUNDLE_SHA256=<hex>
 #       PG_ARCA_REPO=/var/lib/pgarca/repo   PG_ARCA_WAL=/var/lib/pgarca/wal   PG_ARCA_SCRATCH=/var/tmp/pg_arca_scratch
 #       PG_ARCA_USER=<OS user that owns PostgreSQL; default: detected from the running server, else postgres>   PG_ARCA_PG_ROLE=<superuser role, only if unrelated to the OS user>
+#       PG_ARCA_INSTANCE=<name> PG_ARCA_PGDATA=<data dir>   one more agent for ANOTHER PostgreSQL instance on the same server (several clusters on one host):
+#                             own config /etc/pg-arca/<name>, state /var/lib/pgarca/<name>, service pg-arca-agent-<name>, node name <host>-<name>
 #       PG_ARCA_ROLE=worker   operational machine (backup server, host for the recovery instances): no database is searched; runs as postgres if present, else as a
 #                             dedicated system user "pgarca" created here
 # ==============================================================================
@@ -36,7 +38,14 @@ if [[ "$ROLE" == worker && -z "${PG_ARCA_USER:-}" ]] && ! id "$PGUSER_OS" &>/dev
 fi
 [[ -n "${PG_ARCA_USER:-}" ]] || echo "agent OS user: $PGUSER_OS (override with PG_ARCA_USER=...)"
 id "$PGUSER_OS" &>/dev/null || die "OS user '$PGUSER_OS' not found. The agent must run as the PostgreSQL OS user (set PG_ARCA_USER=...)."
-INSTALL_DIR=/opt/pg-arca; CONF_DIR=/etc/pg-arca; STATE_ROOT=/var/lib/pgarca
+INSTALL_DIR=/opt/pg-arca; CONF_DIR=/etc/pg-arca; STATE_ROOT=/var/lib/pgarca; UNIT=pg-arca-agent
+INST="${PG_ARCA_INSTANCE:-}"
+if [[ -n "$INST" ]]; then
+  [[ "$INST" =~ ^[a-z0-9][a-z0-9_-]{0,30}$ ]] || die "PG_ARCA_INSTANCE: lowercase letters, digits, - and _ (max 31)"
+  [[ -n "${PG_ARCA_PGDATA:-}" ]] || die "PG_ARCA_INSTANCE needs PG_ARCA_PGDATA (the data directory of that instance)"
+  CONF_DIR=/etc/pg-arca/$INST; STATE_ROOT=/var/lib/pgarca/$INST; UNIT=pg-arca-agent-$INST
+  : "${PG_ARCA_NODE_NAME:=$(hostname -s)-$INST}"; export PG_ARCA_NODE_NAME
+fi
 REPO_DIR="${PG_ARCA_REPO:-$STATE_ROOT/repo}"; WAL_DIR="${PG_ARCA_WAL:-$STATE_ROOT/wal}"; LOG_DIR=/var/log/pgarca; SCRATCH="${PG_ARCA_SCRATCH:-/var/tmp/pg_arca_scratch}"
 
 # --- python + tools ------------------------------------------------------------
@@ -84,6 +93,7 @@ c = {"connection_mode": "push", "web_server_url": os.environ["PG_ARCA_URL"].rstr
 if os.environ.get("PG_ARCA_PG_ROLE"): c["pg_user"] = os.environ["PG_ARCA_PG_ROLE"]
 if os.environ.get("PG_ARCA_NODE_NAME"): c["node_name"] = os.environ["PG_ARCA_NODE_NAME"]
 if "$ROLE" != "auto": c["node_role"] = "$ROLE"
+if os.environ.get("PG_ARCA_PGDATA"): c["pg_data"] = os.environ["PG_ARCA_PGDATA"]      # this agent manages THIS instance (several on one host: one agent each)
 if os.environ.get("PG_ARCA_TLS_CA"): c["tls_ca_file"] = os.environ["PG_ARCA_TLS_CA"]
 json.dump(c, open(sys.argv[1], "w"), indent=2)
 PY
@@ -105,9 +115,9 @@ if [[ -n "${PG_ARCA_NO_SERVICE:-}" || ! -d /run/systemd/system ]]; then
   echo "  logs: tail -f $LOG_DIR/agent.out"
   exit 0
 fi
-cat > /etc/systemd/system/pg-arca-agent.service <<UNIT
+cat > /etc/systemd/system/$UNIT.service <<UNIT
 [Unit]
-Description=pg_arca node agent
+Description=pg_arca node agent${INST:+ (instance $INST)}
 After=network-online.target
 Wants=network-online.target
 
@@ -140,11 +150,11 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable pg-arca-agent.service >/dev/null
-systemctl restart pg-arca-agent.service      # restart (not just start): re-running the installer is the upgrade path, the old code must not keep running
+systemctl enable $UNIT.service >/dev/null
+systemctl restart $UNIT.service      # restart (not just start): re-running the installer is the upgrade path, the old code must not keep running
 sleep 2
-systemctl is-active --quiet pg-arca-agent.service && echo "pg_arca agent is running." || { echo "agent failed to start:"; journalctl -u pg-arca-agent -n 20 --no-pager; exit 1; }
-echo "Check the console: this node appears under Clusters within seconds. Logs: journalctl -u pg-arca-agent -f"
+systemctl is-active --quiet $UNIT.service && echo "pg_arca agent is running ($UNIT)." || { echo "agent failed to start:"; journalctl -u $UNIT -n 20 --no-pager; exit 1; }
+echo "Check the console: this node appears under Clusters within seconds. Logs: journalctl -u $UNIT -f"
 echo "WAL archiving (PITR) - set on the primary (or in Patroni postgresql.parameters):"
 echo "   archive_mode = on"
 echo "   archive_command = '/usr/local/bin/pg-arca-wal archive %p %f'   # see: pg-arca-cli archive-setup"

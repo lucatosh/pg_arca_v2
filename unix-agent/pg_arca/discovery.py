@@ -208,7 +208,7 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
     if len(running) > 1:
         add("warning", "MULTI_INSTANCE", "Più istanze PostgreSQL in esecuzione su questo server",
             "L'agent ne gestisce UNA (%s); le altre non vengono salvate né mostrate come cluster." % ", ".join("%s:%s" % (i.get("data_directory"), i.get("port")) for i in running),
-            "Imposta pg_data o la porta nelle impostazioni dell'agent per scegliere quale gestire, oppure installa un agent separato per ogni istanza (stesso utente OS, file di configurazione e cartelle di stato diversi).", "host")
+            "Installa un agent per ogni altra istanza: rilancia l'installer con PG_ARCA_INSTANCE=<nome> PG_ARCA_PGDATA=<cartella dati> (configurazione, stato e servizio separati: pg-arca-agent-<nome>). Per cambiare quella gestita da questo agent imposta pg_data nelle sue impostazioni.", "host")
     for i in scan.get("postgres_instances") or []:
         tgt = i.get("data_directory", "")
         st = i.get("settings") or {}
