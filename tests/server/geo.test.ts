@@ -82,6 +82,19 @@ import { deriveCluster } from '../../server/view';
   for (let i = 0; i < 50 && store.peek().settings.geoJobs[job].status === 'running'; i++) await new Promise(r => setTimeout(r, 100));
   const j = store.peek().settings.geoJobs[job];
   assert.strictEqual(j.status, 'succeeded', JSON.stringify(j.steps)); assert.strictEqual(j.steps.length, 4);
+  // ---- split-brain: the other site (it was a site: it has an address/catalogue) becomes writable too
+  {
+    const saved = JSON.parse(JSON.stringify(store.peek().nodes));
+    const prim0 = geoGroups(store.peek())[0].primary!; const other = prim0 === 'c1' ? 'c2' : 'c1'; const on = other === 'c1' ? 'a' : 'b';
+    await store.mutate(d => { const c = d.clusters.find((x: any) => x.id === other); c.geoEndpoint = c.geoEndpoint || { host: 'x', port: 5000 }; d.nodes[on].snapshot = snapP('0/9999999'); d.nodes[on].snapshot.patroni.scope = 'geo-' + other; });
+    const gs = geoGroups(store.peek())[0];
+    assert(gs.sites.every(s => s.health === 'bad' && /DUE SITI PRIMARI/.test(s.problems[0])), JSON.stringify(gs.sites.map(s => [s.name, s.health, s.problems[0]])));
+    assert(evaluate(store.peek()).some(i => i.code === 'geo_replication' && i.severity === 'critical' && /DUE SITI PRIMARI/.test(i.title)));
+    assert.strictEqual((await app.call('POST', '/api/geo/demote', { body: { clusterId: other, to: prim0, confirm: 'no' }, headers: k('dm0') })).status, 400);
+    const dm = await app.call('POST', '/api/geo/demote', { body: { clusterId: other, to: prim0, confirm: 'DECLASSA' }, headers: k('dm1') });
+    assert.strictEqual(dm.status, 202, JSON.stringify(dm.body)); assert.strictEqual(dm.body.operation.type, 'geo_demote'); assert.strictEqual(dm.body.operation.nodeId, on);
+    await store.mutate(d => { d.operations = d.operations.filter((o: any) => o.id !== dm.body.operation.id); d.nodes = saved; });
+  }
   // ---- relationships set by the operator, and false pairs avoided
   const st0 = () => store.peek();
   await store.mutate(d => {

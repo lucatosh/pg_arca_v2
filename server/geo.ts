@@ -88,7 +88,9 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
     const declared = list.some(s => manual.has(s.clusterId));
     // same system identifier alone is not geo-redundancy: a copy restored from a backup of the same cluster has it too. A group needs a standby site
     // (or a link set by an operator).
-    if (!declared && !list.some(s => s.role === 'standby')) continue;
+    const wasSiteC = (x: { clusterId: string }) => { const c = cl.find(k => k.id === x.clusterId); return !!(c?.geoStanza || c?.geoEndpoint) && !c?.geoLink?.none; };
+    const splitBrain = list.filter(s => s.role === 'primary' && wasSiteC(s)).length >= 2;
+    if (!declared && !splitBrain && !list.some(s => s.role === 'standby')) continue;
     for (const s of list) if (manual.has(s.clusterId)) {
       s.link = 'manual';
       if (s.role === 'unknown') s.role = 'standby';                               // declared by the operator, no telemetry to say otherwise
@@ -132,9 +134,17 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
       s.problems = p; s.health = h;
     }
     // other writable clusters with the same identifier are not sites of this pair (restored copies, clones): left out, said once on the primary
-    if (prim && others.length) { prim.problems.push(`${others.map(o => o.name).join(', ')}: stesso database ma scrivibile e non collegato (copia ripristinata o clone): non fa parte della georidondanza`); if (prim.health === 'ok') prim.health = 'warn'; }
-    const keep = list.filter(s => !others.includes(s) || list.some(x => x.declaredPrimary === s.clusterId));
-    if (keep.length < 2 && !keep.some(s => s.role === 'standby')) continue;
+    // a writable cluster that WAS a site of this pair (it carries the pair's catalogue / address) is not a copy: it is the old primary come back after a
+    // DR promotion, or a site promoted by hand -> two primary sites writing different data (split-brain). Copies/clones never were sites.
+    const split = others.filter(wasSiteC);
+    const copies = others.filter(o => !split.includes(o));
+    if (prim && copies.length) { prim.problems.push(`${copies.map(o => o.name).join(', ')}: stesso database ma scrivibile e non collegato (copia ripristinata o clone): non fa parte della georidondanza`); if (prim.health === 'ok') prim.health = 'warn'; }
+    if (prim && split.length) for (const x of [prim, ...split]) {
+      x.problems.unshift(`DUE SITI PRIMARI: ${[prim, ...split].map(o => o.name).join(' e ')} accettano scritture separatamente (split-brain, es. il vecchio primario tornato dopo una promozione DR). Ferma le scritture su quello da scartare e ricostruiscilo come sito di replica`);
+      x.health = 'bad';
+    }
+    const keep = list.filter(s => !copies.includes(s) || list.some(x => x.declaredPrimary === s.clusterId));
+    if (keep.length < 2 && !keep.some(s => s.role === 'standby') && !split.length) continue;
     out.push({ sysid, sites: keep.map(({ _sysid, _lsn, ...rest }) => rest), primary: prim?.clusterId || null });
   }
   return out;
@@ -185,9 +195,10 @@ export function geoParamGuard(st: any, clusterId: string, name: string, value: a
 export function geoIssues(st: any, now = Date.now()) {
   const out: any[] = [];
   for (const g of geoGroups(st, now)) for (const s of g.sites) {
-    if (s.role !== 'standby' || s.health === 'ok') continue;
+    if (s.health === 'ok' || (s.role !== 'standby' && !s.problems.some(p => p.startsWith('DUE SITI PRIMARI')))) continue;
     out.push({ key: `${s.clusterId}:geo_replication`, clusterId: s.clusterId, clusterName: s.name, environment: s.environment, severity: s.health === 'bad' ? 'critical' : 'warning', code: 'geo_replication',
-      title: `Sito di replica ${s.name}: ${s.problems[0]}`, cause: s.problems.join('; ') + '. In caso di disastro sul sito primario, i dati non ancora arrivati qui andrebbero persi.', action: { label: 'Apri la georidondanza', page: 'geo' } });
+      title: s.role === 'standby' ? `Sito di replica ${s.name}: ${s.problems[0]}` : `${s.name}: ${s.problems[0]}`,
+      cause: s.role === 'standby' ? s.problems.join('; ') + '. In caso di disastro sul sito primario, i dati non ancora arrivati qui andrebbero persi.' : s.problems.join('; '), action: { label: 'Apri la georidondanza', page: 'geo' } });
   }
   return out;
 }
@@ -325,6 +336,27 @@ export function mountGeoRoutes(app: any, store: Store) {
       return res.status(202).json({ approval: r, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
     }
     try { const op = await submitTo(store, clusterId, 'geo_promote', params, key, actor(req)); res.status(202).json({ operation: op }); }
+    catch (e: any) { res.status(e.status || 500).json(e.body || { error: 'failed', message: e.message }); }
+  });
+
+  /** Split-brain remedy: one of two writable sites becomes a standby site of the other (geo_demote with the other's address). Its writes since the fork are
+   *  abandoned: Patroni rewinds or rebuilds its members from the chosen primary. Explicit confirmation, four-eyes on protected environments. */
+  app.post('/api/geo/demote', async (req: Request, res: Response) => {
+    const { clusterId, to, confirm } = req.body || {};
+    const key = String(req.headers['idempotency-key'] || ''); if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
+    if (confirm !== 'DECLASSA') return res.status(400).json({ error: 'confirm_required', message: 'Scrivi DECLASSA per confermare.' });
+    const st = store.peek(); const me = geoOf(st, clusterId); const target = st.clusters.find((c: any) => c.id === to);
+    if (!me || !target || !me.peers.some(p => p.clusterId === to)) return res.status(409).json({ error: 'not_paired', message: 'I due cluster non risultano siti dello stesso database.' });
+    if (me.role !== 'primary') return res.status(409).json({ error: 'not_primary', message: `${me.name} non accetta scritture: è già un sito di replica.` });
+    const ep = target.geoEndpoint || geoOf(st, to)?.endpoint;
+    if (!ep) return res.status(409).json({ error: 'endpoint_required', message: `Indica prima come raggiungere ${target.name} (indirizzo del suo leader).` });
+    const params = { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(me.name), confirm: 'DECLASSA' };
+    const cluster = st.clusters.find((c: any) => c.id === clusterId);
+    if (requiresApproval(st, cluster, 'geo_demote', params)) {
+      const r = await requestApproval(store, ops.audit, { cluster, type: 'geo_demote', params, key, actor: actor(req) } as any);
+      return res.status(202).json({ approval: r, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
+    }
+    try { const op = await submitTo(store, clusterId, 'geo_demote', params, key, actor(req)); res.status(202).json({ operation: op }); }
     catch (e: any) { res.status(e.status || 500).json(e.body || { error: 'failed', message: e.message }); }
   });
 

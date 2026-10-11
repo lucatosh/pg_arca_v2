@@ -51,8 +51,11 @@ function SiteCard({ s, onOpen }: { s: Site; onOpen: () => void }) {
 
 function GroupCard({ g, role, running }: { g: Group; role: string; running: boolean }) {
   const prim = g.sites.find(s => s.role === 'primary'); const stand = g.sites.filter(s => s.role === 'standby');
-  const [dlg, setDlg] = useState<{ kind: 'switch' | 'promote' | 'endpoint'; site: Site } | null>(null);
+  const extra = g.sites.filter(s => s.role === 'primary' && s !== prim);            // split-brain: more than one writable site
+  const [dlg, setDlg] = useState<{ kind: 'switch' | 'promote' | 'endpoint' | 'demote'; site: Site } | null>(null);
   return <Card title={<span className="row gap-s"><Icon n="swap" s={16} />{prim?.name || '?'}{stand.map(s => <span key={s.clusterId} className="faint"> ⇄ {s.name}</span>)}<span className="small faint mono">· database {g.sysid}</span>{(g as any).stanza ? <span className="small faint" title="I backup di tutti i siti finiscono nello stesso catalogo: un ripristino vede tutta la storia, da qualunque sito sia stato fatto il backup">· catalogo backup comune <span className="mono">{(g as any).stanza}</span></span> : null}</span>}>
+    {extra.length && prim ? <Banner kind="bad" title="Due siti accettano scritture (split-brain)">{[prim, ...extra].map(x => x.name).join(' e ')} sono entrambi primari: i dati stanno divergendo. Scegli quale tenere e declassa l’altro a sito di replica: le scritture fatte su quello declassato dopo la separazione vanno perse (Patroni lo riallinea o lo ricostruisce).
+      {role === 'admin' ? <div className="row wrap" style={{ marginTop: 8 }}>{[prim, ...extra].map(x => <Button key={x.clusterId} sm kind="danger" onClick={() => setDlg({ kind: 'demote', site: x })}>Declassa {x.name}</Button>)}</div> : null}</Banner> : null}
     <div className="geogrid">
       {prim ? <SiteCard s={prim} onOpen={() => go(`c/${encodeURIComponent(prim.clusterId)}`)} /> : <div className="geosite bad"><strong>Sito primario non visibile</strong><p className="small muted">Nessun cluster collegato accetta scritture per questo database.</p></div>}
       <div className="geolinks">{stand.map(s => <div key={s.clusterId} className={`geolink ${s.health}`}>
@@ -60,7 +63,7 @@ function GroupCard({ g, role, running }: { g: Group; role: string; running: bool
         <div className="small"><strong>{s.lagBytes == null ? '—' : s.lagBytes === 0 ? 'allineato' : `indietro di ${bytes(s.lagBytes)}`}</strong></div>
         <div className="small faint">{s.receiver?.status === 'streaming' ? 'WAN attiva' : 'WAN interrotta'}{s.slot ? ` · slot ${s.slot.active ? 'attivo' : 'INATTIVO'}${s.slot.retainedBytes != null ? `, trattiene ${bytes(s.slot.retainedBytes)}` : ''}` : ''}</div>
       </div>)}</div>
-      <div className="stack">{stand.map(s => <SiteCard key={s.clusterId} s={s} onOpen={() => go(`c/${encodeURIComponent(s.clusterId)}`)} />)}</div>
+      <div className="stack">{[...extra, ...stand].map(s => <SiteCard key={s.clusterId} s={s} onOpen={() => go(`c/${encodeURIComponent(s.clusterId)}`)} />)}</div>
     </div>
     {role === 'admin' ? <div className="row wrap" style={{ marginTop: 14 }}>
       {prim && stand.map(s => <Button key={'sw' + s.clusterId} icon="swap" disabled={running || s.health === 'bad'} title={s.health === 'bad' ? 'Il sito di replica non è in salute' : undefined} onClick={() => setDlg({ kind: s.endpoint ? 'switch' : 'endpoint', site: s })}>Switchover pianificato verso {s.name}</Button>)}
@@ -68,6 +71,9 @@ function GroupCard({ g, role, running }: { g: Group; role: string; running: bool
       {g.sites.map(s => <Button key={'ep' + s.clusterId} sm kind="ghost" onClick={() => setDlg({ kind: 'endpoint', site: s })}>Indirizzo di {s.name}</Button>)}
     </div> : null}
     {dlg?.kind === 'endpoint' ? <EndpointDialog s={dlg.site} onClose={() => setDlg(null)} /> : null}
+    {dlg?.kind === 'demote' ? (() => { const keepSite = [prim, ...extra].find(x => x && x.clusterId !== dlg.site.clusterId)!; return <Confirm title={`Declassare ${dlg.site.name}?`} confirmLabel="Declassa" requireText="DECLASSA" danger onClose={() => setDlg(null)}
+      onConfirm={async () => { const s = dlg.site; setDlg(null); try { const r = await api<any>('POST', '/api/geo/demote', { clusterId: s.clusterId, to: keepSite.clusterId, confirm: 'DECLASSA' }, { key: uid('geod') }); toast(r.approval ? 'Richiesta inviata: serve l’approvazione di un altro amministratore' : `${s.name} declassato: segue ${keepSite.name}`, 'ok'); revalidate('/api/geo'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } }}>
+      <p><strong>{dlg.site.name}</strong> smette di accettare scritture e diventa sito di replica di <strong>{keepSite.name}</strong> (tramite il suo DCS, come <span className="mono">patronictl edit-config</span>). Le scritture fatte su {dlg.site.name} dopo la separazione non saranno più visibili: se servono, prima fai un backup o un dump di {dlg.site.name}.</p></Confirm>; })() : null}
     {dlg?.kind === 'switch' && prim ? <Confirm title={`Switchover: ${dlg.site.name} diventa il sito primario`} confirmLabel="Avvia lo switchover" requireText="SWITCHOVER" danger onClose={() => setDlg(null)}
       onConfirm={async () => { const s = dlg.site; setDlg(null); try { const r = await api<any>('POST', '/api/geo/switchover', { from: prim.clusterId, to: s.clusterId, confirm: 'SWITCHOVER' }, { key: uid('geo') }); toast(r.approval ? 'Richiesta inviata: serve l’approvazione di un altro amministratore' : 'Switchover avviato', 'ok'); revalidate('/api/geo'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } }}>
       <ol className="small">
