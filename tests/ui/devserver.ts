@@ -20,6 +20,7 @@ import { mountAdvancedRoutes } from '../../server/approvals';
 import { briefing } from '../../server/health';
 import { mountJoinRoutes } from '../../server/join';
 import { mountWorkerRoutes } from '../../server/workers';
+import { mountGeoRoutes } from '../../server/geo';
 import { audit } from '../../server/ops';
 
 const port = Number(process.argv[2] || 5188); const staticDir = process.argv[3] || '/tmp/claude-0/ui';
@@ -31,7 +32,7 @@ const withAgent = process.env.NO_AGENT !== '1';
   const demo = () => ({ id: 'cluster-demo', name: 'Cluster demo', environment: 'dev', isSandbox: true, status: 'healthy', pgVersion: '16', databases: [{ name: 'demo', size: 1e9 }], totalSizeBytes: 1e9, tps: 0, haState: { nodes: [{ name: 'demo-1', role: 'primary', online: true, state: 'running', host: 'demo', port: 5432, replicationLagBytes: 0, cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 100, source: 'agent' }] } });
   app.use(requireAdmin(store));
   mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec });
-  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountScopedRoutes(app, store); mountDestinationRoutes(app, store); mountNotifyRoutes(app, store, async () => ({ ok: true })); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store); mountWorkerRoutes(app, store);
+  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountScopedRoutes(app, store); mountDestinationRoutes(app, store); mountNotifyRoutes(app, store, async () => ({ ok: true })); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store); mountWorkerRoutes(app, store); mountGeoRoutes(app, store);
   app.get('/api/briefing', (_q: any, r: any) => r.json(briefing(store.peek())));
   await seedDemoOnFirstRun(store, demo);
 
@@ -136,6 +137,32 @@ const withAgent = process.env.NO_AGENT !== '1';
     const wbeat = async () => { try { const hb = await app.call('POST', '/api/agent/heartbeat', { body: { snapshot: winv, max_ops: 2 }, headers: wh });
       for (const op of hb.body.ops || []) { await sleep(400); await app.call('POST', `/api/agent/ops/${op.id}/report`, { body: { status: 'succeeded', result: op.type === 'ephemeral_preflight' ? { ok: true, level: 'ok', major: op.params.major, checks: [{ id: 'binaries', level: 'ok', text: `PostgreSQL ${op.params.major} in /usr/lib/postgresql/${op.params.major}/bin` }, { id: 'scratch', level: 'ok', text: 'scratch /var/tmp/pg_arca_scratch: 111.8 GiB free' }] } : { ok: true } }, headers: wh }); } } catch (e) { console.error(e); } };
     await wbeat(); setInterval(wbeat, 1000);
+    // geo-redundancy: two sites of the same database (sysid 7695): geo-dc1 primary, geo-dc2 Patroni standby cluster; they answer geo_demote / geo_promote
+    const geo: any = { primary: 'dc1', lsn: 0x9000000 };
+    const geoNode = async (name: string, site: string) => {
+      const tk = await app.call('POST', '/api/enrollment-tokens', { body: { label: name, environment: 'prod' }, headers: { cookie } });
+      const e = await app.call('POST', '/api/agent/enroll', { body: { enrollment_token: tk.body.token, node_name: name, agent_version: '2.0', discovery: { postgres_instances: [{ cluster_key: `patroni:geo-${site}`, patroni: { scope: `geo-${site}` } }] } } });
+      return { site, name, h: { authorization: 'Bearer ' + e.body.agent_token, 'x-arca-node': e.body.node_id } };
+    };
+    const gn = [await geoNode('dc1-pg1', 'dc1'), await geoNode('dc2-pg1', 'dc2')];
+    const lsn = (n: number) => `0/${n.toString(16).toUpperCase()}`;
+    const gsnap = (site: string) => {
+      const prim = geo.primary === site; const other = site === 'dc1' ? 'dc2' : 'dc1';
+      return { postgres: { alive: true, version: '16.4', is_in_recovery: !prim, current_lsn: lsn(geo.lsn), system_identifier: '7695', timeline: 1, databases: [{ oid: 5, name: 'postgres', size: 8e6 }],
+          slots: prim ? [{ name: `geo_${other}`, active: true, retained_bytes: 2048 }] : [], replay_ts: prim ? undefined : new Date().toISOString(),
+          wal_receiver: prim ? undefined : { status: 'streaming', sender_host: `${other}-haproxy`, sender_port: 5000, silent_sec: 0.4 } },
+        patroni: { accessible: true, scope: `geo-${site}`, local_node: { role: prim ? 'leader' : 'standby_leader', state: prim ? 'running' : 'streaming' }, members: [{ name: `${site}-pg1`, role: prim ? 'leader' : 'standby_leader', state: prim ? 'running' : 'streaming' }],
+          standby_cluster: prim ? null : { host: `${other}-haproxy`, port: 5000, primary_slot_name: `geo_${site}` } },
+        system: { load_avg_1m: 0.2, cpu_count: 2, memory_used_percent: 30, memory_total_bytes: 4e9 } };
+    };
+    const gbeat = async () => { geo.lsn += 0x100; for (const n of gn) { try {
+      const hb = await app.call('POST', '/api/agent/heartbeat', { body: { snapshot: gsnap(n.site), max_ops: 2 }, headers: n.h });
+      for (const op of hb.body.ops || []) { await sleep(500);
+        if (op.type === 'geo_demote') geo.primary = null;
+        if (op.type === 'geo_promote') geo.primary = n.site;
+        await app.call('POST', `/api/agent/ops/${op.id}/report`, { body: { status: 'succeeded', result: { ok: true } }, headers: n.h }); }
+    } catch (e) { console.error(e); } } };
+    await gbeat(); setInterval(gbeat, 1000);
   }
 
   const mime: Record<string, string> = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html' };

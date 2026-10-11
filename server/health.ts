@@ -5,6 +5,7 @@
  */
 import { resolvePolicy } from './policies';
 import { classify } from './pgcompat';
+import { geoIssues } from './geo';
 
 export type Severity = 'critical' | 'warning' | 'info';
 export interface Issue {
@@ -35,7 +36,9 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     const primary = online.find(n => n.snapshot?.postgres?.is_in_recovery === false);
     const isProd = c.environment === 'prod';
 
-    if (!primary) add({ severity: 'critical', code: 'no_primary', title: 'Nessun primario raggiungibile', cause: online.length ? 'Gli agenti rispondono ma nessun nodo riporta il ruolo di primario.' : 'Nessun agente del cluster risponde da più di 45 secondi.', action: { label: 'Apri il cluster', page: 'cluster' } });
+    // geo DR site (Patroni standby cluster): no primary by design; its own findings (replication between sites) come from geo.ts
+    const standbySite = !primary && online.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader' || n.snapshot?.patroni?.standby_cluster);
+    if (!primary && !standbySite) add({ severity: 'critical', code: 'no_primary', title: 'Nessun primario raggiungibile', cause: online.length ? 'Gli agenti rispondono ma nessun nodo riporta il ruolo di primario.' : 'Nessun agente del cluster risponde da più di 45 secondi.', action: { label: 'Apri il cluster', page: 'cluster' } });
     for (const n of nodes.filter(x => !on(x))) {
       if (!primary && online.length === 0 && nodes.length === 1) break;           // already covered by no_primary
       add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Nodo ${n.name} non risponde`, cause: n.lastSeen ? `Ultimo contatto ${new Date(n.lastSeen).toISOString()}. Agente fermo, server spento o rete interrotta.` : 'Questo nodo non ha mai inviato dati.' });
@@ -54,7 +57,9 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     const last = sets.length ? sets[sets.length - 1] : null;
     const lastMs = last ? ts(last.start_time) : NaN;
     const expectH = pol?.enabled ? Math.min(pol.fullEveryHours, pol.incrEveryHours || pol.fullEveryHours) : 0;
-    if (!sets.length) {
+    if (!sets.length && standbySite) {
+      // backups are taken on the primary site (same database, shared repository): nothing to report here
+    } else if (!sets.length) {
       add({ severity: isProd || pol?.enabled ? 'critical' : 'warning', code: 'no_backup', title: 'Nessun backup completo', cause: pol?.enabled ? 'La strategia è attiva ma non esiste ancora un backup riuscito.' : 'Il cluster non ha una strategia di backup né backup eseguiti: i dati non sono protetti.', action: { label: pol?.enabled ? 'Vedi i backup' : 'Assegna una strategia', page: pol?.enabled ? 'backup' : 'strategy' } });
     } else if (expectH && Number.isFinite(lastMs) && now - lastMs > expectH * 3600_000 * 2) {
       const age = (now - lastMs) / 3600_000;
@@ -70,7 +75,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
 
     const drills = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'restore_drill' && o.status === 'succeeded');
     const lastDrill = drills.length ? drills[drills.length - 1] : null;
-    if (isProd && sets.length && (!lastDrill || now - Date.parse(lastDrill.updatedAt) > 90 * 86400_000))
+    if (isProd && sets.length && !standbySite && (!lastDrill || now - Date.parse(lastDrill.updatedAt) > 90 * 86400_000))
       add({ severity: 'info', code: 'drill_stale', title: lastDrill ? 'Prova di disaster recovery vecchia di oltre 90 giorni' : 'Mai provato il ripristino completo', cause: lastDrill ? 'Una prova periodica conferma che il ripristino funziona ancora e quanto tempo richiede.' : 'Non sai ancora quanto tempo servirebbe a ripristinare l’intero cluster: una prova lo misura senza toccare la produzione.', action: { label: 'Vedi i backup', page: 'backup' } });
 
     // ---- PostgreSQL version: supported / legacy / end-of-life, and binaries of another major (the agent knows which binaries it uses)
@@ -128,6 +133,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       if (n.snapshot?.postgres?.pending_restart?.length) add({ severity: 'info', code: 'pending_restart', detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: riavvio in sospeso`, cause: `Parametri modificati ma non ancora attivi: ${n.snapshot.postgres.pending_restart.slice(0, 5).join(', ')}.` });
     }
   }
+  for (const i of geoIssues(st, now)) out.push(i);
   // ---- operational machines: a recovery host that is down or full stops every restore that depends on it
   const centralUsers = (id: string) => Object.entries(((st.settings?.scoped || {}).ephemeral || {}) as Record<string, any>).filter(([, v]) => v?.placement === 'central' && v?.centralNode === id).map(([k]) => k);
   for (const n of Object.values(st.nodes || {}) as any[]) {

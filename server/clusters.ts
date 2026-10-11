@@ -4,6 +4,7 @@
  *  - Attach with agent:    create an enrollment token (agents.ts) -> install agent -> cluster appears by itself.
  *  - Attach without agent: POST /api/clusters/attach-direct (direct.ts).
  */
+import { geoOf } from './geo';
 import type { Request, Response } from 'express';
 import { Store, nowIso } from './store';
 import { audit } from './ops';
@@ -20,6 +21,13 @@ export function seedDemoOnFirstRun(store: Store, buildDemo: () => any) {
   });
 }
 
+/** Geo role of a cluster for lists and headers: primary / standby site, its peers, the replication state of a standby site. */
+function geoSummary(st: any, id: string) {
+  const g = geoOf(st, id);
+  if (!g) return null;
+  return { role: g.role, health: g.health, problems: g.problems, lagBytes: g.lagBytes ?? null, peers: g.peers.map(p => ({ clusterId: p.clusterId, name: p.name, role: p.role, health: p.health })), endpoint: g.endpoint, upstream: g.upstream || null };
+}
+
 /** Strip secrets / internals before sending a cluster to the browser. */
 export function publicCluster(c: any, st: { nodes: Record<string, any>; directConnections: Record<string, any> }) {
   const { __prevXact, ...rest } = c;
@@ -29,6 +37,7 @@ export function publicCluster(c: any, st: { nodes: Record<string, any>; directCo
     connection: dc ? { host: dc.host, port: dc.port, database: dc.database, user: dc.user, sslmode: dc.sslmode, patroniUrl: dc.patroniUrl, lastOk: dc.lastOk, lastError: dc.lastError } : undefined,
     agentNodes: Object.values(st.nodes).filter((n: any) => n.clusterId === c.id).map((n: any) => ({ id: n.id, name: n.name, lastSeen: n.lastSeen, agentVersion: n.agentVersion, role: n.snapshot?.postgres?.role, sys: n.snapshot?.system ? { cpu: n.snapshot.system.cpu_count, mem: n.snapshot.system.memory_total_bytes } : undefined, settings: n.snapshot?.postgres?.settings, pendingRestart: n.snapshot?.postgres?.pending_restart })),
     capabilities: c.isSandbox ? { demo: true } : capabilitiesOf(c, st),
+    geo: c.isSandbox ? null : geoSummary(st, c.id),
   };
 }
 

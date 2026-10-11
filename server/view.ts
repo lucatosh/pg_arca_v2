@@ -104,12 +104,15 @@ export function deriveCluster(opts: {
   const now = opts.now ?? Date.now();
   const dn = deriveNodes(opts.nodes, now);
   const primary = dn.find(n => n.role === 'primary' && n.online);
-  const primaryRec = primary ? opts.nodes.find(n => n.id === primary.nodeId) : undefined;
+  // a Patroni standby cluster (geo DR site) has no primary by design: its standby leader plays that part for the status and the cluster's facts
+  const standbyLeader = !primary ? dn.find(n => n.role === 'standby_leader' && n.online) : undefined;
+  const lead = primary || standbyLeader;
+  const primaryRec = lead ? opts.nodes.find(n => n.id === lead.nodeId) : undefined;
   const pg = primaryRec?.snapshot?.postgres || {};
   const pt = primaryRec?.snapshot?.patroni || {};
   const anyOffline = dn.some(n => !n.online);
-  const lagging = dn.some(n => n.role !== 'primary' && n.replicationLagBytes > 64 * 1024 * 1024);
-  const status = !primary ? 'degraded' : (anyOffline || lagging ? 'degraded' : 'healthy');
+  const lagging = dn.some(n => n.role !== 'primary' && n.role !== 'standby_leader' && n.replicationLagBytes > 64 * 1024 * 1024);
+  const status = !lead ? 'degraded' : (anyOffline || lagging ? 'degraded' : 'healthy');
   const prior = opts.prior || {};
   const dbs = (pg.databases || []).map((d: any) => {
     const old = (prior.databases || []).find((x: any) => x.name === d.name);
@@ -131,6 +134,7 @@ export function deriveCluster(opts: {
       activeTimeline: num(pg.timeline, 0),
       nodes: dn,
       managedByPatroni: !!pt.scope,
+      standbyCluster: pt.standby_cluster || null,            // geo: this cluster is a DR site replicating from another site
     },
     hbaRules: prior.hbaRules || [],
     ldapConfig: prior.ldapConfig || { enabled: false, serverUrl: '', bindDN: '', baseDN: '', userFilter: '', groupFilter: '', sslVerify: true, syncIntervalMinutes: 0, lastSync: '', managedRolesCount: 0, managedGrantsCount: 0 },

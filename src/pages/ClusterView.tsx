@@ -44,6 +44,9 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
     {c.isSandbox ? <Banner kind="info" title="Cluster demo">Dati di esempio: le operazioni non vengono eseguite. Puoi eliminarlo quando hai collegato un cluster reale.</Banner> : null}
     {agentic ? <ProtectionRibbon c={c} /> : null}
     {agentic ? <ActivityStrip id={c.id} /> : null}
+    {c.geo ? <div className={`geostrip ${c.geo.health}`}><Icon n="swap" s={14} /><span className="small">{c.geo.role === 'standby'
+      ? <><strong>Sito di replica (DR)</strong> di {c.geo.peers?.filter((p: any) => p.role === 'primary').map((p: any) => p.name).join(', ') || '?'} — {c.geo.lagBytes == null ? 'ritardo non misurabile' : c.geo.lagBytes === 0 ? 'allineato' : `indietro di ${bytes(c.geo.lagBytes)}`}{c.geo.problems?.length ? ` · ${c.geo.problems[0]}` : ''}</>
+      : <><strong>Sito primario</strong> con replica su {c.geo.peers?.map((p: any) => p.name).join(', ')}</>}</span><button className="btn ghost sm" onClick={() => go('geo')}>Georidondanza</button></div> : null}
     <div className="clusternav">
       <div className="gnav" role="tablist" aria-label="Aree del cluster">{TAB_GROUPS.map(g => <button key={g.id} role="tab" aria-selected={grp.id === g.id} onClick={() => go(`c/${encodeURIComponent(id)}/${grp.id === g.id ? cur : g.tabs[0]}`)}><Icon n={g.icon} />{g.label}</button>)}</div>
       <Tabs value={cur} onChange={t => go(`c/${encodeURIComponent(id)}/${t}`)} items={grp.tabs.map(tid => TAB_ITEMS.find(t => t.id === tid)!).map(t => ({ id: t.id, label: t.label, icon: t.icon, preview: t.preview }))} />

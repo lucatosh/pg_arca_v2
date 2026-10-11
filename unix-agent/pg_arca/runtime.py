@@ -125,6 +125,14 @@ class Runtime(object):
                 view["members"] = [{k: m.get(k) for k in ("name", "role", "state", "host", "port", "timeline", "lag", "api_url")} for m in cl.get("members", [])]
                 view["paused"] = bool(cl.get("pause", False))
                 view["scope"] = cl.get("scope") or view.get("scope")
+            try:                                                   # geo: a standby cluster (DR site) has standby_cluster in its DCS config: where it replicates from
+                s3, cfg = self.patroni.get_config()
+                if s3 == 200 and isinstance(cfg, dict):
+                    sc = cfg.get("standby_cluster")
+                    view["standby_cluster"] = {k: sc.get(k) for k in ("host", "port", "primary_slot_name", "restore_command") if k in sc} if isinstance(sc, dict) else None
+                    view["permanent_slots"] = sorted((cfg.get("slots") or {}).keys()) if isinstance(cfg.get("slots"), dict) else []
+            except Exception:
+                pass
         return view
 
     def compat(self, pg, inst):

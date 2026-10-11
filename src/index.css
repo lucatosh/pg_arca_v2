@@ -384,3 +384,17 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .side .fleetstate:hover { background: var(--side-hover); } .side .fleetstate .lbl:first-of-type { flex: 1; font-weight: 600; } .side .fleetstate .faint { color: var(--side-ink-2); }
 .side .fleetstate.bad { border-color: rgba(226,88,77,.55); background: rgba(226,88,77,.12); } .side .fleetstate.warn { border-color: rgba(230,162,60,.5); background: rgba(230,162,60,.1); }
 .shell[data-rail="1"] .fleetstate { margin: 2px 14px 4px; padding: 7px; justify-content: center; }
+
+/* geo-redundancy */
+.geogrid { display: grid; grid-template-columns: minmax(0, 1fr) 200px minmax(0, 1fr); gap: 14px; align-items: stretch; }
+@media (max-width: 900px) { .geogrid { grid-template-columns: 1fr; } }
+.geosite { border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; display: grid; gap: 8px; background: var(--surface); }
+.geosite.primary { box-shadow: inset 3px 0 0 var(--accent); } .geosite.standby.ok { box-shadow: inset 3px 0 0 var(--ok); } .geosite.warn { box-shadow: inset 3px 0 0 var(--warn); } .geosite.bad { box-shadow: inset 3px 0 0 var(--bad); }
+.geolinks { display: flex; flex-direction: column; justify-content: center; gap: 12px; text-align: center; }
+.geolink .arrow { position: relative; height: 14px; margin: 0 6px 6px; } .geolink .arrow span { position: absolute; left: 0; right: 10px; top: 6px; height: 3px; border-radius: 2px; background: var(--ok); }
+.geolink .arrow::after { content: ""; position: absolute; right: 0; top: 1px; border: 6px solid transparent; border-left: 10px solid var(--ok); }
+.geolink.warn .arrow span { background: var(--warn); } .geolink.warn .arrow::after { border-left-color: var(--warn); } .geolink.bad .arrow span { background: repeating-linear-gradient(90deg, var(--bad) 0 8px, transparent 8px 14px); } .geolink.bad .arrow::after { border-left-color: var(--bad); }
+.geojob ol { margin: 6px 0 0; padding-left: 18px; }
+.geostrip { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface); }
+.geostrip > span { flex: 1; min-width: 0; } .geostrip.ok { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); } .geostrip.warn { border-color: var(--warn); } .geostrip.bad { border-color: var(--bad); background: var(--bad-soft); }
+.side .geotag { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; padding: 1px 5px; border-radius: 4px; background: rgba(63,182,194,.18); color: #7fd6de; } .side .geotag.p { background: rgba(255,255,255,.08); color: var(--side-ink-2); }

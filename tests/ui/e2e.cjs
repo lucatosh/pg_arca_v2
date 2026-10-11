@@ -154,6 +154,11 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('.side .citem:has-text("bk01")'); await p.waitForSelector('text=Dischi e condivisioni'); await p.waitForSelector('text=/backup');
   await p.click('button:has-text("Verifica come host di recupero")'); await p.waitForSelector('text=Può eseguire i ripristini', { timeout: 15000 }); await shot('18b-worker');
   await p.click('button:has-text("Usala per i ripristini")'); await p.click('.modal button:has-text("Usa questa macchina")'); await p.waitForSelector('text=nodo di recupero per tutti i cluster', { timeout: 10000 });
+  // geo-redundancy: the pair, the DR strip on the standby site, endpoint + planned switchover through both DCS
+  await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("geo-dc2")'); await p.waitForSelector('text=Sito di replica (DR)'); await shot('19a-geo');
+  await p.click('button:has-text("Switchover pianificato verso geo-dc2")'); await p.fill('.modal input.mono >> nth=0', 'dc2-haproxy'); await p.click('.modal button:has-text("Salva")');
+  await p.click('button:has-text("Switchover pianificato verso geo-dc2")'); await p.fill('.modal input.input', 'SWITCHOVER'); await p.click('.modal button:has-text("Avvia lo switchover")');
+  await p.waitForSelector('.geojob:has-text("completato")', { timeout: 30000 }); await p.waitForSelector('.geosite.primary:has-text("geo-dc2")', { timeout: 15000 }); await shot('19b-geo-switched');
   // mobile
   await p.setViewportSize({ width: 390, height: 800 }); await shot('17-mobile');
   console.log(errs.length ? 'ERRORS:\n' + errs.join('\n') : 'no page errors'); assert.strictEqual(errs.length, 0);

@@ -43,7 +43,11 @@ SELECT json_build_object(
   'slots', (SELECT COALESCE(json_agg(json_build_object('name', slot_name, 'type', slot_type, 'active', active,
               'retained_bytes', CASE WHEN pg_is_in_recovery() OR restart_lsn IS NULL THEN NULL ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint END)), '[]'::json)
               FROM pg_replication_slots),
-  'pending_restart', (SELECT COALESCE(json_agg(name), '[]'::json) FROM pg_settings WHERE pending_restart)
+  'pending_restart', (SELECT COALESCE(json_agg(name), '[]'::json) FROM pg_settings WHERE pending_restart),
+  'receive_lsn', CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn()::text END,
+  'replay_ts', CASE WHEN pg_is_in_recovery() THEN pg_last_xact_replay_timestamp() END,
+  'wal_receiver', (SELECT row_to_json(w) FROM (SELECT status, slot_name, sender_host, sender_port, latest_end_lsn::text AS latest_end_lsn, latest_end_time,
+                     last_msg_receipt_time, EXTRACT(EPOCH FROM (now() - last_msg_receipt_time))::numeric(12,1) AS silent_sec FROM pg_stat_wal_receiver) w)
 );
 """
 

@@ -10,7 +10,7 @@ bootstrap:
     loop_wait: 10
     retry_timeout: 10
     maximum_lag_on_failover: 1048576
-    slots: {geo_dc2: {type: physical}}            # permanent slot for the remote site: the primary keeps the WAL DC2 has not received yet
+    slots: ${SLOTS}            # DC1: permanent slot for the remote site (the primary keeps the WAL DC2 has not received yet); DC2: none
 ${STANDBY}
     postgresql:
       use_pg_rewind: true

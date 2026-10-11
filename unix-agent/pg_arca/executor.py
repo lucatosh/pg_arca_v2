@@ -85,6 +85,8 @@ class OperationExecutor:
         r("patroni_reload", self.h_patroni_reload, True)
         r("patroni_pause", self.h_pause, True)
         r("patroni_config_patch", self.h_config_patch, True)
+        r("geo_promote", self.h_geo_promote, True)
+        r("geo_demote", self.h_geo_demote, True)
         # backup / restore / PITR (engine)
         r("backup_run", self.h_backup_run, False)
         r("backup_info", self.h_backup_info, True)
@@ -503,6 +505,58 @@ class OperationExecutor:
             raise OpError("Patroni rejected the patch (%s): %s" % (st, json.dumps(d)[:300]))
         return {"applied": True, "config": d}
 
+
+    # ------------------------------------------------------------------ handlers: geo-redundancy (Patroni standby clusters), always through the DCS
+    def _wait_role(self, want, timeout):
+        ok, lead, members = self.patroni.wait_for(lambda l, m: any(x.get("role") in want and x.get("state") in ("running", "streaming") for x in m), timeout=timeout, interval=2)
+        leader = next((x for x in members if x.get("role") in want), None)
+        return ok, leader, members
+
+    def h_geo_promote(self, p):
+        """This site (a Patroni standby cluster) becomes a normal, writable cluster: standby_cluster is removed from ITS dynamic configuration (PATCH /config, the same
+        as `patronictl edit-config`); Patroni promotes the standby leader. Permanent slots for the other site can be declared at the same time, so that it can
+        follow this site afterwards. The other site is NOT touched here: the console decides the order (DR: the other site is lost; planned: it was demoted first)."""
+        self._require_patroni()
+        st, cfg = self.patroni.get_config()
+        if st != 200 or not isinstance(cfg, dict):
+            raise OpError("cannot read the Patroni configuration (%s)" % st)
+        if not cfg.get("standby_cluster"):
+            return {"promoted": False, "note": "this cluster is not a standby cluster: nothing to do", "already_primary": True}
+        patch = {"standby_cluster": None}
+        slot = p.get("slot_for_peer")
+        if slot:
+            if not re.match(r"^[a-z0-9_]{1,63}$", str(slot)):
+                raise OpError("invalid slot name")
+            patch["slots"] = dict((cfg.get("slots") or {}), **{str(slot): {"type": "physical"}})
+        self._progress({"phase": "geo-promote", "msg": "standby_cluster removed from the DCS: waiting for Patroni to promote the standby leader"})
+        st, d = self.patroni.patch_config(patch)
+        if st >= 300:
+            raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
+        ok, leader, members = self._wait_role(("leader", "master", "primary"), int(p.get("timeout", 120)))
+        if not ok:
+            raise OpError("Patroni did not promote within %ss (members: %s)" % (p.get("timeout", 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
+        return {"promoted": True, "leader": leader.get("name"), "timeline": leader.get("timeline"), "slot_for_peer": slot or None}
+
+    def h_geo_demote(self, p):
+        """This site becomes a standby cluster of another site: standby_cluster {host, port, primary_slot_name} is written to ITS DCS. Patroni turns the leader into a
+        standby leader that replicates from that endpoint (writes stop here at once). Used by the planned site switchover before the other site is promoted."""
+        self._require_patroni()
+        host, port = str(p.get("host") or ""), int(p.get("port") or 5432)
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$", host):
+            raise OpError("invalid host of the other site")
+        sc = {"host": host, "port": port, "create_replica_methods": ["basebackup"]}
+        if p.get("primary_slot_name"):
+            if not re.match(r"^[a-z0-9_]{1,63}$", str(p["primary_slot_name"])):
+                raise OpError("invalid slot name")
+            sc["primary_slot_name"] = str(p["primary_slot_name"])
+        self._progress({"phase": "geo-demote", "msg": "standby_cluster written to the DCS: Patroni turns the leader into a standby leader"})
+        st, d = self.patroni.patch_config({"standby_cluster": sc})
+        if st >= 300:
+            raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
+        ok, leader, members = self._wait_role(("standby_leader",), int(p.get("timeout", 120)))
+        if not ok:
+            raise OpError("no standby leader within %ss (members: %s)" % (p.get("timeout", 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
+        return {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port)}
 
     # ------------------------------------------------------------------ handlers: backup / restore (engine)
     def _ctx(self):

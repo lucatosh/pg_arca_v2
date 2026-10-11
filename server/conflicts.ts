@@ -12,16 +12,16 @@ import type { Operation } from './store';
 const ACTIVE = new Set(['queued', 'leased', 'running']);
 const BACKUP_SETS_READERS = ['restore_instance', 'restore_database', 'restore_object', 'restore_drill', 'backup_verify', 'restore_plan', 'backup_catalog'];
 const DATA_WORK = ['backup_run', 'backup_expire', 'restore_instance', 'restore_database', 'restore_object', 'restore_promote', 'restore_drill', 'restore_apply_rows', 'archive_enable'];
-const HA_DISRUPTIVE = ['patroni_switchover', 'patroni_failover', 'patroni_restart', 'patroni_reinit'];
+const HA_DISRUPTIVE = ['patroni_switchover', 'patroni_failover', 'patroni_restart', 'patroni_reinit', 'geo_promote', 'geo_demote'];
 /** at most one of each, queued or running, per cluster */
-const SINGLETON = ['backup_run', 'backup_expire', 'backup_verify', 'archive_enable', 'restore_instance', 'restore_drill', 'patroni_switchover', 'patroni_failover', 'patroni_pause', 'patroni_config_patch', 'hba_apply', 'ephemeral_install'];
+const SINGLETON = ['backup_run', 'backup_expire', 'backup_verify', 'archive_enable', 'restore_instance', 'restore_drill', 'patroni_switchover', 'patroni_failover', 'patroni_pause', 'patroni_config_patch', 'hba_apply', 'ephemeral_install', 'geo_promote', 'geo_demote'];
 
 export const OP_IT: Record<string, string> = {
   backup_run: 'un backup', backup_expire: 'la pulizia dei backup scaduti', backup_verify: 'una verifica dei backup', archive_enable: 'l’attivazione dell’archiviazione WAL',
   restore_instance: 'un ripristino dell’istanza', restore_database: 'un ripristino di database', restore_object: 'un ripristino di oggetti', restore_promote: 'una promozione dalla quarantena',
   restore_drill: 'una prova di ripristino', restore_apply_rows: 'un recupero di righe', patroni_switchover: 'uno switchover', patroni_failover: 'un failover', patroni_restart: 'un riavvio',
   patroni_reinit: 'la ricostruzione di una replica', patroni_pause: 'la pausa di Patroni', patroni_config_patch: 'una modifica della configurazione Patroni', hba_apply: 'una modifica di pg_hba',
-  ephemeral_install: 'un’installazione di PostgreSQL', restore_plan: 'la verifica di un piano di ripristino', backup_catalog: 'la lettura del catalogo',
+  ephemeral_install: 'un’installazione di PostgreSQL', geo_promote: 'la promozione del sito', geo_demote: 'il passaggio del sito a standby', restore_plan: 'la verifica di un piano di ripristino', backup_catalog: 'la lettura del catalogo',
 };
 const it = (t: string) => OP_IT[t] || t;
 

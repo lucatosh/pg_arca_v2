@@ -2,14 +2,15 @@
 # geo lab node: render the site's Patroni config, install the agent (repository + WAL archive on the shared backup volume), run it beside Patroni.
 set -euo pipefail
 : "${NODE:?}" "${SITE:?}" "${PG_SUPER_PASSWORD:?}" "${PG_REPL_PASSWORD:?}"
-export SCOPE="geo-${SITE}" ETCD="etcd-${SITE}" STANDBY=""
+export SCOPE="geo-${SITE}" ETCD="etcd-${SITE}" STANDBY="" SLOTS="{geo_dc2: {type: physical}}"
 if [[ $SITE == dc2 ]]; then
   STANDBY='    standby_cluster: {host: dc1-haproxy, port: 5000, primary_slot_name: geo_dc2, create_replica_methods: [basebackup]}'
+  SLOTS='{}'
 fi
 export NODE PG_SUPER_PASSWORD PG_REPL_PASSWORD
 install -d -m 0700 -o postgres -g postgres /var/lib/postgresql/data
 install -d -o postgres -g postgres /var/log/pgarca /var/log/patroni /backup/repo /backup/wal
-envsubst '${NODE} ${SCOPE} ${ETCD} ${STANDBY} ${PG_SUPER_PASSWORD} ${PG_REPL_PASSWORD}' < /geo/patroni.yml.tpl > /etc/patroni.yml
+envsubst '${NODE} ${SCOPE} ${ETCD} ${STANDBY} ${SLOTS} ${PG_SUPER_PASSWORD} ${PG_REPL_PASSWORD}' < /geo/patroni.yml.tpl > /etc/patroni.yml
 chown postgres:postgres /etc/patroni.yml; chmod 600 /etc/patroni.yml
 # the standby site connects to DC1 as replicator: libpq password file for the basebackup / streaming (never PGPASSWORD: it would win for every role)
 if [[ -n "${ARCA_URL:-}" && -f /work/unix-agent/install-agent.sh ]]; then

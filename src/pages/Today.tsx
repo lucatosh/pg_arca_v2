@@ -22,7 +22,7 @@ function PendingApprovals({ me, role }: { me: string; role: string }) {
 
 export function TodayPage({ me, role }: { me: string; role: string }) {
   const q = useHealth(15000); const d = q.data;
-  const open = (i: any) => go(String(i.clusterId).startsWith('worker:') ? `w/${encodeURIComponent(String(i.clusterId).slice(7))}` : i.action?.page === 'cluster' || !i.action?.page ? `c/${encodeURIComponent(i.clusterId)}` : i.action.page === 'strategy' ? 'strategy' : `c/${encodeURIComponent(i.clusterId)}/${i.action.page}`);
+  const open = (i: any) => go(i.action?.page === 'geo' ? 'geo' : String(i.clusterId).startsWith('worker:') ? `w/${encodeURIComponent(String(i.clusterId).slice(7))}` : i.action?.page === 'cluster' || !i.action?.page ? `c/${encodeURIComponent(i.clusterId)}` : i.action.page === 'strategy' ? 'strategy' : `c/${encodeURIComponent(i.clusterId)}/${i.action.page}`);
   return <>
     <div className="pagehead"><div className="grow"><h1>Oggi</h1><p className="sub">Cosa richiede attenzione adesso, con la causa probabile e il passo successivo.{d ? ` Aggiornato ${ago(d.generatedAt)}.` : ''}</p></div></div>
     <PendingApprovals me={me} role={role} />

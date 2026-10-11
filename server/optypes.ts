@@ -63,6 +63,11 @@ export const OP_SPECS: Record<string, OpSpec> = {
   patroni_reinit:   { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => (p.member && ident.test(String(p.member).replace(/-/g, '_'))) ? null : 'member required' },
   patroni_reload:   { mutating: true, target: 'patroni_node', needsPatroni: true, validate: () => null },
   patroni_pause:    { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => typeof p.enable === 'boolean' ? null : 'enable boolean required' },
+  // geo-redundancy: a Patroni standby cluster becomes writable / a cluster becomes the standby of another site. Through the DCS only (PATCH /config).
+  geo_promote: { mutating: true, target: 'patroni_node', needsPatroni: true, cancellable: false,
+    validate: p => p.confirm !== 'PROMUOVI' ? 'confirm="PROMUOVI" required (the site becomes writable: if the other site still accepts writes the data diverges)' : (p.slot_for_peer !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.slot_for_peer)) ? 'invalid slot_for_peer' : null) },
+  geo_demote: { mutating: true, target: 'patroni_node', needsPatroni: true, cancellable: false,
+    validate: p => p.confirm !== 'DECLASSA' ? 'confirm="DECLASSA" required (writes on this site stop at once)' : (!/^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$/.test(String(p.host || '')) ? 'host of the other site required' : (!(Number(p.port) >= 1 && Number(p.port) <= 65535) ? 'port required' : (p.primary_slot_name !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.primary_slot_name)) ? 'invalid primary_slot_name' : null))) },
   patroni_config_patch: {
     mutating: true, target: 'patroni_node', needsPatroni: true,
     validate: p => {

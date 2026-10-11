@@ -18,6 +18,7 @@ import { hbaFanout } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
 import { conflictFor, activityOf } from './conflicts';
+import { startSwitchover } from './geo';
 
 export interface Deps {
   /** executes an operation server-side for clusters attached without an agent */
@@ -394,7 +395,9 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (how !== 'approve') { await done(how === 'reject' ? 'rejected' : 'cancelled'); return res.json({ ok: true }); }
     const cluster = store.peek().clusters.find((c: any) => c.id === rec.clusterId);
     if (!cluster) return res.status(404).json({ error: 'cluster_not_found' });
-    const r = rec.type === 'hba_cluster_apply' ? await hbaFanout(store, cluster, rec.params, 'appr:' + id, rec.requestedBy) : await execute(cluster, rec.type, rec.params, rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
+    const r = rec.type === 'hba_cluster_apply' ? await hbaFanout(store, cluster, rec.params, 'appr:' + id, rec.requestedBy)
+      : rec.type === 'geo_switchover' ? await startSwitchover(store, rec.params.from, rec.params.to, rec.requestedBy)
+      : await execute(cluster, rec.type, rec.params, rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
     if (r.code >= 400) return res.status(r.code).json(r.body);                    // not consumed: the approver can retry when the node is back
     await done('approved');
     res.json({ ok: true, operation: r.body.operation, operations: r.body.operations });

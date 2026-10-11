@@ -15,7 +15,8 @@ export const worst = (a: Tone, b: Tone): Tone => (RANK[b] > RANK[a] ? b : a);
 
 /** State of one cluster: its own status, made worse by the health findings of the briefing (backups missing, disks full...). */
 export function toneOf(c: any, health?: Record<string, string>): Tone {
-  const s: Tone = c.status === 'healthy' ? 'ok' : c.status === 'degraded' ? 'warn' : c.status === 'critical' || c.status === 'down' ? 'bad' : 'warn';
+  let s: Tone = c.status === 'healthy' ? 'ok' : c.status === 'degraded' ? 'warn' : c.status === 'critical' || c.status === 'down' ? 'bad' : 'warn';
+  if (c.geo?.role === 'standby') s = worst(s, c.geo.health === 'bad' ? 'bad' : c.geo.health === 'warn' ? 'warn' : 'ok');
   const h = health?.[c.id];
   return worst(s, h === 'critical' ? 'bad' : h === 'warning' ? 'warn' : 'ok');
 }
@@ -78,7 +79,7 @@ export function FleetTree({ clusters, health, current, query }: { clusters: any[
   const q = query.trim().toLowerCase();
   const hasCur = (n: FolderNode): boolean => n.clusters.some(c => c.id === current) || n.children.some(hasCur);
   const item = (c: any, depth: number) => <button key={c.id} className="citem" style={{ paddingLeft: 10 + depth * 12 }} title={`${c.name}${c.folder ? ` — ${c.folder}` : ''}`} aria-current={current === c.id ? 'page' : undefined}
-    onClick={() => go(`c/${encodeURIComponent(c.id)}`)}><Dot kind={toneOf(c, health)} /><span className="n lbl">{c.name}</span>{c.isSandbox ? <span className="faint small lbl">demo</span> : null}</button>;
+    onClick={() => go(`c/${encodeURIComponent(c.id)}`)}><Dot kind={toneOf(c, health)} /><span className="n lbl">{c.name}</span>{c.geo?.role === 'standby' ? <span className="geotag lbl" title={`Sito di replica di ${c.geo.peers?.find((p: any) => p.role === 'primary')?.name || '?'}`}>DR</span> : c.geo?.role === 'primary' && c.geo?.peers?.length ? <span className="geotag p lbl" title="Sito primario con siti di replica">GEO</span> : null}{c.isSandbox ? <span className="faint small lbl">demo</span> : null}</button>;
   const folder = (n: FolderNode, env: string, depth: number): React.ReactNode => {
     const k = `${env}:${n.path}`; const open = q ? true : fold.isOpen(k, n.tone !== 'ok' || hasCur(n));
     return <div key={k} className="fgroup">
