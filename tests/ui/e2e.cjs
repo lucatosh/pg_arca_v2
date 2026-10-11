@@ -13,7 +13,10 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.fill('input[autocomplete=username]', 'admin'); await p.fill('input[type=password]', 'wrong-password-1'); await p.click('button[type=submit]');
   await p.waitForSelector('text=non corretti'); await p.waitForTimeout(1300);
   await p.fill('input[type=password]', 'correct-horse-battery'); await p.click('button[type=submit]');
-  await p.waitForSelector('text=Cluster collegati'); await p.waitForSelector('text=prodpg'); await shot('02-clusters');
+  await p.waitForSelector('text=Cluster collegati'); await p.waitForSelector('text=prodpg');
+  // organise: prodpg into prod > fatturazione/api; the sidebar and the list group it, with the state of the group
+  await p.click('tr:has-text("prodpg") button:has-text("Sposta")'); await p.fill('.modal input[list]', 'fatturazione/api'); await p.click('.modal button:has-text("Salva")');
+  await p.waitForSelector('.side .fhead.folder:has-text("fatturazione")'); await p.waitForSelector('.fleettable tr.frow:has-text("api")'); await shot('02-clusters');
   assert(await p.locator('text=Cluster demo').count() >= 1, 'demo present');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Protezione dei dati'); await shot('03-overview');
   // backup tab
@@ -143,7 +146,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.fill('.modal input >> nth=0', 'operatore1'); await p.fill('.modal input[type=password]', 'operator-password-1'); await p.click('.modal button:has-text("Crea utente")');
   await p.waitForSelector('tr:has-text("operatore1")'); await shot('15e-users');
   // attach wizard
-  await p.click('button:has-text("Cluster") >> nth=0'); await p.click('button:has-text("Collega cluster") >> nth=0'); await p.waitForSelector('text=Con agent (consigliato)'); await p.click('text=Con agent (consigliato)');
+  await p.goto(base + '/#/'); await p.click('button:has-text("Collega cluster") >> nth=0'); await p.waitForSelector('text=Con agent (consigliato)'); await p.click('text=Con agent (consigliato)');
   await p.click('button:has-text("Genera comando")'); await p.waitForSelector('text=PG_ARCA_ENROLL_TOKEN'); await shot('16-attach');
   // operational machines: sidebar entry, list, detail, check as recovery host, use for recoveries
   await p.keyboard.press('Escape').catch(() => {});

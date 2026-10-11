@@ -16,7 +16,7 @@ const P: Record<string, string> = {
   settings: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19 12l2-1-2-4-2 .7a7 7 0 00-1.6-.9L15 4H9l-.4 2.8a7 7 0 00-1.6.9L5 7l-2 4 2 1a7 7 0 000 2l-2 1 2 4 2-.7c.5.4 1 .7 1.6.9L9 20h6l.4-2.8c.6-.2 1.1-.5 1.6-.9l2 .7 2-4-2-1c.1-.7.1-1.3 0-2z',
   list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01', logs: 'M4 4h16v16H4zM8 9l3 3-3 3M13 15h4', user: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0',
   swap: 'M7 4l-4 4 4 4M3 8h14M17 20l4-4-4-4M21 16H7', search: 'M11 18a7 7 0 100-14 7 7 0 000 14zM20 20l-4-4', lock: 'M6 11h12v9H6zM8 11V8a4 4 0 118 0v3',
-  chev: 'M9 6l6 6-6 6', down: 'M6 9l6 6 6-6', hdd: 'M3 14h18v6H3zM3 14l3-9h12l3 9M7 17h.01', layers: 'M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5M3 17l9 5 9-5',
+  chev: 'M9 6l6 6-6 6', folder: 'M3 6h6l2 2h10v11H3z', down: 'M6 9l6 6 6-6', hdd: 'M3 14h18v6H3zM3 14l3-9h12l3 9M7 17h.01', layers: 'M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5M3 17l9 5 9-5',
   file: 'M7 3h7l5 5v13H7zM14 3v5h5', zap: 'M13 2L4 14h7l-1 8 9-12h-7l1-8z', pause: 'M8 5v14M16 5v14', eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 15a3 3 0 100-6 3 3 0 000 6z',
   activity: 'M3 12h4l3-8 4 16 3-8h4', minus: 'M5 12h14', panel: 'M3 4h18v16H3zM9 4v16', cancel: 'M12 21a9 9 0 100-18 9 9 0 000 18zM9 9l6 6M15 9l-6 6', external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
   logout: 'M9 4H4v16h5M16 8l4 4-4 4M20 12H9', bolt: 'M11 3L5 13h6l-1 8 7-11h-6l0-7z', flask: 'M9 3h6M10 3v6l-5 9a2 2 0 002 3h10a2 2 0 002-3l-5-9V3', calendar: 'M4 6h16v14H4zM4 10h16M9 3v4M15 3v4',

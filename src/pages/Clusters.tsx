@@ -5,6 +5,8 @@ import { revalidate, toast, useQuery } from '../hooks';
 import { summarize } from './Strategy';
 import { go } from '../router';
 import { statusKind } from '../App';
+import { buildFleet, toneOf, useFold, FolderNode } from '../Fleet';
+import { useHealth } from './Today';
 
 const ENVS = [['prod', 'Produzione'], ['prep', 'Pre-produzione'], ['int', 'Integrazione'], ['dev', 'Sviluppo'], ['test', 'Test']];
 const stratOf = (c: any, pol: any) => {
@@ -15,7 +17,7 @@ const stratOf = (c: any, pol: any) => {
 const modeOf = (c: any) => c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Solo connessione</Badge> : <Badge kind="accent">Agent</Badge>;
 
 export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]; loading: boolean; demoAvailable: boolean }) {
-  const [wiz, setWiz] = useState(false); const pol = useQuery<any>('/api/policies', { interval: 20000 }).data;
+  const [wiz, setWiz] = useState(false); const pol = useQuery<any>('/api/policies', { interval: 20000 }).data; const [org, setOrg] = useState<any>(null);
   const real = clusters.filter(c => !c.isSandbox);
   const down = clusters.filter(c => c.status !== 'healthy').length;
   const restoreDemo = async () => { try { await api('POST', '/api/clusters/demo'); revalidate('/api/clusters'); } catch (e: any) { toast(e.message, 'bad'); } };
@@ -32,19 +34,54 @@ export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]
       {loading ? <div className="bd stack"><Skeleton h={18} /><Skeleton h={18} /><Skeleton h={18} /></div> :
         !clusters.length ? <Empty icon="db" title="Nessun cluster collegato" action={<div className="row" style={{ justifyContent: 'center' }}><Button kind="primary" icon="plus" onClick={() => setWiz(true)}>Collega cluster</Button>{demoAvailable ? <Button onClick={restoreDemo}>Ripristina il cluster demo</Button> : null}</div>}>
           Collega un cluster installando l’agent su un nodo (backup, ripristino e alta affidabilità completi) oppure con la sola connessione PostgreSQL (monitoraggio, senza backup).</Empty> :
-        <div className="tablewrap"><table className="t">
-          <thead><tr><th>Cluster</th><th>Ambiente</th><th>Stato</th><th>Modalità</th><th>Backup</th><th>PostgreSQL</th><th className="num">Nodi</th><th className="num">Dimensione</th><th className="num">TPS</th></tr></thead>
-          <tbody>{clusters.map(c => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>
-            <td><a href={`#/c/${encodeURIComponent(c.id)}`} onClick={e => e.stopPropagation()}><strong>{c.name}</strong></a></td>
-            <td>{ENVS.find(e => e[0] === c.environment)?.[1] || c.environment}</td>
-            <td><span className="row gap-s"><Dot kind={statusKind(c.status)} />{c.status === 'healthy' ? 'In salute' : c.status === 'degraded' ? 'Degradato' : c.status}</span></td>
-            <td>{modeOf(c)}</td><td>{stratOf(c, pol)}</td><td>{c.pgVersion || '—'}</td>
-            <td className="num">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num">{bytes(c.totalSizeBytes)}</td><td className="num">{num(c.tps)}</td></tr>)}</tbody>
-        </table></div>}
+        <FleetTable clusters={clusters} pol={pol} onOrganize={setOrg} />}
     </Card>
     {real.length === 0 && clusters.length > 0 ? <Banner kind="info" title="Stai guardando il cluster demo">È un esempio: le operazioni non vengono eseguite. Collega un cluster reale e poi elimina la demo dalla sua pagina.</Banner> : null}
     {wiz ? <AttachWizard onClose={() => setWiz(false)} /> : null}
+    {org ? <Organize c={org} all={clusters} onClose={() => setOrg(null)} /> : null}
   </>;
+}
+
+/** Cluster list grouped like the sidebar: environment (state, counts, size) > folders > clusters. */
+function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; onOrganize: (c: any) => void }) {
+  const h = useHealth(30000).data; const health = Object.fromEntries(((h?.clusters || []) as any[]).map((c: any) => [c.id, c.worst]));
+  const groups = buildFleet(clusters, health); const fold = useFold('arca.fleet.table');
+  const size = (n: FolderNode): number => n.clusters.reduce((a, c) => a + (c.totalSizeBytes || 0), 0) + n.children.reduce((a, x) => a + size(x), 0);
+  const nodes = (n: FolderNode): number => n.clusters.reduce((a, c) => a + (c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0), 0) + n.children.reduce((a, x) => a + nodes(x), 0);
+  const summary = (n: { count: number; bad: number; warn: number }) => <span className="small muted">{n.count} {n.count === 1 ? 'cluster' : 'cluster'}{n.bad ? <> · <span style={{ color: 'var(--bad)', fontWeight: 600 }}>{n.bad} critici</span></> : null}{n.warn ? <> · <span style={{ color: 'var(--warn)', fontWeight: 600 }}>{n.warn} da controllare</span></> : null}{!n.bad && !n.warn ? ' · tutti in salute' : ''}</span>;
+  const row = (c: any, depth: number) => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>
+    <td style={{ paddingLeft: 14 + depth * 18 }}><span className="row gap-s"><Dot kind={toneOf(c, health)} /><a href={`#/c/${encodeURIComponent(c.id)}`} onClick={e => e.stopPropagation()}><strong>{c.name}</strong></a></span></td>
+    <td><span className="small">{c.status === 'healthy' ? 'In salute' : c.status === 'degraded' ? 'Degradato' : c.status}{health[c.id] === 'critical' || health[c.id] === 'warning' ? <span className="faint"> · {health[c.id] === 'critical' ? 'problemi critici' : 'da controllare'}</span> : null}</span></td>
+    <td>{modeOf(c)}</td><td>{stratOf(c, pol)}</td><td>{c.pgVersion || '—'}</td>
+    <td className="num">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num">{bytes(c.totalSizeBytes)}</td><td className="num">{num(c.tps)}</td>
+    <td className="num">{c.isSandbox ? null : <button className="btn ghost sm" onClick={e => { e.stopPropagation(); onOrganize(c); }} title="Ambiente e cartella">Sposta…</button>}</td></tr>;
+  const folder = (n: FolderNode, env: string, depth: number): React.ReactNode[] => {
+    const k = `${env}:${n.path}`; const open = fold.isOpen(k, true);
+    return [<tr key={'f' + k} className="frow" onClick={() => fold.toggle(k, true)}><td colSpan={9} style={{ paddingLeft: 14 + depth * 18 }}>
+      <span className="row gap-s"><Icon n={open ? 'down' : 'chev'} s={12} /><Icon n="folder" s={14} /><strong>{n.name}</strong><Dot kind={n.tone} />{summary(n)}<span className="small faint"> · {nodes(n)} {nodes(n) === 1 ? 'nodo' : 'nodi'} · {bytes(size(n))}</span></span></td></tr>,
+      ...(open ? [...n.children.flatMap(ch => folder(ch, env, depth + 1)), ...n.clusters.map(c => row(c, depth + 1))] : [])];
+  };
+  return <div className="tablewrap"><table className="t fleettable">
+    <thead><tr><th>Cluster</th><th>Stato</th><th>Modalità</th><th>Backup</th><th>PostgreSQL</th><th className="num">Nodi</th><th className="num">Dimensione</th><th className="num">TPS</th><th /></tr></thead>
+    <tbody>{groups.flatMap(g => {
+      const k = `env:${g.env}`; const open = fold.isOpen(k, true);
+      return [<tr key={k} className={`erow ${g.tone}`} onClick={() => fold.toggle(k, true)}><td colSpan={9}><span className="row gap-s"><Icon n={open ? 'down' : 'chev'} s={13} /><span className={`envmark ${g.env}`} /><strong>{g.label}</strong><Dot kind={g.tone} />{summary(g)}<span className="small faint"> · {nodes(g.root)} {nodes(g.root) === 1 ? 'nodo' : 'nodi'} · {bytes(size(g.root))}</span></span></td></tr>,
+        ...(open ? [...g.root.children.flatMap(ch => folder(ch, g.env, 1)), ...g.root.clusters.map(c => row(c, 1))] : [])];
+    })}</tbody></table></div>;
+}
+
+/** Environment and folder of a cluster ("prod" > "fatturazione/api"): what groups it in the console AND what its folder-level strategies and settings inherit. */
+function Organize({ c, all, onClose }: { c: any; all: any[]; onClose: () => void }) {
+  const [env, setEnv] = useState(c.environment || 'prod'); const [folder, setFolder] = useState(c.folder || ''); const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const known = [...new Set(all.filter(x => !x.isSandbox && x.folder).map(x => x.folder as string))].sort();
+  const save = async () => { setBusy(true); setErr(null); try { await api('PATCH', `/api/clusters/${encodeURIComponent(c.id)}`, { environment: env, folder }); revalidate('/api/clusters'); toast('Spostato', 'ok'); onClose(); } catch (e: any) { setErr(e.body?.message || (e.body?.error === 'invalid_folder' ? 'Nome di cartella non valido.' : e.message)); } finally { setBusy(false); } };
+  return <Modal title={`Dove sta ${c.name}`} onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} onClick={save}>Salva</Button></>}>
+    <div className="stack">
+      <Field label="Ambiente"><select className="input" value={env} onChange={e => setEnv(e.target.value)}>{ENVS.map(e => <option key={e[0]} value={e[0]}>{e[1]}</option>)}</select></Field>
+      <Field label="Cartella" hint="Per applicazione o servizio, anche su più livelli: «fatturazione» oppure «fatturazione/api». Vuota = direttamente sotto l’ambiente.">
+        <input className="input" list="folders-known" value={folder} onChange={e => setFolder(e.target.value)} placeholder="nome_app" /><datalist id="folders-known">{known.map(f => <option key={f} value={f} />)}</datalist></Field>
+      <p className="small muted">La cartella raggruppa i cluster nella barra laterale e nell’elenco, e le strategie di backup e le impostazioni di recupero assegnate a una cartella valgono per tutti i cluster che contiene.</p>
+      {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
 }
 
 function AttachWizard({ onClose }: { onClose: () => void }) {

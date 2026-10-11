@@ -8,6 +8,7 @@ import { TodayPage, useHealth } from './pages/Today';
 import { JoinBanner } from './pages/Join';
 import { ActivityDock } from './Dock';
 import { OpLogHost } from './OpLog';
+import { FleetTree, toneOf } from './Fleet';
 
 // Everything but the shell, "Oggi" and the first page is loaded on demand: a first paint of a few tens of KB, not the whole console.
 const Clusters = lazy(() => import('./pages/Clusters').then(m => ({ default: m.Clusters })));
@@ -42,6 +43,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
   const wq = useQuery<{ workers: { id: string; name: string; label: string; online: boolean; roles: string[] }[] }>('/api/workers-summary', { interval: 10000 });
   const workers = wq.data?.workers || [];
   const health = useHealth(30000); const hc = health.data?.counts; const urgent = (hc?.critical || 0) + (hc?.warning || 0);
+  const healthMap = useMemo(() => Object.fromEntries(((health.data?.clusters || []) as any[]).map(c => [c.id, c.worst])), [health.data]);
   const [pal, setPal] = useState(false);
   const [th, setTh] = useState(theme());
   const [rail, setRail] = useState(() => rd('arca.rail') === '1');
@@ -66,6 +68,10 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
     <aside className="side" aria-label="Navigazione">
       <div className="brand"><span className="logo"><Icon n="ark" s={18} /></span><span className="name">pg_arca</span>
         <button className="railtoggle" onClick={toggleRail} aria-label={rail ? 'Espandi la barra laterale' : 'Comprimi la barra laterale'} title={rail ? 'Espandi' : 'Comprimi'}><Icon n="panel" /></button></div>
+      {clusters.length ? (() => { const real = clusters.filter(c => !c.isSandbox); const t = real.map(c => toneOf(c, healthMap)); const bad = t.filter(x => x === 'bad').length, warn = t.filter(x => x === 'warn').length;
+        const tone = bad ? 'bad' : warn ? 'warn' : 'ok';
+        return <button className={`fleetstate ${tone}`} onClick={() => go('today')} title="Stato complessivo: apri «Oggi» per le cause e i passi successivi"><Dot kind={tone} />
+          <span className="lbl">{bad ? `${bad} ${bad === 1 ? 'cluster critico' : 'cluster critici'}` : warn ? `${warn} da controllare` : 'Tutto in ordine'}</span><span className="lbl faint small">{real.length - bad - warn}/{real.length} ok</span></button>; })() : null}
       <div className="sgroup">Panoramica</div>
       <nav>
         {nav('today', 'today', 'alert', 'Oggi', urgent ? <span className={`navcount ${hc?.critical ? 'bad' : 'warn'}`}>{urgent}</span> : null)}
@@ -81,12 +87,10 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         {nav('audit', 'audit', 'list', 'Registro attività')}
       </nav>
       <div className="sgroup">Cluster collegati{clusters.length ? ` (${clusters.length})` : ''}</div>
-      {clusters.length > 6 ? <input className="csearch" placeholder="Filtra…" aria-label="Filtra i cluster" value={cq} onChange={e => setCq(e.target.value)} /> : null}
+      {clusters.length > 6 ? <input className="csearch" placeholder="Filtra per nome o cartella…" aria-label="Filtra i cluster" value={cq} onChange={e => setCq(e.target.value)} /> : null}
       <div className="clist">
         {loading ? <div style={{ padding: 10 }}><div className="skeleton" style={{ height: 16 }} /></div> : null}
-        {shown.map(c => <button key={c.id} className="citem" title={c.name} aria-current={route.page === 'cluster' && route.id === c.id ? 'page' : undefined} onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>
-          <Dot kind={statusKind(c.status)} /><span className="n lbl">{c.name}</span>{c.isSandbox ? <span className="faint small lbl">demo</span> : null}
-        </button>)}
+        {!loading ? <FleetTree clusters={clusters} health={healthMap} current={route.page === 'cluster' ? route.id : undefined} query={cq} /> : null}
         {!loading && !clusters.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>Nessun cluster.</div> : null}
         {!loading && clusters.length && !shown.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>Nessun risultato.</div> : null}
       </div>

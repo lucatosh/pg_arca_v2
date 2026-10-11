@@ -366,3 +366,21 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .shell[data-rail="1"] .sgadd { display: none; }
 .activitystrip { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: var(--r); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); }
 .activitystrip > span { flex: 1; min-width: 0; }
+/* fleet tree: environment > folder > cluster, each level with its worst state */
+.fleet { display: flex; flex-direction: column; gap: 2px; }
+.side .fhead { display: flex; align-items: center; gap: 7px; width: 100%; background: none; border: 0; color: var(--side-ink-2); cursor: pointer; padding: 6px 8px; border-radius: 7px; text-align: left; white-space: nowrap; font-size: 12.5px; }
+.side .fhead:hover { background: var(--side-hover); color: var(--side-ink); }
+.side .fhead.env { color: var(--side-ink); font-weight: 600; font-size: 12.5px; letter-spacing: .01em; margin-top: 4px; }
+.side .fhead .n { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.side .envmark { width: 4px; height: 14px; border-radius: 2px; background: var(--side-ink-2); flex: none; } .side .envmark.prod { background: #e2584d; } .side .envmark.prep { background: #e6a23c; } .side .envmark.int { background: #8c7ae6; } .side .envmark.dev { background: #3fb6c2; } .side .envmark.test { background: #7f93a8; }
+.fcount { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; font-variant-numeric: tabular-nums; } .fcount .n { color: var(--side-ink-2); min-width: 14px; text-align: right; }
+.fcount .b, .fcount .w { border-radius: 8px; padding: 0 5px; font-weight: 700; color: #fff; } .fcount .b { background: #c9372c; } .fcount .w { background: #b7791f; }
+.shell[data-rail="1"] .fhead .n, .shell[data-rail="1"] .fcount { display: none; }
+.fleettable tr.erow td { background: color-mix(in srgb, var(--surface-2) 75%, var(--surface)); cursor: pointer; border-top: 1px solid var(--line); }
+.fleettable tr.erow.bad td { box-shadow: inset 3px 0 0 var(--bad); } .fleettable tr.erow.warn td { box-shadow: inset 3px 0 0 var(--warn); } .fleettable tr.erow.ok td { box-shadow: inset 3px 0 0 var(--ok); }
+.fleettable tr.frow td { cursor: pointer; color: var(--ink-2); } .fleettable .envmark { width: 4px; height: 16px; border-radius: 2px; background: var(--ink-3); display: inline-block; }
+.envmark.prod { background: #e2584d; } .envmark.prep { background: #e6a23c; } .envmark.int { background: #8c7ae6; } .envmark.dev { background: #3fb6c2; } .envmark.test { background: #7f93a8; }
+.side .fleetstate { display: flex; align-items: center; gap: 8px; margin: 2px 12px 4px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--side-line); background: rgba(255,255,255,.03); color: var(--side-ink); cursor: pointer; font-size: 12.5px; text-align: left; }
+.side .fleetstate:hover { background: var(--side-hover); } .side .fleetstate .lbl:first-of-type { flex: 1; font-weight: 600; } .side .fleetstate .faint { color: var(--side-ink-2); }
+.side .fleetstate.bad { border-color: rgba(226,88,77,.55); background: rgba(226,88,77,.12); } .side .fleetstate.warn { border-color: rgba(230,162,60,.5); background: rgba(230,162,60,.1); }
+.shell[data-rail="1"] .fleetstate { margin: 2px 14px 4px; padding: 7px; justify-content: center; }
