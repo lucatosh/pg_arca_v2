@@ -42,7 +42,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
   // catalogue pickers: run once per scope entry, through the agent (the catalogue lives next to the repository)
   useEffect(() => { if ((scope === 'database' || scope === 'object') && !dbsR.op && !dbsR.busy) dbsR.run('backup_catalog', { set: 'all' }); }, [scope]);
-  useEffect(() => { if (scope === 'object' && db) { const t = setTimeout(() => objR.run('backup_catalog', { set: dbs.find(x => x.name === db)?.last_set || 'latest', database: db, search, limit: 400 }), search ? 350 : 0); return () => clearTimeout(t); } }, [scope, db, search]);
+  useEffect(() => { if (scope === 'object' && db && !dbs.find(x => x.name === db)?.late) { const t = setTimeout(() => objR.run('backup_catalog', { set: dbs.find(x => x.name === db)?.last_set || 'latest', database: db, search, limit: 400 }), search ? 350 : 0); return () => clearTimeout(t); } }, [scope, db, search]);
   useEffect(() => { if (!newName && db) setNewName(`${db}_restored`.slice(0, 63)); }, [db]);
 
   const tparams = (): Record<string, any> => tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : {};
@@ -50,7 +50,10 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
 
-  const dbs: CatDb[] = dbsR.op?.result?.databases || [];
+  const catDbs: CatDb[] = dbsR.op?.result?.databases || [];
+  // databases that exist now but in NO backup (created after the last one): restorable from the WAL alone, so they are offered too
+  const dbs: CatDb[] = useMemo(() => dbsR.op?.status !== 'succeeded' ? catDbs : [...catDbs, ...((c.databases || []) as any[]).filter(x => x?.name && !catDbs.some(d => d.name === x.name))
+    .map(x => ({ name: String(x.name), oid: String(x.oid ?? ''), size: Number(x.size) || 0, late: true }))], [dbsR.op, c.databases]);
   // what exists NOW (agent snapshot): a database in the backups and not here was DROPPED
   const live: Set<string> | null = Array.isArray(c.databases) && c.databases.length ? new Set<string>(c.databases.map((x: any) => x.name)) : null;
   const droppedDbs = useMemo(() => (live ? dbs.filter(x => !live.has(x.name) && kindOf(x.name) === 'app') : []), [dbs, live]);
@@ -67,7 +70,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const objLive = useMemo(() => {
     if (!db || selDropped) return db && selDropped ? { tables: new Set<string>(), schemas: new Set<string>(), all: true } : null;
     const r = liveR.op?.status === 'succeeded' ? liveR.op.result : null; if (!r) return null;
-    return { tables: new Set<string>((r.objects || []).map((o: any) => `${db}.${o.schema}.${o.table}`)), schemas: new Set<string>((r.schemas || []).map((n: string) => `${db}.${n}`)), all: false };
+    return { tables: new Set<string>((r.objects || []).map((o: any) => `${db}.${o.schema}.${o.table}`)), schemas: new Set<string>((r.schemas || []).map((n: string) => `${db}.${n}`)), all: false,
+             objects: (r.objects || []) as { schema: string; table: string }[] };
   }, [liveR.op, db, selDropped]);
   const catSchemas: any[] = objR.op?.status === 'succeeded' ? objR.op.result.schemas || [] : [];
   const anyTblGone = !!objLive && !objLive.all && catSchemas.some(sc => !objLive.schemas.has(`${db}.${sc.name}`) || (sc.objects || []).some((o: any) => !objLive.tables.has(`${db}.${sc.name}.${o.name}`)));
@@ -97,7 +101,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       {scope !== 'instance' ? (dbsR.op && dbsR.op.status === 'succeeded' ? <>
         <Field label="Database"><DbPicker dbs={dbs} live={live} drops={drops} dropsState={dropsR.busy ? 'running' : dropsR.op?.status === 'succeeded' ? 'done' : dropsR.op ? 'failed' : 'idle'} value={db} onChange={n => { setDb(n); setObjs([]); prev.reset(); }} /></Field>
         {selDropped && selDb ? <DroppedNote db={db} info={drops[String(selDb.oid)]} lastStop={selDb.last_stop} /> : null}
-        {scope === 'object' && db ? <ObjectPicker r={objR.op} busy={objR.busy} search={search} setSearch={setSearch} db={db} value={objs} onChange={setObjs} mode={objMode} live={objLive} drops={tblDrops} dropsBusy={tdropR.busy} err={objR.error} /> : null}</> :
+        {selDb?.late ? <Banner kind="info" title="Creato dopo l’ultimo backup">Nessun backup contiene <strong>{db}</strong>: pg_arca lo ricostruisce dai soli WAL archiviati (la creazione e tutte le modifiche vengono rigiocate). Funziona per ogni istante successivo alla sua creazione; un backup recente rende il ripristino più rapido.</Banner> : null}
+        {scope === 'object' && db ? <ObjectPicker r={selDb?.late ? null : objR.op} busy={selDb?.late ? liveR.busy : objR.busy} search={search} setSearch={setSearch} db={db} value={objs} onChange={setObjs} mode={objMode} live={objLive} drops={tblDrops} dropsBusy={tdropR.busy} err={objR.error} /> : null}</> :
         <OpPanel op={dbsR.op} error={dbsR.error} label="Lettura del catalogo dei backup" />) : null}
       <div className="row"><div className="grow" /><Button kind="primary" disabled={!okWhat} onClick={() => setStep(1)}>Avanti</Button></div></div></Card>}
 
@@ -111,6 +116,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
           <div>{tgt.mode === 'latest' ? <strong>Ultimo istante disponibile</strong> : tgt.mode === 'time' ? <strong>{new Date(tgt.ms).toLocaleString('it-CH')}</strong> : <strong>Subito prima di {tgt.label}</strong>}</div>
           {tgt.mode !== 'latest' ? <Button sm onClick={() => setTgt({ mode: 'latest' })}>Usa l’ultimo istante</Button> : null}
           <div className="small muted">Backup di partenza: {baseSet ? <><span className="mono">{baseSet.id}</span> ({TYPE_LABEL[baseSet.type]})</> : <span style={{ color: 'var(--bad)' }}>nessuno prima di questo istante</span>}</div></div></div>
+      {selDb && !selDb.late && selDb.first_stop && tgt.mode === 'time' && tgt.ms < Date.parse(selDb.first_stop) ? <Banner kind="warn" title={`${db} compare nei backup solo dal ${fmtWhen(Date.parse(selDb.first_stop))}`}>A questo istante potrebbe non esistere ancora: in quel caso il ripristino si ferma dopo il recupero e lo dice. Se è stato creato più tardi, scegli un istante successivo alla sua creazione.</Banner> : null}
       {selDropped && tgt.mode === 'latest' ? <Banner kind="info" title="Database eliminato: l’ultimo istante utile è subito prima del DROP">Per <strong>{db}</strong> “ultimo istante disponibile” significa un attimo prima che venisse eliminato: pg_arca lo individua da solo nei WAL. Scegli un istante diverso solo se ti serve una versione più vecchia.</Banner> : null}
       <details open={!!events.length || !!fx.op}><summary style={{ cursor: 'pointer', fontWeight: 500 }}>Hai cancellato qualcosa? Cerca eliminazioni e svuotamenti nei WAL</summary>
         <div className="stack" style={{ marginTop: 10 }}>
@@ -215,8 +221,20 @@ const Gone = ({ info, busy, lastLabel }: { info?: DropInfo; busy?: boolean; last
   return <span className="gonechip"><span className="dropped">DROPPED</span><span className="when small">{Number.isFinite(t) ? `${info!.time_exact ? '' : 'circa '}${fmtWhen(t)}` : busy ? 'data in calcolo…' : lastLabel || ''}</span></span>; };
 
 function ObjectPicker({ r, busy, search, setSearch, db, value, onChange, mode, live, drops, dropsBusy, err }: { r: Op | null; busy: boolean; search: string; setSearch: (s: string) => void; db: string; value: string[]; onChange: (v: string[]) => void; mode: 'table' | 'schema';
-  live: { tables: Set<string>; schemas: Set<string>; all: boolean } | null; drops: Record<string, DropInfo>; dropsBusy: boolean; err?: string | null }) {
-  const schemas: any[] = r?.status === 'succeeded' ? r.result.schemas || [] : [];
+  live: { tables: Set<string>; schemas: Set<string>; all: boolean; objects?: { schema: string; table: string }[] } | null; drops: Record<string, DropInfo>; dropsBusy: boolean; err?: string | null }) {
+  // the backup catalog + the tables that exist now and in no backup (created after it: restorable from the WAL alone)
+  const schemas: any[] = useMemo(() => {
+    const cat: any[] = r?.status === 'succeeded' ? (r.result.schemas || []).map((sc: any) => ({ ...sc, objects: [...(sc.objects || [])] })) : [];
+    const ql = search.trim().toLowerCase();
+    for (const o of live?.objects || []) {
+      if (ql && !`${o.schema}.${o.table}`.toLowerCase().includes(ql)) continue;
+      let sc = cat.find(x => x.name === o.schema);
+      if (sc?.objects.some((x: any) => x.name === o.table)) continue;
+      if (!sc) { sc = { name: o.schema, objects: [], late: true }; cat.push(sc); }
+      sc.objects.push({ name: o.table, late: true });
+    }
+    return cat;
+  }, [r, live, search]);
   const has = (id: string) => value.includes(id);
   const toggleTable = (id: string) => onChange(has(id) ? value.filter(x => x !== id) : [...value, id]);
   const toggleSchema = (sch: string, tablesIds: string[]) => { const sid = `${db}.${sch}`; onChange(mode === 'schema' ? (has(sid) ? value.filter(x => x !== sid) : [...value, sid]) : has(sid) ? value.filter(x => x !== sid) : [...value.filter(x => !tablesIds.includes(x)), sid]); };
@@ -232,7 +250,7 @@ function ObjectPicker({ r, busy, search, setSearch, db, value, onChange, mode, l
         return <div key={s.name}><label className={`sch ${sg ? 'gone' : ''}`}><input type="checkbox" checked={whole} onChange={() => toggleSchema(s.name, ids)} /> <strong>{s.name}</strong>{s.tables != null ? <span className="faint small"> — {s.tables} {s.tables === 1 ? 'tabella' : 'tabelle'}, {bytes(s.bytes)}{whole && mode === 'table' ? ' · schema intero' : ''}</span> : null}
           {sg ? <Gone info={schemaDrop(sid, ids)} busy={dropsBusy} lastLabel="eliminato" /> : live ? <span className="here small">Presente</span> : null}</label>
           {mode === 'table' ? s.objects.map((o: any) => { const id = `${db}.${s.name}.${o.name}`; const on = whole || has(id); const g = tableGone(id);
-            return <button key={id} aria-pressed={on} disabled={whole} onClick={() => toggleTable(id)} className={g ? 'gone' : ''}><input type="checkbox" readOnly checked={on} tabIndex={-1} /><span className="grow">{o.name}</span>{g && !sg ? <Gone info={drops[id]} busy={dropsBusy} lastLabel="eliminata" /> : null}<span className="faint small">{o.partitions ? `${o.partitions} partizioni · ` : ''}{bytes(o.size)}</span></button>; }) : null}</div>; })}
+            return <button key={id} aria-pressed={on} disabled={whole} onClick={() => toggleTable(id)} className={g ? 'gone' : ''}><input type="checkbox" readOnly checked={on} tabIndex={-1} /><span className="grow">{o.name}{o.late ? <span className="here small" title="Non è in nessun backup: si ricostruisce dai WAL archiviati" style={{ marginLeft: 8 }}>dopo l’ultimo backup</span> : null}</span>{g && !sg ? <Gone info={drops[id]} busy={dropsBusy} lastLabel="eliminata" /> : null}<span className="faint small">{o.partitions ? `${o.partitions} partizioni · ` : ''}{bytes(o.size)}</span></button>; }) : null}</div>; })}
       {r?.status === 'succeeded' && !schemas.length ? <div style={{ padding: 12 }} className="muted">Nessuna corrispondenza.</div> : null}
       {r?.status === 'failed' ? <div style={{ padding: 12 }} className="muted">{r.error}</div> : null}{!r && err ? <div style={{ padding: 12, color: 'var(--bad)' }}>{err}</div> : null}</div>
     {r?.result?.truncated ? <p className="small muted">Elenco troncato: affina la ricerca.</p> : null}

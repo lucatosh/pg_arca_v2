@@ -9,7 +9,7 @@ export function parseWalTime(s?: string | null): number {
 }
 export const fmtWhen = (ms: number) => new Date(ms).toLocaleString('it-IT', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-export type CatDb = { name: string; oid: number | string; size: number; connectable?: boolean; tables?: number; objects?: number; matviews?: number; schemas?: number; in_latest?: boolean; last_set?: string; last_stop?: string };
+export type CatDb = { name: string; oid: number | string; size: number; connectable?: boolean; tables?: number; objects?: number; matviews?: number; schemas?: number; in_latest?: boolean; last_set?: string; last_stop?: string; first_stop?: string; late?: boolean };
 export type DropInfo = { time: string; time_exact: boolean } | null | undefined;
 type Kind = 'app' | 'work' | 'system';
 export const kindOf = (n: string): Kind => (/^(template[01]|postgres)$/.test(n) ? 'system' : /^(arca_rl_|pgarca_stage_)/.test(n) || /_(pitr|restored)(_?\d+)?$/.test(n) ? 'work' : 'app');
@@ -34,11 +34,11 @@ export function DbPicker({ dbs, live, drops, dropsState, value, onChange }: { db
     return <button key={d.name} type="button" role="radio" aria-checked={sel} className={`dbrow ${sel ? 'on' : ''} ${r.dropped ? 'gone' : ''}`} onClick={() => onChange(d.name)}>
       <span className="rb" aria-hidden="true" />
       <span className="nm"><strong>{d.name}</strong>
-        <span className="meta">{bytes(d.size)} · {plural(d.tables ?? d.objects ?? 0, 'tabella', 'tabelle')}{d.matviews ? ` · ${plural(d.matviews, 'vista materializzata', 'viste materializzate')}` : ''}{d.schemas ? ` · ${plural(d.schemas, 'schema', 'schemi')}` : ''}</span></span>
+        <span className="meta">{bytes(d.size)}{d.late ? ' · non ancora in un backup' : <> · {plural(d.tables ?? d.objects ?? 0, 'tabella', 'tabelle')}</>}{d.matviews ? ` · ${plural(d.matviews, 'vista materializzata', 'viste materializzate')}` : ''}{d.schemas ? ` · ${plural(d.schemas, 'schema', 'schemi')}` : ''}</span></span>
       <span className="st">{r.dropped ? <>
         <span className="dropped" title="Questo database non esiste più sul server">DROPPED</span>
         <span className="when">{Number.isFinite(t) ? `${info!.time_exact ? '' : 'circa '}${fmtWhen(t)}` : dropsState === 'running' ? <><Icon n="refresh" s={12} spin /> data in calcolo…</> : d.last_stop ? `esisteva al backup del ${fmtWhen(Date.parse(d.last_stop))}` : 'data non rilevata'}</span></>
-        : live ? <span className="here">Presente</span> : null}</span>
+        : d.late ? <span className="here" title="Nessun backup lo contiene: si ricostruisce dai WAL archiviati">Dopo l’ultimo backup</span> : live ? <span className="here">Presente</span> : null}</span>
     </button>;
   };
   const group = (title: string, hint: string | null, list: typeof rows, tone?: string) => list.length ? <div className={`dbgroup ${tone || ''}`} key={title}><div className="gh"><span>{title}</span><span className="n">{list.length}</span>{hint ? <span className="hint">{hint}</span> : null}</div>{list.map(row)}</div> : null;

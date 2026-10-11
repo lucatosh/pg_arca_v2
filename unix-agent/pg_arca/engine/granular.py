@@ -257,9 +257,38 @@ def _db_usable(eph, entry):
         s.close()
 
 
+def _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name):
+    """Catalog entry of `db` in the base backup, or - when the database was CREATED AFTER that backup - a placeholder: the recovery rebuilds it from the WAL alone
+    (CREATE DATABASE is replayed; its oid, encoding and size are read from the recovered instance). Only possible when the recovery really goes past the backup."""
+    if db in cat["databases"]:
+        return cat["databases"][db]
+    return {"name": db, "oid": None, "size": 0, "relations": [], "late": True, "base_set": target["id"]}
+
+
+def _late_check(entry, what):
+    return {"id": "late_db", "level": "warn",
+            "text": "%s is not in backup %s: it was created after that backup, so it is rebuilt from the WAL alone (size unknown in advance)" % (what, entry.get("base_set") or "?"),
+            "fix": "if it did not exist yet at the chosen time the restore stops after the recovery and says so; a later backup makes this faster and cheaper"}
+
+
 def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel):
     """_recover() for a recovery whose purpose is to read database `entry`: if that database was dropped right after the target, it is already damaged in the recovered
     instance (see find_drop_database_lsn). We then stop BEFORE the DROP DATABASE transaction (exclusive LSN) and say so (`stopped_before_drop`)."""
+    if entry.get("oid") is None:                          # created after the base backup: only the WAL knows it
+        eph, info = _recover(ctx, chain, set(), tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+        s = PgSession(eph.conn("postgres"), read_only=True)
+        try:
+            row = s.query("SELECT oid::int, pg_encoding_to_char(encoding), datcollate, datctype FROM pg_database WHERE datname = %s" % sql_lit(entry["name"]))
+        finally:
+            s.close()
+        if row and row[0]:
+            entry.update(oid=int(row[0][0]), encoding=row[0][1], collate=row[0][2], ctype=row[0][3])
+            if _db_usable(eph, entry):
+                info["created_after_backup"] = True
+                return eph, info
+        eph.cleanup()
+        raise EngineError("PGA-PITR-016", "database '%s' did not exist yet at the requested point: it is not in backup %s and the WAL up to the target does not create it"
+                          % (entry["name"], entry.get("base_set") or "?"), "choose a later time")
     eph, info = _recover(ctx, chain, {entry["oid"]}, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     if _db_usable(eph, entry):
         return eph, info
@@ -288,12 +317,10 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
                      into=None, new_name=None, jobs=2, dry_run=False, progress=None, cancel=None):
     target, chain, tt, note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
-    if db not in cat["databases"]:
-        raise EngineError("PGA-GEN-031", "database '%s' is not in backup %s" % (db, target["id"]), "available: %s" % ", ".join(sorted(cat["databases"])))
-    entry = cat["databases"][db]
+    entry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name)
     new_name = new_name or (db + "_restored")
     _check_name(new_name, "destination database name")
-    merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter({entry["oid"]} | system_db_oids(cat)))
+    merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter(({entry["oid"]} if entry["oid"] is not None else set()) | system_db_oids(cat)))
     merged_all, _ = merge_chain(ctx.repo, chain)
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "database": db, "destination_database": new_name,
             "extract_bytes": estimate(merged_sel), "cluster_bytes": estimate(merged_all),
@@ -317,7 +344,20 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
             raise
         dest_err = str(e)                                  # the plan still shows everything else; the unreachable destination becomes a blocker in it
         ctx.log("warning", "plan: cannot look at the live cluster: %s" % e)
+    if entry.get("late") and not entry["size"] and not dest_err:
+        try:                                               # best guess for the space check: the database as it is now
+            s = PgSession(admin.with_db("postgres"), read_only=True)
+            try:
+                v = s.scalar("SELECT pg_database_size(oid) FROM pg_database WHERE datname = %s" % sql_lit(db))
+                entry["size"] = int(v) if v and v.isdigit() else 0
+            finally:
+                s.close()
+        except Exception:
+            pass
     checks = restorecheck.check(ctx, plan, merged_sel, target, need_dest=entry["size"], into=into, name_taken=taken)
+    if entry.get("late"):
+        checks.append(_late_check(entry, "database '%s'" % db))
+        plan["created_after_backup"] = True
     if dest_err:
         where = ("%s:%s" % (into.get("host"), into.get("port", 5432))) if isinstance(into, dict) else "the local PostgreSQL"
         last = dest_err.strip().splitlines()[-1] if dest_err.strip() else dest_err
@@ -377,16 +417,20 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     db, sel = objmod.parse_selection(spec, objects)
     target, chain, tt, _note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
-    if db not in cat["databases"]:
-        raise EngineError("PGA-GEN-031", "database '%s' is not in the backup catalog" % db, "available: %s" % ", ".join(sorted(cat["databases"])))
-    dbentry = cat["databases"][db]
-    nrel = objmod.selection_in_catalog(dbentry, sel)
+    dbentry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name)
+    late_objs = None
+    try:
+        nrel = objmod.selection_in_catalog(dbentry, sel) if not dbentry.get("late") else None
+    except EngineError as e:
+        if e.code != "PGA-GEN-032":
+            raise
+        nrel, late_objs = None, e.message            # created after the base backup (a new table/schema): the recovery replays it from the WAL; analyze() checks it exists
     label = ", ".join(("%s.%s" % (o["schema"], o["name"])) if o["kind"] == "rel" else ("schema %s" % o["schema"]) for o in sel)
     stage = stage_db or ("pgarca_stage_" + now_utc().strftime("%Y%m%dt%H%M%S"))
     if not stage.startswith("pgarca_stage_"):
         raise EngineError("PGA-GEN-081", "a quarantine database name must start with pgarca_stage_ (pg_arca drops it after promotion: it must never be a user database)")
     _check_name(stage, "quarantine database name")
-    merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter({dbentry["oid"]} | system_db_oids(cat)))
+    merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter(({dbentry["oid"]} if dbentry["oid"] is not None else set()) | system_db_oids(cat)))
     merged_all, _ = merge_chain(ctx.repo, chain)
     size_in_backup = sum(o["size"] for o in objmod_user_sizes(dbentry, sel))
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "object": label, "selection": sel, "relations_in_backup": nrel, "size_in_backup": size_in_backup,
@@ -409,6 +453,13 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
         dest_err = str(e)                                  # the plan still shows everything else; the unreachable destination becomes a blocker in it
         ctx.log("warning", "plan: cannot look at the live cluster: %s" % e)
     checks = restorecheck.check(ctx, plan, merged_sel, target, need_dest=size_in_backup, into=into, name_taken=taken, scope="object")
+    if dbentry.get("late"):
+        checks.append(_late_check(dbentry, "database '%s'" % db))
+        plan["created_after_backup"] = True
+    elif late_objs:
+        checks.append({"id": "late_obj", "level": "warn", "text": "%s in backup %s: it was created after that backup and is rebuilt from the WAL" % (late_objs, target["id"]),
+                       "fix": "if it did not exist yet at the chosen time the restore stops after the recovery and says so"})
+        plan["created_after_backup"] = True
     if dest_err:
         where = ("%s:%s" % (into.get("host"), into.get("port", 5432))) if isinstance(into, dict) else "the local PostgreSQL"
         last = dest_err.strip().splitlines()[-1] if dest_err.strip() else dest_err
