@@ -8,6 +8,7 @@
 import { Store, NodeRecord, nowIso } from './store';
 import * as ops from './ops';
 import { hbaTarget } from './hba';
+import { conflictFor } from './conflicts';
 import { geoOf } from './geo';
 import { isTerminal } from './ops';
 
@@ -98,6 +99,7 @@ export async function hbaExpiryTick(store: Store, now = Date.now()): Promise<str
     const okAfter = (n: NodeRecord) => mine.some(o => (c.haState?.managedByPatroni || o.nodeId === n.id) && o.status === 'succeeded' && ts(o.createdAt) >= latestDue);
     const pending = nodes.filter(n => !okAfter(n));
     if (!pending.length && nodes.length) { await store.mutate(d => { const m = d.settings.hbaExpiry; m[cid] = (m[cid] || []).filter((t: number) => t > now); if (!m[cid].length) delete m[cid]; }); continue; }
+    if (conflictFor(st.operations, cid, 'hba_expire', {})) continue;        // someone is changing pg_hba right now: retried at the next tick
     for (const n of pending) {
       const bucket = Math.floor(now / 600_000);
       const r = await ops.submit(store, { type: 'hba_expire', clusterId: cid, nodeId: n.id, params: {}, idempotencyKey: `sched:${cid}:hbaexp:${n.id}:${bucket}`, createdBy: 'scheduler', ttlSeconds: 600 });

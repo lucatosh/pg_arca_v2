@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import { Store } from './store';
 import * as ops from './ops';
 import { requiresApproval, requestApproval } from './approvals';
+import { conflictFor } from './conflicts';
 
 export interface HbaTemplate {
   id: string; name: string; description: string; envs: string[];
@@ -60,6 +61,7 @@ export function mountHbaRoutes(app: any, store: Store) {
       return res.status(202).json({ approval: rec, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
     }
     const t = hbaTarget(st, c.id); if (!t) return res.status(409).json({ error: 'no_suitable_node', message: 'Nessun nodo con l’API di Patroni raggiungibile.' });
+    const cf = conflictFor(st.operations.filter(o => o.idempotencyKey !== key), c.id, 'hba_restore', params, (req as any).actor); if (cf) return res.status(409).json(cf);
     try {
       const r = await ops.submit(store, { type: 'hba_restore', clusterId: c.id, nodeId: t.id, params, idempotencyKey: key, createdBy: (req as any).actor || 'admin', ttlSeconds: 600 });
       res.status(202).json({ operation: r.op });
@@ -111,6 +113,7 @@ export async function recordHbaHistory(store: Store, op: any) {
 
 /** Submit one hba_apply per target node (or one for the whole Patroni cluster) and remember temporary-rule expiries for the scheduler. */
 export async function hbaFanout(store: Store, c: any, body: any, key: string, actor: string): Promise<{ code: number; body: any }> {
+  const c0 = c;
   const st = store.peek(); const { rules, force = false, adopt = false } = body;
   const baseRevs: Record<string, string> = body.baseRevs && typeof body.baseRevs === 'object' && !Array.isArray(body.baseRevs) ? body.baseRevs : {};
   const bad = validateOp('hba_apply', { rules, force: !!force, adopt: !!adopt });                 // the same checks every other operation gets
@@ -122,6 +125,10 @@ export async function hbaFanout(store: Store, c: any, body: any, key: string, ac
   const t = patroni ? hbaTarget(st, c.id) : null;
   if (patroni && !t) return { code: 409, body: { error: 'no_suitable_node', message: 'Nessun nodo con l’API di Patroni raggiungibile: pg_hba si modifica solo tramite il DCS.' } };
   const targets = patroni ? [t!] : online;
+  {                                                   // a colleague is already changing pg_hba here: refused with who and since when (replays of the same intent pass)
+    const cf = conflictFor(st.operations.filter(o => !String(o.idempotencyKey || '').startsWith(`${key}:`)), c0.id, 'hba_apply', {}, actor);
+    if (cf) return { code: 409, body: cf };
+  }
   const out: any[] = [];
   try {
     for (const n of targets) {
