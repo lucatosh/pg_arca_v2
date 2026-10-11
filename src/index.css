@@ -341,6 +341,12 @@ details.dbgroup > summary.gh { cursor: pointer; } details.dbgroup > summary.gh::
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
 .gonechip { display: inline-flex; align-items: center; gap: 8px; margin-left: 10px; font-weight: 400; } .gonechip .dropped { background: var(--bad); color: #fff; font-weight: 800; letter-spacing: .08em; font-size: 10.5px; padding: 1px 7px; border-radius: 5px; } .gonechip .when { color: var(--ink-3); }
 .tree .sch.gone strong, .tree button.gone .grow { color: var(--bad); } .tree .here { color: var(--ok); font-weight: 600; margin-left: 10px; }
+/* polish: selection, readable row hover on every table, a quiet header tint on cards, numerals that do not jump */
+::selection { background: color-mix(in srgb, var(--accent-2) 30%, transparent); }
+table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+.card > .hd { background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface-2) 55%, var(--surface))); border-radius: var(--r-lg) var(--r-lg) 0 0; }
+.card > .hd:last-child { border-radius: var(--r-lg); border-bottom: 0; }
+.btn, .tabs button, .side .navbtn { -webkit-tap-highlight-color: transparent; }
 .preflight { border: 1px solid var(--line, #d8dbe0); border-radius: var(--r); padding: 10px 14px; } .preflight.bad { border-color: var(--bad); background: var(--bad-soft); } .preflight.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line, #d8dbe0)); }
 .preflight .ph { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; } .preflight ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .preflight li { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; } .preflight li svg { flex: none; margin-top: 2px; } .preflight li.ok svg { color: var(--ok); } .preflight li.warn svg { color: var(--warn); } .preflight li.bad svg { color: var(--bad); }
