@@ -26,7 +26,18 @@ if a and a[0] == "show":      # op.py show <id-suffix> -> full record of an oper
     for o in ops:
         if o["id"].endswith(a[1]): print(json.dumps(o, indent=1)[:4000])
     sys.exit(0)
-cl, typ = a[0], a[1]; params = json.loads(a[2]) if len(a) > 2 and not a[2].startswith("--") else {}
+def _kv(args):
+    """params as key=value words (JSON values): avoids the shell-quoting trouble of passing JSON through ssh/PowerShell.   hours=24 mode=databases since_backup=true"""
+    o = {}
+    for w in args:
+        k, _, v = w.partition("=")
+        try: o[k] = json.loads(v)
+        except ValueError: o[k] = v
+    return o
+cl, typ = a[0], a[1]
+rest = [x for x in a[2:] if not x.startswith("--")]
+if rest and rest[0].startswith("{"): params = json.loads(rest[0])
+else: params = _kv([x for i, x in enumerate(a[2:]) if "=" in x and not x.startswith("--") and (i == 0 or not a[2:][i - 1].startswith("--"))])
 node = a[a.index("--node") + 1] if "--node" in a else None; wait = int(a[a.index("--wait") + 1]) if "--wait" in a else 300
 s, d = call("GET", "/api/clusters"); cs = [c for c in d["clusters"] if c["id"] == cl or cl.lower() in c["name"].lower()]
 if not cs: print("cluster not found"); sys.exit(2)
