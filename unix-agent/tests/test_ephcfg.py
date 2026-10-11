@@ -98,8 +98,29 @@ class InstallPlan(unittest.TestCase):
         self.assertTrue(p["modes"]["system"]["possible"])
         self.assertTrue(any("cluster" in w for w in p["modes"]["system"]["warnings"]))
 
+    def test_an_empty_apt_index_is_not_reported_as_a_missing_repository(self):
+        lists = tempfile.mkdtemp()
+        self.assertTrue(ephcfg._apt_index_empty(lists))
+        open(os.path.join(lists, "deb.debian.org_debian_dists_trixie_main_binary-amd64_Packages.lz4"), "w").close()
+        self.assertFalse(ephcfg._apt_index_empty(lists))
+        self.assertFalse(ephcfg._apt_index_empty(os.path.join(lists, "nope")))
+        orig = ephcfg._apt_index_empty
+        try:
+            ephcfg._apt_index_empty = lambda *a, **k: True
+            p = ephcfg.install_plan(17, {"install_dir": tempfile.mkdtemp()}, FACTS_DEB, available=False)
+        finally:
+            ephcfg._apt_index_empty = orig
+        bl = " ".join(p["modes"]["private"]["blockers"])
+        self.assertIn("apt-get update", bl)
+        self.assertNotIn("PGDG", bl)
+
     def test_an_unknown_package_points_to_the_repository_to_add(self):
-        p = ephcfg.install_plan(19, {"install_dir": tempfile.mkdtemp()}, FACTS_DEB, available=False)
+        orig = ephcfg._apt_index_empty
+        try:
+            ephcfg._apt_index_empty = lambda *a, **k: False
+            p = ephcfg.install_plan(19, {"install_dir": tempfile.mkdtemp()}, FACTS_DEB, available=False)
+        finally:
+            ephcfg._apt_index_empty = orig
         self.assertFalse(p["modes"]["private"]["possible"])
         self.assertTrue(any("PGDG" in b for b in p["modes"]["private"]["blockers"]))
         self.assertIsNone(p["recommended"])

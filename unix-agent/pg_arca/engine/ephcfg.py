@@ -223,6 +223,14 @@ def _pkgs(family, major):
     return []
 
 
+def _apt_index_empty(lists="/var/lib/apt/lists"):
+    """True when apt has no package index at all (cleaned image, `apt-get update` never run): then 'unknown package' means 'index is empty', not 'repository missing'."""
+    try:
+        return not any(n.endswith("_Packages") or "_Packages." in n for n in os.listdir(lists))
+    except OSError:
+        return False
+
+
 def _available(family, major, run=None):
     """Does the package manager know the package? (False/True/None for 'cannot tell')."""
     run = run or _run
@@ -261,7 +269,9 @@ def install_plan(major, eph=None, facts=None, available=None):
     if fam not in ("debian", "rhel"):
         plan["blocked"] = "automatic installation is supported on Debian/Ubuntu and RHEL-like systems; on this host (%s) install the PostgreSQL %d server package by hand and set the binaries directory" % (f["os"], major)
         return plan
-    if avail is False:
+    if avail is False and fam == "debian" and _apt_index_empty():
+        common.append("apt has no package index on this host (apt-get update was never run, or the lists were cleaned), so %s cannot be found: run `apt-get update` as root, or install system-wide with root/sudo" % ", ".join(pk))
+    elif avail is False:
         common.append("the package manager does not know %s: add the PostgreSQL (PGDG) repository for this distribution first (https://www.postgresql.org/download/linux/)" % ", ".join(pk))
     # ---- private
     need, blockers = [], []
