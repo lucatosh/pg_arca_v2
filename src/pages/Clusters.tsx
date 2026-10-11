@@ -7,6 +7,7 @@ import { go } from '../router';
 import { statusKind } from '../App';
 import { buildFleet, toneOf, useFold, FolderNode, replicaText } from '../Fleet';
 import { useHealth } from './Today';
+import { GeoLinkField, LinkMode, linkModeOf, saveGeoLink } from '../GeoLink';
 
 const ENVS = [['prod', 'Produzione'], ['prep', 'Pre-produzione'], ['int', 'Integrazione'], ['dev', 'Sviluppo'], ['test', 'Test']];
 const stratOf = (c: any, pol: any) => {
@@ -51,14 +52,15 @@ function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; 
   const nn = (c: any) => c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0;
   const nodes = (n: FolderNode): number => n.clusters.reduce((a, c) => a + nn(c) + (c.replicas || []).reduce((b: number, r: any) => b + nn(r), 0), 0) + n.children.reduce((a, x) => a + nodes(x), 0);
   const summary = (n: { count: number; bad: number; warn: number }) => <span className="small muted">{n.count} {n.count === 1 ? 'cluster' : 'cluster'}{n.bad ? <> · <span style={{ color: 'var(--bad)', fontWeight: 600 }}>{n.bad} critici</span></> : null}{n.warn ? <> · <span style={{ color: 'var(--warn)', fontWeight: 600 }}>{n.warn} da controllare</span></> : null}{!n.bad && !n.warn ? ' · tutti in salute' : ''}</span>;
-  const one = (c: any, depth: number, replica = false) => <tr key={c.id} className={`click${replica ? ' replicarow' : ''}`} onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>
+  const one = (c: any, depth: number, replica = false, parentEnv?: string) => <tr key={c.id} className={`click${replica ? ' replicarow' : ''}`} onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>
     <td style={{ paddingLeft: 14 + depth * 18 }}><span className="row gap-s">{replica ? <span className="branch" aria-hidden /> : null}<Dot kind={toneOf(c, health)} /><a href={`#/c/${encodeURIComponent(c.id)}`} onClick={e => e.stopPropagation()}><strong>{c.name}</strong></a>
+      {replica && parentEnv && c.environment && c.environment !== parentEnv ? <span className="faint small">· {c.environment}</span> : null}
       {replica ? <span className="geotag" title="Sito di replica (standby cluster): riceve i dati dal primario sopra">DR</span> : c.replicas?.length ? <span className="geotag p" title={`Sito primario, replicato su ${c.replicas.map((r: any) => r.name).join(', ')}`}>GEO</span> : null}</span></td>
-    <td><span className="small">{replica ? <>Replica di {c.geo.peers?.find((p: any) => p.role === 'primary')?.name} · <span style={{ color: c.geo.health === 'ok' ? undefined : `var(--${c.geo.health})` }}>{replicaText(c)}</span></> : c.status === 'healthy' ? 'In salute' : c.status === 'degraded' ? 'Degradato' : c.status}{health[c.id] === 'critical' || health[c.id] === 'warning' ? <span className="faint"> · {health[c.id] === 'critical' ? 'problemi critici' : 'da controllare'}</span> : null}</span></td>
+    <td className={replica ? 'stcell' : undefined} title={replica ? `Replica di ${c.geo.peers?.find((p: any) => p.role === 'primary')?.name}: ${replicaText(c)}` : undefined}><span className="small">{replica ? <>Replica{c.geo.link === 'manual' ? ' (indicata a mano)' : ''} · <span style={{ color: c.geo.health === 'ok' ? undefined : `var(--${c.geo.health})` }}>{replicaText(c)}</span></> : c.status === 'healthy' ? 'In salute' : c.status === 'degraded' ? 'Degradato' : c.status}{health[c.id] === 'critical' || health[c.id] === 'warning' ? <span className="faint"> · {health[c.id] === 'critical' ? 'problemi critici' : 'da controllare'}</span> : null}</span></td>
     <td>{modeOf(c)}</td><td>{stratOf(c, pol)}</td><td>{c.pgVersion || '—'}</td>
     <td className="num">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num">{bytes(c.totalSizeBytes)}</td><td className="num">{num(c.tps)}</td>
-    <td className="num">{c.isSandbox ? null : <button className="btn ghost sm" onClick={e => { e.stopPropagation(); onOrganize(c); }} title="Ambiente e cartella">Sposta…</button>}</td></tr>;
-  const row = (c: any, depth: number) => [one(c, depth), ...(c.replicas || []).map((r: any) => one(r, depth + 1, true))];
+    <td className="num">{c.isSandbox ? null : <button className="btn ghost sm" onClick={e => { e.stopPropagation(); onOrganize(c); }} title="Ambiente, cartella e relazione di replica">Organizza…</button>}</td></tr>;
+  const row = (c: any, depth: number) => [one(c, depth), ...(c.replicas || []).map((r: any) => one(r, depth + 1, true, c.environment))];
   const folder = (n: FolderNode, env: string, depth: number): React.ReactNode[] => {
     const k = `${env}:${n.path}`; const open = fold.isOpen(k, true);
     return [<tr key={'f' + k} className="frow" onClick={() => fold.toggle(k, true)}><td colSpan={9} style={{ paddingLeft: 14 + depth * 18 }}>
@@ -77,13 +79,15 @@ function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; 
 /** Environment and folder of a cluster ("prod" > "fatturazione/api"): what groups it in the console AND what its folder-level strategies and settings inherit. */
 function Organize({ c, all, onClose }: { c: any; all: any[]; onClose: () => void }) {
   const [env, setEnv] = useState(c.environment || 'prod'); const [folder, setFolder] = useState(c.folder || ''); const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const [lm, setLm] = useState<LinkMode>(linkModeOf(c)); const [lp, setLp] = useState<string>(c.geoLink?.primary || '');
   const known = [...new Set(all.filter(x => !x.isSandbox && x.folder).map(x => x.folder as string))].sort();
-  const save = async () => { setBusy(true); setErr(null); try { await api('PATCH', `/api/clusters/${encodeURIComponent(c.id)}`, { environment: env, folder }); revalidate('/api/clusters'); toast('Spostato', 'ok'); onClose(); } catch (e: any) { setErr(e.body?.message || (e.body?.error === 'invalid_folder' ? 'Nome di cartella non valido.' : e.message)); } finally { setBusy(false); } };
-  return <Modal title={`Dove sta ${c.name}`} onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} onClick={save}>Salva</Button></>}>
+  const save = async () => { if (lm === 'manual' && !lp) { setErr('Scegli il cluster primario.'); return; } setBusy(true); setErr(null); try { await api('PATCH', `/api/clusters/${encodeURIComponent(c.id)}`, { environment: env, folder }); await saveGeoLink(c, lm, lp); revalidate('/api/clusters'); toast('Salvato', 'ok'); onClose(); } catch (e: any) { setErr(e.body?.message || (e.body?.error === 'invalid_folder' ? 'Nome di cartella non valido.' : e.message)); } finally { setBusy(false); } };
+  return <Modal title={`Organizza ${c.name}`} onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} onClick={save}>Salva</Button></>}>
     <div className="stack">
       <Field label="Ambiente"><select className="input" value={env} onChange={e => setEnv(e.target.value)}>{ENVS.map(e => <option key={e[0]} value={e[0]}>{e[1]}</option>)}</select></Field>
       <Field label="Cartella" hint="Per applicazione o servizio, anche su più livelli: «fatturazione» oppure «fatturazione/api». Vuota = direttamente sotto l’ambiente.">
         <input className="input" list="folders-known" value={folder} onChange={e => setFolder(e.target.value)} placeholder="nome_app" /><datalist id="folders-known">{known.map(f => <option key={f} value={f} />)}</datalist></Field>
+      <GeoLinkField c={c} all={all} mode={lm} setMode={setLm} primary={lp} setPrimary={setLp} />
       {c.geo?.role === 'standby' ? <Banner kind="info">{c.name} è un sito di replica: nell’elenco e nella barra laterale compare sempre sotto il suo primario ({c.geo.peers?.find((p: any) => p.role === 'primary')?.name || '—'}), ovunque sia archiviato. Ambiente e cartella qui decidono le strategie e le impostazioni che eredita, e la sua posizione se diventa primario.</Banner> : null}
       <p className="small muted">La cartella raggruppa i cluster nella barra laterale e nell’elenco, e le strategie di backup e le impostazioni di recupero assegnate a una cartella valgono per tutti i cluster che contiene.</p>
       {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;

@@ -5,7 +5,8 @@ const base = process.env.BASE || 'http://localhost:5188';
 (async () => {
   const b = await chromium.launch(process.env.PW_CHROMIUM === 'bundled' ? {} : { executablePath: process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium' }); const ctx = await b.newContext({ viewport: { width: 1360, height: 860 } });
   const p = await ctx.newPage(); global.__p = p; const errs = [];
-  p.on('pageerror', e => errs.push('pageerror: ' + e.message)); p.on('console', m => { if (m.type() === 'error' && !/401|428|Failed to load resource|WebSocket/.test(m.text())) errs.push('console: ' + m.text()); });
+  p.on('pageerror', e => errs.push('pageerror: ' + e.message));
+  p.on('response', async r => { if (r.request().method() === 'POST' && /\/operations$/.test(r.url())) { try { const j = await r.json(); if (!j.operation) console.log('POST operations without operation:', r.status(), JSON.stringify(j).slice(0, 400), r.request().postData()?.slice(0, 200)); } catch { /* not json */ } } }); p.on('console', m => { if (m.type() === 'error' && !/401|428|Failed to load resource|WebSocket/.test(m.text())) errs.push('console: ' + m.text()); });
   // cluster pages live in four areas: pick the area (pill), then the page (underline tab)
   const tab = async (area, name) => { await p.click(`.gnav >> role=tab[name="${area}"]`); if (name) await p.click(`.clusternav .tabs >> role=tab[name=/${name}/]`); };
   const shot = n => p.screenshot({ path: `${out}/${n}.png` });
@@ -15,7 +16,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.fill('input[type=password]', 'correct-horse-battery'); await p.click('button[type=submit]');
   await p.waitForSelector('text=Cluster collegati'); await p.waitForSelector('text=prodpg');
   // organise: prodpg into prod > fatturazione/api; the sidebar and the list group it, with the state of the group
-  await p.click('tr:has-text("prodpg") button:has-text("Sposta")'); await p.fill('.modal input[list]', 'fatturazione/api'); await p.click('.modal button:has-text("Salva")');
+  await p.click('tr:has-text("prodpg") button:has-text("Organizza")'); await p.fill('.modal input[list]', 'fatturazione/api'); await p.click('.modal button:has-text("Salva")');
   await p.waitForSelector('.side .fhead.folder:has-text("fatturazione")'); await p.waitForSelector('.fleettable tr.frow:has-text("api")'); await shot('02-clusters');
   assert(await p.locator('text=Cluster demo').count() >= 1, 'demo present');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Protezione dei dati'); await shot('03-overview');
@@ -159,6 +160,17 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Switchover pianificato verso geo-dc2")'); await p.fill('.modal input.mono >> nth=0', 'dc2-haproxy'); await p.click('.modal button:has-text("Salva")');
   await p.click('button:has-text("Switchover pianificato verso geo-dc2")'); await p.fill('.modal input.input', 'SWITCHOVER'); await p.click('.modal button:has-text("Avvia lo switchover")');
   await p.waitForSelector('.geojob:has-text("completato")', { timeout: 30000 }); await p.waitForSelector('.geosite.primary:has-text("geo-dc2")', { timeout: 15000 }); await shot('19b-geo-switched');
+  // relationships: the standby site sits under its primary (auto); "no relationship" detaches it; a cluster without telemetry declared as replica by hand
+  await p.goto(base + '/#/'); await p.waitForSelector('.fleettable tr.replicarow');
+  const stbyName = (await p.locator('.fleettable tr.replicarow strong').first().innerText()).trim();
+  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button:has-text("Organizza")`); await p.check('.modal input[name=glm] >> nth=2'); await p.click('.modal button:has-text("Salva")');
+  await p.waitForFunction(() => !document.querySelector('.fleettable tr.replicarow'), null, { timeout: 15000 });
+  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button:has-text("Organizza")`); await p.check('.modal input[name=glm] >> nth=0'); await p.click('.modal button:has-text("Salva")');
+  await p.waitForSelector('.fleettable tr.replicarow', { timeout: 15000 });
+  await p.click('.fleettable tr:has(strong:text-is("pg-e2e-new")) button:has-text("Organizza")'); await p.check('.modal input[name=glm] >> nth=1');
+  await p.selectOption('.modal fieldset select', { label: 'prodpg · prod' }); await p.click('.modal button:has-text("Salva")');
+  await p.waitForSelector('.fleettable tr.replicarow:has-text("pg-e2e-new")', { timeout: 15000 }); await shot('19c-manual-link');
+  await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("impostato a mano")'); await shot('19d-geo-manual');
   // mobile
   await p.setViewportSize({ width: 390, height: 800 }); await shot('17-mobile');
   console.log(errs.length ? 'ERRORS:\n' + errs.join('\n') : 'no page errors'); assert.strictEqual(errs.length, 0);

@@ -15,6 +15,7 @@ import { PendingJoin } from './Join';
 import { NodePanel } from './NodePanel';
 import { ProtectionRibbon } from './Ribbon';
 import { TAB_ITEMS, TAB_GROUPS, groupOf } from '../tabs';
+import { GeoLinkModal } from '../GeoLink';
 
 const PREVIEW_TEXT: Record<string, string> = {
   ldap: 'Sincronizzazione di utenti e gruppi da LDAP / Active Directory verso i ruoli PostgreSQL. Non ancora disponibile.',
@@ -25,6 +26,7 @@ const PREVIEW_TEXT: Record<string, string> = {
 export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const q = useQuery<{ cluster: any }>(`/api/clusters/${encodeURIComponent(id)}`, { interval: 5000 });
   const [detach, setDetach] = useState(false); const [busy, setBusy] = useState(false); const [spin, setSpin] = useState(false);
+  const [gl, setGl] = useState(false); const allClusters: any[] = useQuery<any>('/api/clusters').data?.clusters || [];
   const c = q.data?.cluster; const cur = TAB_ITEMS.some(t => t.id === tab) ? tab! : 'overview'; const grp = groupOf(cur);
   if (q.error?.status === 404) return <Empty icon="db" title="Cluster non trovato" action={<Button onClick={() => go('')}>Torna all’elenco</Button>}>Potrebbe essere stato scollegato.</Empty>;
   if (!c) return <div className="stack"><Skeleton h={30} w={260} /><Skeleton h={120} /></div>;
@@ -46,7 +48,8 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
     {agentic ? <ActivityStrip id={c.id} /> : null}
     {c.geo ? <div className={`geostrip ${c.geo.health}`}><Icon n="swap" s={14} /><span className="small">{c.geo.role === 'standby'
       ? <><strong>Sito di replica (DR)</strong> di {c.geo.peers?.filter((p: any) => p.role === 'primary').map((p: any) => p.name).join(', ') || '?'} — {c.geo.lagBytes == null ? 'ritardo non misurabile' : c.geo.lagBytes === 0 ? 'allineato' : `indietro di ${bytes(c.geo.lagBytes)}`}{c.geo.problems?.length ? ` · ${c.geo.problems[0]}` : ''}</>
-      : <><strong>Sito primario</strong> con replica su {c.geo.peers?.map((p: any) => p.name).join(', ')}</>}</span><button className="btn ghost sm" onClick={() => go('geo')}>Georidondanza</button></div> : null}
+      : <><strong>Sito primario</strong> con replica su {c.geo.peers?.map((p: any) => p.name).join(', ')}</>}</span><button className="btn ghost sm" onClick={() => setGl(true)}>Relazione…</button><button className="btn ghost sm" onClick={() => go('geo')}>Georidondanza</button></div> : null}
+    {gl ? <GeoLinkModal c={c} all={allClusters} onClose={() => setGl(false)} /> : null}
     <div className="clusternav">
       <div className="gnav" role="tablist" aria-label="Aree del cluster">{TAB_GROUPS.map(g => <button key={g.id} role="tab" aria-selected={grp.id === g.id} onClick={() => go(`c/${encodeURIComponent(id)}/${grp.id === g.id ? cur : g.tabs[0]}`)}><Icon n={g.icon} />{g.label}</button>)}</div>
       <Tabs value={cur} onChange={t => go(`c/${encodeURIComponent(id)}/${t}`)} items={grp.tabs.map(tid => TAB_ITEMS.find(t => t.id === tid)!).map(t => ({ id: t.id, label: t.label, icon: t.icon, preview: t.preview }))} />

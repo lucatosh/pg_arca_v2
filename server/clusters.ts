@@ -25,7 +25,7 @@ export function seedDemoOnFirstRun(store: Store, buildDemo: () => any) {
 function geoSummary(st: any, id: string) {
   const g = geoOf(st, id);
   if (!g) return null;
-  return { role: g.role, health: g.health, problems: g.problems, lagBytes: g.lagBytes ?? null, peers: g.peers.map(p => ({ clusterId: p.clusterId, name: p.name, role: p.role, health: p.health })), endpoint: g.endpoint, upstream: g.upstream || null };
+  return { role: g.role, health: g.health, problems: g.problems, lagBytes: g.lagBytes ?? null, peers: g.peers.map(p => ({ clusterId: p.clusterId, name: p.name, role: p.role, health: p.health, link: p.link })), endpoint: g.endpoint, upstream: g.upstream || null, link: g.link };
 }
 
 /** Strip secrets / internals before sending a cluster to the browser. */

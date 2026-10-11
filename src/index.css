@@ -412,3 +412,8 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .side .sidescroll .clist { flex: none; overflow: visible; }
 .side .sidescroll .wlist { max-height: none; overflow: visible; }
 .fleettable td strong { white-space: nowrap; }
+
+.geolinkf { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px 12px; margin: 0; display: grid; gap: 6px; }
+.geolinkf legend { font-weight: 600; padding: 0 6px; font-size: 13px; }
+.geolinkf .check { align-items: flex-start; } .geolinkf .check input { margin-top: 3px; }
+.fleettable td.stcell { max-width: 280px; } .fleettable td.stcell > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -31,6 +31,8 @@ export interface Site {
   receiver?: { status: string; sender: string; silentSec: number | null } | null;
   lagBytes?: number | null; replayDelaySec?: number | null; slot?: { name: string; active: boolean; retainedBytes: number | null } | null;
   health: 'ok' | 'warn' | 'bad'; problems: string[];
+  link: 'auto' | 'manual';                                           // how the console knows this site belongs to the group: same system identifier, or set by an operator
+  declaredPrimary?: string | null;                                   // manual link: the cluster the operator said this one replicates from
 }
 export interface GeoGroup { sysid: string; sites: Site[]; primary: string | null }
 
@@ -38,8 +40,12 @@ function siteOf(st: any, c: any, now: number): Site & { _sysid: string | null; _
   const nodes = (Object.values(st.nodes) as NodeRecord[]).filter(n => n.clusterId === c.id && n.kind !== 'worker');
   const on = nodes.filter(n => online(n, now));
   const prim = on.find(n => n.snapshot?.postgres?.is_in_recovery === false);
-  const sl = on.find(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader');
-  const sc = nodes.map(n => n.snapshot?.patroni?.standby_cluster).find(x => x && x.host);
+  // a site that replicates from another one: Patroni standby cluster (standby leader + standby_cluster), or a plain physical standby (every running
+  // node in recovery, streaming from somewhere) registered as a cluster of its own
+  const plain = !prim && on.length > 0 && on.every(n => n.snapshot?.postgres?.is_in_recovery === true && !n.snapshot?.patroni?.accessible) ? on.find(n => n.snapshot?.postgres?.wal_receiver) || null : null;
+  const sl = on.find(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader') || plain || undefined;
+  const sc = nodes.map(n => n.snapshot?.patroni?.standby_cluster).find(x => x && x.host)
+    || (plain?.snapshot?.postgres?.wal_receiver?.sender_host ? { host: plain.snapshot.postgres.wal_receiver.sender_host, port: plain.snapshot.postgres.wal_receiver.sender_port, primary_slot_name: plain.snapshot.postgres.wal_receiver.slot_name } : null);
   const lead = prim || sl || null;
   const pg = lead?.snapshot?.postgres || {};
   const sysid = nodes.map(n => n.snapshot?.postgres?.system_identifier).find(Boolean) || null;
@@ -52,22 +58,53 @@ function siteOf(st: any, c: any, now: number): Site & { _sysid: string | null; _
     upstream: sc ? { host: String(sc.host), port: Number(sc.port || 5432), slot: sc.primary_slot_name || undefined } : null,
     receiver: wr ? { status: String(wr.status || ''), sender: wr.sender_host ? `${wr.sender_host}:${wr.sender_port}` : '', silentSec: wr.silent_sec != null ? Number(wr.silent_sec) : null } : (role === 'standby' ? { status: 'none', sender: '', silentSec: null } : null),
     replayDelaySec: sl?.snapshot?.postgres?.replay_ts ? Math.max(0, Math.round((now - Date.parse(sl.snapshot.postgres.replay_ts)) / 1000)) : null,
-    health: 'ok', problems: [], _sysid: sysid, _lsn: lsnToBig(pg.current_lsn),
+    health: 'ok', problems: [], link: 'auto', declaredPrimary: c.geoLink?.primary || null, _sysid: sysid, _lsn: lsnToBig(pg.current_lsn),
   };
 }
 
-/** Every group of clusters sharing a system identifier (at least one standby site among them). Pure. */
+/** Every group of sites of the same database. Automatic: clusters sharing a system identifier (at least one standby site among them). Manual (geoLink set by an
+ *  operator on the standby cluster): pairs clusters the agents cannot match (no agent / no telemetry yet / cluster added without agent) and documents intent;
+ *  a manual link whose two sides report DIFFERENT system identifiers is kept but flagged (it cannot be a replica of that cluster). geoLink.none detaches a
+ *  cluster from automatic pairing. Pure. */
 export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
-  const sites = (st.clusters as any[]).filter(c => !c.isSandbox && c.source !== 'direct').map(c => siteOf(st, c, now));
-  const by = new Map<string, typeof sites>();
-  for (const s of sites) if (s._sysid) { const l = by.get(s._sysid) || []; l.push(s); by.set(s._sysid, l); }
+  const cl = (st.clusters as any[]).filter(c => !c.isSandbox);
+  const sites = cl.map(c => siteOf(st, c, now));
+  const byId = new Map(sites.map(s => [s.clusterId, s]));
+  const linkOf = (id: string) => cl.find(c => c.id === id)?.geoLink || null;
+  // union-find over clusters: same sysid (unless detached), plus manual links
+  const parent = new Map<string, string>(); const find = (x: string): string => { const p = parent.get(x) ?? x; if (p === x) return x; const r = find(p); parent.set(x, r); return r; };
+  const join = (a: string, b: string) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+  const bySys = new Map<string, string>();
+  for (const s of sites) {
+    if (linkOf(s.clusterId)?.none || !s._sysid) continue;
+    const o = bySys.get(s._sysid); if (o) join(s.clusterId, o); else bySys.set(s._sysid, s.clusterId);
+  }
+  const manual = new Set<string>();
+  for (const s of sites) { const p = linkOf(s.clusterId)?.primary; if (p && byId.has(p) && p !== s.clusterId) { join(s.clusterId, p); manual.add(s.clusterId); } }
+  const groups = new Map<string, typeof sites>();
+  for (const s of sites) { if (linkOf(s.clusterId)?.none && !manual.has(s.clusterId)) continue; const r = find(s.clusterId); const l = groups.get(r) || []; l.push(s); groups.set(r, l); }
   const out: GeoGroup[] = [];
-  for (const [sysid, list] of by) {
-    if (list.length < 2 && !list.some(s => s.role === 'standby')) continue;
-    const prim = list.find(s => s.role === 'primary');
+  for (const [, list] of groups) {
+    const declared = list.some(s => manual.has(s.clusterId));
+    // same system identifier alone is not geo-redundancy: a copy restored from a backup of the same cluster has it too. A group needs a standby site
+    // (or a link set by an operator).
+    if (!declared && !list.some(s => s.role === 'standby')) continue;
+    for (const s of list) if (manual.has(s.clusterId)) {
+      s.link = 'manual';
+      if (s.role === 'unknown') s.role = 'standby';                               // declared by the operator, no telemetry to say otherwise
+    }
+    const prims = list.filter(s => s.role === 'primary');
+    const upHosts = new Set(list.filter(s => s.role === 'standby' && s.upstream).map(s => s.upstream!.host));
+    // several writable clusters with the same identifier (e.g. a restored copy): the primary SITE is the one the standby sites point at / were linked to
+    const prim = prims.find(s => list.some(x => x.declaredPrimary === s.clusterId)) || prims.find(s => s.endpoint && upHosts.has(s.endpoint.host))
+      || prims.find(s => (Object.values(st.nodes) as NodeRecord[]).some(n => n.clusterId === s.clusterId && upHosts.has(String(n.name)))) || prims[0]
+      || (declared ? list.find(s => list.some(x => x.declaredPrimary === s.clusterId) && s.role !== 'standby') : undefined);
+    const others = prims.filter(s => s !== prim);
     const primNode = prim ? (Object.values(st.nodes) as NodeRecord[]).find(n => n.id === prim.leaderNodeId) : undefined;
     // the primary site's address as its standby sites use it: no need to type it, and it is what a later switchover back needs
     if (prim && !prim.endpoint) { const up = list.find(s => s.role === 'standby' && s.upstream)?.upstream; if (up) { prim.endpoint = { host: up.host, port: up.port }; prim.endpointSource = 'detected'; } }
+    if (prim && prim.role === 'unknown') prim.role = 'primary';
+    const sysid = list.map(s => s._sysid).find(Boolean) || 'manuale';
     for (const s of list) {
       if (s.role !== 'standby') continue;
       if (prim && prim._lsn !== null && s._lsn !== null) s.lagBytes = prim._lsn >= s._lsn ? Number(prim._lsn - s._lsn) : 0;
@@ -76,7 +113,9 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
       s.slot = slotName ? { name: slotName, active: !!sl?.active, retainedBytes: sl?.retained_bytes ?? null } : null;
       const p: string[] = []; let h: Site['health'] = 'ok';
       const bad = (m: string) => { p.push(m); h = 'bad'; }; const warn = (m: string) => { p.push(m); if (h === 'ok') h = 'warn'; };
-      if (!s.online) bad('il sito non ha un nodo raggiungibile');
+      const blind = manual.has(s.clusterId) && !s._sysid;                 // declared site with no agent telemetry: nothing to measure, not a failure
+      if (blind) { /* see the manual-link note below */ }
+      else if (!s.online) bad('il sito non ha un nodo raggiungibile');
       else if (!s.receiver || s.receiver.status !== 'streaming') bad(`non riceve WAL dal sito primario (ricevitore: ${s.receiver?.status || 'assente'})`);
       if (s.receiver?.silentSec != null && s.receiver.silentSec > 120) bad(`nessun messaggio dal sito primario da ${Math.round(s.receiver.silentSec)} s`);
       else if (s.receiver?.silentSec != null && s.receiver.silentSec > 30) warn(`ultimo messaggio dal sito primario ${Math.round(s.receiver.silentSec)} s fa`);
@@ -85,9 +124,18 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
       if (s.slot && !s.slot.active) warn(`lo slot ${s.slot.name} sul sito primario non è attivo: il primario conserva i WAL (${s.slot.retainedBytes != null ? Math.round(s.slot.retainedBytes / MB) + ' MB' : '?'})`);
       if (s.slot?.retainedBytes != null && s.slot.retainedBytes > 8 * 1024 * MB) bad(`lo slot ${s.slot.name} trattiene ${Math.round(s.slot.retainedBytes / MB)} MB di WAL sul sito primario: rischio di disco pieno`);
       if (!prim) warn('nessun sito primario visibile tra i cluster collegati');
+      if (s.link === 'manual' && s.declaredPrimary) {
+        const dp = list.find(x => x.clusterId === s.declaredPrimary);
+        if (dp && dp._sysid && s._sysid && dp._sysid !== s._sysid) bad(`impostato come replica di ${dp.name}, ma è un altro database (identificativo di sistema diverso): non può ricevere i suoi dati`);
+        if (!s._sysid) warn('relazione impostata a mano: senza agent su questo cluster lo stato della replica non è misurabile');
+      }
       s.problems = p; s.health = h;
     }
-    out.push({ sysid, sites: list.map(({ _sysid, _lsn, ...rest }) => rest), primary: prim?.clusterId || null });
+    // other writable clusters with the same identifier are not sites of this pair (restored copies, clones): left out, said once on the primary
+    if (prim && others.length) { prim.problems.push(`${others.map(o => o.name).join(', ')}: stesso database ma scrivibile e non collegato (copia ripristinata o clone): non fa parte della georidondanza`); if (prim.health === 'ok') prim.health = 'warn'; }
+    const keep = list.filter(s => !others.includes(s) || list.some(x => x.declaredPrimary === s.clusterId));
+    if (keep.length < 2 && !keep.some(s => s.role === 'standby')) continue;
+    out.push({ sysid, sites: keep.map(({ _sysid, _lsn, ...rest }) => rest), primary: prim?.clusterId || null });
   }
   return out;
 }
@@ -197,6 +245,24 @@ export function mountGeoRoutes(app: any, store: Store) {
     res.json({ groups: geoGroups(st), jobs: Object.values(st.settings.geoJobs || {}).sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 10) });
   });
   app.get('/api/clusters/:id/geo', (req: Request, res: Response) => res.json({ geo: geoOf(store.peek(), req.params.id) }));
+
+  /** Primary / standby relationship set by an operator (when it cannot be detected, or to make intent explicit). primary: cluster id | null (back to
+   *  automatic); none: true detaches the cluster from automatic pairing. Refuses self-links and cycles. */
+  app.put('/api/clusters/:id/geo-link', async (req: Request, res: Response) => {
+    const { primary, none } = req.body || {};
+    const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
+    if (!c) return res.status(404).json({ error: 'cluster_not_found' });
+    if (primary != null) {
+      const p = st.clusters.find((x: any) => x.id === primary);
+      if (!p || p.isSandbox || p.id === c.id) return res.status(400).json({ error: 'invalid_primary', message: 'Scegli un altro cluster collegato.' });
+      let cur: any = p; const seen = new Set([c.id]);
+      while (cur?.geoLink?.primary) { if (seen.has(cur.geoLink.primary)) return res.status(400).json({ error: 'cycle', message: `${p.name} risulta già replica di ${c.name}: la relazione sarebbe circolare.` }); seen.add(cur.id); cur = st.clusters.find((x: any) => x.id === cur.geoLink.primary); }
+    }
+    await store.mutate(d => { const x = d.clusters.find((y: any) => y.id === c.id); if (!x) return;
+      x.geoLink = primary != null ? { primary: String(primary), at: nowIso(), by: actor(req) } : none ? { none: true, at: nowIso(), by: actor(req) } : undefined;
+      ops.audit(d, { clusterId: c.id, actor: actor(req), action: 'geo.link', status: 'OK', details: x.geoLink || { auto: true } }); });
+    res.json({ ok: true, geo: geoOf(store.peek(), c.id) });
+  });
 
   /** How the other sites reach this one (host:port of its leader endpoint, e.g. the site's HAProxy or VIP): needed to make another site follow it. */
   app.put('/api/clusters/:id/geo-endpoint', async (req: Request, res: Response) => {

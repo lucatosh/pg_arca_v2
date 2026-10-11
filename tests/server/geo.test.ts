@@ -69,5 +69,33 @@ import { deriveCluster } from '../../server/view';
   for (let i = 0; i < 50 && store.peek().settings.geoJobs[job].status === 'running'; i++) await new Promise(r => setTimeout(r, 100));
   const j = store.peek().settings.geoJobs[job];
   assert.strictEqual(j.status, 'succeeded', JSON.stringify(j.steps)); assert.strictEqual(j.steps.length, 4);
+  // ---- relationships set by the operator, and false pairs avoided
+  const st0 = () => store.peek();
+  await store.mutate(d => {
+    d.clusters.push({ id: 'c3', name: 'geo-copy', environment: 'test', source: 'agent' }, { id: 'c4', name: 'dr-direct', environment: 'prod', source: 'direct' }, { id: 'c5', name: 'other-db', environment: 'prod', source: 'agent' });
+    d.nodes.c = { id: 'c', name: 'copy-pg1', clusterId: 'c3', lastSeen: now(), snapshot: { postgres: { alive: true, is_in_recovery: false, current_lsn: '0/1000', system_identifier: '7695', timeline: 2 } } } as any;
+    d.nodes.e = { id: 'e', name: 'other-pg1', clusterId: 'c5', lastSeen: now(), snapshot: { postgres: { alive: true, is_in_recovery: true, current_lsn: '0/1000', system_identifier: '1111', timeline: 1, wal_receiver: { status: 'streaming', sender_host: 'x', sender_port: 5432, silent_sec: 1 } } } } as any;
+  });
+  let gg = geoGroups(st0()).find(x => x.sites.some(s => s.clusterId === 'c1'))!;
+  assert(!gg.sites.some(s => s.clusterId === 'c3'), 'a restored copy (same sysid, writable, not followed by anyone) is not a site');
+  assert(gg.sites.find(s => s.clusterId === gg.primary)!.problems.some(p => /geo-copy/.test(p)), 'but it is mentioned');
+  // a cluster without agent declared as DR of the current primary
+  const prim = gg.primary!;
+  assert.strictEqual((await app.call('PUT', '/api/clusters/c4/geo-link', { body: { primary: prim } })).status, 200);
+  gg = geoGroups(st0()).find(x => x.sites.some(s => s.clusterId === 'c4'))!;
+  const c4 = gg.sites.find(s => s.clusterId === 'c4')!;
+  assert.strictEqual(c4.link, 'manual'); assert.strictEqual(c4.role, 'standby'); assert.strictEqual(c4.health, 'warn');
+  // declared link to a DIFFERENT database: kept but flagged as impossible
+  assert.strictEqual((await app.call('PUT', '/api/clusters/c5/geo-link', { body: { primary: prim } })).status, 200);
+  const c5 = geoGroups(st0()).flatMap(x => x.sites).find(s => s.clusterId === 'c5')!;
+  assert.strictEqual(c5.health, 'bad'); assert(c5.problems.some(p => /altro database/.test(p)));
+  // cycles and self links refused; back to automatic; detach
+  assert.strictEqual((await app.call('PUT', '/api/clusters/c5/geo-link', { body: { primary: 'c5' } })).status, 400);
+  assert.strictEqual((await app.call('PUT', `/api/clusters/${prim}/geo-link`, { body: { primary: 'c4' } })).status, 400, 'cycle');
+  assert.strictEqual((await app.call('PUT', '/api/clusters/c5/geo-link', { body: { primary: null } })).status, 200);
+  assert(!geoGroups(st0()).some(x => x.sites.some(s => s.clusterId === 'c5' && s.link === 'manual')));
+  const stby = gg.sites.find(s => s.role === 'standby' && s.link === 'auto')!.clusterId;
+  assert.strictEqual((await app.call('PUT', `/api/clusters/${stby}/geo-link`, { body: { none: true } })).status, 200);
+  assert(!geoGroups(st0()).some(x => x.sites.some(s => s.clusterId === stby)), 'detached from automatic pairing');
   console.log('geo tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

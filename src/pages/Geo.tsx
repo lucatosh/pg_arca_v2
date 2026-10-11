@@ -8,7 +8,7 @@ import { go } from '../router';
  * Geo-redundancy: the same database on several sites (Patroni clusters with the same system identifier): one primary site, standby sites replicating
  * over the WAN. Shows the replication between sites and runs the two site-level actions: planned switchover and DR promotion — both through each site's DCS.
  * ==================================================================================================================================================== */
-interface Site { clusterId: string; name: string; environment: string; role: 'primary' | 'standby' | 'unknown'; leader: string | null; online: boolean; lsn: string | null; timeline: number | null; endpointSource?: string | null;
+interface Site { clusterId: string; name: string; environment: string; role: 'primary' | 'standby' | 'unknown'; leader: string | null; online: boolean; lsn: string | null; timeline: number | null; endpointSource?: string | null; link?: 'auto' | 'manual';
   endpoint: { host: string; port: number } | null; upstream?: { host: string; port: number; slot?: string } | null; receiver?: { status: string; sender: string; silentSec: number | null } | null;
   lagBytes?: number | null; replayDelaySec?: number | null; slot?: { name: string; active: boolean; retainedBytes: number | null } | null; health: 'ok' | 'warn' | 'bad'; problems: string[] }
 interface Group { sysid: string; sites: Site[]; primary: string | null }
@@ -18,11 +18,14 @@ const ROLE_IT = { primary: 'Sito primario', standby: 'Sito di replica (DR)', unk
 
 export function GeoPage({ role }: { role: string }) {
   const q = useQuery<{ groups: Group[]; jobs: Job[] }>('/api/geo', { interval: 4000 });
-  const d = q.data;
+  const d = q.data; const [pick, setPick] = useState(false);
+  const all: any[] = useQuery<any>('/api/clusters').data?.clusters || [];
   return <>
     <div className="pagehead"><div className="grow"><h1>Georidondanza</h1>
-      <p className="sub">Lo stesso database su più siti: un sito primario e siti di replica (cluster Patroni in modalità standby) che ricevono i WAL attraverso la rete geografica. Qui vedi quanto sono allineati e governi il passaggio tra siti.</p></div></div>
-    {!d ? <Skeleton h={220} /> : !d.groups.length ? <Empty icon="swap" title="Nessuna coppia di siti">Quando un cluster Patroni in modalità <code>standby_cluster</code> replica da un altro cluster collegato (stesso database), la coppia compare qui automaticamente.</Empty> :
+      <p className="sub">Lo stesso database su più siti: un sito primario e siti di replica (cluster Patroni in modalità standby, o standby fisici) che ricevono i WAL attraverso la rete geografica. Le coppie sono riconosciute da sole; puoi anche indicarle tu.</p></div>
+      {role !== 'viewer' ? <Button icon="plus" onClick={() => setPick(true)}>Indica un sito di replica</Button> : null}</div>
+    {pick ? <LinkPicker all={all} onClose={() => setPick(false)} /> : null}
+    {!d ? <Skeleton h={220} /> : !d.groups.length ? <Empty icon="swap" title="Nessuna coppia di siti">Quando un cluster in modalità <code>standby_cluster</code> (o uno standby fisico registrato come cluster) replica da un altro cluster collegato, la coppia compare qui da sola. Per un cluster senza agent, o per dichiarare la relazione prima di attivare la replica, usa «Indica un sito di replica».</Empty> :
       d.groups.map(g => <GroupCard key={g.sysid} g={g} role={role} running={d.jobs.some(j => j.status === 'running')} />)}
     {d?.jobs?.length ? <Card title="Passaggi tra siti"><div className="stack">{d.jobs.map(j => <div key={j.id} className="geojob">
       <div className="row"><strong>{j.fromName} → {j.toName}</strong><Badge kind={j.status === 'succeeded' ? 'ok' : j.status === 'failed' ? 'bad' : 'accent'}>{j.status === 'running' ? 'in corso' : j.status === 'succeeded' ? 'completato' : 'interrotto'}</Badge><div className="grow" /><span className="small faint">{j.createdBy}, {ago(j.createdAt)}</span></div>
@@ -32,7 +35,7 @@ export function GeoPage({ role }: { role: string }) {
 
 function SiteCard({ s, onOpen }: { s: Site; onOpen: () => void }) {
   return <div className={`geosite ${s.role} ${s.health}`}>
-    <div className="row"><Dot kind={s.online ? s.health : 'bad'} /><button className="linkbtn" onClick={onOpen}><strong>{s.name}</strong></button><div className="grow" /><Badge kind={s.role === 'primary' ? 'accent' : undefined}>{ROLE_IT[s.role]}</Badge></div>
+    <div className="row"><Dot kind={s.online ? s.health : 'bad'} /><button className="linkbtn" onClick={onOpen}><strong>{s.name}</strong></button><div className="grow" />{s.link === 'manual' ? <Badge title="Relazione indicata da un operatore (Organizza… nell’elenco cluster)">impostato a mano</Badge> : null}<Badge kind={s.role === 'primary' ? 'accent' : undefined}>{ROLE_IT[s.role]}</Badge></div>
     <dl className="kv small">
       <dt>Leader</dt><dd>{s.leader || <span style={{ color: 'var(--bad)' }}>nessuno raggiungibile</span>}{s.timeline ? <span className="faint"> · timeline {s.timeline}</span> : null}</dd>
       <dt>Posizione WAL</dt><dd className="mono">{s.lsn || '—'}</dd>
@@ -96,5 +99,22 @@ function PromoteDialog({ s, primary, onClose }: { s: Site; primary?: Site; onClo
       {alive ? <label className="check"><input type="checkbox" checked={lost} onChange={e => setLost(e.target.checked)} /> So che {primary!.name} è perso o isolato e che non tornerà a ricevere scritture (lo spegnerò / isolerò io).</label> : null}
       <p className="small">{s.name} smette di replicare e diventa scrivibile (Patroni lo promuove: <code>standby_cluster</code> rimosso dal suo DCS). Il vecchio sito primario, quando torna, NON deve riprendere a scrivere: va ricostruito come sito di replica.</p>
       <Field label="Per confermare scrivi PROMUOVI"><input className="input" value={typed} onChange={e => setTyped(e.target.value)} /></Field>
+      {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
+}
+
+/** Declare a standby site by hand: which cluster replicates from which. */
+function LinkPicker({ all, onClose }: { all: any[]; onClose: () => void }) {
+  const real = all.filter(c => !c.isSandbox).sort((a, b) => a.name.localeCompare(b.name));
+  const [stby, setStby] = useState(''); const [prim, setPrim] = useState(''); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
+  const save = async () => {
+    setBusy(true); setErr(null);
+    try { await api('PUT', `/api/clusters/${encodeURIComponent(stby)}/geo-link`, { primary: prim }); revalidate('/api/geo'); revalidate('/api/clusters'); toast('Relazione salvata', 'ok'); onClose(); }
+    catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
+  };
+  return <Modal title="Indica un sito di replica" onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} disabled={!stby || !prim || stby === prim} onClick={save}>Salva</Button></>}>
+    <div className="stack">
+      <Field label="Sito di replica (standby)"><select className="input" value={stby} onChange={e => setStby(e.target.value)}><option value="">Scegli…</option>{real.map(c => <option key={c.id} value={c.id}>{c.name}{c.geo?.role ? ` · ${c.geo.role === 'standby' ? 'già replica' : 'primario'}` : ''}</option>)}</select></Field>
+      <Field label="Replica di (sito primario)"><select className="input" value={prim} onChange={e => setPrim(e.target.value)}><option value="">Scegli…</option>{real.filter(c => c.id !== stby).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+      <p className="small muted">Serve quando la console non può riconoscerla da sola (cluster senza agent, replica non ancora attiva). Se gli agent vedono database diversi la relazione resta, ma viene segnalata come impossibile. Non modifica nulla su PostgreSQL o Patroni.</p>
       {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
 }
