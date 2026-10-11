@@ -160,6 +160,15 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Switchover pianificato verso geo-dc2")'); await p.fill('.modal input.mono >> nth=0', 'dc2-haproxy'); await p.click('.modal button:has-text("Salva")');
   await p.click('button:has-text("Switchover pianificato verso geo-dc2")'); await p.fill('.modal input.input', 'SWITCHOVER'); await p.click('.modal button:has-text("Avvia lo switchover")');
   await p.waitForSelector('.geojob:has-text("completato")', { timeout: 30000 }); await p.waitForSelector('.geosite.primary:has-text("geo-dc2")', { timeout: 15000 }); await shot('19b-geo-switched');
+  // pg_hba on a Patroni site: DCS only, previous versions kept by the console and restorable
+  await p.goto(base + '/#/'); const g1 = await p.locator('.fleettable a:has(strong:text-is("geo-dc1"))').getAttribute('href'); await p.goto(base + '/' + g1 + '/hba');
+  await p.waitForSelector('text=Patroni · configurazione condivisa (DCS)'); await p.waitForSelector('text=Altre regole della lista nel DCS');
+  await p.click('button:has-text("Aggiungi una regola")'); await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '172.30.9.0/24');
+  await p.click('button:has-text("Aggiungi alla lista")'); await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata');
+  await p.click('button:has-text("Applica a tutto il cluster")'); await p.click('.modal button:has-text("Applica")'); await p.waitForSelector('text=written to the DCS', { timeout: 15000 });
+  await p.waitForSelector('.card:has-text("Versioni precedenti") button:has-text("Ripristina")', { timeout: 15000 }); await shot('14g-hba-dcs');
+  await p.click('.card:has-text("Versioni precedenti") button:has-text("Ripristina") >> nth=0'); await p.click('.modal button:has-text("Ripristina nel DCS")');
+  await p.waitForSelector('text=Versione ripristinata nel DCS', { timeout: 15000 });
   // relationships: the standby site sits under its primary (auto); "no relationship" detaches it; a cluster without telemetry declared as replica by hand
   await p.goto(base + '/#/'); await p.waitForSelector('.fleettable tr.replicarow');
   const stbyName = (await p.locator('.fleettable tr.replicarow strong').first().innerText()).trim();

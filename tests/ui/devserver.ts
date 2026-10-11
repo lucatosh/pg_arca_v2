@@ -155,9 +155,27 @@ const withAgent = process.env.NO_AGENT !== '1';
           standby_cluster: prim ? null : { host: `${other}-haproxy`, port: 5000, primary_slot_name: `geo_${site}` } },
         system: { load_avg_1m: 0.2, cpu_count: 2, memory_used_percent: 30, memory_total_bytes: 4e9 } };
     };
+    // pg_hba of a Patroni site lives in its DCS list: managed block + other entries; every change keeps the previous list (the console stores it)
+    const dcs: Record<string, { base: string[]; managed: any[] }> = { dc1: { base: ['local all all trust', 'host replication replicator 172.30.0.0/16 scram-sha-256', 'host all all 172.30.0.0/16 scram-sha-256'], managed: [] }, dc2: { base: ['local all all trust', 'host replication replicator 172.30.0.0/16 scram-sha-256'], managed: [] } };
+    const ruleLine = (r: any) => [r.type, r.database, r.user, ...(r.type === 'local' ? [] : [r.address]), r.method].join('  ');
+    const listOf = (x: { base: string[]; managed: any[] }) => [...(x.managed.length ? ['# >>> pg_arca managed block >>>', ...x.managed.flatMap((r: any) => r.comment ? ['# ' + r.comment, ruleLine(r)] : [ruleLine(r)]), '# <<< pg_arca managed block <<<'] : []), ...x.base];
+    const revOf = (l: string[]) => createHash('sha256').update(l.join('\n') + '\n').digest('hex').slice(0, 16);
+    const parse = (l: string) => { const t = l.trim().split(/\s+/); return t[0] === 'local' ? { type: 'local', database: t[1], user: t[2], address: '', method: t[3] } : { type: t[0], database: t[1], user: t[2], address: t[3], method: t[4] }; };
+    const hbaGeo = async (n: any, op: any) => {
+      const x = dcs[n.site]; const p = op.params || {}; const cur = listOf(x); const ok = (result: any) => app.call('POST', `/api/agent/ops/${op.id}/report`, { body: { status: 'succeeded', result }, headers: n.h });
+      if (op.type === 'hba_read') return ok({ hba_file: 'Patroni DCS: postgresql.pg_hba', mode: 'patroni', dcs_seed: false, seed_skipped: 0, rev: revOf(cur), raw: cur.join('\n') + '\n', truncated: false, dcs_rules: x.base.map(parse),
+        managed: { present: x.managed.length > 0, rules: x.managed, rev: null }, effective: [], errors: [], ssl: false, has_includes: false, rule_count: cur.length, suggest: { replication_clients: [], roles: ['app', 'replicator'], databases: ['postgres'] }, backups: [] });
+      if (op.type === 'hba_plan') return ok({ valid: true, errors: [], warnings: [], changed: true, mode: 'patroni', dcs_seed: false, base_rev: revOf(cur), diff: ['--- pg_hba (attuale)', '+++ pg_hba (nuovo)', ...(p.rules || []).map((r: any) => '+' + ruleLine(r))],
+        simulation: [{ label: 'locale: utente postgres (peer)', before: true, after: true, critical: true }], would_lock_out: [] });
+      if (op.type === 'hba_apply') { const prev = cur; x.managed = (p.rules || []).map((r: any) => ({ ...r })); return ok({ changed: true, mode: 'patroni', rev: revOf(listOf(x)), rules: x.managed.length, dcs_seed: false, previous: prev, previous_rev: revOf(prev), list: listOf(x), note: 'written to the DCS and loaded by PostgreSQL; every member follows' }); }
+      if (op.type === 'hba_restore') { const prev = cur; const l: string[] = p.list || []; const b = l.findIndex(z => z.startsWith('# <<<')); x.managed = b < 0 ? [] : l.slice(1, b).filter(z => !z.startsWith('#')).map(parse); x.base = b < 0 ? l : l.slice(b + 1);
+        return ok({ changed: true, mode: 'patroni', rev: revOf(listOf(x)), previous: prev, previous_rev: revOf(prev), list: listOf(x), restored: true }); }
+      return ok({ changed: false });
+    };
     const gbeat = async () => { geo.lsn += 0x100; for (const n of gn) { try {
       const hb = await app.call('POST', '/api/agent/heartbeat', { body: { snapshot: gsnap(n.site), max_ops: 2 }, headers: n.h });
       for (const op of hb.body.ops || []) { await sleep(500);
+        if (op.type.startsWith('hba_')) { await hbaGeo(n, op); continue; }
         if (op.type === 'geo_demote') geo.primary = null;
         if (op.type === 'geo_promote') geo.primary = n.site;
         await app.call('POST', `/api/agent/ops/${op.id}/report`, { body: { status: 'succeeded', result: { ok: true } }, headers: n.h }); }

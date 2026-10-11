@@ -227,7 +227,7 @@ function HbaInner({ c }: { c: any }) {
           {!patroni && first.backups?.length ? <Button icon="restore" disabled={applying} onClick={() => setRb(true)}>Ripristina versione precedente</Button> : null}</div>
         {patroni ? <p className="small muted">Scrittura solo nel DCS di Patroni (come <span className="mono">patronictl edit-config</span>): Patroni riscrive pg_hba.conf su ogni membro e ricarica; l’agent verifica con PostgreSQL (pg_hba_file_rules) che le regole siano in vigore. I file sui nodi non vengono mai letti né modificati.</p> : null}
         {errorsInDraft ? <Banner kind="bad" title="Ci sono regole duplicate">Rimuovi i duplicati segnalati in rosso prima di continuare.</Banner> : null}
-        {plans ? <PlanView plans={plans} lock={lock} force={force} setForce={setForce} /> : null}
+        {plans ? <PlanView plans={plans} lock={lock} force={force} setForce={setForce} patroni={patroni} /> : null}
         {applyRes ? <div className="stack">{applyRes.map(a => <Banner key={a.node} kind={a.ok ? 'ok' : 'bad'} title={a.node}>{a.text}</Banner>)}</div> : null}
       </div></Card>
 
@@ -335,7 +335,7 @@ function Templates({ tpls, sugg, env, all, hosts, onAdd }: { tpls: Tpl[]; sugg: 
   </Card>;
 }
 
-function PlanView({ plans, lock, force, setForce }: { plans: { node: string; res?: any; error?: string }[]; lock: string[]; force: boolean; setForce: (v: boolean) => void }) {
+function PlanView({ plans, lock, force, setForce, patroni }: { plans: { node: string; res?: any; error?: string }[]; lock: string[]; force: boolean; setForce: (v: boolean) => void; patroni?: boolean }) {
   const p0 = plans.find(p => p.res?.valid && p.res?.diff?.length) || plans[0];
   const warns = plans.flatMap(p => (p.res?.warnings || []).map((w: any) => w.message));
   return <div className="stack">
@@ -346,7 +346,7 @@ function PlanView({ plans, lock, force, setForce }: { plans: { node: string; res
     {plans.every(p => p.res?.changed === false) ? <Banner kind="ok" title="Nessuna differenza">Le regole attuali coincidono già con la lista.</Banner> : null}
     {p0?.res?.simulation?.length ? <div className="tablewrap"><table className="t"><thead><tr><th>Connessione simulata</th><th>Prima</th><th>Dopo</th></tr></thead><tbody>
       {p0.res.simulation.map((s: any, i: number) => <tr key={i}><td>{s.label}</td><td>{s.before ? <Badge kind="ok">consentita</Badge> : <Badge>rifiutata</Badge>}</td><td>{s.after ? <Badge kind="ok">consentita</Badge> : <Badge kind={s.before ? 'bad' : undefined}>rifiutata</Badge>}{s.uncertain ? <span className="small muted"> (incerta)</span> : null}</td></tr>)}</tbody></table></div> : null}
-    {p0?.res?.diff?.length ? <details open><summary className="small muted" style={{ cursor: 'pointer' }}>Differenze nel file</summary><pre className="out">{p0.res.diff.join('\n')}</pre></details> : null}
+    {p0?.res?.diff?.length ? <details open><summary className="small muted" style={{ cursor: 'pointer' }}>{patroni ? 'Differenze nella lista del DCS (postgresql.pg_hba)' : 'Differenze nel file'}</summary><pre className="out">{p0.res.diff.join('\n')}</pre></details> : null}
   </div>;
 }
 
