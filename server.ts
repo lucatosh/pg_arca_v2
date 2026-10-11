@@ -18,7 +18,7 @@ import { mountNotifyRoutes, startNotifier } from './server/notify';
 import { briefing } from './server/health';
 import { mountAdvancedRoutes } from './server/approvals';
 import { mountJoinRoutes } from './server/join';
-import { audit as auditLog } from './server/ops';
+import { audit as auditLog, setResultsDir } from './server/ops';
 import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv } from './server/auth';
 import { runSelfTest } from './server/selftest';
 import { attachLogSocket, broadcastLiveLog, mountLogRoutes } from './server/logs';
@@ -36,6 +36,7 @@ const server = http.createServer(app);
 
 const DATA_DIR = process.env.PG_ARCA_DATA_DIR || path.join(process.cwd(), 'data');
 const store = new Store(DATA_DIR);
+setResultsDir(path.join(DATA_DIR, 'results'));          // large operation results live next to the state, not inside it
 const direct = new DirectDriver(store, loadSecretKey(DATA_DIR));
 
 // Same-origin console: no open CORS. Basic hardening headers.

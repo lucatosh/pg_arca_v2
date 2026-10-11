@@ -483,7 +483,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
 
   app.get('/api/operations/:id', (req: Request, res: Response) => {
     const op = store.peek().operations.find(o => o.id === req.params.id);
-    op ? res.json({ operation: op }) : res.status(404).json({ error: 'not_found' });
+    op ? res.json({ operation: ops.withResult(op) }) : res.status(404).json({ error: 'not_found' });
   });
 
   /** Log of one operation (status changes + what the agent reported); `after` = number of lines already shown, for cheap polling. */

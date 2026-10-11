@@ -89,5 +89,16 @@ import * as ops from '../../server/ops';
     assert.deepStrictEqual((op.log || []).map(l => l.text.split(' · ')[0]), ['checkpoint', 'copy']);
     const tl = ops.opTimeline(op);
     assert.ok(tl.some(x => x.kind === 'status') && tl.some(x => x.kind === 'log') && tl.every((x, i) => i === 0 || tl[i - 1].at <= x.at));
+    // a large result lives in a side file: the state keeps a summary (scalars included), the API gives back the whole thing, pruning removes the file
+    const rdir = fs.mkdtempSync(path.join(os.tmpdir(), 'res-')); ops.setResultsDir(rdir);
+    const big = { ok: true, set: 'S1', tables: Array.from({ length: 6000 }, (_, i) => ({ schema: 's', name: 'table_' + i, size: i })) };
+    await ops.report(s3, 'n9', id, 'succeeded', big);
+    const done = s3.peek().operations.find((o: any) => o.id === id)!;
+    assert.strictEqual(done.result.ok, true); assert.strictEqual(done.result.set, 'S1'); assert(done.result._offloaded); assert(!done.result.tables);
+    assert(JSON.stringify(s3.peek()).length < 100_000, 'the state stays small');
+    assert.strictEqual(ops.withResult(done).result.tables.length, 6000);
+    await s3.mutate((d: any) => { d.settings.activity = { retentionDays: 1 }; for (const o of d.operations) if (o.id === id) o.updatedAt = new Date(Date.now() - 3 * 86400e3).toISOString(); ops.pruneOps(d); });
+    assert.strictEqual(fs.readdirSync(rdir).length, 0, 'pruned with its operation');
+    ops.setResultsDir(null);
   }
 })().catch(e=>{console.error(e);process.exit(1)});

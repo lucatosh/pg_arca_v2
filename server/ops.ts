@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 /**
  * Operation journal & state machine.
  *
@@ -39,7 +41,7 @@ export function pruneOps(draft: AppState, now = Date.now()): number {
     const drop = new Set(terms.slice(0, terms.length - HARD_CAP_TERMINAL).map(o => o.id));
     kept = kept.filter(o => !drop.has(o.id));
   }
-  if (kept.length !== before) draft.operations = kept;
+  if (kept.length !== before) { const ids = new Set(kept.map(o => o.id)); dropResultFiles(draft.operations.filter(o => !ids.has(o.id))); draft.operations = kept; }
   return before - kept.length;
 }
 export const prunable = (st: AppState, now = Date.now()) => {
@@ -87,6 +89,38 @@ export function opTimeline(op: Operation): { at: string; text: string; kind: 'st
   const st = op.history.map(h => ({ at: h.at, text: `${h.status}${h.note ? ': ' + h.note : ''}`, kind: 'status' as const }));
   const lg = (op.log || []).map(l => ({ at: l.at, text: l.text, kind: 'log' as const }));
   return [...st, ...lg].sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/**
+ * Large results (catalog of a database with thousands of tables, WAL forensics with details, restore diffs) do not belong in the state file, which is
+ * rewritten on every commit: above RESULT_INLINE_MAX bytes the result goes to <data>/results/<op>.json and the operation keeps a small summary (its scalar
+ * fields, so checks like `result.ok` keep working). GET /api/operations/:id puts the full result back.
+ */
+export const RESULT_INLINE_MAX = 192 * 1024;
+let resultsDir: string | null = null;
+export function setResultsDir(dir: string | null) { resultsDir = dir; if (dir) fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); }
+function setResult(op: Operation, result: any) {
+  if (result === undefined || !resultsDir) { op.result = result; return; }
+  let text: string;
+  try { text = JSON.stringify(result); } catch { op.result = result; return; }
+  if (text.length <= RESULT_INLINE_MAX) { op.result = result; return; }
+  const file = `${op.id}.json`;
+  fs.writeFileSync(path.join(resultsDir, file), text, { mode: 0o600 });
+  const small: Record<string, any> = {};
+  if (result && typeof result === 'object' && !Array.isArray(result)) for (const [k, v] of Object.entries(result)) if (v === null || ['number', 'boolean'].includes(typeof v) || (typeof v === 'string' && v.length <= 200)) small[k] = v;
+  op.result = { ...small, _offloaded: { bytes: text.length } };
+  (op as any).resultRef = file;
+}
+/** The operation as the API returns it: with its full result, also when that lives in a side file. */
+export function withResult(op: Operation): Operation {
+  const ref = (op as any).resultRef;
+  if (!ref || !resultsDir) return op;
+  try { return { ...op, result: JSON.parse(fs.readFileSync(path.join(resultsDir, path.basename(ref)), 'utf8')) }; }
+  catch { return op; }                                      // file gone: the summary is what is left
+}
+function dropResultFiles(ops: Operation[]) {
+  if (!resultsDir) return;
+  for (const o of ops) { const ref = (o as any).resultRef; if (ref) { try { fs.unlinkSync(path.join(resultsDir, path.basename(ref))); } catch { /* already gone */ } } }
 }
 
 function push(op: Operation, status: OpStatus, note?: string) {
@@ -182,7 +216,7 @@ export function report(store: Store, nodeId: string, opId: string, status: 'runn
       audit(draft, { clusterId: op.clusterId, actor: `agent:${nodeId}`, action: `op.${op.type}`, status: 'CANCELLED', details: { opId } }); return { ok: true, op }; }
     push(op, status, status === 'failed' ? error : undefined);
     op.progress = undefined;
-    op.result = result;
+    setResult(op, result);
     op.error = error;
     op.leaseUntil = undefined;
     audit(draft, { clusterId: op.clusterId, actor: `agent:${nodeId}`, action: `op.${op.type}`, status: status.toUpperCase(), details: { opId, error } });
@@ -222,7 +256,7 @@ export async function runLocal<T>(store: Store, input: SubmitInput, exec: () => 
   if (!claimed) return { op: store.peek().operations.find(o => o.id === op.id)!, created };
   try {
     const result = await exec();
-    await store.mutate(d => { const o = d.operations.find(x => x.id === op.id)!; push(o, 'succeeded'); o.result = result;
+    await store.mutate(d => { const o = d.operations.find(x => x.id === op.id)!; push(o, 'succeeded'); setResult(o, result);
       audit(d, { clusterId: o.clusterId, actor: o.createdBy, action: `op.${o.type}`, status: 'SUCCEEDED', details: { opId: o.id } }); });
   } catch (e: any) {
     await store.mutate(d => { const o = d.operations.find(x => x.id === op.id)!; push(o, 'failed', e.message); o.error = e.message;
