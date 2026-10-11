@@ -25,6 +25,28 @@ class WalTests(unittest.TestCase):
         out = os.path.join(self.t, "restored"); code, _ = self.wm.retrieve_segment(n, out)
         self.assertEqual(code, 0); self.assertEqual(open(out, "rb").read(), b"a" * MB)
 
+    def mkdb(self, name, sysid, fill=b"b"):
+        """A segment that starts with a real long page header (XLP_LONG_HEADER) of database `sysid`."""
+        import struct
+        hdr = struct.pack("<HHIQI", 0xD116, 0x0002 | 0x0004, 1, 0, 0) + b"\0" * 4 + struct.pack("<QII", sysid, MB, 8192)
+        p = os.path.join(self.src, name)
+        with open(p, "wb") as f: f.write(hdr + fill * (MB - len(hdr)))
+        return p
+
+    def test_one_database_per_archive(self):
+        from pg_arca.wal_manager import segment_sysid
+        a = self.mkdb(seg(1, 0, 1), 7001)
+        self.assertEqual(segment_sysid(a), "7001")
+        self.wm.archive_segment(a, seg(1, 0, 1))
+        self.assertEqual(self.wm.owner(), "7001")
+        self.assertEqual(self.wm._read_meta(seg(1, 0, 1)).get("sysid"), "7001")
+        self.wm.archive_segment(self.mkdb(seg(2, 0, 2), 7001), seg(2, 0, 2))        # the other site of the same database (new timeline): fine
+        with self.assertRaises(WalArchiveError) as c:                               # another cluster pointed at the same directory: refused, clearly
+            self.wm.archive_segment(self.mkdb(seg(1, 0, 5), 9999), seg(1, 0, 5))
+        self.assertIn("PGA-WAL-032", str(c.exception))
+        self.assertIsNone(self.wm._find(seg(1, 0, 5))[0])
+        self.wm.archive_segment(self.mk(seg(1, 0, 7)), seg(1, 0, 7))                 # no readable header (tests, odd tools): no owner check, still archived
+
     def test_promotion_partial_segment_is_not_a_gap(self):
         for i in (1, 2, 3):
             n = seg(1, 0, i); self.wm.archive_segment(self.mk(n), n)

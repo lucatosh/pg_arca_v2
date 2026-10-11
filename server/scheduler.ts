@@ -8,6 +8,7 @@
 import { Store, NodeRecord, nowIso } from './store';
 import * as ops from './ops';
 import { hbaTarget } from './hba';
+import { geoOf } from './geo';
 import { isTerminal } from './ops';
 
 import { type BackupPolicy, DEFAULT_POLICY, validatePolicy, resolvePolicy } from './policies';
@@ -119,10 +120,13 @@ export async function standbyKickTick(store: Store, now = Date.now()): Promise<s
     if (o.type !== 'backup_run' || o.status !== 'running' || o.progress?.phase !== 'wal') continue;
     const node: NodeRecord | undefined = st.nodes[o.nodeId];
     if (!node || node.snapshot?.postgres?.is_in_recovery !== true) continue;
-    const primary = Object.values(st.nodes).find(n => n.clusterId === o.clusterId && online(n, now) && n.snapshot?.postgres?.is_in_recovery === false);
+    let primary = Object.values(st.nodes).find(n => n.clusterId === o.clusterId && online(n, now) && n.snapshot?.postgres?.is_in_recovery === false);
+    // a standby SITE (geo-redundancy) has no primary of its own: the WAL it waits for is written by the primary site's leader
+    if (!primary) { const g = geoOf(st, o.clusterId); const ps = g?.role === 'standby' ? g.peers.find(p => p.role === 'primary') : null;
+      if (ps?.leaderNodeId) { const n = st.nodes[ps.leaderNodeId]; if (n && online(n, now) && n.snapshot?.postgres?.is_in_recovery === false) primary = n; } }
     if (!primary) continue;
     const key = `standbykick:${o.id}:${Math.floor(now / 20_000)}`;
-    const r = await ops.submit(store, { type: 'wal_switch', clusterId: o.clusterId, nodeId: primary.id, params: {}, idempotencyKey: key, createdBy: 'scheduler', ttlSeconds: 120 });
+    const r = await ops.submit(store, { type: 'wal_switch', clusterId: primary.clusterId || o.clusterId, nodeId: primary.id, params: {}, idempotencyKey: key, createdBy: 'scheduler', ttlSeconds: 120 });
     if (r.created) out.push(key);
   }
   return out;

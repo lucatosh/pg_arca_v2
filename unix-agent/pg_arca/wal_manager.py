@@ -44,6 +44,29 @@ except Exception:  # pragma: no cover
     _zstd = None
 
 
+OWNER_FILE = "ARCHIVE_OWNER.json"      # the database (system identifier) this archive belongs to: one database per WAL archive directory
+
+
+def segment_sysid(path):
+    """System identifier from the long page header at the start of a WAL segment (None if not readable / not a segment start).
+    XLogLongPageHeaderData: magic(2) info(2) tli(4) pageaddr(8) rem_len(4) +pad(4) | sysid(8) seg_size(4) blcksz(4); XLP_LONG_HEADER = 0x0002."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            h = f.read(40)
+    except (IOError, OSError):
+        return None
+    if len(h) < 40:
+        return None
+    for order in ("<", ">"):                                  # written by the server's own byte order
+        info = struct.unpack(order + "H", h[2:4])[0]
+        if info & 0x0002:
+            sysid, seg = struct.unpack(order + "QI", h[24:36])
+            if seg and seg & (seg - 1) == 0 and (1 << 20) <= seg <= (1 << 30):
+                return str(sysid)
+    return None
+
+
 class WalArchiveError(Exception):
     def __init__(self, code, message):
         super().__init__("%s: %s" % (code, message))
@@ -141,6 +164,36 @@ class WalManager:
         except (IOError, OSError, ValueError):
             return None
 
+    # ------------------------------------------------------------------ ownership
+    def owner(self):
+        try:
+            with open(os.path.join(self.wal_dir, OWNER_FILE), "r", encoding="utf-8") as f:
+                return str(json.load(f).get("system_identifier") or "") or None
+        except (IOError, OSError, ValueError):
+            return None
+
+    def _check_owner(self, sysid):
+        """A WAL archive directory holds ONE database (segment names restart at 1 in every cluster): a second database writing here would collide with
+        the first one's names and its retention would delete the other's WAL. The sites of a geo-redundant pair are the same database: they share it."""
+        cur = self.owner()
+        if cur is None:
+            p = os.path.join(self.wal_dir, OWNER_FILE)
+            tmp = "%s.%d.tmp" % (p, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"system_identifier": sysid, "since": time.time()}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.link(tmp, p)                                 # first writer wins; a concurrent different owner is caught just below
+            except FileExistsError:
+                pass
+            finally:
+                os.unlink(tmp)
+            cur = self.owner()
+        if cur and cur != sysid:
+            raise WalArchiveError("PGA-WAL-032", "this WAL archive (%s) belongs to another database (system identifier %s; this one is %s): each PostgreSQL cluster "
+                                  "needs its own WAL archive directory. Set a different wal_archive_dir for this cluster" % (self.wal_dir, cur, sysid))
+
     # ------------------------------------------------------------------ archive
     def archive_segment(self, src_path, name):
         """archive_command %p %f. Returns (ok, dest, sha256, message); raises WalArchiveError on refusal."""
@@ -153,6 +206,9 @@ class WalManager:
         if SEG_RE.match(name) and (size & (size - 1) != 0 or size < (1 << 20) or size > (1 << 30)):
             raise WalArchiveError("PGA-WAL-012", "segment size %d is not a valid WAL segment size (partial copy?)" % size)
 
+        sysid = segment_sysid(src_path) if not is_history else None
+        if sysid:
+            self._check_owner(sysid)
         raw_sha = _sha256_file(src_path)
         existing, codec = self._find(name)
         if existing:
@@ -188,6 +244,8 @@ class WalManager:
                 os.fsync(f.fileno())
             final = os.path.join(self.wal_dir, name + ("." + codec_used if codec_used else ""))
             meta = {"sha256": raw_sha, "size": size, "codec": codec_used or "none", "archived_at": time.time()}
+            if sysid:
+                meta["sysid"] = sysid
             if self.crypto and not is_history:
                 meta["enc"] = "aes-256-gcm"
                 meta["key_id"] = self.crypto.key_id

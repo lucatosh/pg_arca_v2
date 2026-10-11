@@ -114,6 +114,30 @@ def _dependents(sets, full):
     return [s for s in sets if s["id"].split("_")[0] == prefix]
 
 
+def _sibling_floors(repo, keep):
+    """Oldest backup start LSN of every OTHER stanza of the same database in this repository (e.g. the sites of a geo-redundant pair, registered as two
+    clusters, sharing one WAL archive): the shared archive must keep what their backups need too."""
+    sysid = next((s.get("system_identifier") for s in keep if s.get("system_identifier")), None)
+    out = []
+    root = repo.p("stanza")
+    if not sysid or not os.path.isdir(root):
+        return out
+    for st in os.listdir(root):
+        if st == repo.stanza:
+            continue
+        d = os.path.join(root, st, "backup")
+        if not os.path.isdir(d):
+            continue
+        for sid in os.listdir(d):
+            try:
+                m = read_json(os.path.join(d, sid, "meta.json"))
+            except (IOError, OSError, ValueError):
+                continue
+            if m.get("status") in ("COMPLETE", "RUNNING", "PENDING_WAL") and str(m.get("system_identifier")) == str(sysid) and m.get("start_lsn"):
+                out.append(lsn_to_int(m["start_lsn"]))
+    return out
+
+
 def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
     repo = ctx.repo
     keep_full = int(retention_full if retention_full is not None else ctx.retention_full)
@@ -153,7 +177,7 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         walrm = 0
         if oldest_lsn is not None:
             seg = keep[0].get("wal_segment_size") or ctx.seg_size
-            floor = wal_segno(oldest_lsn, seg)
+            floor = wal_segno(min([oldest_lsn] + _sibling_floors(repo, keep)), seg)
             for name in ctx.wal.list_segments():
                 p = parse_wal_name(name, seg)
                 if p and p[1] < floor:

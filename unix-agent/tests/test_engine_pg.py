@@ -592,6 +592,21 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len([s for s in left if s["type"] == "full"]), 1)
         self.assertTrue(verify(F.ctx, deep=True)["ok"])
 
+    def test_15b_expire_keeps_wal_of_another_site_of_the_same_database(self):
+        """Two clusters of the SAME database (geo sites) registered separately = two stanzas sharing one WAL archive: expiring one must not delete
+        the WAL the other's backups need."""
+        site2 = Ctx(F.conn, F.src, F.repo, "site2", F.wal, F.scratch, process_max=2, compression="zlib", level=1, start_fast=True, seg_size=F.seg,
+                    agent_path=F.ctx.agent_path, key_file=F.key or None)
+        old = run_backup(site2, "full")
+        q("app", "INSERT INTO orders(note) SELECT 'site2 ' || g FROM generate_series(1,2000) g"); q("postgres", "SELECT pg_switch_wal()")
+        run_backup(F.ctx, "full"); run_backup(F.ctx, "full")
+        expire(F.ctx, retention_full=1)
+        from pg_arca.engine.util import lsn_to_int, wal_segno, wal_name
+        first = wal_segno(lsn_to_int(old["start_lsn"]), F.seg)
+        names = set(F.ctx.wal.list_segments())
+        self.assertTrue(any(n[8:] == wal_name(1, first, F.seg)[8:] for n in names), "the start segment of the other site's backup is still archived")
+        self.assertTrue(restore_instance(site2, dest=os.path.join(F.base, "site2_dry"), dry_run=True)["preflight"]["ok"])
+
     def test_16_cancel_during_spread_checkpoint(self):
         """A backup that waits for a SPREAD checkpoint (minutes on a busy server) must report it and must be cancellable at once, not after the checkpoint."""
         from pg_arca.engine.util import Cancelled
