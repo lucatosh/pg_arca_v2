@@ -59,4 +59,20 @@ r = o.get("result") or {}
 check("DR drill in %ss" % o.get("_sec"), o.get("status") == "succeeded", str(o.get("error"))[:400])
 print("   drill:", json.dumps({k: r.get(k) for k in ("ok", "node", "recovered_to", "duration_sec", "rto_sec", "where", "checks") if k in r})[:600], "| ran on node", o.get("nodeId"), "bk1 =", bk and bk["id"])
 check("drill ran on bk1", bool(bk) and o.get("nodeId") == bk["id"])
+print("== 5. table recovered on bk1 and delivered to the primary site (into a separate schema)")
+import subprocess
+def leader(site):
+    for n in (site + "-pg1", site + "-pg2"):
+        if subprocess.run("docker exec %s curl -s -o /dev/null -w '%%{http_code}' localhost:8008/leader" % n, shell=True, capture_output=True, text=True).stdout == "200": return n
+l1 = leader("dc1")
+want = subprocess.run("docker exec %s gosu postgres psql -XAtc 'select count(*) from geo_sw'" % l1, shell=True, capture_output=True, text=True).stdout.strip()
+o = run(ids["geo-dc1"], "restore_object", {"object": "postgres.public.geo_sw", "stage_db": "pgarca_stage_geo"}, 1800)
+check("restore_object on bk1 in %ss (node %s)" % (o.get("_sec"), o.get("nodeId")), o.get("status") == "succeeded" and bk and o.get("nodeId") == bk["id"], str(o.get("error"))[:400])
+if o.get("status") == "succeeded":
+    p = run(ids["geo-dc1"], "restore_promote", {"stage_db": "pgarca_stage_geo", "mode": "as_new", "target_schema": "recovered_geo"}, 900)
+    check("promoted into schema recovered_geo of the primary site", p.get("status") == "succeeded", str(p.get("error"))[:400])
+    got = subprocess.run("docker exec %s gosu postgres psql -XAtc 'select count(*) from recovered_geo.geo_sw'" % l1, shell=True, capture_output=True, text=True).stdout.strip()
+    check("rows recovered (%s) = rows at backup time or more recent (%s now)" % (got, want), got.isdigit() and int(got) > 0, got)
+    subprocess.run("docker exec %s gosu postgres psql -XAtc 'drop schema if exists recovered_geo cascade'" % l1, shell=True)
+subprocess.run("docker exec %s gosu postgres psql -XAtc 'drop database if exists pgarca_stage_geo with (force)'" % l1, shell=True)
 print("%d/%d checks passed" % (sum(OK), len(OK)))
