@@ -27,8 +27,9 @@ case "${1:-help}" in
   latency) # one-way delay on the WAN side of the DC2 nodes (e.g. ./geo.sh latency 40ms; ./geo.sh latency 0 removes it)
     for n in dc2-pg1 dc2-pg2; do dev=$(docker exec "$n" ip -o -4 addr | awk '/172\.30\.0\./{print $2}'); docker exec "$n" tc qdisc del dev "$dev" root 2>/dev/null || true
       [[ ${2:-0} != 0 ]] && docker exec "$n" tc qdisc add dev "$dev" root netem delay "$2" && echo "$n: WAN delay $2 on $dev"; done ;;
-  wan-cut)   docker network disconnect arca-geo_wan dc1-haproxy && echo "WAN cut: DC2 no longer reaches DC1" ;;
-  wan-restore) docker network connect arca-geo_wan dc1-haproxy && echo "WAN restored" ;;
+  wan-cut)   # the WAN side of DC1: its HAProxy (the address DC2 replicates from) leaves the WAN network
+    h=$(docker ps --format '{{.Names}}' | grep -E '(^|-)dc1-haproxy(-[0-9]+)?$' | head -1); docker network disconnect arca-geo_wan "$h" && echo "WAN cut: DC2 no longer reaches DC1 ($h)" ;;
+  wan-restore) h=$(docker ps --format '{{.Names}}' | grep -E '(^|-)dc1-haproxy(-[0-9]+)?$' | head -1); docker network connect --alias dc1-haproxy arca-geo_wan "$h" && echo "WAN restored ($h)" ;;
   promote-dc2)  # DR: DC2 becomes a normal (writable) cluster. Through Patroni's DCS (edit-config), never by hand on PostgreSQL.
     l=$(site_leader dc2) || { echo "no DC2 leader"; exit 1; }
     docker exec "$l" bash -c "patronictl -c /etc/patroni.yml edit-config --force -s standby_cluster=null" ;;

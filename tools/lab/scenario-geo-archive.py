@@ -42,7 +42,9 @@ print("== WAN cut: DC2 must keep up through the archive")
 l1 = leader("dc1")
 psql(l1, "CREATE TABLE IF NOT EXISTS geo_arch(id bigserial, at timestamptz default now())")
 time.sleep(5)
-sh("cd %s && ./geo.sh wan-cut" % HERE)
+print("  ", sh("cd %s && ./geo.sh wan-cut 2>&1" % HERE))
+time.sleep(70)                                     # wal_receiver_timeout: the standby leader notices the WAN is gone
+print("   receiver after the cut:", psql(l2, "SELECT coalesce(status,'none') FROM pg_stat_wal_receiver") or "none")
 tok = int(time.time())
 psql(l1, "INSERT INTO geo_arch(id) SELECT %d::bigint*1000+g FROM generate_series(1,500) g" % tok)
 psql(l1, "SELECT pg_switch_wal()"); time.sleep(3); psql(l1, "SELECT pg_switch_wal()")
@@ -52,8 +54,8 @@ for _ in range(60):
     if seen == "500": break
     time.sleep(3)
 rcv = psql(l2, "SELECT coalesce(status,'none') FROM pg_stat_wal_receiver") or "none"
-check("rows written on DC1 during the WAN cut reached DC2 through the archive (%s/500, receiver %s)" % (seen, rcv), seen == "500")
-sh("cd %s && ./geo.sh wan-restore" % HERE)
+check("rows written on DC1 during the WAN cut reached DC2 through the archive (%s/500, receiver %s)" % (seen, rcv), seen == "500" and rcv != "streaming")
+print("  ", sh("cd %s && ./geo.sh wan-restore 2>&1" % HERE))
 print("== WAN back: streaming resumes")
 st = ""
 for _ in range(60):
