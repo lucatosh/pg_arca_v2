@@ -10,6 +10,18 @@ export function parseWalTime(s?: string | null): number {
 export const fmtWhen = (ms: number) => new Date(ms).toLocaleString('it-IT', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 export type CatDb = { name: string; oid: number | string; size: number; connectable?: boolean; tables?: number; objects?: number; matviews?: number; schemas?: number; in_latest?: boolean; last_set?: string; last_stop?: string; first_stop?: string; late?: boolean };
+/** Object paths `db.schema.name` as the agent reads them: a part with a dot or a quote is double-quoted (db."sales.eu".orders). */
+export const qpart = (x: string) => (/[."]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x);
+export const qid = (...parts: string[]) => parts.map(qpart).join('.');
+export function splitId(id: string): string[] {
+  const out: string[] = []; let cur = ''; let i = 0;
+  while (i < id.length) {
+    if (id[i] === '"' && !cur) { let j = i + 1; let buf = ''; while (j < id.length) { if (id[j] === '"') { if (id[j + 1] === '"') { buf += '"'; j += 2; continue; } break; } buf += id[j++]; } cur = buf; i = j + 1; continue; }
+    if (id[i] === '.') { out.push(cur); cur = ''; i++; continue; }
+    cur += id[i++];
+  }
+  out.push(cur); return out;
+}
 export type DropInfo = { time: string; time_exact: boolean } | null | undefined;
 type Kind = 'app' | 'work' | 'system';
 export const kindOf = (n: string): Kind => (/^(template[01]|postgres)$/.test(n) ? 'system' : /^(arca_rl_|pgarca_stage_)/.test(n) || /_(pitr|restored)(_?\d+)?$/.test(n) ? 'work' : 'app');

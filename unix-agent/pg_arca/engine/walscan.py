@@ -21,7 +21,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from pg_arca.engine.util import EngineError, lsn_to_int, parse_wal_name, wal_name
+from pg_arca.engine.util import EngineError, lsn_to_int, parse_wal_name, spec_path, wal_name
 
 CACHE_VERSION = 4                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
 LSN_RE = re.compile(rb"lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")
@@ -343,7 +343,7 @@ def _catalog_names(ctx, sets=4):
             for dbname, d in cat["databases"].items():
                 dbs.setdefault(str(d["oid"]), dbname)
                 for r in d["relations"]:
-                    rel.setdefault((str(d["oid"]), str(r["relfilenode"])), ("%s.%s.%s" % (dbname, r["schema"], r["name"]), r.get("kind") or "?"))
+                    rel.setdefault((str(d["oid"]), str(r["relfilenode"])), (spec_path(dbname, r["schema"], r["name"]), r.get("kind") or "?"))
     except EngineError:
         pass
     return rel, dbs
@@ -377,7 +377,7 @@ def _live_names(ctx, pairs, rel, dbs):
                 for r in s.query("SELECT pg_relation_filenode(c.oid), n.nspname, c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
                                  "WHERE pg_relation_filenode(c.oid) IN (%s)" % nums):
                     if len(r) >= 4 and r[0]:
-                        rel[(d, str(r[0]))] = ("%s.%s.%s" % (dn, r[1], r[2]), r[3])
+                        rel[(d, str(r[0]))] = (spec_path(dn, r[1], r[2]), r[3])
                 dbs.setdefault(d, dn)
             finally:
                 s.close()

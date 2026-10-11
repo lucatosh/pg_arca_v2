@@ -56,6 +56,9 @@ INSERT INTO %(s)s.secret SELECT g, 'postgres', 'secret ' || g FROM generate_seri
 INSERT INTO %(s)s.orders SELECT g, date '2025-01-01' + (g %% 300), CASE WHEN g %% 2 = 0 THEN 'eu' ELSE 'us' END, g * 1.5 FROM generate_series(1, 1000) g;
 INSERT INTO %(s)s.lines(id, parent_id, qty, price) SELECT g, 1 + g %% 300, g %% 7, 2.5 FROM generate_series(1, 2000) g;
 INSERT INTO %(s)s.%(long)s SELECT g, 'v' || g FROM generate_series(1, 100) g;
+CREATE SCHEMA "sales.eu";
+CREATE TABLE "sales.eu"."a.b""c" (id int PRIMARY KEY, v text);
+INSERT INTO "sales.eu"."a.b""c" SELECT g, 'd' || g FROM generate_series(1, 10) g;
 """ % {"s": QS, "long": LONG}
 
 
@@ -180,6 +183,15 @@ class Exotic(unittest.TestCase):
         self.assertEqual(len(cp), 1, cp)
         self.assertEqual(cp[0][1], "f", "a copy is never attached to the live tree")
         self.assertEqual(snap(), before, "as_new must not touch anything live")
+
+    def test_09_names_with_dots_and_quotes(self):
+        from pg_arca.engine.util import spec_path
+        q(DB, 'DROP TABLE "sales.eu"."a.b""c"')
+        self.switch()
+        spec = spec_path(DB, "sales.eu", 'a.b"c')
+        self.assertEqual(spec, '%s."sales.eu"."a.b""c"' % DB)
+        self.go([spec], mode="missing_only")
+        self.assertEqual(q(DB, 'SELECT count(*) FROM "sales.eu"."a.b""c"')[0][0], "10")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,15 @@ def _check_name(n, what):
         raise EngineError("PGA-GEN-065", "invalid %s %r (letters, digits, _ and $; max 63; must not start with a digit)" % (what, n))
 
 
+def _spec3(spec):
+    """db.schema.name with quoted parts allowed (a name with a dot: db."a.b".t); [] when malformed."""
+    from pg_arca.engine.util import split_spec
+    try:
+        return split_spec(spec or "")
+    except ValueError:
+        return []
+
+
 def _dest_conn(ctx, into):
     if not into:
         return ctx.conn.with_db("postgres")
@@ -637,7 +646,7 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
         raise EngineError("PGA-GEN-080", "missing_only needs a quarantine database made by the current restore_object (this one predates it): restore the object again")
     if dry_run:
         raise EngineError("PGA-GEN-080", "this quarantine database predates the dependency-aware restore: no plan available, restore the object again")
-    parts = spec.split(".")
+    parts = _spec3(spec)
     if len(parts) != 3:
         raise EngineError("PGA-GEN-082", "object must be database.schema.name")
     dbname, schema, name = parts
@@ -794,7 +803,7 @@ def diff_object(ctx, stage_db, spec, into=None, limit=200):
     Returns what exists only in the recovered copy (deleted since), only in the live table (added since) and what changed.
     Read-only on both sides."""
     import json
-    parts = (spec or "").split(".")
+    parts = _spec3(spec)
     if len(parts) != 3:
         raise EngineError("PGA-GEN-082", "object must be database.schema.name")
     dbname, schema, name = parts
@@ -845,7 +854,7 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
     Before touching anything the current version of every affected row is saved in pgarca_rowsafe_<ts>_<table>.
     Nothing is applied if any key cannot be found or the table definitions differ in a way that makes the copy unsafe."""
     import json
-    parts = (spec or "").split(".")
+    parts = _spec3(spec)
     if len(parts) != 3:
         raise EngineError("PGA-GEN-082", "object must be database.schema.name")
     dbname, schema, name = parts

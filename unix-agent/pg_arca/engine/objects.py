@@ -18,7 +18,7 @@ import shutil
 import tempfile
 
 from pg_arca.engine.pgsession import PgSession, run_dump, run_tool
-from pg_arca.engine.util import EngineError, now_utc, quote_ident, sql_lit
+from pg_arca.engine.util import EngineError, now_utc, quote_ident, split_spec, sql_lit
 
 META = "pgarca_meta"
 SYS_SCHEMAS = ("pg_catalog", "information_schema", "pg_toast")
@@ -39,9 +39,12 @@ def parse_selection(spec, objects=None):
     out = []
     seen = set()
     for it in items:
-        parts = str(it).split(".")
+        try:
+            parts = split_spec(str(it))                  # a part with a dot or a quote is double-quoted: db."sales.eu".orders
+        except ValueError:
+            parts = []
         if len(parts) not in (2, 3) or not all(parts):
-            raise EngineError("PGA-GEN-030", "invalid object %r" % it, "use database.schema.object (a table, view or sequence) or database.schema (a whole schema)")
+            raise EngineError("PGA-GEN-030", "invalid object %r" % it, "use database.schema.object (a table, view or sequence) or database.schema (a whole schema); quote a name that contains a dot: db.\"my.schema\".t")
         if parts[1] in ("pg_catalog", "information_schema", "pg_toast") or parts[1].startswith("pg_temp"):
             raise EngineError("PGA-GEN-034", "%r is a system schema: its objects belong to PostgreSQL itself and are never restored one by one" % parts[1],
                               "to bring back a whole database use restore_database")

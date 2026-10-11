@@ -261,6 +261,51 @@ def quote_ident(s):
     return '"' + str(s).replace('"', '""') + '"'
 
 
+def spec_part(s):
+    """One part of an object path `db.schema.name` as the UI and the agent write it: as is, or double-quoted ("" for a quote) when it contains a dot or a quote."""
+    s = str(s)
+    return '"' + s.replace('"', '""') + '"' if ("." in s or '"' in s) else s
+
+
+def spec_path(*parts):
+    return ".".join(spec_part(p) for p in parts)
+
+
+def split_spec(text):
+    """Inverse of spec_path: 'db."a.b".t' -> ['db', 'a.b', 't']. Unquoted parts are taken literally (case kept). Raises ValueError when malformed."""
+    out, cur, i, n, quoted = [], [], 0, len(text), False
+    while i < n:
+        ch = text[i]
+        if ch == '"' and not cur and not quoted:
+            j, buf = i + 1, []
+            while True:
+                if j >= n:
+                    raise ValueError("unterminated quote")
+                if text[j] == '"':
+                    if j + 1 < n and text[j + 1] == '"':
+                        buf.append('"')
+                        j += 2
+                        continue
+                    break
+                buf.append(text[j])
+                j += 1
+            cur, quoted, i = buf, True, j + 1
+            if i < n and text[i] != ".":
+                raise ValueError("text after a quoted part")
+            continue
+        if ch == ".":
+            out.append("".join(cur))
+            cur, quoted = [], False
+            i += 1
+            continue
+        if quoted:
+            raise ValueError("text after a quoted part")
+        cur.append(ch)
+        i += 1
+    out.append("".join(cur))
+    return out
+
+
 def new_id(prefix):
     return "%s-%s" % (prefix, uuid.uuid4().hex[:8])
 

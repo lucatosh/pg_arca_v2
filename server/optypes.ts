@@ -92,13 +92,31 @@ const isoUtcOffset = /([+-]\d{2}(:?\d{2})?|Z|UTC)\s*$/;
 const setId = /^[0-9]{8}-[0-9]{6}[FDI](_[0-9]{8}-[0-9]{6}[FDI])?$/;
 const lsn = /^[0-9A-Fa-f]{1,8}\/[0-9A-Fa-f]{1,8}$/;
 /** restore_object: `object` = database.schema.name | database.schema, or `objects` = a list of them (all in the same database). */
-const OBJ = /^[^.\s]+\.[^.\s]+(\.[^.\s]+)?$/;
+/** `db.schema[.name]` split into its parts; a part with a dot or a quote is double-quoted (db."sales.eu".orders). Names may contain spaces and any
+ *  character PostgreSQL accepts (quoted identifiers): only control characters and parts longer than 63 bytes are refused. null = malformed. */
+export function splitSpec(text: string): string[] | null {
+  const out: string[] = []; let cur = ''; let quoted = false; let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' && !cur && !quoted) {
+      let j = i + 1; let buf = '';
+      for (;;) { if (j >= text.length) return null; if (text[j] === '"') { if (text[j + 1] === '"') { buf += '"'; j += 2; continue; } break; } buf += text[j++]; }
+      cur = buf; quoted = true; i = j + 1; if (i < text.length && text[i] !== '.') return null; continue;
+    }
+    if (ch === '.') { out.push(cur); cur = ''; quoted = false; i++; continue; }
+    if (quoted) return null;
+    cur += ch; i++;
+  }
+  out.push(cur);
+  return out.every(x => x.length > 0 && Buffer.byteLength(x) <= 63 && !/[\u0000-\u001f\u007f]/.test(x)) ? out : null;
+}
+const specOk = (o: string, n: number[]) => { const p = splitSpec(o); return !!p && n.includes(p.length); };
 const objectsErr = (p: any): string | null => {
   const list: string[] = Array.isArray(p.objects) ? p.objects.map(String) : (p.object ? [String(p.object)] : []);
   if (!list.length) return 'object (database.schema.name or database.schema) or objects[] required';
   if (list.length > 200) return 'at most 200 objects per restore';
-  if (!list.every(o => OBJ.test(o))) return 'every object must be database.schema.name or database.schema';
-  if (new Set(list.map(o => o.split('.')[0])).size > 1) return 'all objects must belong to the same database';
+  if (!list.every(o => specOk(o, [2, 3]))) return 'every object must be database.schema.name or database.schema (quote a name that contains a dot)';
+  if (new Set(list.map(o => splitSpec(o)![0])).size > 1) return 'all objects must belong to the same database';
   return null;
 };
 const dbName = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/;
@@ -115,7 +133,7 @@ function targetErr(p: Record<string, any>): string | null {
   return null;
 }
 const hbaRulesErr = (p: Record<string, any>): string | null => (!Array.isArray(p.rules) || p.rules.length > 200 || p.rules.some((r: any) => !r || typeof r !== 'object')) ? 'rules must be a list of at most 200 objects' : null;
-const stageErr = (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!/^[^.\s]+\.[^.\s]+\.[^.\s]+$/.test(String(p.object ?? '')) ? 'object must be database.schema.name' : null);
+const stageErr = (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!specOk(String(p.object ?? ''), [3]) ? 'object must be database.schema.name' : null);
 const keysErr = (p: any) => {
   for (const f of ['restore_keys', 'delete_keys']) {
     const v = p[f]; if (v === undefined) continue;
@@ -155,7 +173,7 @@ Object.assign(OP_SPECS, {
   hba_expire:   { mutating: true,  target: 'node', lane: 'control', validate: () => null },
   hba_restore:  { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (!Array.isArray(p.list) || !p.list.length || p.list.length > 600 || p.list.some((x: any) => typeof x !== 'string' || x.length > 600 || /[\r\n]/.test(x)) ? 'list must be pg_hba lines' : p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
   hba_rollback: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.backup && !/^[\w.\-]{1,100}$/.test(String(p.backup)) ? 'invalid backup name' : null) },
-  restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (p.object && !/^[^.\s]+\.[^.\s]+(\.[^.\s]+)?$/.test(String(p.object)) ? 'object must be database.schema or database.schema.name' : (p.mode && !['as_new', 'replace', 'missing_only'].includes(p.mode) ? 'mode must be as_new|replace|missing_only' : (p.mode === 'replace' && !p.dry_run && p.confirm !== 'SOSTITUISCI' ? 'replace needs confirm="SOSTITUISCI" (the originals are renamed, never dropped, but the swap is visible to every client)' : (p.target_schema !== undefined && p.target_schema !== null && p.target_schema !== '' && (p.mode !== 'as_new' || !/^[a-z_][a-z0-9_]{0,62}$/.test(String(p.target_schema)) || /^pg_/.test(String(p.target_schema))) ? 'target_schema: only with mode as_new, lowercase letters, digits and _' : intoErr(p))))) },
+  restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (p.object && !specOk(String(p.object), [2, 3]) ? 'object must be database.schema or database.schema.name' : (p.mode && !['as_new', 'replace', 'missing_only'].includes(p.mode) ? 'mode must be as_new|replace|missing_only' : (p.mode === 'replace' && !p.dry_run && p.confirm !== 'SOSTITUISCI' ? 'replace needs confirm="SOSTITUISCI" (the originals are renamed, never dropped, but the swap is visible to every client)' : (p.target_schema !== undefined && p.target_schema !== null && p.target_schema !== '' && (p.mode !== 'as_new' || !/^[a-z_][a-z0-9_]{0,62}$/.test(String(p.target_schema)) || /^pg_/.test(String(p.target_schema))) ? 'target_schema: only with mode as_new, lowercase letters, digits and _' : intoErr(p))))) },
   restore_drill:    { ...dataOp, mutating: false, validate: (p: any) => (p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null) },
   restore_diff:     { ...dataOp, mutating: false, cancellable: false, validate: (p: any) => stageErr(p) || intoErr(p) },
   restore_apply_rows: { ...dataOp, cancellable: false, validate: (p: any) => stageErr(p) || keysErr(p) || intoErr(p) },

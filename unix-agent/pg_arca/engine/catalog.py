@@ -50,7 +50,11 @@ def snapshot_catalog(conn, log=None):
 
 
 def find_object(cat, spec):
-    parts = spec.split(".")
+    from pg_arca.engine.util import split_spec
+    try:
+        parts = split_spec(spec)
+    except ValueError:
+        parts = []
     if len(parts) != 3:
         raise EngineError("PGA-GEN-030", "invalid object spec %r" % spec, "use database.schema.object (e.g. billing.public.invoices)")
     db, sch, obj = parts
