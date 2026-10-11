@@ -158,6 +158,26 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   </div>;
 }
 
+const ROLE_IT: Record<string, string> = { scratch: 'istanza di recupero (estrazione, WAL, dump)', data: 'dati del cluster in produzione', dest: 'destinazione del ripristino', tablespace: 'tablespace ricollocati' };
+type Vol = { paths: string[]; roles: string[]; need: number; free: number; total: number; free_after?: number };
+/** Disk space per FILESYSTEM: what is used now, what the restore will write, what is left. Two folders on the same volume are one bar (their needs add up). */
+export function SpaceBars({ vols }: { vols?: Vol[] }) {
+  if (!vols || !vols.length) return null;
+  return <div className="spacebars" role="group" aria-label="Spazio su disco">
+    <div className="ph"><strong>Spazio su disco</strong><span className="small faint">calcolato sul server, per volume</span></div>
+    {vols.map((v, i) => {
+      const used = Math.max(0, v.total - v.free); const after = v.free - v.need; const live = v.roles.includes('data');
+      const pct = (x: number) => `${Math.max(0, Math.min(100, (100 * x) / Math.max(v.total, 1)))}%`;
+      const tone = after < 0 ? 'bad' : (live ? after < Math.max(0.05 * v.total, 2 ** 30) : after < 0.02 * v.total) ? 'bad' : live && after < 0.1 * v.total ? 'warn' : 'ok';
+      return <div key={i} className={`vol ${tone}`}>
+        <div className="row small"><span className="grow"><strong>{v.roles.map(r => ROLE_IT[r] || r).join(' + ')}</strong><span className="faint"> — {v.paths.join(', ')}</span></span>
+          <span className="nowrap">{after < 0 ? <>mancano <strong>{bytes(-after)}</strong></> : <>restano <strong>{bytes(after)}</strong> ({Math.round((100 * after) / Math.max(v.total, 1))}%)</>}</span></div>
+        <div className="bar" aria-hidden="true"><i className="used" style={{ width: pct(used) }} /><i className="need" style={{ width: pct(Math.min(v.need, Math.max(v.free, 0))) }} />{after < 0 ? <i className="over" style={{ width: pct(-after) }} /> : null}</div>
+        <div className="small faint">occupato {bytes(used)} · serve {bytes(v.need)} · libero ora {bytes(v.free)} su {bytes(v.total)}{live ? ' · volume del cluster in produzione: deve restare almeno il 5% libero' : ''}</div>
+      </div>; })}
+  </div>;
+}
+
 /** The checks the agent ran before the long recovery: what is fine, what deserves attention, what blocks (with the way out). */
 function Preflight({ pf }: { pf: { level: string; ok: boolean; checks: { id: string; level: string; text: string; fix?: string }[] } }) {
   const order: Record<string, number> = { bad: 0, warn: 1, ok: 2 };
@@ -175,6 +195,7 @@ function PlanView({ p, scope }: { p: any; scope: Scope }) {
       : p.preflight?.ok === false ? <Banner kind="bad" title="Non si può ancora avviare">Il backup e i WAL ci sono, ma un controllo preliminare blocca il ripristino: vedi sotto cosa fare.</Banner>
         : <Banner kind="ok" title="Ripristino possibile">Il backup di partenza e i WAL necessari sono presenti.</Banner>}
     {p.preflight?.checks?.length ? <Preflight pf={p.preflight} /> : null}
+    <SpaceBars vols={p.space} />
     <dl className="kv"><dt>Istante</dt><dd>{p.target === 'end of archive' ? 'ultimo disponibile' : Number.isFinite(Date.parse(p.target)) ? new Date(p.target).toLocaleString('it-CH') : p.target}</dd>
       <dt>Backup di partenza</dt><dd><span className="mono">{p.set}</span></dd>
       <dt>Catena</dt><dd className="mono small">{(p.chain || []).join(' → ')}</dd>
@@ -225,7 +246,7 @@ function Notices({ r }: { r: any }) {
 const ACTION: Record<string, string> = { swap: 'sostituisce', create: 'viene creata', copy: 'copia accanto', skip: 'già presente: invariata' };
 
 function PromotePlan({ p }: { p: any }) {
-  return <div className="stack"><table className="t"><thead><tr><th>Tabella</th><th>Cosa succede</th><th className="num">Righe al ripristino</th></tr></thead><tbody>
+  return <div className="stack">{p.preflight?.checks?.length && p.preflight.level !== 'ok' ? <Preflight pf={p.preflight} /> : null}<SpaceBars vols={p.space} /><table className="t"><thead><tr><th>Tabella</th><th>Cosa succede</th><th className="num">Righe al ripristino</th></tr></thead><tbody>
     {(p.tables || []).map((t: any) => <tr key={`${t.schema}.${t.name}`}><td><code>{t.schema}.{t.name}</code></td><td className="small">{ACTION[t.action] || t.action}{t.old_kept_as ? <> — la attuale resta come <code>{t.old_kept_as}</code></> : null}{t.new_name ? <> come <code>{t.new_name}</code></> : null}</td><td className="num">{t.rows_at_target != null ? num(t.rows_at_target) : '—'}</td></tr>)}</tbody></table>
     <dl className="kv"><dt>Chiavi esterne da ricollegare</dt><dd>{num((p.inbound_fks || []).length + (p.outbound_fks || []).length)}{(p.inbound_fks || []).length ? <span className="small muted"> — {(p.inbound_fks as any[]).slice(0, 4).map(f => `${f.table}→${f.ref_table}`).join(', ')}{p.inbound_fks.length > 4 ? '…' : ''}</span> : null}</dd>
       <dt>Viste da ricreare</dt><dd>{num((p.views || []).length)}{(p.views || []).length ? <span className="small muted"> — {(p.views as any[]).slice(0, 4).map(v => v.name).join(', ')}{p.views.length > 4 ? '…' : ''}</span> : null}</dd>
@@ -244,7 +265,7 @@ function Promote({ stage, what, deps, warnings, mode, setMode, drop, setDrop, ru
       <label className={`opt ${mode === 'missing_only' ? 'on' : ''}`}><input type="radio" checked={mode === 'missing_only'} onChange={() => setMode('missing_only')} /><div><div>Solo ciò che manca</div><div className="small muted">Utile dopo un DROP di schema: tornano le tabelle sparite, quelle presenti non vengono toccate.</div></div></label>
       <label className="check"><input type="checkbox" checked={drop} onChange={e => setDrop(e.target.checked)} />Elimina la quarantena dopo la riuscita</label>
       <div className="row"><Button icon="search" busy={preview.busy} disabled={preview.busy || runner.busy} onClick={() => preview.run('restore_promote', { stage_db: stage, mode, dry_run: true })}>Anteprima delle modifiche</Button>
-        <Button kind="primary" icon="restore" busy={runner.busy} disabled={runner.busy} onClick={ask}>Riporta</Button></div>
+        <Button kind="primary" icon="restore" busy={runner.busy} disabled={runner.busy || p?.preflight?.ok === false} title={p?.preflight?.ok === false ? "Spazio insufficiente: vedi l’anteprima" : undefined} onClick={ask}>Riporta</Button></div>
       {preview.op && !p ? <OpPanel op={preview.op} error={preview.error} label="Calcolo dell’anteprima" /> : null}
       {p ? <PromotePlan p={p} /> : null}</> : null}
     {(runner.op || runner.error) && !done ? <OpPanel op={runner.op} error={runner.error} label="Promozione" /> : null}

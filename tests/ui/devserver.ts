@@ -109,6 +109,7 @@ const withAgent = process.env.NO_AGENT !== '1';
       if (op.type === 'restore_plan') {
         if (p.target_time && Date.parse(p.target_time) > Date.now() + 60_000) return report(op.id, { status: 'failed', error: 'PGA-PITR-002: target is in the future' });
         return report(op.id, { status: 'succeeded', result: { set: sets[sets.length - 1].id, chain: sets.slice(-3).map(s => s.id), target: p.target_time || 'end of archive', extract_bytes: 4.2e9, cluster_bytes: 5e9, saved_pct: 16, bytes: 5e9, files: 1200, missing_wal: [], destination_database: p.new_name, destination: p.destination,
+          space: [{ paths: ['/var/lib/postgresql/16/main', '/var/tmp/pg_arca_scratch'], roles: ['data', 'scratch'], need: 9.1e9, free: 4.3e10, total: 2.0e11, free_after: 3.39e10 }],
           preflight: { ok: p.new_name !== 'taken', level: p.new_name === 'taken' ? 'bad' : 'warn', checks: [{ id: 'chunks', level: 'ok', text: 'all 61234 backup chunks needed are present in the repository' }, { id: 'dest_space', level: 'warn', text: 'after the restore the data volume would be left with less than 10% free (40.0 GiB free now, about 38.0 GiB needed)', fix: 'a full data volume stops PostgreSQL: free some space first' }, ...(p.new_name === 'taken' ? [{ id: 'name', level: 'bad', text: "destination database 'taken' already exists", fix: 'choose another name; existing databases are never overwritten' }] : [])] } } });
       }
       if (op.type === 'restore_database' || op.type === 'restore_object' || op.type === 'restore_instance') {

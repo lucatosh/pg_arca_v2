@@ -38,6 +38,65 @@ def missing_chunks(repo, merged, limit=10):
     return len(hashes), n, miss, sampled
 
 
+def _existing(path):
+    p = os.path.abspath(path)
+    while p and not os.path.exists(p):
+        np_ = os.path.dirname(p)
+        if np_ == p:
+            break
+        p = np_
+    return p or "/"
+
+
+ROLE_LABEL = {"scratch": "scratch of the recovery instance (extraction, WAL read-ahead, dump)", "data": "data directory of the live cluster (restored database / quarantine copy)",
+              "dest": "restore destination", "tablespace": "tablespace destination"}
+
+
+def volumes(needs):
+    """needs: [(role, path, bytes)]. Groups them by FILESYSTEM: when the scratch and the live data directory share a volume (very common) their needs ADD UP,
+    which two separate checks would miss. -> [{dev, mount_hint, paths, roles, need, free, total}]"""
+    vols = {}
+    for role, path, need in needs:
+        if not path:
+            continue
+        p = _existing(path)
+        try:
+            st = os.statvfs(p); dev = os.stat(p).st_dev
+        except OSError:
+            continue
+        v = vols.setdefault(dev, {"paths": [], "roles": [], "need": 0, "free": st.f_bavail * st.f_frsize, "total": st.f_blocks * st.f_frsize})
+        if path not in v["paths"]:
+            v["paths"].append(path)
+        if role not in v["roles"]:
+            v["roles"].append(role)
+        v["need"] += int(max(0, need or 0))
+    return list(vols.values())
+
+
+def space_checks(vols, add):
+    """One finding per volume. The live cluster's volume is held to a stricter standard: PostgreSQL stops (PANIC on WAL write) when it fills up."""
+    for v in vols:
+        after = v["free"] - v["need"]
+        live = "data" in v["roles"]
+        keep = max(int(0.05 * v["total"]), 1 << 30) if live else max(int(0.02 * v["total"]), 256 << 20)
+        v["free_after"] = after
+        what = " + ".join(ROLE_LABEL.get(r, r) for r in v["roles"])
+        where = ", ".join(v["paths"])
+        if v["need"] <= 0:
+            continue
+        if after < 0:
+            add("space", "bad", "not enough space on the volume of %s (%s): %s free, about %s needed" % (where, what, human(v["free"]), human(v["need"])),
+                "free space there, move the scratch directory to another volume (recovery instance settings), or restore fewer objects", volume=v)
+        elif after < keep:
+            add("space", "bad" if live else "warn", "the volume of %s (%s) would be left with %s free (%.1f%%)%s" % (where, what, human(after), 100.0 * after / max(v["total"], 1),
+                ": a full data volume stops PostgreSQL" if live else ""), "free space first, or put the scratch directory on another volume", volume=v)
+        elif live and after < 0.10 * v["total"]:
+            add("space", "warn", "after the restore the live cluster's volume (%s) would have %s free (%.1f%%)" % (where, human(after), 100.0 * after / max(v["total"], 1)),
+                "keep at least 10% free on the data volume", volume=v)
+        else:
+            add("space", "ok", "%s: %s free, about %s needed" % (where, human(v["free"]), human(v["need"])), volume=v)
+
+
 def _free(path):
     p = os.path.abspath(path)
     while p and not os.path.exists(p):
@@ -82,27 +141,26 @@ def check(ctx, plan, merged_sel=None, target_set=None, need_dest=0, into=None, n
             from pg_arca.pgcompat import set_profile
             pr = set_profile(target_set)
             major = int(pr.major) if pr is not None else None
-        pf = ephcfg.preflight(ctx, major, ctx.eph, need_bytes=need_scratch, with_plan=False)
+        pf = ephcfg.preflight(ctx, major, ctx.eph, need_bytes=None, with_plan=False)        # space is judged below, per volume
         for c in pf["checks"]:
-            if c["level"] != "ok" or c["id"] in ("binaries", "scratch"):
+            if c["id"] == "scratch" and c["level"] == "ok":
+                continue
+            if c["level"] != "ok" or c["id"] == "binaries":
                 add("eph_" + c["id"], c["level"], c["text"], c.get("fix"))
     except Exception as e:                                                          # the pre-flight must never be the thing that breaks a restore
         add("eph", "warn", "could not check the recovery environment: %s" % e)
-    # ---- destination volume (the live cluster's data directory)
+    # ---- space, per filesystem (scratch and the live data directory often share one)
+    needs = [("scratch", ctx.scratch_dir, need_scratch)]
     if need_dest and not into and ctx.pgdata:
-        free = _free(ctx.pgdata)
+        needs.append(("data", ctx.pgdata, int(need_dest * 1.15)))                  # +15%: indexes rebuilt, temporary files
         plan["need_dest_bytes"] = int(need_dest * 1.15)
-        if free is not None:
-            plan["dest_free_bytes"] = free
-            if free < need_dest * 1.15:
-                add("dest_space", "bad", "the data volume of the live cluster has %s free; the restored data needs about %s (+15%% for indexes and temporary files)" % (human(free), human(int(need_dest * 1.15))),
-                    "free space on the data volume, or restore into another cluster / pick fewer objects")
-            elif free - need_dest * 1.15 < 0.10 * _total(ctx.pgdata):
-                add("dest_space", "warn", "after the restore the data volume would be left with less than 10%% free (%s free now, about %s needed)" % (human(free), human(int(need_dest * 1.15))),
-                    "a full data volume stops PostgreSQL: free some space first")
-            else:
-                add("dest_space", "ok", "data volume: %s free, the restore needs about %s" % (human(free), human(int(need_dest * 1.15))))
-    elif need_dest and into:
+    vols = volumes(needs)
+    space_checks(vols, add)
+    plan["space"] = [{"paths": v["paths"], "roles": v["roles"], "need": v["need"], "free": v["free"], "total": v["total"], "free_after": v.get("free_after")} for v in vols]
+    for v in vols:
+        if "data" in v["roles"]:
+            plan["dest_free_bytes"] = v["free"]
+    if need_dest and into:
         add("dest_space", "warn", "the destination is another cluster: its free disk space cannot be checked from here", "make sure it has about %s free" % human(int(need_dest * 1.15)))
     if name_taken:
         add("name", "bad", "destination database '%s' already exists" % name_taken, "choose another name; existing databases are never overwritten", code="PGA-SEC-030")

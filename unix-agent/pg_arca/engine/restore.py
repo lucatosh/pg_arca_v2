@@ -508,7 +508,23 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
                     "fix": "restore the repository from its copy, or choose an older backup set that does not depend on them; run a deep verify"}]
         else:
             chk = [{"id": "chunks", "level": "ok", "text": "all %d backup chunks needed are present in the repository%s" % (checked, " (random sample)" if sampled else "")}]
-        if "space_warning" in plan:
+        # space per filesystem: destination, relocated tablespaces, and the live data directory when it shares a volume with them (it must never fill up)
+        tb_bytes = {}
+        for k, v in merged.items():
+            if k.startswith("pg_tblspc/"):
+                oid = k.split("/")[1]
+                tb_bytes[oid] = tb_bytes.get(oid, 0) + int(v.get("size") or 0)
+        needs = [("dest", dest, int((plan["bytes"] - sum(tb_bytes.values())) * 1.05) + (64 << 20) if not delta else 0)]
+        needs += [("tablespace", plan["tablespaces"][oid], int(b * 1.05)) for oid, b in tb_bytes.items() if oid in plan["tablespaces"] and not delta]
+        if ctx.pgdata:
+            needs.append(("data", ctx.pgdata, 0))
+        vols = restorecheck.volumes(needs)
+
+        def _add(cid, level, text, fix=None, **kw):
+            chk.append(dict({"id": cid, "level": level, "text": text}, **({"fix": fix} if fix else {})))
+        restorecheck.space_checks(vols, _add)
+        plan["space"] = [{"paths": v["paths"], "roles": v["roles"], "need": v["need"], "free": v["free"], "total": v["total"], "free_after": v.get("free_after")} for v in vols if v["need"] > 0]
+        if delta and "space_warning" in plan:
             chk.append({"id": "dest_space", "level": "warn", "text": plan["space_warning"]})
         plan["preflight"] = restorecheck.summarize(chk)
         if not dry_run:

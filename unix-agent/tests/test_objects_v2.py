@@ -103,6 +103,9 @@ class ObjectsV2(unittest.TestCase):
 
     def go(self, objects, mode="replace", stage="pgarca_stage_t", **kw):
         r = restore_object(F.ctx, DB, objects=objects, target_time=S["t_ok"], stage_db=stage, **kw)
+        dry = promote_object(F.ctx, stage, DB, mode=mode, drop_stage=True, dry_run=True)
+        self.assertTrue(dry["preflight"]["ok"], dry["preflight"])                       # space for the copy into the live database is checked before anything
+        self.assertGreater(dry["space"][0]["need"], 0)
         p = promote_object(F.ctx, stage, DB, mode=mode, drop_stage=True)
         return r, p
 

@@ -351,3 +351,8 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .preflight .ph { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; } .preflight ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .preflight li { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; } .preflight li svg { flex: none; margin-top: 2px; } .preflight li.ok svg { color: var(--ok); } .preflight li.warn svg { color: var(--warn); } .preflight li.bad svg { color: var(--bad); }
 .preflight li.bad { font-weight: 600; } .preflight .fix { display: block; font-weight: 400; color: var(--ink-3); }
+.spacebars { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px; display: grid; gap: 12px; }
+.spacebars .ph { display: flex; justify-content: space-between; gap: 12px; }
+.spacebars .vol { display: grid; gap: 4px; } .spacebars .bar { position: relative; display: flex; height: 10px; border-radius: 6px; background: color-mix(in srgb, var(--ok) 14%, var(--surface-2)); overflow: hidden; }
+.spacebars .bar i { display: block; height: 100%; } .spacebars .bar .used { background: var(--line-strong); } .spacebars .bar .need { background: var(--accent); } .spacebars .bar .over { background: var(--bad); }
+.spacebars .vol.warn .bar .need { background: var(--warn); } .spacebars .vol.bad .bar .need { background: var(--bad); } .spacebars .vol.bad strong { color: var(--bad); }

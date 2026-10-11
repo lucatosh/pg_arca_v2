@@ -518,6 +518,29 @@ def restore_drill(ctx, set_spec=None, progress=None, cancel=None):
     return info
 
 
+def _promote_space(ctx, stage_db, into):
+    """The promotion copies the quarantined tables INTO the live database (the old ones are kept as _old_<ts> with replace): the live data volume needs about
+    the size of the quarantined tables again, while the quarantine database still exists. Checked before anything is touched. None when it cannot be known."""
+    if into or not ctx.pgdata:
+        return None
+    try:
+        s = PgSession(_dest_conn(ctx, None).with_db(stage_db), read_only=True)
+        try:
+            need = int(s.scalar("SELECT coalesce(sum(pg_total_relation_size(c.oid)), 0) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                                "WHERE c.relkind IN ('r','m') AND n.nspname NOT IN ('pg_catalog','information_schema','pgarca_meta') AND n.nspname NOT LIKE 'pg\\_%'") or 0)
+        finally:
+            s.close()
+    except Exception as e:
+        ctx.log("warning", "promotion space check skipped: %s" % e)
+        return None
+    checks = []
+    vols = restorecheck.volumes([("data", ctx.pgdata, int(need * 1.1))])
+    restorecheck.space_checks(vols, lambda cid, level, text, fix=None, **kw: checks.append(dict({"id": cid, "level": level, "text": text}, **({"fix": fix} if fix else {}))))
+    out = restorecheck.summarize(checks)
+    out["space"] = [{"paths": v["paths"], "roles": v["roles"], "need": v["need"], "free": v["free"], "total": v["total"], "free_after": v.get("free_after")} for v in vols]
+    return out
+
+
 def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None, dry_run=False, progress=None):
     """
     Move a table recovered into a quarantine database back into the real database. Never destructive:
@@ -531,7 +554,13 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
     if not stage_db or not stage_db.startswith("pgarca_stage_"):
         raise EngineError("PGA-GEN-081", "only quarantine databases created by pg_arca can be promoted from (name starts with pgarca_stage_)")
     _check_name(stage_db, "quarantine database")
+    space = _promote_space(ctx, stage_db, into)
+    if not dry_run and space and not space["ok"]:
+        bad = [c for c in space["checks"] if c["level"] == "bad"]
+        raise EngineError("PGA-RST-032", "promotion not started: %s" % bad[0]["text"], bad[0].get("fix"))
     v2 = objmod.promote(_dest_conn(ctx, into), stage_db, mode=mode, dry_run=dry_run, progress=progress)          # a stage built by restore_object v2 knows everything around its tables
+    if v2 is not None and space:
+        v2["preflight"] = space; v2["space"] = space.get("space")
     if v2 is not None:
         if drop_stage and not dry_run:
             _drop_db(_dest_conn(ctx, into), stage_db)
