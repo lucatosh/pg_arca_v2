@@ -46,6 +46,9 @@ class FakeDb(object):
     def query_json(self, sql, **kw):
         return {"setting": "100", "context": "sighup"}, ""
 
+    def validate_param(self, name, value):
+        return ({"vartype": "integer"}, None) if name != "bogus_param" else (None, "unknown parameter 'bogus_param' on this PostgreSQL version")
+
 
 def make(up=True, config=None):
     d = tempfile.mkdtemp(prefix="arca_dcs_")
@@ -64,6 +67,17 @@ class DcsOnly(unittest.TestCase):
         self.assertEqual(r["via"], "patroni")
         self.assertEqual(pat.patches, [{"postgresql": {"parameters": {"work_mem": "8MB"}}}])
         self.assertEqual(db.alter_calls, [])
+
+    def test_invalid_param_never_reaches_the_dcs(self):
+        ex, db, pat, _ = make()
+        with self.assertRaises(OpError) as cm:
+            ex.h_set_param({"name": "bogus_param", "value": "1"})
+        self.assertIn("refused before touching the DCS", str(cm.exception))
+        self.assertEqual(pat.patches, [])
+        with self.assertRaises(OpError) as cm:
+            ex.h_set_param({"name": "listen_addresses", "value": "*"})
+        self.assertIn("Patroni configuration", str(cm.exception))
+        self.assertEqual(pat.patches, [])
 
     def test_param_is_refused_when_patroni_is_unreachable(self):
         ex, db, pat, _ = make(up=False)

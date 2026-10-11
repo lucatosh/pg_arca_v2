@@ -8,6 +8,7 @@ import re
 import shutil
 import time
 
+from pg_arca import pgaccess, sysres
 from pg_arca.db_client import PostgresClient
 from pg_arca.discovery import ClusterDiscoveryEngine
 from pg_arca.patroni_bridge import PatroniBridge
@@ -46,7 +47,7 @@ class Runtime(object):
             sock = pick.get("socket_directory")
             self.db = PostgresClient(user=getattr(self.db, "user", None) or c.get("pg_user") or "postgres", port=c.get("pg_port") or pick.get("port") or 5432,
                                      host=c.get("pg_host") or "", socket_dir=None if c.get("pg_host") else (sock if sock and os.path.isdir(sock) else None),
-                                     psql_path=pgaccess.find_tool("psql", c, pick))
+                                     psql_path=pgaccess.find_tool("psql", c, pick if pick.get("running") else None))      # a stopped instance's directory is only a guess: the PATH comes first then
             if not c.get("pg_user"):                              # no role configured: the owner of PGDATA / the agent's OS user / postgres, whichever really connects
                 pgaccess.resolve_user(self.db, c, pick)
         # Patroni: configured URL wins, else discovered local REST port
