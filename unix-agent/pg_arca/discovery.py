@@ -42,7 +42,7 @@ PG_INTERESTING_PARAMS = (
     "archive_command", "archive_timeout", "max_wal_senders", "max_connections",
     "wal_log_hints", "data_checksums", "shared_preload_libraries", "hot_standby",
     "primary_conninfo", "restore_command", "max_wal_size", "data_directory",
-    "hba_file", "ident_file", "cluster_name", "ssl", "log_directory", "logging_collector",
+    "hba_file", "ident_file", "cluster_name", "ssl", "log_directory", "log_filename", "logging_collector",
 )
 
 EXTRA_CONFIG_GLOBS = [
@@ -720,6 +720,7 @@ class ClusterDiscoveryEngine:
                 "config_path": path or None,
                 "restapi_port": rport,
                 "restapi_url": base,
+                "log_dir": (cfg.get("log") or {}).get("dir") if isinstance(cfg.get("log"), dict) else None,
                 "restapi_authenticated": bool(auth_hdr),
                 "rest_reachable": code in (200, 503) and isinstance(nd, dict),
                 "dcs_type": dcs, "dcs_hosts": dcs_hosts,

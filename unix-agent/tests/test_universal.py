@@ -231,5 +231,21 @@ class Links(unittest.TestCase):
         self.assertEqual(pgdata.skipped_links(tempfile.mkdtemp()), [])
 
 
+class LogFiles(unittest.TestCase):
+    def test_log_file_follows_the_instances_own_naming(self):
+        from pg_arca.runtime import LogShipper
+        d, ld = tempfile.mkdtemp(), None
+        ld = os.path.join(d, "mylogs")
+        os.makedirs(ld)
+        open(os.path.join(ld, "pg-2026-10-11_010203"), "w").close()                  # no .log suffix: only log_filename tells
+        pdir = os.path.join(d, "patroni-logs")
+        os.makedirs(pdir)
+        open(os.path.join(pdir, "patroni.log"), "w").close()
+        rt = types.SimpleNamespace(instance={"data_directory": d, "settings": {"log_directory": ld, "log_filename": "pg-%Y-%m-%d_%H%M%S"}}, patroni_info={"log_dir": pdir})
+        files = LogShipper({}, rt)._files()
+        self.assertTrue(any(f.endswith("pg-2026-10-11_010203") for f in files), files)
+        self.assertTrue(any(f.endswith("patroni.log") for f in files), files)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -214,17 +214,24 @@ class LogShipper(object):
             if pgdata:
                 dirs.append(os.path.join(pgdata, "log"))
             dirs += ["/var/log/postgresql", "/var/log/pgsql"]
+            pats = ["*.log"]
+            lf = st.get("log_filename")
+            if lf:                                                               # the instance's own file name pattern (strftime escapes -> wildcards), e.g. postgresql-%Y-%m-%d_%H%M%S
+                g = re.sub(r"%[a-zA-Z%]", "*", str(lf).strip("'\""))
+                if g and g != "*" and not g.endswith((".csv", ".json")):
+                    pats.insert(0, re.sub(r"\*+", "*", g))
             for d in dict.fromkeys(dirs):
-                found = [f for f in glob.glob(os.path.join(d, "*.log")) if os.path.isfile(f)]
+                found = [f for pt in pats for f in glob.glob(os.path.join(d, pt)) if os.path.isfile(f)]
                 if found:
                     cands.append(max(found, key=os.path.getmtime))
                     break
             pat = self.rt.patroni_info or {}
-            pdirs = ["/var/log/patroni"]
-            for d in pdirs:
+            pdirs = [pat.get("log_dir"), "/var/log/patroni"]
+            for d in [x for x in dict.fromkeys(pdirs) if x]:
                 found = [f for f in glob.glob(os.path.join(d, "*.log*")) if os.path.isfile(f) and not f.endswith((".gz", ".zst"))]
                 if found:
                     cands.append(max(found, key=os.path.getmtime))
+                    break
             cands += [p for p in ("/var/log/pgarca/agent.log", "/var/log/pgarca/agent.out") if os.path.exists(p)]
             files = cands
         return files
