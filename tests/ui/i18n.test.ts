@@ -8,4 +8,5 @@ assert.strictEqual(itCheck('something new from a newer agent'), 'something new f
 assert.strictEqual(itFix('make sure it has about 3 GiB free'), 'assicurati che abbia circa 3 GiB liberi');
 assert.strictEqual(itCheck("the agent's user (postgres) cannot create restore destination /srv/restore_big: /srv is not writable for it"), 'l’utente dell’agent (postgres) non può creare la destinazione del ripristino /srv/restore_big: /srv non è scrivibile per lui');
 assert.match(itFix('create it for the agent: mkdir -p /srv/x && chown postgres: /srv/x (or choose a destination under a directory it owns)'), /^creala per l’agent: mkdir -p/);
+assert.match(itCheck('the recovery host cannot reach the cluster that receives the result (172.30.1.2:5432): timeout expired'), /^l’host di recupero non raggiunge/);
 console.log('i18n OK');

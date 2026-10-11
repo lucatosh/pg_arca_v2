@@ -299,6 +299,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     plan["saved_pct"] = round(100.0 * (1 - plan["extract_bytes"] / float(max(plan["cluster_bytes"], 1))), 1)
     plan["database_bytes"] = entry["size"]
     taken = None
+    dest_err = None
     try:                                                                                 # fail fast BEFORE the long recovery (and show it in the plan)
         admin = _dest_conn(ctx, into)
         s = PgSession(admin.with_db("postgres"), read_only=True)
@@ -307,13 +308,17 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
                 taken = new_name
         finally:
             s.close()
-    except EngineError:
-        raise
     except Exception as e:
         if not dry_run:
             raise
+        dest_err = str(e)                                  # the plan still shows everything else; the unreachable destination becomes a blocker in it
         ctx.log("warning", "plan: cannot look at the live cluster: %s" % e)
     checks = restorecheck.check(ctx, plan, merged_sel, target, need_dest=entry["size"], into=into, name_taken=taken)
+    if dest_err:
+        where = ("%s:%s" % (into.get("host"), into.get("port", 5432))) if isinstance(into, dict) else "the local PostgreSQL"
+        last = dest_err.strip().splitlines()[-1] if dest_err.strip() else dest_err
+        checks.append({"id": "dest_reach", "level": "bad", "text": "the recovery host cannot reach the cluster that receives the result (%s): %s" % (where, last[:200]),
+                       "fix": "set the delivery address in the recovery instance settings (e.g. the HAProxy / VIP of the leader), or open network and pg_hba from this host"})
     plan["preflight"] = restorecheck.summarize(checks)
     if dry_run:
         plan["dry_run"] = True
@@ -385,6 +390,7 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
             "target": tt or target_lsn or target_xid or target_name or "end of archive"}
     plan["saved_pct"] = round(100.0 * (1 - plan["extract_bytes"] / float(max(plan["cluster_bytes"], 1))), 1)
     taken = None
+    dest_err = None
     try:
         admin = _dest_conn(ctx, into)
         s = PgSession(admin.with_db("postgres"), read_only=True)
@@ -393,13 +399,17 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
                 taken = stage
         finally:
             s.close()
-    except EngineError:
-        raise
     except Exception as e:
         if not dry_run:
             raise
+        dest_err = str(e)                                  # the plan still shows everything else; the unreachable destination becomes a blocker in it
         ctx.log("warning", "plan: cannot look at the live cluster: %s" % e)
     checks = restorecheck.check(ctx, plan, merged_sel, target, need_dest=size_in_backup, into=into, name_taken=taken, scope="object")
+    if dest_err:
+        where = ("%s:%s" % (into.get("host"), into.get("port", 5432))) if isinstance(into, dict) else "the local PostgreSQL"
+        last = dest_err.strip().splitlines()[-1] if dest_err.strip() else dest_err
+        checks.append({"id": "dest_reach", "level": "bad", "text": "the recovery host cannot reach the cluster that receives the result (%s): %s" % (where, last[:200]),
+                       "fix": "set the delivery address in the recovery instance settings (e.g. the HAProxy / VIP of the leader), or open network and pg_hba from this host"})
     plan["preflight"] = restorecheck.summarize(checks)
     if dry_run:
         plan["dry_run"] = True

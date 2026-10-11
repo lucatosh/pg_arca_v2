@@ -18,7 +18,7 @@ import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
 import { conflictFor, activityOf } from './conflicts';
-import { startSwitchover, geoParamGuard, geoStanzaPlan } from './geo';
+import { startSwitchover, geoParamGuard, geoStanzaPlan, geoOf } from './geo';
 const geoStanzaChecked = new Map<string, number>();
 
 export interface Deps {
@@ -104,13 +104,18 @@ export function withEphemeral(store: Store, o: { type: string; clusterId: string
 
 /** Where a central ephemeral recovery delivers its result: the cluster's primary (derived from what the agents report), overridable with centralInto. */
 export function centralInto(st: any, cluster: any, eph: Record<string, any>): { host: string; port: number; user: string } | null {
-  const nodes = Object.values(st.nodes as Record<string, NodeRecord>).filter(n => n.clusterId === cluster.id);
-  const prim = nodes.find(n => n.snapshot?.postgres?.is_in_recovery === false) || nodes[0];
   const o = (eph.centralInto || {}) as Record<string, any>;
-  const host = o.host || String(prim?.remoteIp || '').replace(/^::ffff:/, '');
-  if (!host) return null;
+  // a standby SITE is read-only: what is recovered for it is delivered to the primary site of the pair
+  let target = cluster;
+  try { const g = geoOf(st, cluster.id); const p = g?.role === 'standby' ? g.peers.find(x => x.role === 'primary') : null; if (p) target = st.clusters.find((c: any) => c.id === p.clusterId) || cluster; } catch { /* no geo data */ }
+  const nodes = Object.values(st.nodes as Record<string, NodeRecord>).filter(n => n.clusterId === target.id);
+  const prim = nodes.find(n => n.snapshot?.postgres?.is_in_recovery === false) || nodes[0];
   const pg = prim?.snapshot?.postgres || {};
-  return { host, port: Number(o.port || pg.port || pg.settings?.port || 5432), user: String(o.user || 'postgres') };
+  // the address OTHER sites use to reach the cluster's leader (HAProxy / VIP): reachable from outside its network and still right after a failover
+  const ep = target.geoEndpoint && !o.host ? target.geoEndpoint : null;
+  const host = o.host || ep?.host || String(prim?.remoteIp || '').replace(/^::ffff:/, '');
+  if (!host) return null;
+  return { host, port: Number(o.port || ep?.port || pg.port || pg.settings?.port || 5432), user: String(o.user || 'postgres') };
 }
 
 export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {}) {

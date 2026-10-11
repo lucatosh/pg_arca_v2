@@ -218,6 +218,13 @@ class ObjectsV2(unittest.TestCase):
         q(DB, "DROP SCHEMA recovered CASCADE")
         q(DB, "UPDATE shop.customers SET full_name = 'Customer 1' WHERE id = 1")
 
+    def test_07c_plan_with_unreachable_delivery_target_is_blocked_not_crashed(self):
+        r = restore_object(F.ctx, DB, objects=["%s.shop.customers" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_t", dry_run=True,
+                           into={"host": "127.0.0.1", "port": 1, "user": "postgres"})
+        bad = [c for c in r["preflight"]["checks"] if c["level"] == "bad"]
+        self.assertTrue(any(c["id"] == "dest_reach" for c in bad), r["preflight"])
+        self.assertFalse(r["preflight"]["ok"])
+
     # ------------------------------------------------------------------ missing_only: only what is gone comes back, what exists keeps today's data
     def test_08_missing_only_brings_back_only_what_is_missing(self):
         q(DB, "DROP TABLE hr.timesheets; INSERT INTO hr.departments (name, budget) VALUES ('Added after the backup', 1)")

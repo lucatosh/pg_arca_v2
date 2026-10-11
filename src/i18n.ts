@@ -9,6 +9,7 @@ const ROLE: Record<string, string> = {
 const roles = (s: string) => s.split(' + ').map(r => ROLE[r] || r).join(' + ');
 const SRC: Record<string, string> = { configured: 'configurati', "this node's own": 'quelli del nodo', 'installed package': 'pacchetto installato', 'installed by pg_arca': 'installati da pg_arca' };
 const RULES: Rule[] = [
+  [/^the recovery host cannot reach the cluster that receives the result \((.+?)\): (.+)$/, m => `l’host di recupero non raggiunge il cluster che riceve il risultato (${m[1]}): ${m[2]}`],
   [/^the agent's user \((.+?)\) cannot create (restore destination|tablespace destination) (.+): (.+) is not writable for it$/, m => `l’utente dell’agent (${m[1]}) non può creare la ${ROLE[m[2]] || m[2]} ${m[3]}: ${m[4]} non è scrivibile per lui`],
   [/^(restore destination|tablespace destination) (.+) exists but the agent's user \((.+)\) cannot write into it$/, m => `la ${ROLE[m[1]] || m[1]} ${m[2]} esiste ma l’utente dell’agent (${m[3]}) non può scriverci`],
   [/^not enough space on the volume of (.+?) \((.+)\): (.+) free, about (.+) needed$/, m => `spazio insufficiente sul volume di ${m[1]} (${roles(m[2])}): ${m[3]} liberi, ne servono circa ${m[4]}`],
@@ -37,6 +38,7 @@ const RULES: Rule[] = [
   [/^(.+) (\S+) is not readable from this host$/, m => `${m[1] === 'WAL archive' ? 'archivio WAL' : m[1]} ${m[2]} non è leggibile da questo host`],
 ];
 const FIX: Rule[] = [
+  [/^set the delivery address in the recovery instance settings \(e\.g\. the HAProxy \/ VIP of the leader\), or open network and pg_hba from this host$/, () => 'indica l’indirizzo di consegna nelle impostazioni dell’istanza di recupero (es. l’HAProxy o il VIP del leader), oppure apri rete e pg_hba da questo host'],
   [/^create it for the agent: (.+) \(or choose a destination under a directory it owns\)$/, m => `creala per l’agent: ${m[1]} (oppure scegli una destinazione in una cartella sua)`],
   [/^free space there, move the scratch directory to another volume \(recovery instance settings\), or restore fewer objects$/, () => 'libera spazio lì, sposta la cartella temporanea su un altro volume (impostazioni dell’istanza di recupero) o ripristina meno oggetti'],
   [/^free space first, or put the scratch directory on another volume$/, () => 'libera prima spazio, o metti la cartella temporanea su un altro volume'],

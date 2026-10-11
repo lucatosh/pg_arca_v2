@@ -52,6 +52,7 @@ assert.equal(v({ keepOnFailure: false }).value.keepOnFailure, false);
 assert.deepEqual(centralInto(st, st.clusters[0], {}), { host: '10.0.0.5', port: 5433, user: 'postgres' });
 assert.deepEqual(centralInto(st, st.clusters[0], { centralInto: { host: 'db.example.test', user: 'arca' } }), { host: 'db.example.test', port: 5433, user: 'arca' });
 assert.equal(centralInto(st, st.clusters[1], {}), null, 'a cluster with no agent node has no known primary');
+assert.deepEqual(centralInto(st, { ...st.clusters[0], geoEndpoint: { host: 'dc1-haproxy', port: 5000 } }, {}), { host: 'dc1-haproxy', port: 5000, user: 'postgres' }, 'the address other sites use (HAProxy/VIP) wins over a node IP');
 
 // the new operations
 assert.equal(validateOp('ephemeral_preflight', { major: 16 }), null);
