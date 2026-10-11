@@ -67,7 +67,14 @@ def check(scn, what, ok, detail=""):
     RES.append((scn, what, ok, detail)); print("   %s %s %s" % ("PASS" if ok else "FAIL", what, detail), flush=True)
 
 
+def drop_stale_stages():
+    """A previous run that was killed leaves its stage databases behind: the product (rightly) refuses to overwrite them, so the harness starts clean."""
+    for n in sql("postgres", "SELECT datname FROM pg_database WHERE datname LIKE 'pgarca\\_stage\\_s%'").splitlines():
+        sql("postgres", 'DROP DATABASE IF EXISTS "%s" WITH (FORCE)' % n)
+
+
 def fresh():
+    drop_stale_stages()
     subprocess.run([os.path.join(HERE, "testdb.sh"), "lab"], capture_output=True, check=True)
     base = {t: fp(DB, *t.split(".")) for t in tables(DB)}
     o = op("backup_run", {"type": "incr"}); assert o["status"] == "succeeded", o.get("error")
