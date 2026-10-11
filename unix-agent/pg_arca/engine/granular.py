@@ -171,7 +171,7 @@ def _waldump(exe, tmp, name, *flags):
 
 def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
     """Where the DROP DATABASE of `dboid` begins in the WAL: returns ([candidate stop LSNs, most likely first], drop_lsn, xid) or None. Searched backwards from the segment where recovery stopped (pg_waldump).
-    PostgreSQL damages the database BEFORE the drop commits and without a timestamp: from PG15 it first marks it INVALID with an in-place update (replayed even if the
+    PostgreSQL damages the database BEFORE the drop commits and without a timestamp: from PG15 (and PG 12-14 since their 2023 minor releases) it first marks it INVALID with an in-place update (replayed even if the
     transaction's commit is beyond the target), then deletes its directory when redoing XLOG_DBASE_DROP. A time/xid target "just before the DROP's commit" is already too late;
     only an LSN before the dropping transaction's FIRST record gives back a usable database."""
     seg_size = ctx.seg_size
@@ -208,9 +208,12 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
         dl = lsn_to_int(drop_lsn)
         cands = []
         for seg in range(seg_hit, max(lo, seg_hit - 1) - 1, -1):        # in-place updates of pg_database (1664/0/1262) just before the drop: they carry NO xid
-            name = names.get(seg)
+            # the previous segment was never fetched by the search above (it stops at the segment holding the DROP), but the invalid-marking can sit at its
+            # very end when the DROP DATABASE straddles a segment boundary (seen on PostgreSQL 14 in the matrix: only the DROP's segment was looked at)
+            name = names.get(seg) or (wal_name(tli, seg, seg_size) if ctx.wal.has_segment(wal_name(tli, seg, seg_size)) else None)
             if not name:
                 continue
+            names[seg] = name
             if not os.path.exists(os.path.join(tmp, name)):
                 if ctx.wal.retrieve_segment(name, os.path.join(tmp, name))[0] != 0:
                     continue
@@ -222,9 +225,10 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
         cands = sorted(set(cands), reverse=True)[:3]
         lsns = []
         for seg in range(seg_hit, lo - 1, -1):                       # the dropping transaction's first record (it has an xid once it deletes the pg_database row)
-            name = names.get(seg)
+            name = names.get(seg) or (wal_name(tli, seg, seg_size) if ctx.wal.has_segment(wal_name(tli, seg, seg_size)) else None)
             if not name:
                 break
+            names[seg] = name
             if not os.path.exists(os.path.join(tmp, name)):
                 if ctx.wal.retrieve_segment(name, os.path.join(tmp, name))[0] != 0:
                     break
