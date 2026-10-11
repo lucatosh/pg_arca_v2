@@ -9,18 +9,31 @@ import os
 import sys
 
 
-def _settings():
-    d, comp, lvl, seg = os.environ.get("WAL_ARCHIVE_DIR"), os.environ.get("PG_ARCA_COMPRESSION"), 3, 16 * 1024 * 1024
+def _conf():
+    """The agent's effective settings as the archiver sees them: agent.conf, then the console-managed agent.local.json next to it (same precedence as the agent itself:
+    file < overrides < environment). Without the second step a WAL directory changed from the console would be used by the agent but NOT by archive_command."""
+    path = os.environ.get("PG_ARCA_CONF", "/etc/pg-arca/agent.conf")
+    c = {}
     try:
-        with open(os.environ.get("PG_ARCA_CONF", "/etc/pg-arca/agent.conf"), "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             c = json.load(f)
-        d = d or c.get("wal_archive_dir")
-        comp = comp or c.get("compression")
-        lvl = c.get("compression_level", 3)
-        seg = c.get("wal_segment_size", seg)
+    except Exception:
+        c = {}
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(path)), "agent.local.json"), "r", encoding="utf-8") as f:
+            ov = json.load(f)
+        from pg_arca.overrides import KINDS
+        c.update({k: v for k, v in ov.items() if k in KINDS and v not in (None, "")})
     except Exception:
         pass
-    return d or "/var/lib/pgarca/wal", comp or "zstd", lvl, seg
+    return c
+
+
+def _settings():
+    c = _conf()
+    d = os.environ.get("WAL_ARCHIVE_DIR") or c.get("wal_archive_dir")
+    comp = os.environ.get("PG_ARCA_COMPRESSION") or c.get("compression")
+    return d or "/var/lib/pgarca/wal", comp or "zstd", c.get("compression_level", 3), c.get("wal_segment_size", 16 * 1024 * 1024)
 
 
 def main(argv):
@@ -32,11 +45,7 @@ def main(argv):
     crypto = None
     kf = os.environ.get("PG_ARCA_KEY_FILE")
     if not kf:
-        try:
-            with open(os.environ.get("PG_ARCA_CONF", "/etc/pg-arca/agent.conf"), "r", encoding="utf-8") as f:
-                kf = json.load(f).get("encryption_key_file")
-        except Exception:
-            kf = None
+        kf = _conf().get("encryption_key_file") or None
     if kf:
         try:
             from pg_arca.engine.crypt import from_settings

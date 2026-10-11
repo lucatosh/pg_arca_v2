@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # archive_command / restore_command entry point:   pg-arca-wal archive %p %f   |   pg-arca-wal get %f %p
 import os, sys
-sys.path.insert(0, os.environ.get("PG_ARCA_HOME", "/opt/pg-arca"))
+# where the pg_arca package lives: PG_ARCA_HOME, else next to this script (also when it is reached through a symlink such as /usr/local/bin/pg-arca-wal), else /opt/pg-arca
+_here = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.environ.get("PG_ARCA_HOME") or (_here if os.path.isdir(os.path.join(_here, "pg_arca")) else "/opt/pg-arca"))
 from pg_arca.wal_archive import main
 sys.exit(main(sys.argv))

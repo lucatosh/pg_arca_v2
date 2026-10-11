@@ -192,13 +192,68 @@ class PostgresClient:
                 "restart_required": bool(after.get("pending")) or info.get("context") == "postmaster",
                 "changed": info.get("setting") != after.get("setting") or bool(after.get("pending"))}
 
+    # -- parameter validation ---------------------------------------------
+    _MEM = {"B": 1, "kB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
+    _TIME = {"us": 1e-6, "ms": 1e-3, "s": 1.0, "min": 60.0, "h": 3600.0, "d": 86400.0}
+    _UNIT_BASE = {"B": ("mem", 1), "kB": ("mem", 1024), "8kB": ("mem", 8192), "16kB": ("mem", 16384), "32kB": ("mem", 32768), "MB": ("mem", 1024 ** 2), "GB": ("mem", 1024 ** 3),
+                  "us": ("time", 1e-6), "ms": ("time", 1e-3), "s": ("time", 1.0), "min": ("time", 60.0), "h": ("time", 3600.0), "d": ("time", 86400.0)}
+
+    def validate_param(self, name, value):
+        """Check a parameter name and value against THIS server's pg_settings (type, enum values, range, unit) before it goes anywhere that cannot take it back, such as the Patroni DCS
+        (an unknown or out-of-range value there reaches every member and can stop PostgreSQL from starting). Returns (info, None) or (None, reason)."""
+        info, err = self.query_json("SELECT json_build_object('vartype', vartype, 'unit', unit, 'min', min_val, 'max', max_val, 'enumvals', enumvals, 'context', context, 'setting', setting) "
+                                    "FROM pg_settings WHERE name = :'pname';", variables={"pname": name})
+        if err and not info:
+            return None, "cannot read pg_settings on this node: %s" % err
+        if not info:
+            return None, "unknown parameter '%s' on this PostgreSQL version" % name
+        if value is None:
+            return info, None
+        v = str(value).strip().strip("'")
+        if "\n" in v or "\x00" in v:
+            return None, "the value contains control characters"
+        t = info.get("vartype")
+        if t == "bool":
+            if v.lower() not in ("on", "off", "true", "false", "yes", "no", "1", "0", "t", "f", "y", "n"):
+                return None, "'%s' is not a boolean (on/off)" % v
+        elif t == "enum":
+            ev = info.get("enumvals") or []
+            if v.lower() not in [str(x).lower() for x in ev]:
+                return None, "'%s' is not valid for %s: allowed values are %s" % (v, name, ", ".join(map(str, ev)))
+        elif t in ("integer", "real"):
+            import re as _re
+            m = _re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*$", v)
+            if not m:
+                return None, "'%s' is not a number%s" % (v, " (optionally with a unit)" if info.get("unit") else "")
+            num, suf = float(m.group(1)), m.group(2)
+            unit = info.get("unit")
+            base = self._UNIT_BASE.get(unit) if unit else None
+            if suf:
+                if not base:
+                    return None, "%s takes no unit but '%s' was given" % (name, suf)
+                table = self._MEM if base[0] == "mem" else self._TIME
+                if suf not in table:
+                    return None, "unit '%s' is not valid for %s" % (suf, name)
+                num = num * table[suf] / base[1]
+            lo, hi = info.get("min"), info.get("max")
+            if t == "integer" and num != int(num):
+                return None, "%s must be a whole number (after unit conversion: %s)" % (name, num)
+            if lo not in (None, "") and num < float(lo):
+                return None, "%s is below the minimum (%s%s)" % (v, lo, (" " + unit) if unit else "")
+            if hi not in (None, "") and num > float(hi):
+                return None, "%s is above the maximum (%s%s)" % (v, hi, (" " + unit) if unit else "")
+        return info, None
+
     # -- integrity --------------------------------------------------------
     def verify_amcheck(self, dbname):
         """Returns (status, report): status True=clean, False=corruption, None=could not run (reported, never silently 'passed')."""
         ok, _, err = self.run_psql("CREATE EXTENSION IF NOT EXISTS amcheck;", dbname=dbname)
         if not ok:
             return None, "amcheck unavailable: %s" % (err or "extension missing")
-        cmd = ["pg_amcheck", "-U", self.user, "-p", self.port, "-d", dbname, "--heapallindexed"]
+        exe = os.path.join(os.path.dirname(self.psql), "pg_amcheck") if os.path.isabs(self.psql) else "pg_amcheck"      # the client tools that belong to this psql, not whatever is on the PATH
+        if os.path.isabs(exe) and not os.path.exists(exe):
+            return None, "pg_amcheck not found next to %s (it ships with PostgreSQL 14 and later)" % self.psql
+        cmd = [exe, "-U", self.user, "-p", self.port, "-d", dbname, "--heapallindexed"]
         target = self.socket_dir or self.host
         if target:
             cmd += ["-h", target]

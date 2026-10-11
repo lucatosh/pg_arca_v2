@@ -541,7 +541,8 @@ class ClusterDiscoveryEngine:
             port = int(conf["port"])
         info["port"] = port
         if sockdir is None and "unix_socket_directories" in conf:
-            sockdir = conf["unix_socket_directories"].split(",")[0].strip() or None
+            dirs = [x.strip().strip("'\"") for x in conf["unix_socket_directories"].split(",") if x.strip()]
+            sockdir = next((x for x in dirs if os.path.isdir(x)), dirs[0] if dirs else None)      # several are allowed: the first one that exists
         info["socket_directory"] = sockdir
         info["port_listening"] = any(l["port"] == port for l in listeners) if port else False
 
@@ -576,7 +577,8 @@ class ClusterDiscoveryEngine:
         info["tablespaces"] = tbs
 
         # pg_controldata (authoritative: checksums, timeline, state, LSN)
-        info["control"] = self._controldata(pgdata, ver)
+        info["bin_dir"] = self._bin_dir(ev, ver)
+        info["control"] = self._controldata(pgdata, ver, info["bin_dir"])
         if info["control"].get("data_checksums") is False and conf.get("wal_log_hints", "off") != "on":
             warn.append("data_checksums=off and wal_log_hints=off: page-level incrementals are NOT safe; only full backups allowed")
 
@@ -585,8 +587,33 @@ class ClusterDiscoveryEngine:
         info["connect"] = {"host": sockdir or "127.0.0.1", "port": port, "user": self.pg_user}
         return info
 
-    def _controldata(self, pgdata: str, major: str) -> Dict[str, Any]:
-        bins = ["/usr/pgsql-%s/bin" % major, "/usr/lib/postgresql/%s/bin" % major]
+    @staticmethod
+    def _bin_dir(ev: Dict[str, Any], major: str) -> Optional[str]:
+        """Directory of the binaries that belong to this instance, whatever the installation layout: the RUNNING postmaster's own executable first (authoritative),
+        then the absolute path it was started with, then a vendor directory whose version matches the data directory's major."""
+        pid = ev.get("pid")
+        if pid:
+            try:
+                exe = os.readlink("/proc/%d/exe" % int(pid))
+                if exe.endswith(" (deleted)"):
+                    exe = exe[: -len(" (deleted)")]
+                if os.path.isfile(exe):
+                    return os.path.dirname(exe)
+            except (OSError, ValueError):
+                pass
+        cmd = (ev.get("cmdline") or "").split()
+        if cmd and os.path.isabs(cmd[0]) and os.path.isfile(cmd[0]):
+            return os.path.dirname(cmd[0])
+        try:
+            from pg_arca import pgaccess
+            want = int(str(major).split(".")[0])
+            hits = [d for pat in pgaccess.VENDOR_GLOBS for d in glob.glob(pat) if pgaccess._major_key(d) == want and os.path.isfile(os.path.join(d, "pg_ctl"))]
+            return sorted(hits)[0] if hits else None
+        except (ValueError, ImportError):
+            return None
+
+    def _controldata(self, pgdata: str, major: str, bin_dir: Optional[str] = None) -> Dict[str, Any]:
+        bins = ([bin_dir] if bin_dir else []) + ["/usr/pgsql-%s/bin" % major, "/usr/lib/postgresql/%s/bin" % major]
         exe = self._find_bin("pg_controldata", bins)
         if not exe:
             return {"available": False, "reason": "pg_controldata not found"}
@@ -639,11 +666,11 @@ class ClusterDiscoveryEngine:
             cfg = parse_simple_yaml(_read(path) or "") if path else {}
             rest = cfg.get("restapi", {}) if isinstance(cfg.get("restapi"), dict) else {}
             pg = cfg.get("postgresql", {}) if isinstance(cfg.get("postgresql"), dict) else {}
-            listen = str(rest.get("listen", "0.0.0.0:8008"))
+            listen = str(rest.get("listen") or self._patroni_env(running, "PATRONI_RESTAPI_LISTEN") or self._patroni_listener(running, listeners) or "0.0.0.0:8008")
             rport = int(listen.rsplit(":", 1)[-1]) if listen.rsplit(":", 1)[-1].isdigit() else 8008
             connect = str(rest.get("connect_address", "")) or "127.0.0.1:%d" % rport
-            scheme = "https" if rest.get("certfile") else "http"
-            base = "%s://127.0.0.1:%d" % (scheme, rport)
+            scheme = "https" if (rest.get("certfile") or self._patroni_env(running, "PATRONI_RESTAPI_CERTFILE")) else "http"
+            base = "%s://%s:%d" % (scheme, self._rest_host(listen), rport)
             auth_hdr = {}  # type: Dict[str, str]
             ra = rest.get("authentication")
             if isinstance(ra, dict) and ra.get("username"):
@@ -692,6 +719,7 @@ class ClusterDiscoveryEngine:
                 "node_name": cfg.get("name") or node.get("name"),
                 "config_path": path or None,
                 "restapi_port": rport,
+                "restapi_url": base,
                 "restapi_authenticated": bool(auth_hdr),
                 "rest_reachable": code in (200, 503) and isinstance(nd, dict),
                 "dcs_type": dcs, "dcs_hosts": dcs_hosts,
@@ -703,6 +731,36 @@ class ClusterDiscoveryEngine:
                 "uses_pg_arca_replica_method": "pg_arca" in json.dumps(pg.get("create_replica_methods", "")),
             })
         return out
+
+    @staticmethod
+    def _rest_host(listen: str) -> str:
+        """Address the agent should use to reach the LOCAL Patroni REST API given restapi.listen: a wildcard means loopback, a specific address (10.0.0.5:8008,
+        [fe80::1]:8008) means exactly that address (the API is not reachable on 127.0.0.1 then)."""
+        host = listen.rsplit(":", 1)[0].strip() if ":" in listen else ""
+        host = host.strip("[]")
+        if host in ("", "0.0.0.0", "::", "*", "0:0:0:0:0:0:0:0"):
+            return "127.0.0.1"
+        return "[%s]" % host if ":" in host else host
+
+    @staticmethod
+    def _patroni_env(running, var: str) -> Optional[str]:
+        """Patroni can be configured entirely by environment (containers, Kubernetes): read it from the running process when we are allowed to."""
+        for p in running:
+            try:
+                with open("/proc/%d/environ" % p["pid"], "rb") as f:
+                    for kv in f.read().split(b"\0"):
+                        if kv.startswith(var.encode() + b"="):
+                            return kv.split(b"=", 1)[1].decode("utf-8", "replace")
+            except OSError:
+                continue
+        return None
+
+    @staticmethod
+    def _patroni_listener(running, listeners) -> Optional[str]:
+        """The port the Patroni process itself listens on, when its configuration cannot be read (a root-only patroni.yml): not an assumption of 8008."""
+        pids = {p["pid"] for p in running}
+        mine = sorted((l for l in listeners if l.get("pid") in pids), key=lambda l: (not l["loopback_only"], l["port"]))
+        return ("127.0.0.1:%d" % mine[0]["port"]) if mine else None
 
     def _link_patroni_to_instances(self, instances, patroni):
         for inst in instances:

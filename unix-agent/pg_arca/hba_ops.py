@@ -1,5 +1,6 @@
 """Executor operations for pg_hba.conf: read / plan (simulate) / apply (with verification and rollback) / rollback."""
 import difflib
+import errno
 import glob
 import json
 import os
@@ -74,7 +75,8 @@ def _json(ex, sql, err, default):
 
 
 def _live_probes(ex, err):
-    probes = [{"label": "locale: utente postgres (peer)", "type": "local", "database": "postgres", "user": "postgres", "ssl": False, "critical": True}]
+    me = getattr(ex.db, "user", None) or "postgres"                        # the role the agent really connects with (not always "postgres")
+    probes = [{"label": "locale: utente %s (peer)" % me, "type": "local", "database": "postgres", "user": me, "ssl": False, "critical": True}]
     for r in _json(ex, SQL_REPL, err, []):
         probes.append({"label": "replica %s (%s)" % (r["address"], r["user"]), "type": "host", "ssl": bool(r.get("ssl")), "database": "replication", "user": r["user"],
                        "address": str(r["address"]).split("/")[0], "replication": True, "critical": True})
@@ -217,7 +219,11 @@ def apply(ex, p, err):
         return _apply_patroni(ex, src, clean, new, cur_rev, err)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     bak = "%s.pgarca-%s" % (src.path, stamp)
-    shutil.copy2(src.path, bak)
+    try:
+        shutil.copy2(src.path, bak)
+    except OSError as e:                      # pg_hba.conf may live anywhere (/etc/..., a config volume): the agent's service may not be allowed to write there
+        raise err("cannot write next to %s (%s). Give the agent's OS user write access to that directory%s" % (src.path, e.strerror or e,
+                  "; with the systemd unit also add ReadWritePaths=%s in a drop-in (systemctl edit pg-arca-agent)" % os.path.dirname(src.path) if e.errno == errno.EROFS else ""))
     for old_b in sorted(glob.glob(src.path + ".pgarca-*"))[:-KEEP_BACKUPS]:
         try:
             os.unlink(old_b)

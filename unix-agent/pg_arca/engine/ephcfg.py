@@ -197,11 +197,9 @@ def host_facts():
         fam = "rhel"
     elif any(x in ids for x in ("suse", "sles")):
         fam = "suse"
-    mem = {}
-    for line in _read("/proc/meminfo").splitlines():
-        m = re.match(r"(\w+):\s+(\d+) kB", line)
-        if m:
-            mem[m.group(1)] = int(m.group(2)) * 1024
+    from pg_arca import sysres                                       # what this process may really use (cgroup limits), not what the host has
+    sm = sysres.memory()
+    mem = {"MemTotal": sm["total"] or None, "MemAvailable": sm["available"] if sm["total"] else None}
     sudo = False
     if os.geteuid() != 0 and shutil.which("sudo"):
         try:
@@ -209,7 +207,7 @@ def host_facts():
         except (OSError, subprocess.SubprocessError):
             sudo = False
     return {"os": osr.get("PRETTY_NAME") or osr.get("NAME") or "unknown", "family": fam, "euid": os.geteuid(), "root": os.geteuid() == 0, "sudo_nopasswd": sudo,
-            "arch": os.uname().machine, "mem_total": mem.get("MemTotal"), "mem_available": mem.get("MemAvailable"), "cpus": os.cpu_count(),
+            "arch": os.uname().machine, "mem_total": mem.get("MemTotal"), "mem_available": mem.get("MemAvailable"), "cpus": sysres.cpu_count(),
             "apt": bool(shutil.which("apt-get")), "dnf": bool(shutil.which("dnf") or shutil.which("yum")), "dpkg_deb": bool(shutil.which("dpkg-deb")),
             "rpm2cpio": bool(shutil.which("rpm2cpio")), "cpio": bool(shutil.which("cpio"))}
 

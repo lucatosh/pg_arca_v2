@@ -11,6 +11,7 @@ The console delivers operations AT-LEAST-ONCE (lease + redelivery). Safety comes
 """
 
 import json
+import shlex
 import shutil
 import logging
 import os
@@ -23,6 +24,7 @@ from pg_arca.engine.util import Cancelled, EngineError
 
 logger = logging.getLogger("pg_arca.executor")
 
+PATRONI_LOCAL_PARAMS = {"listen_addresses", "port"}
 DENY_PARAMS = {"data_directory", "config_file", "hba_file", "ident_file", "external_pid_file", "include", "include_dir", "include_if_exists"}
 
 
@@ -270,6 +272,12 @@ class OperationExecutor:
             raise OpError("parameter '%s' cannot be changed from the console" % name)
         if self._patroni_managed():
             # Under Patroni the DCS owns parameters: ALTER SYSTEM would silently diverge / be reverted.
+            if name in PATRONI_LOCAL_PARAMS:
+                raise OpError("'%s' is taken from this node's own Patroni configuration (postgresql.listen / connect_address), not from the DCS: Patroni ignores the DCS value" % name)
+            self._require_pg()
+            _, why = self.db.validate_param(name, value)         # an unknown / out-of-range value in the DCS would reach EVERY member
+            if why:
+                raise OpError("refused before touching the DCS: %s" % why)
             st, d = self.patroni.patch_config({"postgresql": {"parameters": {name: (None if value is None else str(value))}}})
             if st >= 300:
                 raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
@@ -288,13 +296,36 @@ class OperationExecutor:
         r["via"] = "alter_system"
         return r
 
+    def _wal_tool(self):
+        """Absolute path of pg-arca-wal as PostgreSQL's archiver must call it (it runs with the server's PATH, not the agent's). First that exists and is executable: the configured
+        wal_bin / PG_ARCA_WAL_BIN, the PATH, next to the installed package, /usr/local/bin. Raises when none exists: an archive_command that points nowhere fails on every segment."""
+        import pg_arca
+        home = os.path.dirname(os.path.dirname(os.path.realpath(pg_arca.__file__)))
+        cands = [self.config.get("wal_bin"), os.environ.get("PG_ARCA_WAL_BIN"), shutil.which("pg-arca-wal"), os.path.join(home, "pg-arca-wal"), "/usr/local/bin/pg-arca-wal"]
+        for c in cands:
+            if c and os.path.isfile(c) and os.access(c, os.X_OK):
+                return os.path.abspath(c)
+        raise OpError("pg-arca-wal not found (looked in: %s): install the agent completely or set wal_bin; archive_command would fail on every segment" % ", ".join(c for c in cands if c))
+
+    def _archive_env(self):
+        """`env PG_ARCA_CONF=... PG_ARCA_HOME=... ` when the agent does not use the default config file / install directory, so archive_command (run by PostgreSQL, with its own
+        environment) reads the same settings. Empty for the standard layout, which keeps the command short and readable."""
+        import pg_arca
+        parts = []
+        conf = self.config.get("_conf_path")
+        if conf and conf != "/etc/pg-arca/agent.conf":
+            parts.append("PG_ARCA_CONF=%s" % shlex.quote(conf))
+        if os.environ.get("PG_ARCA_HOME"):
+            parts.append("PG_ARCA_HOME=%s" % shlex.quote(os.environ["PG_ARCA_HOME"]))
+        return ("env " + " ".join(parts) + " ") if parts else ""
+
     def h_archive_enable(self, p):
         """One step to continuous WAL archiving for PITR: archive_mode=on, archive_command = this agent's own tool, wal_level>=replica, wal_log_hints when
         checksums are off (needed by incremental backups). The command is built HERE, never taken from the console. Under Patroni the change goes through the DCS
         (every member gets it); otherwise ALTER SYSTEM. archive_mode/wal_level need a restart: it is reported, never done silently."""
         self._require_pg()
-        tool = shutil.which("pg-arca-wal") or "/usr/local/bin/pg-arca-wal"
-        want = {"archive_mode": "on", "archive_command": "%s archive %%p %%f" % tool, "archive_timeout": str(int(p.get("archive_timeout") or 60))}
+        tool = self._wal_tool()
+        want = {"archive_mode": "on", "archive_command": "%s%s archive %%p %%f" % (self._archive_env(), shlex.quote(tool)), "archive_timeout": str(int(p.get("archive_timeout") or 60))}
         cur, err = self.db.query_json("SELECT json_object_agg(name, setting) FROM pg_settings WHERE name IN ('archive_mode','archive_command','archive_timeout','wal_level','wal_log_hints','data_checksums')")
         if not isinstance(cur, dict):
             raise OpError("cannot read the current settings: %s" % err)

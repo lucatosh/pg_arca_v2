@@ -57,7 +57,7 @@ class Ctx(object):
         inst = (runtime.instance if runtime else None) or {}
         db = runtime.db if runtime else None
         conn = PgConn(host=(getattr(db, "socket_dir", None) or getattr(db, "host", "") or ""), port=getattr(db, "port", 5432) or 5432,
-                      user=config.get("pg_user", "postgres"), bindir=config.get("pg_bin_dir", "") or _guess_bindir(inst))
+                      user=getattr(db, "user", None) or config.get("pg_user") or "postgres", bindir=config.get("pg_bin_dir", "") or _guess_bindir(inst))
         stanza = config.get("stanza") or _stanza_name(inst) or "main"
         seg = ((inst.get("control") or {}).get("wal_segment_size")) or 16 * 1024 * 1024
         here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -106,4 +106,6 @@ def _guess_bindir(inst):
     for cand in ("/usr/lib/postgresql/%s/bin" % ver, "/usr/pgsql-%s/bin" % ver, "/usr/local/pgsql/bin"):
         if ver and os.path.isdir(cand):
             return cand
-    return ""
+    from pg_arca import pgaccess                                 # last resorts: the PATH, then any vendor directory (newest first)
+    p = pgaccess.find_tool("pg_ctl", {}, inst)
+    return os.path.dirname(p) if os.path.isabs(p) else ""

@@ -155,7 +155,7 @@ def describe(config, runtime=None):
     ov = load(config)
     inst = (runtime.instance if runtime else None) or {}
     detected = {"pg_data": inst.get("data_directory") or "", "pg_port": inst.get("port") or "", "pg_host": inst.get("socket_directory") or "",
-                "pg_user": "postgres", "pg_bin_dir": inst.get("bin_dir") or inst.get("bindir") or "",
+                "pg_user": (getattr(getattr(runtime, "db", None), "user", None) or "postgres") if runtime else "postgres", "pg_bin_dir": inst.get("bin_dir") or inst.get("bindir") or "",
                 "repo_path": "/var/lib/pgarca/repo", "wal_archive_dir": "/var/lib/pgarca/wal", "scratch_dir": "/var/tmp/pg_arca_scratch",
                 "patroni_url": ("http://127.0.0.1:%s" % runtime.patroni_info["restapi_port"]) if runtime and getattr(runtime, "patroni_info", None) else ""}
     env_keys = {"pg_data": "PG_ARCA_PGDATA", "repo_path": "PG_ARCA_REPO", "wal_archive_dir": "WAL_ARCHIVE_DIR", "patroni_url": "PATRONI_URL", "pg_port": "PGPORT"}

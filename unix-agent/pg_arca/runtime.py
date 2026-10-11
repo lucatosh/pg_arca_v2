@@ -20,11 +20,11 @@ AGENT_VERSION = "2.0.0"
 class Runtime(object):
     def __init__(self, config):
         self.config = config
-        self.engine = ClusterDiscoveryEngine(pg_user=config.get("pg_user", "postgres"))
+        self.engine = ClusterDiscoveryEngine(pg_user=config.get("pg_user") or "postgres")
         self.report = {}
         self.instance = None
         self.patroni_info = None
-        self.db = PostgresClient(user=config.get("pg_user", "postgres"), port=config.get("pg_port") or 5432, host=config.get("pg_host", ""))
+        self.db = PostgresClient(user=config.get("pg_user") or "postgres", port=config.get("pg_port") or 5432, host=config.get("pg_host", ""), psql_path=pgaccess.find_tool("psql", config))
         self.patroni = PatroniBridge("")
         self.refresh()
 
@@ -44,8 +44,11 @@ class Runtime(object):
         self.instance = pick
         if pick:
             sock = pick.get("socket_directory")
-            self.db = PostgresClient(user=c.get("pg_user", "postgres"), port=c.get("pg_port") or pick.get("port") or 5432,
-                                     host=c.get("pg_host") or "", socket_dir=None if c.get("pg_host") else (sock if sock and os.path.isdir(sock) else None))
+            self.db = PostgresClient(user=getattr(self.db, "user", None) or c.get("pg_user") or "postgres", port=c.get("pg_port") or pick.get("port") or 5432,
+                                     host=c.get("pg_host") or "", socket_dir=None if c.get("pg_host") else (sock if sock and os.path.isdir(sock) else None),
+                                     psql_path=pgaccess.find_tool("psql", c, pick))
+            if not c.get("pg_user"):                              # no role configured: the owner of PGDATA / the agent's OS user / postgres, whichever really connects
+                pgaccess.resolve_user(self.db, c, pick)
         # Patroni: configured URL wins, else discovered local REST port
         url = c.get("patroni_url")
         pinfo = None
@@ -56,26 +59,24 @@ class Runtime(object):
         pinfo = pinfo or (rep.get("patroni_clusters") or [None])[0]
         self.patroni_info = pinfo
         if not url and pinfo:
-            url = "http://127.0.0.1:%d" % pinfo["restapi_port"]
+            url = pinfo.get("restapi_url") or "http://127.0.0.1:%d" % pinfo["restapi_port"]
         user, pw = c.get("patroni_user", ""), c.get("patroni_password", "")
         self.patroni = PatroniBridge(url or "", user, pw, c.get("tls_ca_file", ""), c.get("tls_insecure_skip_verify", False))
         return rep
 
     # ------------------------------------------------------------------ telemetry
     def system_metrics(self, paths):
-        out = {"cpu_count": os.cpu_count() or 1}
+        out = {"cpu_count": sysres.cpu_count(), "host_cpu_count": os.cpu_count() or 1}
         try:
             out["load_avg_1m"] = os.getloadavg()[0]
         except OSError:
             out["load_avg_1m"] = 0.0
         try:
-            mem = {}
-            with open("/proc/meminfo") as f:
-                for line in f:
-                    k, v = line.split(":", 1)
-                    mem[k] = int(v.split()[0]) * 1024
-            out["memory_total_bytes"] = mem.get("MemTotal", 0)
-            out["memory_used_percent"] = round((1 - mem.get("MemAvailable", 0) / float(mem["MemTotal"])) * 100, 1) if mem.get("MemTotal") else 0
+            m = sysres.memory()
+            out["memory_total_bytes"] = m["total"]
+            out["memory_used_percent"] = round((1 - m["available"] / float(m["total"])) * 100, 1) if m["total"] else 0
+            if m["limited"]:
+                out["memory_limited_by_cgroup"] = True
         except Exception:
             out["memory_used_percent"] = 0
         disks = {}

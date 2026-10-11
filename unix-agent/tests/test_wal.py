@@ -42,7 +42,11 @@ class WalTests(unittest.TestCase):
             self.assertEqual(wal_archive.main(["x", "archive", self.mk(seg(1, 0, 9)), seg(1, 0, 9)]), 1)
         finally:
             os.environ.clear(); os.environ.update(env)
-        self.assertEqual(wal_archive.main(["x", "get", seg(1, 0, 77), os.path.join(self.t, "o")]) , 1)           # genuinely absent -> 1
+        os.environ["WAL_ARCHIVE_DIR"] = self.wm.wal_dir
+        try:
+            self.assertEqual(wal_archive.main(["x", "get", seg(1, 0, 77), os.path.join(self.t, "o")]) , 1)       # genuinely absent -> 1
+        finally:
+            os.environ.pop("WAL_ARCHIVE_DIR", None)
 
     def test_divergent_copy_is_refused_and_quarantined(self):
         n = seg(1, 0, 2); self.wm.archive_segment(self.mk(n, b"a"), n)

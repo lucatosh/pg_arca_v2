@@ -43,7 +43,7 @@ DEFAULT_CONFIG = {
     "auth_token": "",
 
     # local PostgreSQL access (agent runs as the postgres OS user -> peer auth over the socket)
-    "pg_user": "postgres",
+    "pg_user": "",             # "" = auto: owner of PGDATA, the agent's OS user, then postgres - whichever connects (pgaccess.resolve_user)
     "pg_port": 0,              # 0 = auto (discovery / postmaster.pid)
     "pg_host": "",             # "" = auto (unix socket dir from postmaster.pid)
     "pg_data": "",             # "" = auto (discovery). Explicit override only: env PG_ARCA_PGDATA or agent.conf
@@ -72,6 +72,7 @@ _WEAK_TOKENS = {"", "arca-secret-token-change-me", "changeme", "password", "toke
 def load_config(conf_path=None):
     config = dict(DEFAULT_CONFIG)
     target = conf_path or DEFAULT_CONF_PATH
+    config["_conf_path"] = os.path.abspath(target)         # archive_command must read the SAME file when the agent was started with a non-default one
     if os.path.exists(target):
         try:
             with open(target, "r", encoding="utf-8") as f:
