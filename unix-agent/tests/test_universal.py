@@ -196,5 +196,40 @@ class Sysres(unittest.TestCase):
         self.assertEqual(sysres.memory_limit(root, pc), (None, None))
 
 
+class SocketPath(unittest.TestCase):
+    def test_short_path_is_kept_and_a_deep_one_is_moved(self):
+        from pg_arca.engine import ephemeral
+        base = tempfile.mkdtemp()
+        p = os.path.join(base, ".s")
+        self.assertEqual(ephemeral.short_socket_dir(p), p)
+        deep = os.path.join(base, *(["very_long_directory_name_for_a_nested_volume"] * 4), ".s")
+        self.assertGreater(len(os.path.join(deep, ".s.PGSQL.65535")), 100)
+        d = ephemeral.short_socket_dir(deep)
+        try:
+            self.assertNotEqual(d, deep)
+            self.assertLessEqual(len(os.path.join(d, ".s.PGSQL.65535")), 100)
+            self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700)
+        finally:
+            os.rmdir(d)
+
+
+class Links(unittest.TestCase):
+    def test_links_inside_pgdata_are_reported_not_silently_lost(self):
+        from pg_arca.engine import pgdata
+        d = tempfile.mkdtemp()
+        for sub in ("base", "pg_wal", "pg_tblspc", "global", "log"):
+            os.makedirs(os.path.join(d, sub))
+        ext = tempfile.mkdtemp()
+        open(os.path.join(ext, "postgresql.conf"), "w").close()
+        os.symlink(os.path.join(ext, "postgresql.conf"), os.path.join(d, "postgresql.conf"))     # config kept elsewhere through a link
+        os.symlink(ext, os.path.join(d, "pg_tblspc", "16384"))                                   # tablespace: handled, not reported
+        os.symlink(ext, os.path.join(d, "global_ext"))                                           # a data directory elsewhere: reported
+        got = dict(pgdata.skipped_links(d))
+        self.assertIn("postgresql.conf", got)
+        self.assertIn("global_ext", got)
+        self.assertNotIn("pg_tblspc/16384", got)
+        self.assertEqual(pgdata.skipped_links(tempfile.mkdtemp()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

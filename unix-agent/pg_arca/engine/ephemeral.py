@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import signal
 import socket
 import subprocess
@@ -153,8 +154,8 @@ class Ephemeral(object):
         if os.path.exists(self.dir):
             raise EngineError("PGA-SEC-021", "scratch directory exists: %s" % self.dir, "the engine never reuses a directory")
         os.makedirs(self.dir, mode=0o700)
-        self.sock = os.path.join(self.dir, ".s")
-        os.makedirs(self.sock, mode=0o700)
+        self.sock = short_socket_dir(os.path.join(self.dir, ".s"))
+        self.sock_external = self.sock != os.path.join(self.dir, ".s")
         eph = getattr(ctx, "eph", None) or {}
         self.port = ephcfg.free_port(eph)
         self.bindir = ctx.conn.bindir                              # re-chosen in build() once the major version of the backup is known
@@ -315,6 +316,23 @@ class Ephemeral(object):
         if keep:
             return
         shutil.rmtree(self.dir, ignore_errors=True)
+        if getattr(self, "sock_external", False):
+            shutil.rmtree(self.sock, ignore_errors=True)
+
+
+def short_socket_dir(preferred, limit=100):
+    """A directory for the Unix socket whose full socket path fits in sun_path (107 bytes on Linux). A deep scratch directory (a long mount point, a nested volume) would
+    otherwise make PostgreSQL refuse to start with 'Unix-domain socket path is too long'. The preferred directory is used whenever it fits."""
+    if len(os.path.join(preferred, ".s.PGSQL.65535")) <= limit:
+        os.makedirs(preferred, mode=0o700, exist_ok=True)
+        return preferred
+    for base in (os.environ.get("XDG_RUNTIME_DIR"), "/run/user/%d" % os.geteuid(), "/tmp", "/var/tmp"):
+        if base and os.path.isdir(base) and os.access(base, os.W_OK | os.X_OK):
+            d = tempfile.mkdtemp(prefix="pga", dir=base)           # mkdtemp is 0700
+            if len(os.path.join(d, ".s.PGSQL.65535")) <= limit:
+                return d
+            shutil.rmtree(d, ignore_errors=True)
+    raise EngineError("PGA-EPH-040", "no directory short enough for the PostgreSQL socket (limit ~107 bytes): %s" % preferred, "use a shorter scratch_dir")
 
 
 def reap_stale(ctx, ttl=4 * 3600):

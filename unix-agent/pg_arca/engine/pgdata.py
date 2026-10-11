@@ -47,6 +47,31 @@ def tablespace_links(pgdata):
     return out
 
 
+def skipped_links(pgdata, limit=20):
+    """Symbolic links inside PGDATA that a backup does NOT follow: everything except pg_tblspc/* (tablespaces, handled) and pg_wal (not backed up, the WAL archive covers it).
+    Same as pg_basebackup, which skips them too; reported so a configuration file or a data directory kept elsewhere through a link is never silently missing from the set.
+    [(relative path, target)]"""
+    out = []
+    for cur, dirs, files in os.walk(pgdata, topdown=True, followlinks=False):
+        rel_root = os.path.relpath(cur, pgdata)
+        rel_root = "" if rel_root == "." else rel_root
+        if rel_root.startswith("pg_tblspc") or rel_root == "pg_wal" or _is_excluded_dir(rel_root):
+            dirs[:] = []
+            continue
+        for n in list(dirs) + list(files):
+            full = os.path.join(cur, n)
+            rp = (rel_root + "/" + n) if rel_root else n
+            if os.path.islink(full) and rp not in ("pg_wal",) and not rp.startswith("pg_tblspc") and not _is_excluded_dir(rp):
+                try:
+                    out.append((rp, os.readlink(full)))
+                except OSError:
+                    out.append((rp, "?"))
+                if len(out) >= limit:
+                    return out
+        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(cur, d))]
+    return out
+
+
 def _walk_tree(root, rel_prefix, exclude_top=True):
     for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
         rel_root = os.path.relpath(cur, root)

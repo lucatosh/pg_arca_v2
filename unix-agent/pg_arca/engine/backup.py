@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pg_arca.engine import ENGINE_VERSION
 from pg_arca.engine.catalog import snapshot_catalog
-from pg_arca.engine.pgdata import ZEROPAGE, is_main_fork, page_lsn, tablespace_links, walk_pgdata
+from pg_arca.engine.pgdata import ZEROPAGE, is_main_fork, page_lsn, skipped_links, tablespace_links, walk_pgdata
 from pg_arca.pgcompat import check_tools, require_supported
 from pg_arca.engine.pgsession import PgSession
 from pg_arca.engine.util import (BLCKSZ, CHUNK_SIZE, Cancelled, EngineError, human, iso, lsn_to_int, now_utc, read_json, sql_lit,
@@ -290,6 +290,10 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             raise EngineError("PGA-GEN-040", "pg_backup_start failed", "the backup role needs pg_backup_start privileges (superuser or pg_write_all_data/EXECUTE grants)")
         started_backup = True
         meta["start_lsn"] = start_lsn
+        links = skipped_links(ctx.pgdata)
+        if links:
+            meta["skipped_links"] = [{"path": a, "target": b} for a, b in links]
+            log("warn", "symbolic links inside PGDATA are not followed and are NOT in this backup (same as pg_basebackup): %s" % "; ".join("%s -> %s" % x for x in links[:5]))
 
         # ---- copy files in parallel
         files = list(walk_pgdata(ctx.pgdata))
