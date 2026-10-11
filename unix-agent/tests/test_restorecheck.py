@@ -112,3 +112,18 @@ class Access(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SystemDbOids(unittest.TestCase):
+    """PostgreSQL 14: the 'postgres' database has an initdb-assigned OID (not 5): a sparse recovery must keep IT (found on the lab matrix)."""
+    def test_postgres_oid_from_the_catalog(self):
+        from pg_arca.engine.restore import system_db_oids
+        self.assertEqual(system_db_oids({"databases": {"postgres": {"oid": 13780}, "app": {"oid": 16384}}}), {1, 13780})
+        self.assertEqual(system_db_oids({"databases": {"postgres": {"oid": 5}}}), {1, 5})
+        self.assertEqual(system_db_oids({}), {1, 5})
+
+    def test_permanent_connect_errors(self):
+        from pg_arca.engine.ephemeral import PERMANENT_CONNECT
+        self.assertTrue(PERMANENT_CONNECT.search('FATAL:  could not open file "base/13780/1259": No such file or directory'))
+        self.assertFalse(PERMANENT_CONNECT.search("FATAL:  the database system is not yet accepting connections"))
+        self.assertFalse(PERMANENT_CONNECT.search("FATAL:  the database system is starting up"))

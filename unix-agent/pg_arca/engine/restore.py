@@ -40,6 +40,17 @@ def merge_chain(repo, chain, include=None):
     return merged, mans[-1].get("tablespaces", {})
 
 
+def system_db_oids(cat):
+    """Databases a partial (sparse) recovery always needs: template1 (OID 1, CREATE DATABASE) and the 'postgres' database (where connections land).
+    'postgres' has the fixed OID 5 only since PostgreSQL 15; up to 14 it gets an OID assigned at initdb (e.g. 13780): read it from the backup catalog.
+    Without it a PostgreSQL 14 recovery instance refused every connection ("could not open file base/13780/1259")."""
+    out = {1}
+    dbs = (cat or {}).get("databases") or {}
+    pg = dbs.get("postgres") if isinstance(dbs, dict) else None
+    out.add(int(pg["oid"]) if isinstance(pg, dict) and pg.get("oid") else 5)
+    return out
+
+
 def sparse_filter(keep_oids):
     keep = set(int(x) for x in keep_oids)
 

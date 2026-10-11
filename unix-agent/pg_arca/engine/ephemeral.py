@@ -47,6 +47,9 @@ class TargetNotReached(EngineError):
 _NOT_REACHED = "recovery ended before configured recovery target was reached"
 
 
+PERMANENT_CONNECT = re.compile(r"could not open file|database \"[^\"]+\" does not exist|no pg_hba\.conf entry|password authentication failed|role \"[^\"]+\" does not exist|invalid page", re.I)
+
+
 def death_error(logfile, where):
     """The instance exited while recovering: say WHY in terms the user can act on."""
     tail = tail_file(logfile, 60)
@@ -184,7 +187,8 @@ class Ephemeral(object):
         sparse = keep_oids is not None
         include = None
         if sparse:
-            keep = set(keep_oids) | {1, 5}                 # template1 (oid 1) and postgres (oid 5) are always needed: connections + CREATE DATABASE
+            from pg_arca.engine.restore import system_db_oids
+            keep = set(keep_oids) | system_db_oids(cat)        # template1 + the 'postgres' database (OID 5 only since PostgreSQL 15)
             include = sparse_filter(keep)
         merged, tbs = merge_chain(repo, chain, include)
         full_size = estimate(merge_chain(repo, chain)[0]) if sparse else estimate(merged)
@@ -241,8 +245,14 @@ class Ephemeral(object):
                     s = PgSession(self.conn("postgres"), read_only=True)
                     s.close()
                     return time.time() - t0
-                except EngineError:
-                    pass
+                except EngineError as e:
+                    # "starting up / not yet accepting connections" goes away by itself; a missing catalog file or database never does: fail now, not after
+                    # the whole start timeout (a PostgreSQL 14 recovery once waited 15 minutes on "could not open file base/13780/1259")
+                    msg = "%s %s" % (e.message or "", getattr(e, "hint", "") or "")
+                    if PERMANENT_CONNECT.search(msg):
+                        self.cleanup()
+                        raise EngineError("PGA-PITR-014", "the recovery instance is up but refuses connections for good: %s" % msg.strip().splitlines()[-1][:300],
+                                          "report this with the agent log: the recovered files are incomplete for this PostgreSQL version")
             time.sleep(0.4)
         self.cleanup()
         raise EngineError("PGA-PITR-011", "timeout starting the ephemeral instance (%ds)" % wait, "see %s" % logfile)

@@ -15,7 +15,7 @@ from pg_arca.engine import objects as objmod, restorecheck
 from pg_arca.engine.catalog import find_object
 from pg_arca.engine.ephemeral import Ephemeral, TargetNotReached
 from pg_arca.engine.pgsession import PgConn, PgSession, run_dump, run_tool
-from pg_arca.engine.restore import check_wal_for_chain, choose_set, count_targets, estimate, merge_chain, sparse_filter
+from pg_arca.engine.restore import check_wal_for_chain, choose_set, count_targets, estimate, merge_chain, sparse_filter, system_db_oids
 from pg_arca.engine.util import EngineError, human, lsn_to_int, now_utc, parse_target_time, quote_ident, sql_lit, target_time_to_dt, wal_name, wal_segno
 
 import re as _re
@@ -289,7 +289,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     entry = cat["databases"][db]
     new_name = new_name or (db + "_restored")
     _check_name(new_name, "destination database name")
-    merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter({entry["oid"], 1, 5}))
+    merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter({entry["oid"]} | system_db_oids(cat)))
     merged_all, _ = merge_chain(ctx.repo, chain)
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "database": db, "destination_database": new_name,
             "extract_bytes": estimate(merged_sel), "cluster_bytes": estimate(merged_all),
@@ -382,7 +382,7 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     if not stage.startswith("pgarca_stage_"):
         raise EngineError("PGA-GEN-081", "a quarantine database name must start with pgarca_stage_ (pg_arca drops it after promotion: it must never be a user database)")
     _check_name(stage, "quarantine database name")
-    merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter({dbentry["oid"], 1, 5}))
+    merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter({dbentry["oid"]} | system_db_oids(cat)))
     merged_all, _ = merge_chain(ctx.repo, chain)
     size_in_backup = sum(o["size"] for o in objmod_user_sizes(dbentry, sel))
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "object": label, "selection": sel, "relations_in_backup": nrel, "size_in_backup": size_in_backup,
