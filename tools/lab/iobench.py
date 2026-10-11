@@ -29,6 +29,7 @@ def bench(name, fn, workers):
 for w in (1, 4):
     bench("blake2b", lambda b: hashlib.blake2b(b, digest_size=32).digest(), w)
     bench("zlib level 3", lambda b: zlib.compress(b, 3), w)
+    bench("zlib level 1", lambda b: zlib.compress(b, 1), w)
     try:
         import zstandard
         bench("zstd level 3", lambda b: zstandard.ZstdCompressor(level=3).compress(b), w)
@@ -42,6 +43,8 @@ def write(b):
     fn = os.path.join(p, "%d.%d" % (cnt[0], threading.get_ident()))
     with open(fn + ".tmp", "wb") as f: f.write(b)
     os.rename(fn + ".tmp", fn)
+r3 = sum(len(zlib.compress(b, 3)) for b in chunks[:2000]) / sum(len(b) for b in chunks[:2000]); r1 = sum(len(zlib.compress(b, 1)) for b in chunks[:2000]) / sum(len(b) for b in chunks[:2000])
+print("ratio zlib3 %.2f zlib1 %.2f" % (r3, r1))
 for w in (1, 4):
     bench("write file per chunk", write, w)
 t = time.time(); os.sync(); print("sync %.1f s" % (time.time() - t))
