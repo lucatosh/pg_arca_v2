@@ -541,7 +541,7 @@ def _promote_space(ctx, stage_db, into):
     return out
 
 
-def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None, dry_run=False, progress=None):
+def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None, dry_run=False, progress=None, target_schema=None):
     """
     Move a table recovered into a quarantine database back into the real database. Never destructive:
       as_new  : the recovered table appears next to the original as <name>_pitr_<ts>
@@ -558,7 +558,7 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
     if not dry_run and space and not space["ok"]:
         bad = [c for c in space["checks"] if c["level"] == "bad"]
         raise EngineError("PGA-RST-032", "promotion not started: %s" % bad[0]["text"], bad[0].get("fix"))
-    v2 = objmod.promote(_dest_conn(ctx, into), stage_db, mode=mode, dry_run=dry_run, progress=progress)          # a stage built by restore_object v2 knows everything around its tables
+    v2 = objmod.promote(_dest_conn(ctx, into), stage_db, mode=mode, dry_run=dry_run, progress=progress, target_schema=target_schema or None)          # a stage built by restore_object v2 knows everything around its tables
     if v2 is not None and space:
         v2["preflight"] = space; v2["space"] = space.get("space")
     if v2 is not None:
@@ -566,6 +566,8 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
             _drop_db(_dest_conn(ctx, into), stage_db)
             v2["stage_dropped"] = True
         return v2
+    if target_schema:
+        raise EngineError("PGA-GEN-087", "a target schema needs a quarantine database made by the current restore_object: restore the object again")
     if mode == "missing_only":
         raise EngineError("PGA-GEN-080", "missing_only needs a quarantine database made by the current restore_object (this one predates it): restore the object again")
     if dry_run:

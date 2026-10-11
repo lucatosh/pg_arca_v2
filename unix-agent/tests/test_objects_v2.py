@@ -193,6 +193,31 @@ class ObjectsV2(unittest.TestCase):
         drop_leftovers()
         q(DB, "UPDATE shop.customers SET full_name = 'Customer 1' WHERE id = 1")
 
+    def test_07b_as_new_into_a_separate_schema_keeps_the_real_names(self):
+        q(DB, "UPDATE shop.customers SET full_name = 'live edit' WHERE id = 1")
+        self.switch()
+        restore_object(F.ctx, DB, objects=["%s.shop.customers" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_t")
+        dry = promote_object(F.ctx, "pgarca_stage_t", DB, mode="as_new", drop_stage=False, dry_run=True, target_schema="recovered")
+        self.assertEqual(dry.get("target_schema") or (dry.get("plan") or {}).get("target_schema"), "recovered", dry)
+        with self.assertRaises(EngineError):
+            promote_object(F.ctx, "pgarca_stage_t", DB, mode="as_new", drop_stage=False, dry_run=True, target_schema="Bad Name")
+        p = promote_object(F.ctx, "pgarca_stage_t", DB, mode="as_new", drop_stage=True, target_schema="recovered")
+        self.assertEqual(p.get("promoted"), ["recovered.customers"], p)
+        self.assertEqual(q(DB, "SELECT full_name FROM shop.customers WHERE id = 1")[0][0], "live edit")          # original untouched
+        self.assertEqual(q(DB, "SELECT full_name FROM recovered.customers WHERE id = 1")[0][0], "Customer 1")
+        self.assertEqual(int(q(DB, "SELECT count(*) FROM recovered.customers")[0][0]), 100)
+        idx = [r[0] for r in q(DB, "SELECT indexname FROM pg_indexes WHERE schemaname = 'recovered' ORDER BY 1")]
+        self.assertTrue(idx and not any("pgarca" in i or "_new" in i for i in idx), idx)                       # indexes carry their real names
+        self.assertEqual(leftovers(), [])
+        # a second promotion into the same schema is refused (names taken), nothing changes
+        restore_object(F.ctx, DB, objects=["%s.shop.customers" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_t")
+        with self.assertRaises(EngineError) as cm:
+            promote_object(F.ctx, "pgarca_stage_t", DB, mode="as_new", drop_stage=True, target_schema="recovered")
+        self.assertIn("already there", str(cm.exception))
+        q("postgres", "DROP DATABASE IF EXISTS pgarca_stage_t")
+        q(DB, "DROP SCHEMA recovered CASCADE")
+        q(DB, "UPDATE shop.customers SET full_name = 'Customer 1' WHERE id = 1")
+
     # ------------------------------------------------------------------ missing_only: only what is gone comes back, what exists keeps today's data
     def test_08_missing_only_brings_back_only_what_is_missing(self):
         q(DB, "DROP TABLE hr.timesheets; INSERT INTO hr.departments (name, budget) VALUES ('Added after the backup', 1)")

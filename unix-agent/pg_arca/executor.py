@@ -693,7 +693,7 @@ class OperationExecutor:
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
         return granular.promote_object(ctx, str(p.get("stage_db")), str(p.get("object") or ""), mode=p.get("mode", "as_new"), drop_stage=bool(p.get("drop_stage", True)), into=p.get("into"),
-                                       dry_run=bool(p.get("dry_run")), progress=self._progress)
+                                       dry_run=bool(p.get("dry_run")), progress=self._progress, target_schema=p.get("target_schema") or None)
 
     def h_destination_check(self, p):
         """Is the configured backup destination safe to use from THIS node? Mount type, exclusive create + fsync + atomic rename, free space, what already lives there.

@@ -678,18 +678,24 @@ def _compat(res):
     return res
 
 
-def promote(admin, stage_db, mode="replace", dry_run=False, progress=None):
+def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, target_schema=None):
     """Put the objects of a v2 quarantine database back into the live database it came from (same name, on `admin`'s server).
 
       replace      every recovered table takes the place of the live one, which is kept as <name>_old_<ts> (never dropped); foreign keys that pointed at the old table are
                    re-attached to the new one, views that depended on it are recreated, sequences never go backwards; a table that no longer exists simply comes back
       missing_only only what is missing now comes back; existing tables are left alone
-      as_new       the recovered tables appear next to the originals as <name>_pitr_<ts>; nothing existing is touched and nothing is re-attached
+      as_new       the recovered tables appear next to the originals as <name>_pitr_<ts>; nothing existing is touched and nothing is re-attached.
+                   With target_schema they keep their own names inside that schema instead (created if missing; refused when a name is taken there)
 
     The data is first loaded under temporary names (phase 1: nothing live changes, the application keeps working); the swap itself (phase 2) is ONE transaction with a lock
     timeout, so it either happens completely or not at all. Returns None when `stage_db` is not a v2 stage (the caller then uses the old single-table path)."""
     if mode not in ("replace", "as_new", "missing_only"):
         raise EngineError("PGA-GEN-080", "mode must be replace, missing_only or as_new")
+    if target_schema is not None:
+        if mode != "as_new":
+            raise EngineError("PGA-GEN-087", "a target schema is only possible with mode as_new")
+        if not re.match(r"^[a-z_][a-z0-9_]{0,62}$", str(target_schema)) or str(target_schema).startswith("pg_") or target_schema in ("information_schema",):
+            raise EngineError("PGA-GEN-087", "invalid target schema name %r (lowercase letters, digits and _; not pg_*)" % target_schema)
     stg = PgSession(admin.with_db(stage_db))
     try:
         meta = read_meta(stg)
@@ -716,6 +722,18 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None):
     created_tmp = []                                         # live objects created in phase 1 (dropped again if anything fails)
     try:
         plan = _live_plan(live, meta, mode, ts)
+        if target_schema:
+            names = [r["name"] for r in plan["tables"] if r["action"] != "skip"]
+            dup = sorted(set(n for n in names if names.count(n) > 1))
+            taken = [n for n in names if _exists(live, target_schema, n)]
+            if dup or taken:
+                raise EngineError("PGA-GEN-088", "cannot put the recovered tables in schema %s: %s" % (target_schema, ("names repeated across schemas: %s" % ", ".join(dup)) if dup else ("already there: %s" % ", ".join(taken[:5]))),
+                                  "choose an empty or new schema, or restore one schema at a time")
+            for r in plan["tables"]:
+                if r["action"] != "skip":
+                    r["new_name"] = r["name"]
+                    r["target_schema"] = target_schema
+            plan["target_schema"] = target_schema
         if dry_run:
             plan["dry_run"] = True
             return _slim(plan)
@@ -787,6 +805,41 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None):
             got = int(live.scalar("SELECT count(*) FROM %s" % qi(r["schema"], _short(r["name"], sfx_new))))
             if got != want:
                 raise EngineError("PGA-VRF-040", "verification failed for %s.%s: %d rows at target, %d loaded" % (r["schema"], r["name"], want, got), "nothing was changed in the live database")
+        if mode == "as_new" and target_schema:
+            # move the copies into their own schema under their own names (indexes, constraints and owned sequences follow ALTER TABLE ... SET SCHEMA),
+            # one transaction: either every table is there with its real name, or nothing moved
+            live.query("BEGIN")
+            try:
+                live.query("SET LOCAL lock_timeout = '10s'")
+                live.query("CREATE SCHEMA IF NOT EXISTS %s" % quote_ident(target_schema))
+                for r in todo:
+                    tmpn = _short(r["name"], sfx_new)
+                    seqs = [x[0] for x in live.query("SELECT s.relname FROM pg_depend d JOIN pg_class s ON s.oid = d.objid AND s.relkind = 'S' WHERE d.refobjid = %s::regclass AND d.deptype IN ('a','i')" % sql_lit(qi(r["schema"], tmpn)))]
+                    kids = [x[0] for x in live.query("SELECT c.relname FROM pg_inherits h JOIN pg_class c ON c.oid = h.inhrelid JOIN pg_namespace n ON n.oid = c.relnamespace "
+                                                     "WHERE h.inhparent = %s::regclass AND n.nspname = %s" % (sql_lit(qi(r["schema"], tmpn)), sql_lit(r["schema"])))]
+                    live.query("ALTER TABLE %s SET SCHEMA %s" % (qi(r["schema"], tmpn), quote_ident(target_schema)))
+                    for k in kids:                                        # partitions follow their parent into the new schema (SET SCHEMA moves only the parent)
+                        live.query("ALTER TABLE %s SET SCHEMA %s" % (qi(r["schema"], k), quote_ident(target_schema)))
+                    live.query("ALTER TABLE %s RENAME TO %s" % (qi(target_schema, tmpn), quote_ident(r["name"])))
+                    for (idx,) in live.query("SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = %s::regclass" % sql_lit(qi(target_schema, r["name"]))):
+                        orig = orig_of.get((r["schema"], idx))
+                        if orig and orig != idx:
+                            live.query("ALTER INDEX %s RENAME TO %s" % (qi(target_schema, idx), quote_ident(orig)))
+                    for sq in seqs:
+                        orig = orig_of.get((r["schema"], sq))
+                        if orig and orig != sq:
+                            live.query("ALTER SEQUENCE %s RENAME TO %s" % (qi(target_schema, sq), quote_ident(orig)))
+                live.query("COMMIT")
+            except BaseException:
+                try:
+                    live.query("ROLLBACK")
+                except EngineError:
+                    pass
+                raise
+            result.update(plan=_slim(plan), promoted=["%s.%s" % (target_schema, r["name"]) for r in todo], old_kept_as=[], target_schema=target_schema,
+                          note="the recovered tables are in schema %s with their own names; the originals are untouched and nothing was re-attached" % target_schema)
+            created_tmp = []
+            return _compat(result)
         if mode == "as_new":
             result.update(plan=_slim(plan), promoted=["%s.%s" % (r["schema"], r["new_name"]) for r in todo], old_kept_as=[], note="the recovered tables sit next to the originals; nothing was re-attached")
             created_tmp = []
