@@ -324,6 +324,13 @@ def loaded_matches(ex, text, err):
     want = [k for k in (_norm_key(hba.render_rule(dict(x["rule"], comment=""))) for x in hba.parse_file(text)[0]) if k]
     rows = _json(ex, SQL_RULES, err, [])
     have = [k for k in (_norm_key(rule_from_effective(r) or "") for r in rows if not r.get("error")) if k]
+    # with ssl=off (gssapi off) PostgreSQL loads hostssl (hostgssenc) lines as rows that carry only an error: they cannot be compared field by
+    # field, so they are matched by count
+    soft = {"hostssl": sum(1 for r in rows if r.get("error") and SOFT[0] in r["error"]), "hostgssenc": sum(1 for r in rows if r.get("error") and SOFT[1] in r["error"])}
+    if soft["hostssl"] or soft["hostgssenc"]:
+        skipped = {t: [k for k in want if k[0] == t] for t in soft}
+        if all(len(skipped[t]) == soft[t] for t in soft if soft[t]):
+            want = [k for k in want if not soft.get(k[0])]
     ok = want == have and not hard_errors(rows)
     if not ok:
         miss = [" ".join(k) for k in want if k not in have][:3]

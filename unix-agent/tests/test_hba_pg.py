@@ -28,9 +28,13 @@ class FakePatroni(object):
         self.hba_path, self.cfg = hba_path, {"postgresql": {"pg_hba": lst}}
         self.write()
 
+    reload = None
+
     def write(self):
         with open(self.hba_path, "w") as f:
             f.write("\n".join(self.cfg["postgresql"]["pg_hba"]) + "\n")
+        if self.reload:                     # Patroni reloads PostgreSQL after rewriting the file
+            self.reload()
 
     def get_node_status(self): return 200, {"state": "running"}
     def get_config(self): return 200, self.cfg
@@ -96,13 +100,17 @@ class HbaPg(unittest.TestCase):
     def test_4_patroni_mode_edits_dcs_list(self):
         lst = ["local all all trust", "host all all 0.0.0.0/0 scram-sha-256"]
         pt = FakePatroni(self.hba, lst)
+        pt.reload = lambda: self.db.run_psql("SELECT pg_reload_conf();")
+        pt.write()
         ex = self.ex(pt)
         self.assertEqual(ex.h_hba_read({})["mode"], "patroni")
         res = ex.h_hba_apply({"rules": [R(comment="x")]}); self.assertEqual(res["mode"], "patroni")
         self.assertTrue(any(l.startswith(hba.BEGIN[:20]) for l in pt.cfg["postgresql"]["pg_hba"]))
         self.assertIn("local all all trust", pt.cfg["postgresql"]["pg_hba"], "foreign entries kept")
         self.assertEqual(ex.h_hba_read({})["errors"], [])
-        with self.assertRaises(OpError): ex.h_hba_rollback({})
+        with self.assertRaises(OpError): ex.h_hba_rollback({})        # previous versions are kept by the console (hba_restore), not as files
+        res2 = ex.h_hba_restore({"list": lst}); self.assertTrue(res2["changed"]); self.assertEqual(pt.cfg["postgresql"]["pg_hba"], lst)
+        ex.h_hba_apply({"rules": [R(comment="x")]})
         ex.h_hba_apply({"rules": []}); self.assertFalse(any(hba.BEGIN in l for l in pt.cfg["postgresql"]["pg_hba"]))
 
     def test_5_adopt_existing_rules_and_temporary_rules(self):
@@ -132,8 +140,9 @@ class HbaPg(unittest.TestCase):
         self.assertEqual(len(left), 5); self.assertTrue(all("2020" not in r["comment"] for r in left)); self.assertEqual(ex.h_hba_read({})["errors"], [])
         self.assertFalse(ex.h_hba_expire({})["changed"], "nothing else expired: no-op")
         self.assertEqual(hba.until_of({"comment": "x [until=2999-01-01T00:00Z]"}), 32472144000)
-        pt = FakePatroni(self.hba, ["local all all trust"])
-        with self.assertRaises(OpError): self.ex(pt).h_hba_expire({})
+        pt = FakePatroni(self.hba, ["local all all trust"])          # Patroni: temporary rules live in the DCS list too; none there -> no-op
+        pt.reload = lambda: self.db.run_psql("SELECT pg_reload_conf();")
+        self.assertFalse(self.ex(pt).h_hba_expire({})["changed"])
 
 
 if __name__ == "__main__":
