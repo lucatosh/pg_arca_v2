@@ -151,9 +151,12 @@ Metodo: strumenti in `unix-agent/tests/` (`bench_restore.py`, `bench_forensics.p
 | Dump dall'istanza recuperata | `pg_dump` con compressione di default | `zstd:1` (solo PG ≥ 16, `pgsession.run_dump`; sulle versioni precedenti nessun cambiamento) | 3,5 s → 1,1 s |
 | `pg_restore` | il tempo è caricamento dati + costruzione indici | nulla da guadagnare dal formato: il lavoro è nel server di destinazione | non ottimizzato; `jobs` configurabile |
 
+Prove che **non** hanno dato vantaggio (macchina di prova a 2 vCPU, 400 MB di dati + 300 MB di WAL in 325 segmenti: recovery ≈ 44–47 s): `max_wal_size` alto + `checkpoint_timeout` lungo per evitare i restartpoint (nessuna differenza misurabile, scartato), read-ahead più profondo (24 segmenti, 8 worker: invariato o peggiore, la CPU è già satura tra redo e prefetch). Su macchine con più core il risultato può essere diverso: non misurato.
+
 Sicurezza e successo (blindatura):
 - **Pre-flight prima della fase lunga** (`engine/restorecheck.py`): catena di chunk completa, spazio di scratch e del volume dati del cluster vivo, nome di destinazione libero, ambiente dell'istanza effimera. Il piano lo mostra (blocca «Avvia» se bloccante) e l'avvio lo rivaluta, perché il disco può essere cambiato dopo il piano.
-- **Mai sovrascrivere**: un database di destinazione esistente è un errore (`PGA-SEC-030`) *prima* del recupero; la modalità `replace` per oggetti conserva gli originali come `_old_<data>` e, nella UI, chiede la conferma digitata `SOSTITUISCI`.
+- **Mai sovrascrivere**: un database di destinazione esistente è un errore (`PGA-SEC-030`) *prima* del recupero; la modalità `replace` per oggetti conserva gli originali come `_old_<data>`, nella UI chiede la conferma digitata `SOSTITUISCI` e il server la richiede anche via API (`confirm`), oltre all'approvazione negli ambienti protetti.
+- Anche il restore di istanza controlla la catena di chunk (piano + avvio) e il test `test_12b` verifica che con un chunk mancante nulla venga creato.
 - **Verifica a fine ripristino**: numero di tabelle all'istante di recupero = numero di tabelle ripristinate (`PGA-VRF-040`).
 - **Pulizia**: stage, spool WAL e istanza effimera sono rimossi anche in caso di errore; lo spool viene fermato prima di essere cancellato.
 

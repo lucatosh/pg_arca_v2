@@ -74,6 +74,12 @@ import * as ops from '../../server/ops';
     const { validateOp } = await import('../../server/optypes');
     assert.strictEqual(validateOp('wal_forensics', { mode: 'databases', hours: 0 }), null);
     assert.ok(validateOp('wal_forensics', { mode: 'x' }) && validateOp('wal_forensics', { hours: -1 }) && validateOp('wal_forensics', { limit: 0 }));
+    // swapping restored tables in for the originals needs the explicit confirmation (the preview and the other modes do not)
+    const pr = { stage_db: 'pgarca_stage_1', object: 'app.public.orders' };
+    assert.ok(validateOp('restore_promote', { ...pr, mode: 'replace' }));
+    assert.strictEqual(validateOp('restore_promote', { ...pr, mode: 'replace', confirm: 'SOSTITUISCI' }), null);
+    assert.strictEqual(validateOp('restore_promote', { ...pr, mode: 'replace', dry_run: true }), null);
+    assert.strictEqual(validateOp('restore_promote', { ...pr, mode: 'as_new' }), null);
     // operation log: phase changes are lines, counters of the same phase are throttled
     const id = got.find(o => o.type === 'backup_run')!.id;
     await ops.report(s3, 'n9', id, 'running', undefined, undefined, 120, { phase: 'checkpoint' });
