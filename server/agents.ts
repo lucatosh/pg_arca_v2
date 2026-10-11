@@ -14,7 +14,7 @@ import { Store, NodeRecord, sha256, newSecret, newId, nowIso } from './store';
 import * as ops from './ops';
 import { OP_SPECS, validateOp } from './optypes';
 import { requiresApproval, requestApproval } from './approvals';
-import { hbaFanout } from './hba';
+import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
 import { conflictFor, activityOf } from './conflicts';
@@ -226,6 +226,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
     if (!['running', 'succeeded', 'failed'].includes(status)) return res.status(400).json({ error: 'invalid_status' });
     const r = await ops.report(store, node.id, req.params.id, status, result, error ? String(error).slice(0, 4000) : undefined, 120,
       status === 'running' && progress && typeof progress === 'object' ? JSON.parse(JSON.stringify(progress).slice(0, 4000)) : undefined);
+    if (r.ok && status === 'succeeded' && (r.op?.type === 'hba_apply' || r.op?.type === 'hba_restore' || r.op?.type === 'hba_expire')) await recordHbaHistory(store, { ...r.op, result });
     if (r.ok && status === 'succeeded' && r.op?.type === 'discovery_scan' && result && typeof result === 'object') {
       await store.mutate(d => { if (d.nodes[node.id]) { d.nodes[node.id].discovery = result; refreshCluster(d, d.nodes[node.id].clusterId || ''); } });
     }
@@ -397,7 +398,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (!cluster) return res.status(404).json({ error: 'cluster_not_found' });
     const r = rec.type === 'hba_cluster_apply' ? await hbaFanout(store, cluster, rec.params, 'appr:' + id, rec.requestedBy)
       : rec.type === 'geo_switchover' ? await startSwitchover(store, rec.params.from, rec.params.to, rec.requestedBy)
-      : await execute(cluster, rec.type, rec.params, rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
+      : await execute(cluster, rec.type, rec.params, rec.type === 'hba_restore' ? hbaTarget(store.peek(), cluster.id)?.id : rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
     if (r.code >= 400) return res.status(r.code).json(r.body);                    // not consumed: the approver can retry when the node is back
     await done('approved');
     res.json({ ok: true, operation: r.body.operation, operations: r.body.operations });

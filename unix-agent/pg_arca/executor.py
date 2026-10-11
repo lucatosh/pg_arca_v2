@@ -113,6 +113,7 @@ class OperationExecutor:
         r("hba_plan", self.h_hba_plan, True)
         r("hba_apply", self.h_hba_apply, True)           # compare-before-write: re-running is a no-op
         r("hba_rollback", self.h_hba_rollback, False)
+        r("hba_restore", self.h_hba_restore, True)        # Patroni: a previous DCS list, compare-before-write
 
     # ------------------------------------------------------------------ journal
     def _path(self, op_id):
@@ -768,6 +769,10 @@ class OperationExecutor:
     def h_hba_expire(self, p):
         from pg_arca import hba_ops
         return hba_ops.expire(self, p, OpError)
+
+    def h_hba_restore(self, p):
+        from pg_arca import hba_ops
+        return hba_ops.restore_dcs(self, p, OpError)
 
     def h_hba_rollback(self, p):
         from pg_arca import hba_ops

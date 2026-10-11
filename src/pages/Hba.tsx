@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago } from '../ui';
-import { isTerminal, Op, toast, useQuery } from '../hooks';
+import { isTerminal, Op, revalidate, toast, useQuery } from '../hooks';
 import { Issue, Rule, analyze, covers, describe, fill, fromEffective, key, sortRules, stripUntil, tag, untilLabel, untilOf, validCidr, withUntil } from '../hbaLogic';
 
 type Row = Rule & { _id: string };
@@ -97,16 +97,19 @@ function HbaInner({ c }: { c: any }) {
   }, [st.reads]);
 
   const shown: Row[] = useMemo(() => (order === 'manual' ? rows : sortRules(rows, order)), [rows, order]);
+  // rules outside the managed block: on Patroni the other entries of the DCS list (what Patroni writes), elsewhere what PostgreSQL loaded from the file
+  const outside: Rule[] = useMemo(() => (Array.isArray(first?.dcs_rules) ? (first.dcs_rules as any[]).map(r => ({ type: r.type, database: r.database, user: r.user, address: r.address || '', method: r.method, options: r.options || undefined }) as Rule)
+    : ((first?.effective || []) as any[]).filter(r => !r.error).map(fromEffective)), [first]);
   const existing: Rule[] = useMemo(() => {
     const mk = new Set(shown.map(r => key(r)));
-    return ((first?.effective || []) as any[]).filter(r => !r.error).map(fromEffective).filter(r => !mk.has(key(r)));
-  }, [first, shown]);
+    return outside.filter(r => !mk.has(key(r)));
+  }, [outside, shown]);
   // rules that live in the file outside the managed block, as the server sees them now; adopting = pulling every one of them into the block
   const serverUnmanaged: Rule[] = useMemo(() => {
     const mk = new Set((first?.managed?.rules || []).map((r: any) => key({ type: r.type, database: r.database, user: r.user, address: r.address || '', method: r.method, options: r.options } as Rule)));
-    return ((first?.effective || []) as any[]).filter(r => !r.error).map(fromEffective).filter(r => !mk.has(key(r)));
-  }, [first]);
-  const adopt = !patroni && serverUnmanaged.length > 0 && serverUnmanaged.every(u => shown.some(s => key(s) === key(u)));
+    return outside.filter(r => !mk.has(key(r)));
+  }, [first, outside]);
+  const adopt = serverUnmanaged.length > 0 && serverUnmanaged.every(u => shown.some(s => key(s) === key(u)));
   // Evaluation order = managed block first (top of the rules), then everything that was already in the file.
   const all: Rule[] = useMemo(() => [...shown, ...existing], [shown, existing]);
   const issues = useMemo(() => analyze(all), [all]);
@@ -154,7 +157,7 @@ function HbaInner({ c }: { c: any }) {
       const r: any = await api<{ mode: string; approval?: any; operations: { nodeId: string; nodeName: string; operation: Op }[] }>('POST', `/api/clusters/${encodeURIComponent(c.id)}/hba/apply`, { rules: shown.map(clean), baseRevs, force, adopt }, { key: keyRef.current.key });
       if (r.approval) { toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); keyRef.current = null; return; }
       const done = await Promise.all((r.operations as any[]).map(async o => { try { const op = await waitOp(o.operation); return { node: o.nodeName, ok: true, text: op.result?.changed === false ? 'già aggiornato' : op.result?.note || 'applicato e verificato' }; } catch (e: any) { return { node: o.nodeName, ok: false, text: e.message }; } }));
-      setApplyRes(done); keyRef.current = null;
+      setApplyRes(done); keyRef.current = null; revalidate(`/api/clusters/${encodeURIComponent(c.id)}/hba/history`);
       if (done.every(d => d.ok)) toast('Regole applicate e verificate', 'ok'); else toast('Alcuni nodi non hanno applicato le regole', 'bad');
       await st.load();
     } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setApplying(false); }
@@ -185,6 +188,8 @@ function HbaInner({ c }: { c: any }) {
       <span className="small muted mono">{patroni ? 'postgresql.pg_hba' : first.hba_file}</span>
       <div className="grow" /><Button sm icon="refresh" busy={st.loading} onClick={st.load}>Rileggi</Button></div>
 
+    {patroni && first.dcs_seed ? <Banner kind="info" title="Il DCS di Patroni non contiene ancora pg_hba">Le regole mostrate sono quelle in vigore secondo PostgreSQL (pg_hba_file_rules), cioè quelle che Patroni ha scritto dalla configurazione locale dei nodi. Alla prima modifica diventano la lista nel DCS e da quel momento valgono per tutti i membri.{first.seed_skipped ? ` ${first.seed_skipped} riga/e con errori non sono state riprese.` : ''}</Banner> : null}
+    {first.pg_down ? <Banner kind="warn" title={`PostgreSQL non è attivo su ${okReads[0].nodeName}`}>La lista nel DCS è leggibile e modificabile, ma la simulazione sulle connessioni attive e la verifica avvengono su un membro con PostgreSQL attivo.</Banner> : null}
     {st.reads.some(r => !r.ok) ? <Banner kind="warn" title="Alcuni nodi non hanno risposto">{st.reads.filter(r => !r.ok).map(r => `${r.nodeName}: ${r.error}`).join(' · ')}</Banner> : null}
     {drift.length ? <Banner kind="warn" title="I nodi hanno regole diverse">{drift.map(d => d.nodeName).join(', ')} {drift.length > 1 ? 'differiscono' : 'differisce'} da {okReads[0].nodeName}. Applicando da qui tutti i nodi riceveranno lo stesso blocco gestito; le regole scritte a mano fuori dal blocco restano com’erano.</Banner> : null}
     {probs.length ? <Banner kind="bad" title="PostgreSQL segnala errori nel file attuale">{probs.slice(0, 3).map((p: any) => `riga ${p.line_number}: ${p.error}`).join(' · ')}</Banner> : null}
@@ -207,7 +212,7 @@ function HbaInner({ c }: { c: any }) {
 
     <Templates tpls={tpls.data?.templates || []} sugg={sugg} env={c.environment} all={all} hosts={hosts} onAdd={rs => add(rs)} />
 
-    {existing.length ? <Card title={`Regole già presenti nel file (${existing.length})`} pad={false} actions={!patroni && !adopt ? <Button sm onClick={() => add(serverUnmanaged)} title="Le sposta nel blocco gestito mantenendo lo stesso ordine di valutazione: potrai modificarle e riordinarle.">Adotta nel blocco gestito</Button> : <span className="small muted">Valgono dopo il blocco gestito · sola lettura</span>}>
+    {existing.length ? <Card title={patroni ? `Altre regole della lista nel DCS (${existing.length})` : `Regole già presenti nel file (${existing.length})`} pad={false} actions={!adopt ? <Button sm onClick={() => add(serverUnmanaged)} title="Le sposta nel blocco gestito mantenendo lo stesso ordine di valutazione: potrai modificarle e riordinarle.">Adotta nel blocco gestito</Button> : <span className="small muted">Valgono dopo il blocco gestito · sola lettura</span>}>
       <div className="tablewrap"><table className="t hba"><tbody>{existing.map((r, i) => {
         const gi = shown.length + i; const is = issues.filter(x => x.index === gi);
         return <tr key={i}><td className="num muted" style={{ width: 28 }}>{gi + 1}</td><td><div>{describe(r)}</div>{is.map((x, k) => <div key={k} className={`small ${x.level === 'error' ? 'hba-err' : 'muted'}`}>{x.message}</div>)}</td>
@@ -220,15 +225,18 @@ function HbaInner({ c }: { c: any }) {
         <div className="row wrap"><Button icon="eye" busy={planning} disabled={planning || applying || errorsInDraft} onClick={doPlan}>Verifica effetto</Button>
           <Button kind="primary" icon="check" busy={applying} disabled={!plans || invalid || nothing || errorsInDraft || (lock.length > 0 && !force) || applying} onClick={() => setConfirmApply(true)}>{patroni ? 'Applica a tutto il cluster' : okReads.length > 1 ? `Applica a ${okReads.length} nodi` : 'Applica'}</Button>
           {!patroni && first.backups?.length ? <Button icon="restore" disabled={applying} onClick={() => setRb(true)}>Ripristina versione precedente</Button> : null}</div>
+        {patroni ? <p className="small muted">Scrittura solo nel DCS di Patroni (come <span className="mono">patronictl edit-config</span>): Patroni riscrive pg_hba.conf su ogni membro e ricarica; l’agent verifica con PostgreSQL (pg_hba_file_rules) che le regole siano in vigore. I file sui nodi non vengono mai letti né modificati.</p> : null}
         {errorsInDraft ? <Banner kind="bad" title="Ci sono regole duplicate">Rimuovi i duplicati segnalati in rosso prima di continuare.</Banner> : null}
         {plans ? <PlanView plans={plans} lock={lock} force={force} setForce={setForce} /> : null}
         {applyRes ? <div className="stack">{applyRes.map(a => <Banner key={a.node} kind={a.ok ? 'ok' : 'bad'} title={a.node}>{a.text}</Banner>)}</div> : null}
       </div></Card>
 
-    <details className="card"><summary className="hd" style={{ cursor: 'pointer' }}><h2>Testo grezzo del file</h2></summary><div className="bd"><pre className="out">{first.raw}</pre>{first.truncated ? <p className="small muted">Mostrate solo le prime 200 000 byte.</p> : null}</div></details>
+    {patroni ? <DcsHistory c={c} rev={first.rev} onDone={st.load} /> : null}
+
+    <details className="card"><summary className="hd" style={{ cursor: 'pointer' }}><h2>{patroni ? (first.dcs_seed ? 'Regole in vigore (da PostgreSQL)' : 'Lista nel DCS (postgresql.pg_hba)') : 'Testo grezzo del file'}</h2></summary><div className="bd"><pre className="out">{first.raw}</pre>{first.truncated ? <p className="small muted">Mostrate solo le prime 200 000 byte.</p> : null}</div></details>
 
     {confirmApply ? <Confirm title={patroni ? 'Applicare al cluster?' : 'Applicare le regole?'} confirmLabel="Applica" onClose={() => setConfirmApply(false)} onConfirm={doApply} danger={lock.length > 0}>
-      <p>{patroni ? 'La lista viene scritta nella configurazione dinamica di Patroni e tutti i membri la ricaricano.' : `Il blocco gestito viene scritto in modo atomico su ${okReads.length} nodo/i, ricaricato e verificato con pg_hba_file_rules. Se la verifica fallisce il file precedente viene rimesso.`}</p>
+      <p>{patroni ? `La lista viene scritta nella configurazione dinamica di Patroni (DCS) e tutti i membri la ricaricano.${first.dcs_seed ? ' Il DCS oggi non ha una lista pg_hba: le regole in vigore vengono copiate nel DCS insieme alla modifica, così nulla va perso.' : ''} La versione attuale resta tra le versioni precedenti.` : `Il blocco gestito viene scritto in modo atomico su ${okReads.length} nodo/i, ricaricato e verificato con pg_hba_file_rules. Se la verifica fallisce il file precedente viene rimesso.`}</p>
       {lock.length ? <Banner kind="bad" title="Forzatura attiva">Questa modifica blocca: {lock.join('; ')}.</Banner> : null}</Confirm> : null}
     {rb ? <Confirm title="Ripristinare la versione precedente?" confirmLabel="Ripristina" onClose={() => setRb(false)} onConfirm={doRollback}><p>Il file torna alla copia salvata prima dell’ultima modifica ({first.backups[first.backups.length - 1]}). Prima di sovrascrivere viene salvata la versione attuale.</p></Confirm> : null}
   </div>;
@@ -261,7 +269,7 @@ function Suggestions({ rows, existing, first, add, c }: { rows: Rule[]; existing
 }
 
 function AddRule({ rows, existing, first, hosts, order, onAdd }: { rows: Row[]; existing: Rule[]; first: any; hosts: string[]; order: Order; onAdd: (r: Rule) => void }) {
-  const [open, setOpen] = useState(false); const [valid, setValid] = useState('0'); const canTemp = first.mode !== 'patroni';
+  const [open, setOpen] = useState(false); const [valid, setValid] = useState('0'); const canTemp = true;
   const blank: Rule = { type: 'hostssl', database: 'all', user: '', address: '', method: 'scram-sha-256', comment: '' };
   const [r, setR] = useState<Rule>(blank);
   const set = (p: Partial<Rule>) => setR(x => {
@@ -340,4 +348,29 @@ function PlanView({ plans, lock, force, setForce }: { plans: { node: string; res
       {p0.res.simulation.map((s: any, i: number) => <tr key={i}><td>{s.label}</td><td>{s.before ? <Badge kind="ok">consentita</Badge> : <Badge>rifiutata</Badge>}</td><td>{s.after ? <Badge kind="ok">consentita</Badge> : <Badge kind={s.before ? 'bad' : undefined}>rifiutata</Badge>}{s.uncertain ? <span className="small muted"> (incerta)</span> : null}</td></tr>)}</tbody></table></div> : null}
     {p0?.res?.diff?.length ? <details open><summary className="small muted" style={{ cursor: 'pointer' }}>Differenze nel file</summary><pre className="out">{p0.res.diff.join('\n')}</pre></details> : null}
   </div>;
+}
+
+/** Patroni: the DCS keeps only the current list; the console keeps the previous ones (each change made from here) so a change can be undone. */
+function DcsHistory({ c, rev, onDone }: { c: any; rev: string; onDone: () => void }) {
+  const h = useQuery<{ history: { index: number; at: string; by: string; seed: boolean; kind: string; rules: number; list: string[] }[] }>(`/api/clusters/${encodeURIComponent(c.id)}/hba/history`);
+  const [pick, setPick] = useState<any>(null); const [busy, setBusy] = useState(false); const [force, setForce] = useState(false); const [err, setErr] = useState<string | null>(null);
+  const items = h.data?.history || [];
+  const go = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const r: any = await api('POST', `/api/clusters/${encodeURIComponent(c.id)}/hba/restore`, { index: pick.index, baseRev: rev, force }, { key: uid('hbarst') });
+      if (r.approval) { toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); setPick(null); return; }
+      await waitOp(r.operation); toast('Versione ripristinata nel DCS e verificata', 'ok'); setPick(null); revalidate(`/api/clusters/${encodeURIComponent(c.id)}/hba/history`); onDone();
+    } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
+  };
+  return <Card title="Versioni precedenti" actions={<span className="small muted">Conservate dalla console · ultime 15</span>} pad={false}>
+    {!items.length ? <div className="bd"><p className="muted small">Nessuna modifica fatta da qui finora. Dopo ogni modifica la lista precedente resta disponibile per tornare indietro.</p></div> :
+      <div className="tablewrap"><table className="t"><thead><tr><th>Sostituita il</th><th>Da</th><th className="num">Regole</th><th /></tr></thead><tbody>
+        {items.map(x => <tr key={x.index}><td>{new Date(x.at).toLocaleString('it-CH')} <span className="faint small">({ago(x.at)})</span>{x.seed ? <Badge title="Regole in vigore prima che la lista fosse nel DCS">prima del DCS</Badge> : null}</td><td>{x.by}</td><td className="num">{x.rules}</td>
+          <td className="num"><Button sm icon="restore" onClick={() => { setPick(x); setForce(false); setErr(null); }}>Ripristina…</Button></td></tr>)}</tbody></table></div>}
+    {pick ? <Modal title="Ripristinare questa versione?" onClose={() => setPick(null)} footer={<><div className="grow" /><Button onClick={() => setPick(null)}>Annulla</Button><Button kind="primary" busy={busy} onClick={go}>Ripristina nel DCS</Button></>}>
+      <div className="stack"><p>La lista sostituita il {new Date(pick.at).toLocaleString('it-CH')} torna nel DCS di Patroni e tutti i membri la ricaricano. Prima di scrivere l’agent controlla che nessuna connessione attiva (repliche, amministrazione locale) venga bloccata; la lista attuale resta tra le versioni precedenti.</p>
+        <pre className="out">{pick.list.join('\n')}</pre>
+        {err ? <Banner kind="bad">{err}{/lock out/.test(err) ? <label className="check" style={{ marginTop: 8 }}><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />So cosa sto facendo: ripristina comunque</label> : null}</Banner> : null}</div></Modal> : null}
+  </Card>;
 }

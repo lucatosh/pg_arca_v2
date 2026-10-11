@@ -7,6 +7,7 @@
  */
 import { Store, NodeRecord, nowIso } from './store';
 import * as ops from './ops';
+import { hbaTarget } from './hba';
 import { isTerminal } from './ops';
 
 import { type BackupPolicy, DEFAULT_POLICY, validatePolicy, resolvePolicy } from './policies';
@@ -71,8 +72,8 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
   return submitted;
 }
 
-/** Temporary pg_hba rules ([until=...] in the comment): once the earliest expiry has passed, ask every online file-mode node to drop the elapsed ones.
- *  Retried every 10 minutes until an hba_expire operation succeeds after the expiry; Patroni clusters are not handled (the UI does not offer expiry there). */
+/** Temporary pg_hba rules ([until=...] in the comment): once the earliest expiry has passed, ask every online file-mode node to drop the elapsed ones
+ *  (Patroni: one member, through the DCS). Retried every 10 minutes until an hba_expire operation succeeds after the expiry. */
 /** Apply the history retention even when nothing new is submitted. */
 export async function pruneTick(store: Store, now = Date.now()): Promise<number> {
   if (!ops.prunable(store.peek(), now)) return 0;
@@ -87,11 +88,13 @@ export async function hbaExpiryTick(store: Store, now = Date.now()): Promise<str
   for (const [cid, list] of Object.entries((st.settings.hbaExpiry || {}) as Record<string, number[]>)) {
     const due = list.filter(t => t <= now); if (!due.length) continue;
     const c = (st.clusters as any[]).find(x => x.id === cid);
-    if (!c || c.haState?.managedByPatroni) continue;
+    if (!c) continue;
     const latestDue = Math.max(...due);
-    const nodes = Object.values(st.nodes).filter(n => n.clusterId === cid && online(n, now));
+    // Patroni: the temporary rules live in the DCS list, one member edits it for everyone
+    const tgt = c.haState?.managedByPatroni ? hbaTarget(st, cid) : null;
+    const nodes = c.haState?.managedByPatroni ? (tgt ? [tgt] : []) : Object.values(st.nodes).filter(n => n.clusterId === cid && online(n, now));
     const mine = st.operations.filter(o => o.clusterId === cid && o.type === 'hba_expire');
-    const okAfter = (n: NodeRecord) => mine.some(o => o.nodeId === n.id && o.status === 'succeeded' && ts(o.createdAt) >= latestDue);
+    const okAfter = (n: NodeRecord) => mine.some(o => (c.haState?.managedByPatroni || o.nodeId === n.id) && o.status === 'succeeded' && ts(o.createdAt) >= latestDue);
     const pending = nodes.filter(n => !okAfter(n));
     if (!pending.length && nodes.length) { await store.mutate(d => { const m = d.settings.hbaExpiry; m[cid] = (m[cid] || []).filter((t: number) => t > now); if (!m[cid].length) delete m[cid]; }); continue; }
     for (const n of pending) {

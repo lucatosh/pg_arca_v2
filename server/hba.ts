@@ -40,6 +40,32 @@ export const HBA_SUGGESTED: Record<string, string[]> = {
 };
 
 export function mountHbaRoutes(app: any, store: Store) {
+  app.get('/api/clusters/:id/hba/history', (req: Request, res: Response) => {
+    const h = ((store.peek().settings.hbaHistory || {})[req.params.id] || []) as any[];
+    res.json({ history: h.map((x, i) => ({ index: i, at: x.at, by: x.by, seed: x.seed, kind: x.kind, rules: x.list.filter((l: string) => l.trim() && !l.trim().startsWith('#')).length, list: x.list })) });
+  });
+
+  // Patroni: put a previous DCS list back (same four-eyes rule as an apply). The agent re-checks the revision and simulates lock-outs first.
+  app.post('/api/clusters/:id/hba/restore', async (req: Request, res: Response) => {
+    const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
+    if (!c) return res.status(404).json({ error: 'cluster_not_found' });
+    if (!c.haState?.managedByPatroni) return res.status(409).json({ error: 'not_patroni', message: 'Per i nodi con file pg_hba.conf usa «Ripristina versione precedente» (copie di backup sul nodo).' });
+    const key = String(req.headers['idempotency-key'] || ''); if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
+    const h = ((st.settings.hbaHistory || {})[c.id] || []) as any[]; const item = h[Number(req.body?.index)];
+    if (!item) return res.status(404).json({ error: 'version_not_found' });
+    const params = { list: item.list, base_rev: req.body?.baseRev || undefined, force: !!req.body?.force };
+    const bad = validateOp('hba_restore', params); if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
+    if (requiresApproval(st, c, 'hba_cluster_apply', {})) {
+      const rec = await requestApproval(store, ops.audit, { cluster: c, type: 'hba_restore', params, key, actor: (req as any).actor || 'admin' } as any);
+      return res.status(202).json({ approval: rec, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
+    }
+    const t = hbaTarget(st, c.id); if (!t) return res.status(409).json({ error: 'no_suitable_node', message: 'Nessun nodo con l’API di Patroni raggiungibile.' });
+    try {
+      const r = await ops.submit(store, { type: 'hba_restore', clusterId: c.id, nodeId: t.id, params, idempotencyKey: key, createdBy: (req as any).actor || 'admin', ttlSeconds: 600 });
+      res.status(202).json({ operation: r.op });
+    } catch (e: any) { res.status(e.code === 'IDEMPOTENCY_CONFLICT' ? 422 : 500).json({ error: 'failed', message: e.message }); }
+  });
+
   app.get('/api/hba/templates', (_req: Request, res: Response) => res.json({ templates: HBA_TEMPLATES, suggested: HBA_SUGGESTED }));
 
   // Apply one rule set to the cluster. Patroni clusters: the DCS list is edited once (every member follows). Others: every online node, each with
@@ -63,6 +89,26 @@ export function mountHbaRoutes(app: any, store: Store) {
   });
 }
 
+/** Patroni cluster: the one node that edits the DCS list. Patroni API reachable AND PostgreSQL running (the change is verified through pg_hba_file_rules),
+ *  the leader / standby leader first (it is the member whose rules matter most for the replicas and the remote site). */
+export function hbaTarget(st: any, clusterId: string): any | null {
+  const nodes = (Object.values(st.nodes) as any[]).filter(n => n.clusterId === clusterId && n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000 && n.snapshot?.patroni?.accessible);
+  const rank = (n: any) => (n.snapshot?.postgres?.alive === false ? 10 : 0) + (['leader', 'master', 'primary', 'standby_leader'].includes(n.snapshot?.patroni?.local_node?.role) ? 0 : 1);
+  return nodes.sort((a, b) => rank(a) - rank(b))[0] || null;
+}
+
+/** Previous pg_hba lists of a Patroni cluster (newest first): the DCS keeps only the current one, the console keeps the last 15 so a change can be undone. */
+export async function recordHbaHistory(store: Store, op: any) {
+  const r = op?.result; if (!r || r.mode !== 'patroni' || r.changed !== true) return;
+  const prev: string[] | null = Array.isArray(r.previous) ? r.previous : Array.isArray(r.seed_list) ? r.seed_list : null;
+  if (!prev) return;
+  await store.mutate(d => {
+    const h = ((d.settings.hbaHistory ||= {})[op.clusterId] ||= []);
+    h.unshift({ at: new Date().toISOString(), by: op.createdBy || '?', opId: op.id, list: prev.slice(0, 600), rev: r.previous_rev || null, seed: !Array.isArray(r.previous), replacedBy: Array.isArray(r.list) ? r.list.length : null, kind: r.restored ? 'restore' : 'apply' });
+    d.settings.hbaHistory[op.clusterId] = h.slice(0, 15);
+  });
+}
+
 /** Submit one hba_apply per target node (or one for the whole Patroni cluster) and remember temporary-rule expiries for the scheduler. */
 export async function hbaFanout(store: Store, c: any, body: any, key: string, actor: string): Promise<{ code: number; body: any }> {
   const st = store.peek(); const { rules, force = false, adopt = false } = body;
@@ -73,7 +119,9 @@ export async function hbaFanout(store: Store, c: any, body: any, key: string, ac
   const online = Object.values(st.nodes).filter(n => n.clusterId === c.id && n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000);
   if (!online.length) return { code: 409, body: { error: 'no_suitable_node', message: 'Nessun nodo online.' } };
   const patroni = !!c.haState?.managedByPatroni;
-  const targets = patroni ? [online.find(n => n.snapshot?.patroni?.accessible) || online[0]] : online;
+  const t = patroni ? hbaTarget(st, c.id) : null;
+  if (patroni && !t) return { code: 409, body: { error: 'no_suitable_node', message: 'Nessun nodo con l’API di Patroni raggiungibile: pg_hba si modifica solo tramite il DCS.' } };
+  const targets = patroni ? [t!] : online;
   const out: any[] = [];
   try {
     for (const n of targets) {

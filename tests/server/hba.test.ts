@@ -1,7 +1,7 @@
 import fs from 'fs'; import os from 'os'; import path from 'path'; import assert from 'assert';
 import { MiniApp } from './mini-express';
 import { Store } from '../../server/store';
-import { mountHbaRoutes, HBA_TEMPLATES, HBA_SUGGESTED } from '../../server/hba';
+import { mountHbaRoutes, HBA_TEMPLATES, HBA_SUGGESTED, recordHbaHistory, hbaTarget } from '../../server/hba';
 import { validateOp } from '../../server/optypes';
 import { hbaExpiryTick } from '../../server/scheduler';
 (async () => {
@@ -44,5 +44,23 @@ import { hbaExpiryTick } from '../../server/scheduler';
   for (const o of store.peek().operations.filter(o => o.type === 'hba_expire')) await store.mutate(d => { const x = d.operations.find(y => y.id === o.id)!; x.status = 'succeeded'; x.createdAt = new Date(later + 1000).toISOString(); });
   await store.mutate(d => { for (const n of Object.values(d.nodes)) (n as any).lastSeen = new Date(later + 1000).toISOString(); });
   await hbaExpiryTick(store, later + 1000); assert.strictEqual(store.peek().settings.hbaExpiry?.k1, undefined);
+  // Patroni: history of DCS lists kept by the console, restore goes to the DCS editor node, temporary rules expired by ONE member
+  await store.mutate(d => { for (const n of Object.values(d.nodes)) (n as any).lastSeen = new Date().toISOString(); (d.nodes as any).c.snapshot = { patroni: { accessible: true, local_node: { role: 'leader' } }, postgres: { alive: true } }; });
+  assert.strictEqual(hbaTarget(store.peek(), 'k2').id, 'c', 'leader preferred');
+  await recordHbaHistory(store, { id: 'o1', clusterId: 'k2', createdBy: 'mario', result: { mode: 'patroni', changed: true, previous: null, seed_list: ['local all all peer'], list: ['local all all peer', 'host all app 10.0.0.0/24 scram-sha-256'] } });
+  await recordHbaHistory(store, { id: 'o2', clusterId: 'k2', createdBy: 'anna', result: { mode: 'patroni', changed: true, previous: ['local all all peer', 'host all app 10.0.0.0/24 scram-sha-256'], previous_rev: '0123456789abcdef', list: ['local all all peer'] } });
+  await recordHbaHistory(store, { id: 'o3', clusterId: 'k1', result: { mode: 'file', changed: true } });
+  const hist = (await call('GET', '/api/clusters/k2/hba/history')).body.history;
+  assert.strictEqual(hist.length, 2); assert.strictEqual(hist[0].by, 'anna'); assert.strictEqual(hist[0].rules, 2); assert.strictEqual(hist[1].seed, true);
+  assert.strictEqual((await call('GET', '/api/clusters/k1/hba/history')).body.history.length, 0, 'file mode keeps backups on the node');
+  const rs = await call('POST', '/api/clusters/k2/hba/restore', { index: 0, baseRev: 'fedcba9876543210' }, { 'idempotency-key': 'r1' });
+  assert.strictEqual(rs.status, 202, JSON.stringify(rs.body)); assert.strictEqual(rs.body.operation.type, 'hba_restore'); assert.strictEqual(rs.body.operation.nodeId, 'c');
+  assert.deepStrictEqual(rs.body.operation.params.list, hist[0].list);
+  assert.strictEqual((await call('POST', '/api/clusters/k1/hba/restore', { index: 0 }, { 'idempotency-key': 'r2' })).status, 409);
+  assert.strictEqual((await call('POST', '/api/clusters/k2/hba/restore', { index: 9 }, { 'idempotency-key': 'r3' })).status, 404);
+  assert(validateOp('hba_restore', { list: ['a\nb'] }), 'no multi-line entries');
+  const past = new Date(Date.now() - 60_000).toISOString().slice(0, 16);
+  await call('POST', '/api/clusters/k2/hba/apply', { rules: [{ type: 'hostssl', database: 'all', user: 'ext', address: '10.9.0.0/24', method: 'scram-sha-256', comment: `x [until=${past}Z]` }] }, { 'idempotency-key': 'h9' });
+  const subP = await hbaExpiryTick(store, Date.now()); assert.deepStrictEqual(subP, ['k2:c'], 'Patroni: one member edits the DCS');
   console.log('ALL HBA TESTS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

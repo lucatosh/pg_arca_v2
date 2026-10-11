@@ -73,5 +73,24 @@ class T(unittest.TestCase):
         self.assertIsNone(walscan.Cache(os.path.join(d, "c.json"), SEG).get("A", "10:1", "D"), "segments that left the archive leave the cache")
 
 
+class FoldCreates(unittest.TestCase):
+    def test_truncate_is_a_commit_dropping_files_plus_new_files_same_xid(self):
+        c = walscan.parse_line(b"rmgr: Storage     len (rec/tot): 42/42, tx: 900, lsn: 0/5000100, prev 0/5000000, desc: CREATE base/5/17001")
+        self.assertEqual(c["kind"], "CREATE")
+        drop = {"kind": "DROP", "xid": "900", "lsn": "0/5000200", "rels": [["5", "16384"]], "nrels": 1, "time": "t"}
+        other = {"kind": "DROP", "xid": "901", "lsn": "0/5000300", "rels": [["5", "16390"]], "nrels": 1, "time": "t"}
+        out = walscan.fold_creates([c, drop, other])
+        self.assertEqual([e["kind"] for e in out], ["TRUNCATE", "DROP"])
+        self.assertEqual(out[0]["rels"], [["5", "17001"]])            # named after the NEW file: the one the catalog knows
+        self.assertTrue(out[0]["rewrite_possible"])
+
+    def test_drop_and_truncate_in_one_transaction_keeps_both(self):
+        c = {"kind": "CREATE", "xid": "7", "lsn": "0/1", "rels": [["5", "200"]], "nrels": 1}
+        d = {"kind": "DROP", "xid": "7", "lsn": "0/2", "rels": [["5", "100"], ["5", "101"], ["5", "102"]], "nrels": 3}
+        out = walscan.fold_creates([c, d])
+        self.assertEqual(sorted(e["kind"] for e in out), ["DROP", "TRUNCATE"])
+        self.assertEqual(next(e for e in out if e["kind"] == "DROP")["nrels"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

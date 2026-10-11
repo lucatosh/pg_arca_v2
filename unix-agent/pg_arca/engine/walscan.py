@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from pg_arca.engine.util import EngineError, lsn_to_int, parse_wal_name, wal_name
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 LSN_RE = re.compile(rb"lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")
 XID_RE = re.compile(rb"tx:\s*(\d+)")
 TS_RE = re.compile(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)? [A-Za-z0-9+:-]+)")
@@ -69,6 +69,14 @@ def parse_line(line):
             return None
         ts = TS_RE.search(line.split(b"COMMIT", 1)[1])
         kind = "DROP"
+    elif line.startswith(b"rmgr: Storage") and b"CREATE" in line:
+        # a new relation file. Alone it means nothing; with a COMMIT of the SAME transaction that drops files it is how TRUNCATE (and table rewrites:
+        # VACUUM FULL, CLUSTER, ALTER TABLE ... TYPE) look in the WAL since PostgreSQL gives the emptied table a new file instead of truncating the old one
+        rels = PATH_RE.findall(line.split(b"desc:", 1)[-1].decode("ascii", "replace"))
+        if not rels:
+            return None
+        ts = None
+        kind = "CREATE"
     elif line.startswith(b"rmgr: Storage"):
         if b"TRUNCATE" not in line:
             return None
@@ -98,6 +106,27 @@ def parse_line(line):
         return None
     return {"lsn": m_lsn.group(1).decode(), "xid": m_xid.group(1).decode() if m_xid else "?", "time": ts.group(1).decode() if ts else None,
             "kind": kind, "rels": [[a, b] for a, b in rels][:12], "nrels": len(rels)}
+
+
+def fold_creates(events):
+    """COMMIT that drops files + new files created by the same transaction = the table was emptied (TRUNCATE) or rewritten: report it as TRUNCATE, named
+    after the NEW files (those the catalog knows today), with the caveat that a rewrite looks the same. Lone CREATE events are not reported."""
+    made = {}
+    for e in events:
+        if e["kind"] == "CREATE" and e.get("xid") not in (None, "?", "0"):
+            made.setdefault(e["xid"], []).extend(e["rels"])
+    out = []
+    for e in events:
+        if e["kind"] == "CREATE":
+            continue
+        if e["kind"] == "DROP" and e.get("xid") in made:
+            new = made[e["xid"]]
+            out.append(dict(e, kind="TRUNCATE", rewrite_possible=True, rels=new[:12], nrels=len(new)))
+            if e.get("nrels", len(e["rels"])) > len(new):         # the same transaction also dropped other relations (DROP TABLE ...; TRUNCATE ...): keep the DROP too
+                out.append(dict(e, nrels=e.get("nrels", len(e["rels"])) - len(new), mixed=True))
+            continue
+        out.append(e)
+    return out
 
 
 class Cache(object):
@@ -457,6 +486,7 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
                 events.append(e)
         if mode == "databases":
             events = [e for e in events if e["kind"] == "DROP DATABASE"]     # a cache entry from a full scan also holds table events
+        events = fold_creates(events)
         events.sort(key=lambda e: lsn_to_int(e["lsn"]))
         events = events[-max(1, int(limit or 20)) * (3 if mode == "events" else 5):]      # head-room: names / filters below may drop some
         # names
