@@ -20,6 +20,7 @@ def wait(oid, t=900):
         if o["status"] in ("succeeded", "failed", "cancelled", "expired", "rejected"): return o
         time.sleep(2)
     return o
+IM = int(os.environ.get("INSTALL_MAJOR", "17"))   # a major the distribution ships (Debian 13: 17); 12 needs PGDG, which is a good negative test
 call("POST", "/api/auth/login", {"username": U, "password": P})
 s, d = call("GET", "/api/clusters"); CL = [c for c in d["clusters"] if "arca-lab" in c["name"].lower()][0]["id"]
 s, d = call("GET", "/api/clusters/%s/destination" % CL); nodes = d["nodes"]
@@ -35,8 +36,8 @@ for n in nodes:
         print("\n== preflight %s PG%s: %s" % (n["name"], major, o["status"]))
         print(json.dumps(r, indent=1)[:1800] if r else o.get("error"))
 if "install" in sys.argv:
-    n = nodes[0]; o = run("ephemeral_install", n["id"], {"major": 12, "mode": "private", "confirm": "INSTALL"})
-    print("\n== install private PG12 on %s: %s" % (n["name"], o["status"])); print(json.dumps(o.get("result") or o.get("error"), indent=1)[:2500])
+    n = nodes[0]; o = run("ephemeral_install", n["id"], {"major": IM, "mode": "private", "confirm": "INSTALL"})
+    print("\n== install private PG%s on %s: %s" % (IM, n["name"], o["status"])); print(json.dumps(o.get("result") or o.get("error"), indent=1)[:2500])
 # destination: check only, in a scratch path next to the repo (never applied)
 repo = nodes[0]["repo_path"] or "/var/lib/pg_arca"
 base = os.path.dirname(repo.rstrip("/")) or "/"
