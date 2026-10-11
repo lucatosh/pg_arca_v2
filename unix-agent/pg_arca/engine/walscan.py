@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from pg_arca.engine.util import EngineError, lsn_to_int, parse_wal_name, wal_name
 
-CACHE_VERSION = 3
+CACHE_VERSION = 4                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
 LSN_RE = re.compile(rb"lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")
 XID_RE = re.compile(rb"tx:\s*(\d+)")
 TS_RE = re.compile(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)? [A-Za-z0-9+:-]+)")
@@ -78,16 +78,11 @@ def parse_line(line):
         ts = None
         kind = "CREATE"
     elif line.startswith(b"rmgr: Storage"):
-        if b"TRUNCATE" not in line:
-            return None
-        desc = line.split(b"desc:", 1)[-1].decode("ascii", "replace")
-        if re.search(r"\bto\s+[1-9]\d*\b", desc):              # vacuum trimming trailing empty pages: not data loss; only "to 0" empties a relation
-            return None
-        rels = PATH_RE.findall(desc) or [(b, c) for _, b, c in TRIPLE_RE.findall(desc)]
-        if not rels:
-            return None
-        ts = None
-        kind = "TRUNCATE"
+        # "TRUNCATE ... to N" is never the loss of committed data: PostgreSQL truncates a file in place only when the table was created (or already given a
+        # new file) in the SAME transaction, and VACUUM trims empty trailing pages (to 0 after everything was DELETEd: the loss was the DELETE, earlier).
+        # A real TRUNCATE gives the table a new file (Storage CREATE + COMMIT dropping the old one, see fold_creates). On PostgreSQL 18 VACUUM's record even
+        # carries an xid, so it cannot be told apart by that: reporting these was a false "table emptied" (version matrix, PG18).
+        return None
     elif line.startswith(b"rmgr: Database"):
         if b"DROP" not in line:
             return None

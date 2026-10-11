@@ -34,8 +34,9 @@ class T(unittest.TestCase):
         self.assertEqual(e["rels"], [["5", "16384"]])
 
     def test_truncate_only_to_zero(self):
-        z = walscan.parse_line(b"rmgr: Storage len (rec/tot): 20/20, tx: 0, lsn: 0/3000100, prev 0/3000000, desc: TRUNCATE base/5/16384 to 0 flags 7")
-        self.assertEqual((z["kind"], z["rels"]), ("TRUNCATE", [["5", "16384"]]))
+        # in-place truncation (same-transaction table) and VACUUM trimming are never the loss of committed data (PG18 VACUUM even has an xid)
+        self.assertIsNone(walscan.parse_line(b"rmgr: Storage len (rec/tot): 20/20, tx: 0, lsn: 0/3000100, prev 0/3000000, desc: TRUNCATE base/5/16384 to 0 flags 7"))
+        self.assertIsNone(walscan.parse_line(b"rmgr: Storage len (rec/tot): 46/46, tx: 756, lsn: 0/017D23B0, prev 0/017D2380, desc: TRUNCATE base/5/16392 to 0 blocks flags 7"))
         self.assertIsNone(walscan.parse_line(b"rmgr: Storage len (rec/tot): 20/20, tx: 0, lsn: 0/3000100, prev 0/3000000, desc: TRUNCATE base/5/16384 to 12 flags 7"))
 
     def test_drop_database(self):

@@ -25,7 +25,8 @@ class ArchiveEnable(unittest.TestCase):
     def test_enable_restart_backup_restore(self):
         b = tempfile.mkdtemp(prefix="arca_ae_"); data, sock, wal = b + "/data", b + "/s", b + "/wal"; os.makedirs(sock); port = 56700 + os.getpid() % 200
         env = dict(os.environ, PATH=HERE + os.pathsep + os.environ["PATH"], WAL_ARCHIVE_DIR=wal, PG_ARCA_HOME=HERE, PG_ARCA_CONF="/nonexistent")
-        self.assertEqual(sh(os.path.join(BIN, "initdb"), "-D", data, "-U", "postgres", "--auth=trust").returncode, 0)    # NO checksums, archiving off: the hard case
+        nock = ["--no-data-checksums"] if "--no-data-checksums" in sh(os.path.join(BIN, "initdb"), "--help").stdout else []   # PostgreSQL 18 enables checksums by default
+        self.assertEqual(sh(os.path.join(BIN, "initdb"), "-D", data, "-U", "postgres", "--auth=trust", *nock).returncode, 0)    # NO checksums, archiving off: the hard case
         with open(data + "/postgresql.conf", "a") as f:
             f.write("\nport=%d\nunix_socket_directories='%s'\nlisten_addresses=''\nwal_level=minimal\nmax_wal_senders=0\n" % (port, sock))
         start = lambda: sh(os.path.join(BIN, "pg_ctl"), "-D", data, "-l", b + "/l", "-w", "start", env=env)

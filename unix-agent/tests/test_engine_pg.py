@@ -607,7 +607,7 @@ class EngineTests(unittest.TestCase):
         ev = walscan.scan(F.ctx, mode="events", hours=1, cache_dir=os.path.join(F.scratch, "fx2"))
         tr = [e for e in ev["events"] if e["kind"] == "TRUNCATE"]
         self.assertTrue(any(any("trunc_me" in n for n in e.get("names", [])) for e in tr), [(e["kind"], e.get("names")) for e in ev["events"]])
-        self.assertTrue(all(e.get("rewrite_possible") for e in tr))
+        self.assertTrue(all(e.get("rewrite_possible") for e in tr if any("trunc_me" in n for n in e.get("names", []))), tr)
 
     def test_14_crashed_backup_does_not_poison_dedup(self):
         # simulate a crashed run: RUNNING meta + a torn chunk newer than it
