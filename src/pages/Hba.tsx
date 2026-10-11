@@ -65,7 +65,10 @@ function useHbaState(c: any) {
       if (c.haState?.managedByPatroni) {
         // the rule list is shared through the DCS: one readable node is enough. A node whose PostgreSQL is down (replica being cloned, stopped) is skipped, not fatal.
         out = [];
-        for (const n of fresh) { const r = await readOne(n); out = [r]; if (r.ok) break; }
+        // prefer a member whose PostgreSQL is running (the simulation and the verification need it); a DCS-only read is kept as the fallback
+        let fallback: NodeRead | null = null;
+        for (const n of fresh) { const r = await readOne(n); out = [r]; if (r.ok && !r.data?.pg_down) break; if (r.ok && !fallback) fallback = r; }
+        if (!(out[0]?.ok && !out[0].data?.pg_down) && fallback) out = [fallback];
       } else out = await Promise.all(fresh.map(readOne));    // single instance or independent servers: each has its own pg_hba.conf
       setReads(out);
     } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
