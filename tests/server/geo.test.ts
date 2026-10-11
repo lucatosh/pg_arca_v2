@@ -3,7 +3,7 @@
 import assert from 'assert'; import fs from 'fs'; import os from 'os'; import path from 'path';
 import { MiniApp } from './mini-express';
 import { Store } from '../../server/store';
-import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, stanzaOf } from '../../server/geo';
+import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, stanzaOf, geoReadiness } from '../../server/geo';
 import { evaluate } from '../../server/health';
 import { deriveCluster } from '../../server/view';
 
@@ -137,5 +137,29 @@ import { deriveCluster } from '../../server/view';
   const stby = gg.sites.find(s => s.role === 'standby' && s.link === 'auto')!.clusterId;
   assert.strictEqual((await app.call('PUT', `/api/clusters/${stby}/geo-link`, { body: { none: true } })).status, 200);
   assert(!geoGroups(st0()).some(x => x.sites.some(s => s.clusterId === stby)), 'detached from automatic pairing');
+  // DR readiness of a pair: permanent slot, upstream that follows the leader, params, RPO, rewind, local replication, backups, last switchover test
+  {
+    const st3 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'geor-')));
+    const P = (extra: any = {}) => ({ postgres: { alive: true, is_in_recovery: false, version: '16.4', current_lsn: '0/9000000', system_identifier: '42', timeline: 1, settings: { max_connections: '200' }, slots: [{ name: 'geo_b', active: true }], hba_patroni_local: { ok: true }, ...extra.pg },
+      patroni: { accessible: true, scope: 'a', local_node: { role: 'leader' }, permanent_slots: extra.perm ?? ['geo_b'], use_pg_rewind: true, members: [{ name: 'a1', host: 'a1' }] }, backup: { recent_sets: [{ status: 'COMPLETE', type: 'full', start_time: new Date().toISOString() }] } });
+    const S = (extra: any = {}) => ({ postgres: { alive: true, is_in_recovery: true, version: extra.version || '16.4', current_lsn: '0/9000000', system_identifier: '42', timeline: 1, settings: { max_connections: extra.maxc || '200' }, replay_ts: now(), wal_receiver: { status: 'streaming', sender_host: 'x', sender_port: 5000, silent_sec: 1 }, hba_patroni_local: { ok: true } },
+      patroni: { accessible: true, scope: 'b', local_node: { role: 'standby_leader' }, use_pg_rewind: true, standby_cluster: { host: extra.host || 'a-haproxy', port: 5000, primary_slot_name: 'geo_b', ...(extra.rc ? { restore_command: 'pg-arca-wal get %f %p' } : {}) } } });
+    await st3.mutate(d => { d.clusters.push({ id: 'A', name: 'site-a', environment: 'prod', source: 'agent', geoEndpoint: { host: 'a-haproxy', port: 5000 } } as any, { id: 'B', name: 'site-b', environment: 'prod', source: 'agent', geoEndpoint: { host: 'b-haproxy', port: 5000 } } as any);
+      d.nodes.a1 = { id: 'a1', name: 'a1', clusterId: 'A', lastSeen: now(), snapshot: P() } as any; d.nodes.b1 = { id: 'b1', name: 'b1', clusterId: 'B', lastSeen: now(), snapshot: S({ rc: true }) } as any;
+      d.settings.geoJobs = { j1: { id: 'j1', from: 'A', to: 'B', fromName: 'site-a', toName: 'site-b', status: 'succeeded', createdAt: new Date(Date.now() - 86400_000).toISOString(), finishedAt: new Date(Date.now() - 86400_000 + 7000).toISOString() } }; });
+    const rd = () => geoReadiness(st3.peek(), geoGroups(st3.peek())[0]);
+    let r = rd(); assert.strictEqual(r.status, 'ready', JSON.stringify(r.checks.filter(c => c.level !== 'ok'))); assert.strictEqual(r.rpoSec, 0); assert.strictEqual(r.lastTest!.seconds, 7);
+    // the lab-style traps, one at a time
+    await st3.mutate(d => { d.nodes.a1.snapshot = P({ perm: [] }); });
+    r = rd(); assert.strictEqual(r.status, 'not_ready'); assert(r.checks.some(c => c.id === 'slot' && c.level === 'bad' && /non è permanente/.test(c.text)));
+    await st3.mutate(d => { d.nodes.a1.snapshot = P(); d.nodes.b1.snapshot = S({ host: 'a1', rc: true, maxc: '100' }); });
+    r = rd(); assert(r.checks.some(c => c.id === 'upstream' && c.level === 'warn')); assert(r.checks.some(c => c.id === 'param:max_connections' && c.level === 'bad'));
+    await st3.mutate(d => { d.nodes.b1.snapshot = S({ version: '15.6' }); });
+    r = rd(); assert(r.checks.some(c => c.id === 'version' && c.level === 'bad')); assert(r.checks.some(c => c.id === 'archive' && c.level === 'info'));
+    const app3 = new MiniApp(); app3.use((req: any, _r: any, next: any) => { req.actor = 'mario'; req.role = 'admin'; return next(); }); mountGeoRoutes(app3, st3);
+    assert.strictEqual((await app3.call('PUT', '/api/geo/settings', { body: { rpoSec: 0 } })).status, 400);
+    assert.strictEqual((await app3.call('PUT', '/api/geo/settings', { body: { rpoSec: 30 } })).status, 200);
+    const gg3 = (await app3.call('GET', '/api/geo')).body; assert.strictEqual(gg3.rpoTargetSec, 30); assert.strictEqual(gg3.groups[0].readiness.rpoTargetSec, 30);
+  }
   console.log('geo tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

@@ -66,6 +66,7 @@ export const OP_SPECS: Record<string, OpSpec> = {
   // geo-redundancy: a Patroni standby cluster becomes writable / a cluster becomes the standby of another site. Through the DCS only (PATCH /config).
   geo_promote: { mutating: true, target: 'patroni_node', needsPatroni: true, cancellable: false,
     validate: p => p.confirm !== 'PROMUOVI' ? 'confirm="PROMUOVI" required (the site becomes writable: if the other site still accepts writes the data diverges)' : (p.slot_for_peer !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.slot_for_peer)) ? 'invalid slot_for_peer' : null) },
+  geo_archive_fallback: { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => typeof p.enable !== 'boolean' ? 'enable (true|false) required' : null },
   geo_demote: { mutating: true, target: 'patroni_node', needsPatroni: true, cancellable: false,
     validate: p => p.confirm !== 'DECLASSA' ? 'confirm="DECLASSA" required (writes on this site stop at once)' : (!/^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$/.test(String(p.host || '')) ? 'host of the other site required' : (!(Number(p.port) >= 1 && Number(p.port) <= 65535) ? 'port required' : (p.primary_slot_name !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.primary_slot_name)) ? 'invalid primary_slot_name' : (p.drop_slots !== undefined && (!Array.isArray(p.drop_slots) || p.drop_slots.some((x: any) => !/^[a-z0-9_]{1,63}$/.test(String(x)))) ? 'invalid drop_slots' : null)))) },
   patroni_config_patch: {
@@ -78,6 +79,9 @@ export const OP_SPECS: Record<string, OpSpec> = {
         for (const k of Object.keys(pg.parameters || {})) if (DANGEROUS_GUCS.has(k)) return `${k} cannot be changed from the console (it runs commands or relocates files)`;
       }
       for (const k of ['restapi', 'etcd', 'etcd3', 'consul', 'zookeeper', 'kubernetes', 'ctl', 'scope', 'name', 'namespace', 'watchdog', 'bootstrap']) if (k in p.patch) return `${k} cannot be changed from the console`;
+      // standby_cluster carries shell commands (restore_command, archive_cleanup_command) and decides which site writes: only through the geo operations
+      if ('standby_cluster' in p.patch) return 'standby_cluster is changed only through the geo-redundancy operations (switchover, promotion, archive fallback)';
+      if (pg && typeof pg === 'object' && 'recovery_conf' in pg) return 'postgresql.recovery_conf cannot be changed from the console (it runs commands)';
       return null;
     },
   },

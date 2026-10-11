@@ -152,7 +152,8 @@ const withAgent = process.env.NO_AGENT !== '1';
           slots: prim ? [{ name: `geo_${other}`, active: true, retained_bytes: 2048 }] : [], replay_ts: prim ? undefined : new Date().toISOString(),
           wal_receiver: prim ? undefined : { status: 'streaming', sender_host: `${other}-haproxy`, sender_port: 5000, silent_sec: 0.4 } },
         patroni: { accessible: true, scope: `geo-${site}`, local_node: { role: prim ? 'leader' : 'standby_leader', state: prim ? 'running' : 'streaming' }, members: [{ name: `${site}-pg1`, role: prim ? 'leader' : 'standby_leader', state: prim ? 'running' : 'streaming' }],
-          standby_cluster: prim ? null : { host: `${other}-haproxy`, port: 5000, primary_slot_name: `geo_${site}` } },
+          standby_cluster: prim ? null : { host: `${other}-haproxy`, port: 5000, primary_slot_name: `geo_${site}`, ...(geo.rc?.[site] ? { restore_command: '/usr/local/bin/pg-arca-wal get %f %p' } : {}) },
+          permanent_slots: prim ? [`geo_${other}`] : [], use_pg_rewind: !!geo.rewind?.[site] },
         system: { load_avg_1m: 0.2, cpu_count: 2, memory_used_percent: 30, memory_total_bytes: 4e9 } };
     };
     // pg_hba of a Patroni site lives in its DCS list: managed block + other entries; every change keeps the previous list (the console stores it)
@@ -179,6 +180,8 @@ const withAgent = process.env.NO_AGENT !== '1';
         if (op.type.startsWith('hba_')) { await hbaGeo(n, op); continue; }
         if (op.type === 'geo_demote') geo.primary = null;
         if (op.type === 'geo_promote') geo.primary = n.site;
+        if (op.type === 'geo_archive_fallback') (geo.rc ||= {})[n.site] = !!op.params?.enable;
+        if (op.type === 'patroni_config_patch' && op.params?.patch?.postgresql?.use_pg_rewind) (geo.rewind ||= {})[n.site] = true;
         await app.call('POST', `/api/agent/ops/${op.id}/report`, { body: { status: 'succeeded', result: { ok: true } }, headers: n.h }); }
     } catch (e) { console.error(e); } } };
     await gbeat(); setInterval(gbeat, 1000);

@@ -11,7 +11,8 @@ import { go } from '../router';
 interface Site { clusterId: string; name: string; environment: string; role: 'primary' | 'standby' | 'unknown'; leader: string | null; online: boolean; lsn: string | null; timeline: number | null; endpointSource?: string | null; link?: 'auto' | 'manual';
   endpoint: { host: string; port: number } | null; upstream?: { host: string; port: number; slot?: string } | null; receiver?: { status: string; sender: string; silentSec: number | null } | null;
   lagBytes?: number | null; replayDelaySec?: number | null; slot?: { name: string; active: boolean; retainedBytes: number | null } | null; health: 'ok' | 'warn' | 'bad'; problems: string[] }
-interface Group { sysid: string; sites: Site[]; primary: string | null }
+interface Ready { checks: { id: string; level: 'ok' | 'warn' | 'bad' | 'info'; text: string; fix?: string; site?: string; clusterId?: string; action?: 'archive_fallback' | 'enable_rewind' }[]; status: 'ready' | 'degraded' | 'not_ready'; rpoSec: number | null; rpoTargetSec: number; lastTest: { at: string; seconds: number | null; from: string; to: string } | null }
+interface Group { sysid: string; sites: Site[]; primary: string | null; readiness?: Ready }
 interface Job { id: string; fromName: string; toName: string; status: string; createdBy: string; createdAt: string; steps: { at: string; text: string }[]; error?: string }
 
 const ROLE_IT = { primary: 'Sito primario', standby: 'Sito di replica (DR)', unknown: 'Ruolo non determinato' };
@@ -65,6 +66,7 @@ function GroupCard({ g, role, running }: { g: Group; role: string; running: bool
       </div>)}</div>
       <div className="stack">{[...extra, ...stand].map(s => <SiteCard key={s.clusterId} s={s} onOpen={() => go(`c/${encodeURIComponent(s.clusterId)}`)} />)}</div>
     </div>
+    {g.readiness ? <Readiness r={g.readiness} role={role} /> : null}
     {role === 'admin' ? <div className="row wrap" style={{ marginTop: 14 }}>
       {prim && stand.map(s => <Button key={'sw' + s.clusterId} icon="swap" disabled={running || s.health === 'bad'} title={s.health === 'bad' ? 'Il sito di replica non è in salute' : undefined} onClick={() => setDlg(s.endpoint ? { kind: 'switch', site: s } : { kind: 'endpoint', site: s, next: 'switch' })}>Switchover pianificato verso {s.name}</Button>)}
       {stand.map(s => <Button key={'pr' + s.clusterId} kind="danger" icon="alert" disabled={running} onClick={() => setDlg({ kind: 'promote', site: s })}>Promuovi {s.name} (disaster recovery)…</Button>)}
@@ -123,4 +125,38 @@ function LinkPicker({ all, onClose }: { all: any[]; onClose: () => void }) {
       <Field label="Replica di (sito primario)"><select className="input" value={prim} onChange={e => setPrim(e.target.value)}><option value="">Scegli…</option>{real.filter(c => c.id !== stby).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
       <p className="small muted">Serve quando la console non può riconoscerla da sola (cluster senza agent, replica non ancora attiva). Se gli agent vedono database diversi la relazione resta, ma viene segnalata come impossibile. Non modifica nulla su PostgreSQL o Patroni.</p>
       {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
+}
+
+/** "If the primary site is lost now, does the DR site take over cleanly, and how much is lost?": the conditions a geo pair silently depends on. */
+const READY_IT = { ready: 'Pronto al disaster recovery', degraded: 'Pronto con riserve', not_ready: 'Non pronto al disaster recovery' };
+function Readiness({ r, role }: { r: Ready; role: string }) {
+  const [open, setOpen] = useState(r.status !== 'ready'); const [edit, setEdit] = useState(false); const [rpo, setRpo] = useState(String(r.rpoTargetSec)); const [busy, setBusy] = useState(false);
+  const issues = r.checks.filter(c => c.level !== 'ok'); const tone = r.status === 'ready' ? 'ok' : r.status === 'degraded' ? 'warn' : 'bad';
+  const [fixing, setFixing] = useState<string | null>(null);
+  // one-click fixes, through the site's own DCS (agent operations: the command / setting is built by the agent, never sent from here)
+  const fix = async (c: Ready['checks'][number]) => {
+    setFixing(c.id + c.clusterId);
+    try {
+      const body = c.action === 'archive_fallback' ? { type: 'geo_archive_fallback', params: { enable: true } } : { type: 'patroni_config_patch', params: { patch: { postgresql: { use_pg_rewind: true } } } };
+      const r: any = await api('POST', `/api/clusters/${encodeURIComponent(c.clusterId!)}/operations`, body, { key: uid('geofix') });
+      if (r.approval) toast('Richiesta inviata: serve l’approvazione di un altro amministratore.', 'info', 8000);
+      else toast(c.action === 'archive_fallback' ? 'Riserva dall’archivio in attivazione nel DCS del sito' : 'pg_rewind in attivazione nel DCS del sito', 'ok');
+      setTimeout(() => revalidate('/api/geo'), 8000);
+    } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setFixing(null); }
+  };
+  const save = async () => { setBusy(true); try { await api('PUT', '/api/geo/settings', { rpoSec: Number(rpo) }); revalidate('/api/geo'); toast('Obiettivo RPO salvato', 'ok'); setEdit(false); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
+  return <div className={`geoready ${tone}`}>
+    <div className="row wrap gap-s">
+      <button className="linkbtn row gap-s" onClick={() => setOpen(!open)} aria-expanded={open}><Icon n={open ? 'down' : 'chev'} s={13} /><Dot kind={tone} /><strong>{READY_IT[r.status]}</strong></button>
+      <span className="small muted">perdita stimata <strong>{r.rpoSec == null ? 'non misurabile' : r.rpoSec < 1 ? 'nessuna' : `${r.rpoSec} s`}</strong> · obiettivo {r.rpoTargetSec} s
+        {r.lastTest ? <> · ultimo switchover {ago(r.lastTest.at)}{r.lastTest.seconds != null ? `, ${r.lastTest.seconds} s` : ''}</> : <> · switchover mai provato</>}</span>
+      <div className="grow" />{role === 'admin' ? <Button sm kind="ghost" onClick={() => setEdit(true)}>Obiettivo RPO…</Button> : null}
+    </div>
+    {open ? <ul className="geochecks">{[...issues, ...r.checks.filter(c => c.level === 'ok')].map((c, i) => <li key={i} className={c.level}>
+      <Icon n={c.level === 'ok' ? 'check' : c.level === 'info' ? 'info' : 'alert'} s={13} /><span className="grow">{c.text}{c.fix ? <span className="faint"> — {c.fix}</span> : null}</span>
+      {role === 'admin' && c.action && c.clusterId ? <Button sm busy={fixing === c.id + c.clusterId} onClick={() => fix(c)}>{c.action === 'archive_fallback' ? 'Attiva la riserva dall’archivio' : 'Attiva pg_rewind'}</Button> : null}</li>)}</ul> : null}
+    {edit ? <Modal title="Obiettivo di perdita dati (RPO)" onClose={() => setEdit(false)} footer={<><div className="grow" /><Button onClick={() => setEdit(false)}>Annulla</Button><Button kind="primary" busy={busy} onClick={save}>Salva</Button></>}>
+      <Field label="Secondi di transazioni che è accettabile perdere se il sito primario sparisce" hint="Oltre l’obiettivo la coppia è «con riserve»; oltre dieci volte «non pronta». Vale per tutte le coppie di siti.">
+        <input className="input" type="number" min={1} max={86400} value={rpo} onChange={e => setRpo(e.target.value)} /></Field></Modal> : null}
+  </div>;
 }

@@ -199,9 +199,89 @@ export function geoParamGuard(st: any, clusterId: string, name: string, value: a
   return low.length ? `${name} = ${v} sul sito primario supera il valore dei siti di replica (${low.map(x => `${x.name}: ${x.cur}`).join(', ')}): i loro standby si fermerebbero ("hot standby is not possible"). Alza prima ${name} sui siti di replica, poi qui.` : null;
 }
 
+/* ====================================================================================================================================================
+ * DR readiness of a pair of sites: "if the primary site burns down now, does the standby site take over cleanly, and how much data is lost?"
+ * Everything is derived from the agents' telemetry (no extra operation): the conditions a geo-redundant Patroni deployment silently depends on.
+ * ==================================================================================================================================================== */
+export interface ReadyCheck { id: string; level: 'ok' | 'warn' | 'bad' | 'info'; text: string; fix?: string; site?: string; clusterId?: string; action?: 'archive_fallback' | 'enable_rewind' }
+export const GEO_RPO_DEFAULT_SEC = 60;
+const DAY = 86400_000;
+const major = (v: any) => { const m = /^(\d+)/.exec(String(v || '')); return m ? Number(m[1]) : null; };
+export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
+  const checks: ReadyCheck[] = [];
+  const add = (c: ReadyCheck) => checks.push(c);
+  const nodesOf = (cid: string) => (Object.values(st.nodes) as NodeRecord[]).filter(n => n.clusterId === cid && n.kind !== 'worker');
+  const lead = (site: Site) => (Object.values(st.nodes) as NodeRecord[]).find(n => n.id === site.leaderNodeId) || nodesOf(site.clusterId).find(n => online(n, now));
+  const prim = g.sites.find(s => s.clusterId === g.primary);
+  const rpoTarget = Number(st.settings.geoRpoSec) > 0 ? Number(st.settings.geoRpoSec) : GEO_RPO_DEFAULT_SEC;
+  let rpo: number | null = null;
+  if (!prim) { add({ id: 'primary', level: 'bad', text: 'nessun sito primario visibile' }); return { checks, status: 'not_ready' as const, rpoSec: null, rpoTargetSec: rpoTarget, lastTest: null }; }
+  const pn = lead(prim); const pv: any = pn?.snapshot?.patroni || {}; const ppg: any = pn?.snapshot?.postgres || {};
+  const primHosts = new Set(nodesOf(prim.clusterId).flatMap(n => [n.name, String(n.remoteIp || '').replace(/^::ffff:/, ''), ...((n.snapshot?.patroni?.members || []) as any[]).map(m => String(m.host || ''))]).filter(Boolean));
+  for (const s of g.sites.filter(x => x.role === 'standby')) {
+    const sn = lead(s); const sv: any = sn?.snapshot?.patroni || {}; const spg: any = sn?.snapshot?.postgres || {};
+    const at = (t: string) => `${s.name}: ${t}`;
+    // same major version (a standby of another major cannot replay the WAL)
+    const a = major(ppg.version), b = major(spg.version);
+    if (a && b && a !== b) add({ id: 'version', level: 'bad', site: s.name, text: at(`PostgreSQL ${b} contro ${a} sul sito primario: la replica fisica richiede la stessa versione principale`) });
+    // the slot that keeps the WAL for this site must be PERMANENT (declared in the primary site's DCS), or it disappears at the primary site's first failover
+    const slot = s.upstream?.slot;
+    if (!slot) add({ id: 'slot', level: sv.standby_cluster?.restore_command ? 'info' : 'warn', site: s.name, text: at('replica senza slot: se resta indietro oltre wal_keep_size i WAL che le servono vengono cancellati sul sito primario'),
+      fix: 'dichiara uno slot permanente nel DCS del sito primario (slots: {nome: {type: physical}}) e indicalo in standby_cluster.primary_slot_name' });
+    else if (Array.isArray(pv.permanent_slots) && !pv.permanent_slots.includes(slot)) add({ id: 'slot', level: 'bad', site: s.name, text: at(`lo slot ${slot} esiste solo sul leader attuale del sito primario, non è permanente nel suo DCS: al primo failover del sito primario sparisce e questa replica si interrompe`),
+      fix: `aggiungi ${slot} a «slots» nella configurazione dinamica del sito primario (patronictl edit-config)` });
+    else add({ id: 'slot', level: 'ok', site: s.name, text: at(`slot ${slot} permanente nel DCS del sito primario`) });
+    // the standby site must follow the primary site's LEADER, not one node: a node name/IP stops working at the primary site's first failover
+    if (s.upstream && primHosts.has(s.upstream.host)) add({ id: 'upstream', level: 'warn', site: s.name, text: at(`replica da ${s.upstream.host}, un singolo nodo del sito primario: dopo un failover là la replica si ferma`),
+      fix: 'punta standby_cluster.host a un indirizzo che segue il leader (HAProxy, VIP, DNS gestito da Patroni)' });
+    else if (s.upstream) add({ id: 'upstream', level: 'ok', site: s.name, text: at(`replica da ${s.upstream.host}:${s.upstream.port}, indirizzo che segue il leader`) });
+    // archive fallback: with restore_command the standby site can catch up from the WAL archive when streaming is not possible (slot lost, long WAN outage)
+    if (sv.standby_cluster && !sv.standby_cluster.restore_command) add({ id: 'archive', level: 'info', site: s.name, clusterId: s.clusterId, action: 'archive_fallback', text: at('nessun restore_command nello standby_cluster: senza streaming non può recuperare dall’archivio WAL'),
+      fix: 'aggiungi standby_cluster.restore_command (es. pg-arca-wal get %f %p) per recuperare dall’archivio condiviso' });
+    else if (sv.standby_cluster?.restore_command) add({ id: 'archive', level: 'ok', site: s.name, text: at('riserva dall’archivio WAL attiva (restore_command nello standby_cluster)') });
+    // parameters a hot standby needs at least as high as its primary
+    for (const k of STANDBY_MIN_PARAMS) {
+      const pvv = Number(ppg.settings?.[k]), svv = Number(spg.settings?.[k]);
+      if (Number.isFinite(pvv) && Number.isFinite(svv) && svv < pvv) add({ id: 'param:' + k, level: 'bad', site: s.name, text: at(`${k} = ${svv}, minore del sito primario (${pvv}): l’hot standby si ferma ("hot standby is not possible")`), fix: `alza ${k} sul sito di replica` });
+    }
+    // RPO: how much would be lost if the primary site vanished now
+    const r = s.lagBytes === 0 ? 0 : (s.receiver?.status === 'streaming' && s.receiver.silentSec != null && s.receiver.silentSec < 10 && (s.lagBytes ?? 0) < 16 * MB) ? Math.round(s.receiver.silentSec) : (s.replayDelaySec ?? null);
+    rpo = r === null ? rpo : Math.max(rpo ?? 0, r);
+    if (r === null) add({ id: 'rpo', level: 'warn', site: s.name, text: at('perdita di dati in caso di disastro non misurabile (nessun dato di replica)') });
+    else add({ id: 'rpo', level: r > rpoTarget ? (r > rpoTarget * 10 ? 'bad' : 'warn') : 'ok', site: s.name, text: at(`perdita stimata in caso di disastro: ${r < 1 ? 'nessuna' : `circa ${r} s di transazioni`} (obiettivo ${rpoTarget} s)${s.lagBytes ? ` · ${Math.round(s.lagBytes / MB)} MB da ricevere` : ''}`) });
+    if (!s.endpoint) add({ id: 'endpoint', level: 'warn', site: s.name, text: at('indirizzo con cui gli altri siti lo raggiungerebbero non indicato: serve per lo switchover pianificato'), fix: 'indicalo in Georidondanza → «Indirizzo di …»' });
+    // after a promotion this site must be able to rewind / re-follow
+    if (sv.accessible && sv.use_pg_rewind !== true) add({ id: 'rewind', level: 'warn', site: s.name, clusterId: s.clusterId, action: 'enable_rewind', text: at('pg_rewind spento: dopo un ritorno del vecchio primario i membri vanno ricostruiti per intero'), fix: 'postgresql.use_pg_rewind: true nel DCS' });
+    if (spg.hba_patroni_local?.ok === false) add({ id: 'hba_local', level: 'bad', site: s.name, text: at('pg_hba non consente a Patroni la replica locale: dopo un failover il sito resta fermo'), fix: spg.hba_patroni_local.suggest?.[0] });
+  }
+  if (!prim.endpoint) add({ id: 'endpoint', level: 'warn', site: prim.name, text: `${prim.name}: indirizzo per gli altri siti non noto (serve allo switchover di ritorno)` });
+  if (pv.accessible && pv.use_pg_rewind !== true) add({ id: 'rewind', level: 'warn', site: prim.name, clusterId: prim.clusterId, action: 'enable_rewind', text: `${prim.name}: pg_rewind spento: un vecchio primario non potrà diventare sito di replica senza ricostruzione`, fix: 'postgresql.use_pg_rewind: true nel DCS' });
+  if (ppg.hba_patroni_local?.ok === false) add({ id: 'hba_local', level: 'bad', site: prim.name, text: `${prim.name}: pg_hba non consente a Patroni la replica locale`, fix: ppg.hba_patroni_local.suggest?.[0] });
+  // backups: one catalogue for the database, recent, usable from the DR site too
+  const sets = (nodesOf(prim.clusterId).map(n => n.snapshot?.backup?.recent_sets).find(x => Array.isArray(x) && x.length) || []) as any[];
+  const lastOk = sets.filter(x => x.status === 'COMPLETE').map(x => Date.parse(x.start_time)).filter(Number.isFinite).sort().pop();
+  if (!lastOk) add({ id: 'backup', level: 'warn', text: 'nessun backup completo del database: se entrambi i siti si perdono non resta nulla da ripristinare', fix: 'assegna una strategia di backup alla coppia' });
+  else add({ id: 'backup', level: now - lastOk > 8 * DAY ? 'warn' : 'ok', text: `ultimo backup ${Math.round((now - lastOk) / 3600_000)} h fa, catalogo comune ai siti` });
+  // the switchover has been TRIED: when, and how long it took (the RTO actually measured)
+  const jobs = (Object.values(st.settings.geoJobs || {}) as any[]).filter(j => j.status === 'succeeded' && g.sites.some(x => x.clusterId === j.from) && g.sites.some(x => x.clusterId === j.to));
+  const last = jobs.sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt)))[0];
+  const lastTest = last ? { at: last.finishedAt || last.createdAt, seconds: last.finishedAt ? Math.round((Date.parse(last.finishedAt) - Date.parse(last.createdAt)) / 1000) : null, from: last.fromName, to: last.toName } : null;
+  if (!lastTest) add({ id: 'tested', level: 'info', text: 'switchover tra i siti mai provato da questa console: una prova pianificata misura il tempo reale di passaggio' });
+  else add({ id: 'tested', level: now - Date.parse(lastTest.at) > 180 * DAY ? 'info' : 'ok', text: `ultimo switchover ${lastTest.from} → ${lastTest.to} ${Math.round((now - Date.parse(lastTest.at)) / DAY)} giorni fa${lastTest.seconds != null ? `, durato ${lastTest.seconds} s` : ''}` });
+  const status = checks.some(c => c.level === 'bad') ? 'not_ready' as const : checks.some(c => c.level === 'warn') ? 'degraded' as const : 'ready' as const;
+  return { checks, status, rpoSec: rpo, rpoTargetSec: rpoTarget, lastTest };
+}
+
 /** Health findings for the briefing ("Oggi"): one per standby site in trouble. */
 export function geoIssues(st: any, now = Date.now()) {
   const out: any[] = [];
+  for (const g of geoGroups(st, now)) {                  // the pair would not survive the loss of the primary site cleanly: said once, on the primary site
+    if (!g.primary) continue;
+    const r = geoReadiness(st, g, now); const bad = r.checks.filter(c => c.level === 'bad');
+    const pc = st.clusters.find((c: any) => c.id === g.primary);
+    if (bad.length && pc) out.push({ key: `${pc.id}:geo_dr_readiness`, clusterId: pc.id, clusterName: pc.name, environment: pc.environment, severity: 'warning', code: 'geo_dr_readiness',
+      title: `Georidondanza non pronta al disaster recovery: ${bad[0].text}`, cause: bad.map(c => c.text + (c.fix ? ` (${c.fix})` : '')).join('; '), action: { label: 'Apri la georidondanza', page: 'geo' } });
+  }
   for (const g of geoGroups(st, now)) for (const s of g.sites) {
     if (s.health === 'ok' || (s.role !== 'standby' && !s.problems.some(p => p.startsWith('DUE SITI PRIMARI')))) continue;
     out.push({ key: `${s.clusterId}:geo_replication`, clusterId: s.clusterId, clusterName: s.name, environment: s.environment, severity: s.health === 'bad' ? 'critical' : 'warning', code: 'geo_replication',
@@ -297,9 +377,17 @@ export function mountGeoRoutes(app: any, store: Store) {
   const actor = (req: Request) => (req as any).actor || 'admin';
   app.get('/api/geo', (_req: Request, res: Response) => {
     const st = store.peek();
-    res.json({ groups: geoGroups(st).map(g => ({ ...g, stanza: g.sites.map(x => st.clusters.find((c: any) => c.id === x.clusterId)?.geoStanza).find(Boolean) || null })), jobs: Object.values(st.settings.geoJobs || {}).sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 10) });
+    res.json({ rpoTargetSec: Number(st.settings.geoRpoSec) > 0 ? Number(st.settings.geoRpoSec) : GEO_RPO_DEFAULT_SEC,
+      groups: geoGroups(st).map(g => ({ ...g, stanza: g.sites.map(x => st.clusters.find((c: any) => c.id === x.clusterId)?.geoStanza).find(Boolean) || null, readiness: geoReadiness(st, g) })), jobs: Object.values(st.settings.geoJobs || {}).sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 10) });
   });
   app.get('/api/clusters/:id/geo', (req: Request, res: Response) => res.json({ geo: geoOf(store.peek(), req.params.id) }));
+  /** RPO objective of the geo pairs (seconds of transactions it is acceptable to lose if the primary site is lost). */
+  app.put('/api/geo/settings', async (req: Request, res: Response) => {
+    const v = Number(req.body?.rpoSec);
+    if (!Number.isInteger(v) || v < 1 || v > 86400) return res.status(400).json({ error: 'invalid_rpo', message: 'Obiettivo RPO tra 1 secondo e 24 ore.' });
+    await store.mutate(d => { d.settings.geoRpoSec = v; ops.audit(d, { actor: actor(req), action: 'geo.settings', status: 'OK', details: { rpoSec: v } } as any); });
+    res.json({ ok: true, rpoSec: v });
+  });
 
   /** Primary / standby relationship set by an operator (when it cannot be detected, or to make intent explicit). primary: cluster id | null (back to
    *  automatic); none: true detaches the cluster from automatic pairing. Refuses self-links and cycles. */

@@ -284,5 +284,32 @@ class PatroniLocalReplication(unittest.TestCase):
         self.assertTrue(hba_ops.patroni_local_check(self.db(rows))["ok"])
 
 
+
+class GeoArchiveFallback(unittest.TestCase):
+    def test_sets_and_removes_restore_command_in_the_dcs_only(self):
+        from unittest import mock
+        ex, db, pat, hf = make(config={"standby_cluster": {"host": "dc1-haproxy", "port": 5000, "primary_slot_name": "geo_dc2"}})
+        ex._require_patroni = lambda: None
+        def patch(pt):
+            pat.patches.append(pt)
+            sc = pt.get("standby_cluster")
+            if isinstance(sc, dict):
+                pat.config["standby_cluster"] = dict((k, v) for k, v in sc.items() if v is not None)
+            return 200, pat.config
+        pat.patch_config = patch
+        with mock.patch("shutil.which", lambda x: "/bin/true"):
+            r = ex.h_geo_archive_fallback({"enable": True})
+        self.assertEqual(r["restore_command"], "/bin/true get %f %p")
+        self.assertEqual(pat.config["standby_cluster"]["host"], "dc1-haproxy")                 # the rest of standby_cluster untouched
+        r = ex.h_geo_archive_fallback({"enable": False})
+        self.assertNotIn("restore_command", pat.config["standby_cluster"])
+
+    def test_refused_on_a_primary_site(self):
+        ex, db, pat, hf = make(config={"postgresql": {}})
+        ex._require_patroni = lambda: None
+        with self.assertRaises(OpError):
+            ex.h_geo_archive_fallback({"enable": True})
+
+
 if __name__ == "__main__":
     unittest.main()

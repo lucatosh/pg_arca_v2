@@ -417,3 +417,11 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .geolinkf legend { font-weight: 600; padding: 0 6px; font-size: 13px; }
 .geolinkf .check { align-items: flex-start; } .geolinkf .check input { margin-top: 3px; }
 .fleettable td.stcell { max-width: 280px; } .fleettable td.stcell > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* DR readiness of a geo pair */
+.geoready { margin-top: 14px; padding: 10px 12px; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface-2); }
+.geoready.bad { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); } .geoready.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.geochecks { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.geochecks li { display: flex; gap: 8px; align-items: flex-start; } .geochecks li > svg { flex: none; margin-top: 3px; }
+.geochecks li.bad > svg { color: var(--bad); } .geochecks li.warn > svg { color: var(--warn); } .geochecks li.ok > svg { color: var(--ok); } .geochecks li.info > svg { color: var(--ink-2); }
+.geochecks li.ok { color: var(--ink-2); }

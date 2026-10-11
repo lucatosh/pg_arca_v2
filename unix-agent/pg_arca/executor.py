@@ -113,7 +113,8 @@ class OperationExecutor:
         r("hba_plan", self.h_hba_plan, True)
         r("hba_apply", self.h_hba_apply, True)           # compare-before-write: re-running is a no-op
         r("hba_rollback", self.h_hba_rollback, False)
-        r("hba_restore", self.h_hba_restore, True)        # Patroni: a previous DCS list, compare-before-write
+        r("hba_restore", self.h_hba_restore, True)
+        r("geo_archive_fallback", self.h_geo_archive_fallback, True)        # Patroni: a previous DCS list, compare-before-write
 
     # ------------------------------------------------------------------ journal
     def _path(self, op_id):
@@ -573,6 +574,36 @@ class OperationExecutor:
         if not ok:
             raise OpError("Patroni did not promote within %ss (members: %s)" % (p.get("timeout", 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
         return {"promoted": True, "leader": leader.get("name"), "timeline": leader.get("timeline"), "slot_for_peer": slot or None}
+
+    def h_geo_archive_fallback(self, p):
+        """Standby site: let it catch up from the shared WAL archive when streaming from the primary site is not possible (slot lost, long WAN outage):
+        standby_cluster.restore_command in ITS DCS, built here (never a command coming from the console). enable=false removes it."""
+        self._require_patroni()
+        st, cfg = self.patroni.get_config()
+        if st != 200 or not isinstance(cfg, dict):
+            raise OpError("cannot read the Patroni configuration (%s)" % st)
+        sc = cfg.get("standby_cluster")
+        if not isinstance(sc, dict) or not sc:
+            raise OpError("this cluster is not a standby site (no standby_cluster in its DCS)")
+        if p.get("enable"):
+            exe = shutil.which("pg-arca-wal") or "/usr/local/bin/pg-arca-wal"
+            if not os.path.exists(exe):
+                raise OpError("pg-arca-wal is not installed on this node: install the agent with the WAL helper first")
+            cmd = "%s get %%f %%p" % exe
+            if sc.get("restore_command") and sc.get("restore_command") != cmd and not p.get("replace_foreign"):
+                raise OpError("standby_cluster already has a different restore_command (%s): not replaced" % sc.get("restore_command")[:120])
+            new = dict(sc, restore_command=cmd)
+        else:
+            new = dict((k, v) for k, v in sc.items() if k != "restore_command")
+            new["restore_command"] = None
+        st, d = self.patroni.patch_config({"standby_cluster": new})
+        if st >= 300:
+            raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
+        st2, cfg2 = self.patroni.get_config()
+        got = (cfg2.get("standby_cluster") or {}).get("restore_command") if st2 == 200 and isinstance(cfg2, dict) else "?"
+        if bool(got) != bool(p.get("enable")):
+            raise OpError("verification failed: standby_cluster.restore_command is %r in the DCS" % got)
+        return {"restore_command": got, "note": "Patroni applies it to the standby leader (restart of the standby leader may be needed on older Patroni)"}
 
     def h_geo_demote(self, p):
         """This site becomes a standby cluster of another site: standby_cluster {host, port, primary_slot_name} is written to ITS DCS. Patroni turns the leader into a
