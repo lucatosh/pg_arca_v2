@@ -66,8 +66,22 @@ class Ctx(object):
     def cleanup_spool(self):
         """The recovery is over: the prefetcher notices the missing directory and leaves."""
         import shutil
+        import signal
+        import time
         if getattr(self, "_spool_id", None):
-            shutil.rmtree(self.spool_dir, ignore_errors=True)
+            sp = self.spool_dir
+            try:                                                # stop the prefetcher first: a worker finishing a segment would re-create the directory behind us
+                with open(os.path.join(sp, ".lock")) as f:
+                    pid = int(f.read().strip() or 0)
+                if pid > 1:
+                    os.kill(pid, signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
+            for _ in range(10):
+                shutil.rmtree(sp, ignore_errors=True)
+                if not os.path.exists(sp):
+                    break
+                time.sleep(0.05)
 
     @classmethod
     def from_config(cls, config, runtime=None, log=None):

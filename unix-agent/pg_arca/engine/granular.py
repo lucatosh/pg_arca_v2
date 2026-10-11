@@ -11,7 +11,7 @@ import tempfile
 import time
 
 from pg_arca.engine.backup import build_chain
-from pg_arca.engine import objects as objmod
+from pg_arca.engine import objects as objmod, restorecheck
 from pg_arca.engine.catalog import find_object
 from pg_arca.engine.ephemeral import Ephemeral, TargetNotReached
 from pg_arca.engine.pgsession import PgConn, PgSession, run_dump, run_tool
@@ -297,17 +297,28 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     if note:
         plan["note"] = note
     plan["saved_pct"] = round(100.0 * (1 - plan["extract_bytes"] / float(max(plan["cluster_bytes"], 1))), 1)
+    plan["database_bytes"] = entry["size"]
+    taken = None
+    try:                                                                                 # fail fast BEFORE the long recovery (and show it in the plan)
+        admin = _dest_conn(ctx, into)
+        s = PgSession(admin.with_db("postgres"), read_only=True)
+        try:
+            if s.scalar("SELECT 1 FROM pg_database WHERE datname=%s" % sql_lit(new_name)) == "1":
+                taken = new_name
+        finally:
+            s.close()
+    except EngineError:
+        raise
+    except Exception as e:
+        if not dry_run:
+            raise
+        ctx.log("warning", "plan: cannot look at the live cluster: %s" % e)
+    checks = restorecheck.check(ctx, plan, merged_sel, target, need_dest=entry["size"], into=into, name_taken=taken)
+    plan["preflight"] = restorecheck.summarize(checks)
     if dry_run:
         plan["dry_run"] = True
         return plan
-    admin = _dest_conn(ctx, into)
-    # fail fast BEFORE the long recovery
-    s = PgSession(admin.with_db("postgres"), read_only=True)
-    try:
-        if s.scalar("SELECT 1 FROM pg_database WHERE datname=%s" % sql_lit(new_name)) == "1":
-            raise EngineError("PGA-SEC-030", "destination database '%s' already exists" % new_name, "choose another name")
-    finally:
-        s.close()
+    restorecheck.enforce(checks)
     eph, info = _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     created = False
     tmp = tempfile.mkdtemp(prefix="pgarca-dump-")
@@ -373,10 +384,27 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
             "quarantine_database": stage, "extract_bytes": estimate(merged_sel), "cluster_bytes": estimate(merged_all),
             "target": tt or target_lsn or target_xid or target_name or "end of archive"}
     plan["saved_pct"] = round(100.0 * (1 - plan["extract_bytes"] / float(max(plan["cluster_bytes"], 1))), 1)
+    taken = None
+    try:
+        admin = _dest_conn(ctx, into)
+        s = PgSession(admin.with_db("postgres"), read_only=True)
+        try:
+            if s.scalar("SELECT 1 FROM pg_database WHERE datname=%s" % sql_lit(stage)) == "1":
+                taken = stage
+        finally:
+            s.close()
+    except EngineError:
+        raise
+    except Exception as e:
+        if not dry_run:
+            raise
+        ctx.log("warning", "plan: cannot look at the live cluster: %s" % e)
+    checks = restorecheck.check(ctx, plan, merged_sel, target, need_dest=size_in_backup, into=into, name_taken=taken, scope="object")
+    plan["preflight"] = restorecheck.summarize(checks)
     if dry_run:
         plan["dry_run"] = True
         return plan
-    admin = _dest_conn(ctx, into)
+    restorecheck.enforce(checks)
     eph, info = _recover_db(ctx, chain, dbentry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     created = False
     try:
