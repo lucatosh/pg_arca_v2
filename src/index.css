@@ -336,3 +336,7 @@ details.dbgroup > summary.gh { cursor: pointer; } details.dbgroup > summary.gh::
 .dbrow:focus-visible { outline: 2px solid var(--accent-2); outline-offset: -2px; }
 .dropnote { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--bad); border-radius: var(--r); background: var(--bad-soft); font-size: 13px; } .dropnote .badge { flex: none; font-weight: 800; letter-spacing: .06em; }
 @media (max-width: 560px) { .dbrow { grid-template-columns: 18px 1fr; } .dbrow .st { grid-column: 2; justify-items: start; } }
+
+.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.gonechip { display: inline-flex; align-items: center; gap: 8px; margin-left: 10px; font-weight: 400; } .gonechip .dropped { background: var(--bad); color: #fff; font-weight: 800; letter-spacing: .08em; font-size: 10.5px; padding: 1px 7px; border-radius: 5px; } .gonechip .when { color: var(--ink-3); }
+.tree .sch.gone strong, .tree button.gone .grow { color: var(--bad); } .tree .here { color: var(--ok); font-weight: 600; margin-left: 10px; }

@@ -262,7 +262,9 @@ class OperationExecutor:
     def h_list_objects(self, p):
         self._require_pg()
         try:
-            return {"objects": self.db.get_database_objects(str(p.get("database")))}
+            dbname = str(p.get("database"))
+            sch, _ = self.db.query_json("SELECT COALESCE(json_agg(nspname ORDER BY nspname), '[]'::json) FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' AND nspname <> 'information_schema'", dbname=dbname)
+            return {"objects": self.db.get_database_objects(dbname), "schemas": sch or []}
         except Exception as e:
             raise OpError(str(e))
 
@@ -668,7 +670,7 @@ class OperationExecutor:
         return walscan.scan(self._ctx_ro(), mode=mode, hours=max(0, hours), since_backup=bool(p.get("since_backup", mode == "databases")), since_iso=p.get("since_iso"),
                             limit=max(1, min(int(p.get("limit", 20)), 200)), since=p.get("since"), until=p.get("until"),
                             cache_dir=os.path.join(self.config.get("state_dir", "/var/lib/pgarca/state"), "forensics"),
-                            progress=self._progress, cancel=self._cancelled, budget_sec=max(30, min(int(p.get("budget_sec", 900)), 7200)))
+                            progress=self._progress, cancel=self._cancelled, budget_sec=max(30, min(int(p.get("budget_sec", 900)), 7200)), detail=bool(p.get("detail")))
 
     def h_hba_read(self, p):
         from pg_arca import hba_ops

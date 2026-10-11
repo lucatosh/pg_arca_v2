@@ -308,7 +308,7 @@ def _catalog_names(ctx, sets=4):
             for dbname, d in cat["databases"].items():
                 dbs.setdefault(str(d["oid"]), dbname)
                 for r in d["relations"]:
-                    rel.setdefault((str(d["oid"]), str(r["relfilenode"])), "%s.%s.%s" % (dbname, r["schema"], r["name"]))
+                    rel.setdefault((str(d["oid"]), str(r["relfilenode"])), ("%s.%s.%s" % (dbname, r["schema"], r["name"]), r.get("kind") or "?"))
     except EngineError:
         pass
     return rel, dbs
@@ -332,7 +332,7 @@ def window_start(ctx, hours=None, since_backup=False, since_iso=None):
     return 0
 
 
-def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since=None, until=None, limit=20, cache_dir=None, progress=None, cancel=None, budget_sec=900, workers=None):
+def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since=None, until=None, limit=20, cache_dir=None, progress=None, cancel=None, budget_sec=900, workers=None, detail=False):
     """Returns {"events": [...ascending...], "segments_scanned", "segments_cached", "segments_total", "complete", "window": {...}, "elapsed_sec", ["suggestion"]}.
     mode "events": DROP / TRUNCATE / DROP DATABASE; mode "databases": only DROP DATABASE (the cheap one: no Transaction records are printed)."""
     if mode not in KINDS:
@@ -444,6 +444,8 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
                 e = dict(e)
                 e["seg"] = n
                 events.append(e)
+        if mode == "databases":
+            events = [e for e in events if e["kind"] == "DROP DATABASE"]     # a cache entry from a full scan also holds table events
         events.sort(key=lambda e: lsn_to_int(e["lsn"]))
         events = events[-max(1, int(limit or 20)) * (3 if mode == "events" else 5):]      # head-room: names / filters below may drop some
         # names
@@ -468,7 +470,12 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
                                 c["time"] = e["time"]
                                 cache.dirty = True
             else:
-                e["names"] = [rel_names.get((str(a), str(b)), "%s/%s" % (a, b)) for a, b in e["rels"]][:6]
+                got = [rel_names.get((str(a), str(b)), ("%s/%s" % (a, b), "?")) for a, b in e["rels"]]
+                tabs = [n for n, k in got if k in ("r", "p", "m")]           # indexes, TOAST tables and sequences travel with their table: name the tables
+                e["names"] = (tabs or [n for n, _ in got])[:6]
+                e["ntables"] = len(tabs)
+                if detail:
+                    e["tables"] = tabs[:400]                              # every table of the event (the UI matches them against what exists now)
             if e.get("time"):
                 e["time_exact"] = True
             else:

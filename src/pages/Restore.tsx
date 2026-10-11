@@ -26,13 +26,13 @@ export function RestoreTab({ c }: { c: any }) {
 
 function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [step, setStep] = useState(0);
-  const [scope, setScope] = useState<Scope>('database');
+  const [scope, setScope] = useState<Scope>('database'); const [objMode, setObjMode] = useState<'table' | 'schema'>('table');
   const [db, setDb] = useState(''); const [objs, setObjs] = useState<string[]>([]); const obj = objs[0] || ''; const [search, setSearch] = useState('');
   const [tgt, setTgt] = useState<Target>({ mode: 'latest' });
   const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false);
   const [ask, setAsk] = useState(false);
   const prom = useOpRunner(c.id); const prev = useOpRunner(c.id); const [pmode, setPmode] = useState<PMode>('as_new'); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false);
-  const dbsR = useOpRunner(c.id); const dropsR = useOpRunner(c.id); const [fxHours, setFxHours] = useState(24); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id);
+  const dbsR = useOpRunner(c.id); const dropsR = useOpRunner(c.id); const liveR = useOpRunner(c.id); const tdropR = useOpRunner(c.id); const [fxHours, setFxHours] = useState(24); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id);
 
   const from = useMemo(() => Math.min(...sets.map(s => Date.parse(s.stop_time!))), [sets]);
   const to = Math.max(Date.now(), d.archiver?.last_archived_time ? Date.parse(d.archiver.last_archived_time) : 0);
@@ -60,6 +60,17 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     dropsR.run('wal_forensics', { mode: 'databases', since_iso: new Date(since).toISOString(), limit: 100, budget_sec: 300 });
   }, [droppedDbs.length]);
   const selDb = dbs.find(x => x.name === db); const selDropped = !!selDb && droppedDbs.some(x => x.name === db);
+  // tables / schemas of the selected database that exist NOW: whatever the backup knows and the server does not was DROPPED (the database itself may be gone: then everything is)
+  useEffect(() => { if (scope === 'object' && db && live?.has(db)) liveR.run('list_objects', { database: db }); }, [scope, db]);
+  const objLive = useMemo(() => {
+    if (!db || selDropped) return db && selDropped ? { tables: new Set<string>(), schemas: new Set<string>(), all: true } : null;
+    const r = liveR.op?.status === 'succeeded' ? liveR.op.result : null; if (!r) return null;
+    return { tables: new Set<string>((r.objects || []).map((o: any) => `${db}.${o.schema}.${o.table}`)), schemas: new Set<string>((r.schemas || []).map((n: string) => `${db}.${n}`)), all: false };
+  }, [liveR.op, db, selDropped]);
+  const catSchemas: any[] = objR.op?.status === 'succeeded' ? objR.op.result.schemas || [] : [];
+  const anyTblGone = !!objLive && !objLive.all && catSchemas.some(sc => !objLive.schemas.has(`${db}.${sc.name}`) || (sc.objects || []).some((o: any) => !objLive.tables.has(`${db}.${sc.name}.${o.name}`)));
+  useEffect(() => { if (anyTblGone && !tdropR.op && !tdropR.busy) tdropR.run('wal_forensics', { mode: 'events', hours: 336, limit: 200, detail: true, budget_sec: 300 }); }, [anyTblGone]);
+  const tblDrops: Record<string, DropInfo> = useMemo(() => { const m: Record<string, DropInfo> = {}; for (const e of tdropR.op?.result?.events || []) if (e.kind === 'DROP') for (const t of e.tables || []) m[t] = { time: e.time, time_exact: e.time_exact !== false }; return m; }, [tdropR.op]);
   const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && objs.length > 0);
   const okWhere = scope === 'instance' ? dest.startsWith('/') : scope === 'database' ? /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName) : true;
   const okWhen = tgt.mode !== 'time' || (tgt.ms >= from && tgt.ms <= to + 60000);
@@ -75,14 +86,15 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     <div className="steps">{STEPS.map((s, i) => <span key={s} className={`s ${i === step ? 'on' : i < step ? 'done' : ''}`}>{i < step ? <Icon n="check" s={14} /> : null}{s}</span>)}</div>
 
     {step === 0 && <Card title="Cosa vuoi ripristinare?"><div className="stack">
-      <div className="grid g3">
+      <div className="grid choices">
         <button className="choice" aria-pressed={scope === 'database'} onClick={() => setScope('database')}><Icon n="db" s={22} /><div><strong>Un database</strong><p className="sub">Estrae solo i file di quel database: molto più veloce del cluster intero. Arriva con un nome nuovo.</p></div></button>
-        <button className="choice" aria-pressed={scope === 'object'} onClick={() => setScope('object')}><Icon n="file" s={22} /><div><strong>Tabelle o schemi</strong><p className="sub">Recupera una o più tabelle, o interi schemi, con chiavi esterne, viste, sequenze e permessi, in un database di quarantena.</p></div></button>
+        <button className="choice" aria-pressed={scope === 'object' && objMode === 'schema'} onClick={() => { setScope('object'); if (objMode !== 'schema') { setObjMode('schema'); setObjs([]); } }}><Icon n="layers" s={22} /><div><strong>Uno schema</strong><p className="sub">Recupera un intero schema con tutte le sue tabelle, chiavi esterne, viste, sequenze e permessi, anche se è stato eliminato. Passa da un database di quarantena.</p></div></button>
+        <button className="choice" aria-pressed={scope === 'object' && objMode === 'table'} onClick={() => { setScope('object'); if (objMode !== 'table') { setObjMode('table'); setObjs([]); } }}><Icon n="file" s={22} /><div><strong>Una o più tabelle</strong><p className="sub">Recupera singole tabelle con ciò da cui dipendono, o righe puntuali. Le tabelle eliminate sono segnalate.</p></div></button>
         <button className="choice" aria-pressed={scope === 'instance'} onClick={() => setScope('instance')}><Icon n="server" s={22} /><div><strong>Tutto il cluster</strong><p className="sub">Ricostruisce una copia completa in una cartella vuota. Non tocca mai l’istanza in esecuzione.</p></div></button></div>
       {scope !== 'instance' ? (dbsR.op && dbsR.op.status === 'succeeded' ? <>
         <Field label="Database"><DbPicker dbs={dbs} live={live} drops={drops} dropsState={dropsR.busy ? 'running' : dropsR.op?.status === 'succeeded' ? 'done' : dropsR.op ? 'failed' : 'idle'} value={db} onChange={n => { setDb(n); setObjs([]); prev.reset(); }} /></Field>
         {selDropped && selDb ? <DroppedNote db={db} info={drops[String(selDb.oid)]} lastStop={selDb.last_stop} /> : null}
-        {scope === 'object' && db ? <ObjectPicker r={objR.op} busy={objR.busy} search={search} setSearch={setSearch} db={db} value={objs} onChange={setObjs} /> : null}</> :
+        {scope === 'object' && db ? <ObjectPicker r={objR.op} busy={objR.busy} search={search} setSearch={setSearch} db={db} value={objs} onChange={setObjs} mode={objMode} live={objLive} drops={tblDrops} dropsBusy={tdropR.busy} /> : null}</> :
         <OpPanel op={dbsR.op} error={dbsR.error} label="Lettura del catalogo dei backup" />) : null}
       <div className="row"><div className="grow" /><Button kind="primary" disabled={!okWhat} onClick={() => setStep(1)}>Avanti</Button></div></div></Card>}
 
@@ -158,18 +170,29 @@ function PlanView({ p, scope }: { p: any; scope: Scope }) {
       {p.destination_database ? <><dt>Nuovo database</dt><dd>{p.destination_database}</dd></> : null}{p.quarantine_database ? <><dt>Quarantena</dt><dd>{p.quarantine_database}</dd></> : null}</dl></div>;
 }
 
-function ObjectPicker({ r, busy, search, setSearch, db, value, onChange }: { r: Op | null; busy: boolean; search: string; setSearch: (s: string) => void; db: string; value: string[]; onChange: (v: string[]) => void }) {
+const Gone = ({ info, busy, lastLabel }: { info?: DropInfo; busy?: boolean; lastLabel?: string }) => { const t = info ? parseWalTime(info.time) : NaN;
+  return <span className="gonechip"><span className="dropped">DROPPED</span><span className="when small">{Number.isFinite(t) ? `${info!.time_exact ? '' : 'circa '}${fmtWhen(t)}` : busy ? 'data in calcolo…' : lastLabel || ''}</span></span>; };
+
+function ObjectPicker({ r, busy, search, setSearch, db, value, onChange, mode, live, drops, dropsBusy }: { r: Op | null; busy: boolean; search: string; setSearch: (s: string) => void; db: string; value: string[]; onChange: (v: string[]) => void; mode: 'table' | 'schema';
+  live: { tables: Set<string>; schemas: Set<string>; all: boolean } | null; drops: Record<string, DropInfo>; dropsBusy: boolean }) {
   const schemas: any[] = r?.status === 'succeeded' ? r.result.schemas || [] : [];
   const has = (id: string) => value.includes(id);
-  const toggleTable = (sch: string, id: string) => onChange(has(id) ? value.filter(x => x !== id) : [...value, id]);
-  const toggleSchema = (sch: string, tablesIds: string[]) => { const sid = `${db}.${sch}`; onChange(has(sid) ? value.filter(x => x !== sid) : [...value.filter(x => !tablesIds.includes(x)), sid]); };
-  return <div className="stack"><Field label="Tabelle e schemi" hint="Spunta una o più tabelle, oppure l’intero schema. Le dipendenze vengono incluse da sole."><input className="input" placeholder="Cerca per nome" value={search} onChange={e => setSearch(e.target.value)} /></Field>
-    <div className="tree">{busy && !schemas.length ? <div style={{ padding: 12 }} className="muted">Lettura del catalogo…</div> : null}
-      {schemas.map(s => { const sid = `${db}.${s.name}`; const whole = has(sid); const ids = s.objects.map((o: any) => `${db}.${s.name}.${o.name}`);
-        return <div key={s.name}><label className="sch"><input type="checkbox" checked={whole} onChange={() => toggleSchema(s.name, ids)} /> {s.name}{s.tables != null ? <span className="faint small"> — {s.tables} {s.tables === 1 ? 'tabella' : 'tabelle'}, {bytes(s.bytes)}{whole ? ' · schema intero' : ''}</span> : null}</label>
-          {s.objects.map((o: any) => { const id = `${db}.${s.name}.${o.name}`; const on = whole || has(id);
-            return <button key={id} aria-pressed={on} disabled={whole} onClick={() => toggleTable(s.name, id)}><input type="checkbox" readOnly checked={on} tabIndex={-1} /><span className="grow">{o.name}</span><span className="faint small">{o.partitions ? `${o.partitions} partizioni · ` : ''}{bytes(o.size)}</span></button>; })}</div>; })}
-      {r?.status === 'succeeded' && !schemas.length ? <div style={{ padding: 12 }} className="muted">Nessuna tabella corrisponde.</div> : null}
+  const toggleTable = (id: string) => onChange(has(id) ? value.filter(x => x !== id) : [...value, id]);
+  const toggleSchema = (sch: string, tablesIds: string[]) => { const sid = `${db}.${sch}`; onChange(mode === 'schema' ? (has(sid) ? value.filter(x => x !== sid) : [...value, sid]) : has(sid) ? value.filter(x => x !== sid) : [...value.filter(x => !tablesIds.includes(x)), sid]); };
+  const tableGone = (id: string) => !!live && (live.all || !live.tables.has(id));
+  const schemaGone = (sid: string) => !!live && (live.all || !live.schemas.has(sid));
+  // a dropped schema was dropped together with its tables: the latest table drop is when it went
+  const schemaDrop = (sid: string, ids: string[]): DropInfo => { let best: DropInfo = null; for (const id of ids) { const d = drops[id]; if (d && (!best || parseWalTime(d.time) > parseWalTime(best.time))) best = d; } return best; };
+  const nGone = schemas.reduce((n, sc) => n + (schemaGone(`${db}.${sc.name}`) ? 1 : 0), 0);
+  return <div className="stack"><Field label={mode === 'schema' ? 'Schemi' : 'Tabelle'} hint={mode === 'schema' ? 'Scegli uno o più schemi: tabelle, chiavi esterne, viste, sequenze e permessi vengono ripristinati insieme.' : 'Spunta una o più tabelle. Le dipendenze vengono incluse da sole.'}><input className="input" placeholder="Cerca per nome" value={search} onChange={e => setSearch(e.target.value)} /></Field>
+    {live && !live.all && schemas.length && (nGone || schemas.some(sc => sc.objects.some((o: any) => tableGone(`${db}.${sc.name}.${o.name}`)))) ? <p className="small" style={{ color: 'var(--bad)', fontWeight: 600 }}>Ci sono {mode === 'schema' ? 'schemi' : 'tabelle'} presenti nei backup e non più sul server: sono segnalati DROPPED.</p> : null}
+    <div className={`tree ${mode}`}>{busy && !schemas.length ? <div style={{ padding: 12 }} className="muted">Lettura del catalogo…</div> : null}
+      {schemas.map(s => { const sid = `${db}.${s.name}`; const whole = has(sid); const ids = s.objects.map((o: any) => `${db}.${s.name}.${o.name}`); const sg = schemaGone(sid);
+        return <div key={s.name}><label className={`sch ${sg ? 'gone' : ''}`}><input type="checkbox" checked={whole} onChange={() => toggleSchema(s.name, ids)} /> <strong>{s.name}</strong>{s.tables != null ? <span className="faint small"> — {s.tables} {s.tables === 1 ? 'tabella' : 'tabelle'}, {bytes(s.bytes)}{whole && mode === 'table' ? ' · schema intero' : ''}</span> : null}
+          {sg ? <Gone info={schemaDrop(sid, ids)} busy={dropsBusy} lastLabel="eliminato" /> : live ? <span className="here small">Presente</span> : null}</label>
+          {mode === 'table' ? s.objects.map((o: any) => { const id = `${db}.${s.name}.${o.name}`; const on = whole || has(id); const g = tableGone(id);
+            return <button key={id} aria-pressed={on} disabled={whole} onClick={() => toggleTable(id)} className={g ? 'gone' : ''}><input type="checkbox" readOnly checked={on} tabIndex={-1} /><span className="grow">{o.name}</span>{g && !sg ? <Gone info={drops[id]} busy={dropsBusy} lastLabel="eliminata" /> : null}<span className="faint small">{o.partitions ? `${o.partitions} partizioni · ` : ''}{bytes(o.size)}</span></button>; }) : null}</div>; })}
+      {r?.status === 'succeeded' && !schemas.length ? <div style={{ padding: 12 }} className="muted">Nessuna corrispondenza.</div> : null}
       {r?.status === 'failed' ? <div style={{ padding: 12 }} className="muted">{r.error}</div> : null}</div>
     {r?.result?.truncated ? <p className="small muted">Elenco troncato: affina la ricerca.</p> : null}
     {value.length ? <p className="small">Selezione: {value.map(v => <code key={v} style={{ marginRight: 6 }}>{v.split('.').slice(1).join('.')}{v.split('.').length === 2 ? ' (schema)' : ''}</code>)}</p> : null}
