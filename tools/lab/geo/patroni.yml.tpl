@@ -25,12 +25,12 @@ ${STANDBY}
         archive_command: "/usr/local/bin/pg-arca-wal archive %p %f"
         archive_timeout: 60
         wal_keep_size: 512MB
+      pg_hba:                  # in the DCS (patronictl edit-config), shared by every member of the site: pg_arca reads and changes it only there
+        - local all all trust
+        - host all all 127.0.0.1/32 trust
+        - host replication replicator 172.30.0.0/16 scram-sha-256
+        - host all all 172.30.0.0/16 scram-sha-256
   initdb: [encoding: UTF8, data-checksums]
-  pg_hba:
-    - host replication replicator 172.30.0.0/16 scram-sha-256
-    - host all all 172.30.0.0/16 scram-sha-256
-    - local all all trust
-    - host all all 127.0.0.1/32 trust
 postgresql:
   listen: 0.0.0.0:5432
   connect_address: "${NODE}:5432"

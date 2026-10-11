@@ -32,7 +32,39 @@ case "${1:-help}" in
   promote-dc2)  # DR: DC2 becomes a normal (writable) cluster. Through Patroni's DCS (edit-config), never by hand on PostgreSQL.
     l=$(site_leader dc2) || { echo "no DC2 leader"; exit 1; }
     docker exec "$l" bash -c "patronictl -c /etc/patroni.yml edit-config --force -s standby_cluster=null" ;;
+  agent-update) # reinstall the agent from /work (= this checkout) on every geo node and restart only the agent process (Patroni/PostgreSQL untouched, credentials kept)
+    for n in dc1-pg1 dc1-pg2 dc2-pg1 dc2-pg2 bk1; do
+      docker exec -e PG_ARCA_NO_SERVICE=1 "$n" bash /work/unix-agent/install-agent.sh >/dev/null 2>&1 || echo "$n: install FAILED"
+      docker exec "$n" pkill -f '^python3 /opt/pg-arca/pg-arca-agent.py' || true; done
+    sleep 12; for n in dc1-pg1 dc1-pg2 dc2-pg1 dc2-pg2 bk1; do echo "== $n"; docker exec "$n" tail -n 2 /var/log/pgarca/agent.out; done ;;
+  fix-dcs)   # bring both DCS to the intended geo layout, ONLY through Patroni's REST /config (= patronictl edit-config), never files:
+             #   DC1: permanent slot geo_dc2; DC2: standby_cluster -> dc1-haproxy:5000 with slot geo_dc2, no permanent slots of its own; pg_hba kept in the DCS on both
+    hba='["local all all trust","host all all 127.0.0.1/32 trust","host replication replicator 172.30.0.0/16 scram-sha-256","host all all 172.30.0.0/16 scram-sha-256"]'
+    l1=$(site_leader dc1) && docker exec -i "$l1" curl -s -XPATCH -H 'content-type: application/json' --data-binary @- localhost:8008/config <<<"{\"slots\":{\"geo_dc2\":{\"type\":\"physical\"}},\"postgresql\":{\"pg_hba\":$hba}}" >/dev/null && echo "DC1 DCS ok"
+    l2=$(site_leader dc2) && docker exec -i "$l2" curl -s -XPATCH -H 'content-type: application/json' --data-binary @- localhost:8008/config <<<"{\"slots\":null,\"standby_cluster\":{\"host\":\"dc1-haproxy\",\"port\":5000,\"primary_slot_name\":\"geo_dc2\",\"create_replica_methods\":[\"basebackup\"]},\"postgresql\":{\"pg_hba\":$hba}}" >/dev/null && echo "DC2 DCS ok"
+    sleep 15; ./geo.sh verify ;;
+  verify)    # is it REALLY a geo-redundant pair? DCS content, slot, receiver, and a row written on DC1 read back on DC2
+    ok=0; bad=0; chk() { if eval "$2"; then echo "  PASS $1"; ok=$((ok+1)); else echo "  FAIL $1"; bad=$((bad+1)); fi; }
+    l1=$(site_leader dc1 || true); l2=$(site_leader dc2 || true)
+    c1=$(docker exec "$l1" curl -s localhost:8008/config); c2=$(docker exec "$l2" curl -s localhost:8008/config)
+    r1=$(docker exec "$l1" curl -s localhost:8008/patroni | jq -r .role); r2=$(docker exec "$l2" curl -s localhost:8008/patroni | jq -r .role)
+    echo "DC1 leader $l1 ($r1), DC2 leader $l2 ($r2)"
+    chk "DC1 is a normal primary site (no standby_cluster in its DCS)" '[[ $r1 == primary || $r1 == master ]] && [[ $(jq -r ".standby_cluster // empty" <<<"$c1") == "" ]]'
+    chk "DC1 DCS has the permanent slot geo_dc2" '[[ $(jq -r ".slots.geo_dc2.type // empty" <<<"$c1") == physical ]]'
+    chk "DC2 is a standby cluster led by a standby leader" '[[ $r2 == standby_leader ]]'
+    chk "DC2 DCS standby_cluster -> dc1-haproxy:5000 slot geo_dc2" '[[ $(jq -r ".standby_cluster | \"\(.host):\(.port):\(.primary_slot_name)\"" <<<"$c2") == dc1-haproxy:5000:geo_dc2 ]]'
+    chk "DC2 DCS has no permanent slots of its own" '[[ $(jq -r ".slots // {} | length" <<<"$c2") == 0 ]]'
+    chk "pg_hba kept in both DCS (edit-config)" '[[ $(jq -r ".postgresql.pg_hba | length" <<<"$c1") -gt 0 && $(jq -r ".postgresql.pg_hba | length" <<<"$c2") -gt 0 ]]'
+    act=$(docker exec "$l1" gosu postgres psql -XAtc "select active from pg_replication_slots where slot_name='geo_dc2'")
+    rcv=$(docker exec "$l2" gosu postgres psql -XAtc "select status||'@'||sender_host from pg_stat_wal_receiver")
+    chk "slot geo_dc2 active on the DC1 leader" '[[ $act == t ]]'
+    chk "DC2 standby leader streams from DC1 (wal receiver: $rcv)" '[[ $rcv == streaming@dc1-haproxy ]]'
+    tok="geo-$(date +%s%N)"
+    docker exec "$l1" gosu postgres psql -XAtqc "create table if not exists geo_probe(t text, at timestamptz default now()); insert into geo_probe(t) values ('$tok')" >/dev/null
+    seen=""; for _ in $(seq 30); do for n in dc2-pg1 dc2-pg2; do [[ $(docker exec "$n" gosu postgres psql -XAtc "select count(*) from geo_probe where t='$tok'" 2>/dev/null) == 1 ]] && seen="$seen $n"; done; [[ $seen == *dc2-pg1* && $seen == *dc2-pg2* ]] && break; seen=""; sleep 1; done
+    chk "a row written on DC1 is readable on both DC2 nodes" '[[ $seen == *dc2-pg1* && $seen == *dc2-pg2* ]]'
+    echo "$ok passed, $bad failed"; [[ $bad == 0 ]] ;;
   organise)  # put both sites in the console folder 'geo' and name them
     for c in $($API GET /api/clusters | jq -r '.clusters[] | select(.name|test("^geo-dc")) | .id'); do $API PATCH /api/clusters/$c '{"folder":"geo"}' >/dev/null; done; echo done ;;
-  *) sed -n 2,3p "$0"; echo "commands: up down reset status latency <ms> wan-cut wan-restore promote-dc2 organise" ;;
+  *) sed -n 2,3p "$0"; echo "commands: up down reset status verify fix-dcs agent-update latency <ms> wan-cut wan-restore promote-dc2 organise" ;;
 esac
