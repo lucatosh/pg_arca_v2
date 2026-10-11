@@ -48,6 +48,9 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
   // unauthenticated sockets are refused
   const bad = new WebSocket(`ws://127.0.0.1:${port}/ws/logs?deny=1`); const code = await new Promise<number>(r => bad.on('close', c => r(c))); assert.strictEqual(code, 4401);
+  // a page on another site cannot open the stream with the operator's cookie (cross-site WebSocket hijacking)
+  const evil = new WebSocket(`ws://127.0.0.1:${port}/ws/logs`, { origin: 'https://evil.example' }); const ecode = await new Promise<number>(r => evil.on('close', c => r(c))); assert.strictEqual(ecode, 4403);
+  const same = new WebSocket(`ws://127.0.0.1:${port}/ws/logs`, { origin: `http://127.0.0.1:${port}` }); await new Promise<void>((r, j) => { same.on('open', () => r()); same.on('close', c => j(new Error('same origin refused ' + c))); }); same.close();
 
   // closing clients stops watching (after the linger) and frees the subscription
   a.ws.close(); b.ws.close(); await sleep(100);

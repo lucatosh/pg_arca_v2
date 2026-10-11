@@ -18,6 +18,7 @@ interface WsSubscription {
   subscribed?: boolean;
   queue?: LiveLogEntry[];
   dropped?: number;
+  req?: any;                 // the upgrade request: its session cookie is re-checked periodically
 }
 
 const activeSubscriptions = new Set<WsSubscription>();
@@ -25,8 +26,10 @@ const activeSubscriptions = new Set<WsSubscription>();
 // Create WebSocket server attached to HTTP server on /ws/logs
 let wss: WebSocketServer;
 export function attachLogSocket(server: http.Server, authenticate: (req: any) => string | null = sessionUser) {
-  wss = new WebSocketServer({ server, path: '/ws/logs' });
+  wss = new WebSocketServer({ server, path: '/ws/logs', maxPayload: 16 * 1024 });     // clients only send small filter messages
   wss.on('connection', (ws: WebSocket, req: any) => onConnection(ws, req, authenticate));
+  // a session that ends (logout, user disabled or removed, expiry) also ends its live log stream
+  setInterval(() => { for (const s of activeSubscriptions) if (s.req && !authenticate(s.req)) { try { s.ws.close(4401, 'session ended'); } catch { /* gone */ } } }, 15_000).unref();
 }
 
 function shouldEmitLogToSub(sub: WsSubscription, entry: LiveLogEntry): boolean {
@@ -84,8 +87,20 @@ function recompute() {
 }
 setInterval(recompute, 2000).unref();
 
+/** Same origin as the console (Host, or X-Forwarded-Host behind a proxy), or listed in PG_ARCA_ALLOWED_ORIGINS (comma separated). No Origin header = not a browser: allowed (the session cookie is still required). */
+export function originAllowed(req: any): boolean {
+  const origin = String(req.headers?.origin || '');
+  if (!origin) return true;
+  const o = origin.replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase();
+  const hosts = [req.headers?.host, req.headers?.['x-forwarded-host']].filter(Boolean).flatMap((h: string) => String(h).split(',')).map(h => h.trim().toLowerCase());
+  const extra = String(process.env.PG_ARCA_ALLOWED_ORIGINS || '').split(',').map(x => x.trim().replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase()).filter(Boolean);
+  return hosts.includes(o) || extra.includes(o);
+}
+
 function onConnection(ws: WebSocket, req: any, authenticate: (req: any) => string | null) {
   if (!authenticate(req)) { ws.close(4401, 'unauthenticated'); return; }
+  // cross-site WebSocket hijacking: a page on another site must not open the stream with the operator's cookie
+  if (!originAllowed(req)) { ws.close(4403, 'origin not allowed'); return; }
   const sub: WsSubscription = {
     ws,
     clusterId: 'all',
@@ -93,6 +108,7 @@ function onConnection(ws: WebSocket, req: any, authenticate: (req: any) => strin
     service: 'all',
     minLevel: 'all',
     isPaused: false,
+    req,
     subscribed: false              // nothing is sent (and nothing is "watched") until the client says what it wants to see
   };
   activeSubscriptions.add(sub);
@@ -111,7 +127,7 @@ function onConnection(ws: WebSocket, req: any, authenticate: (req: any) => strin
         if (msg.nodeName !== undefined) sub.nodeName = msg.nodeName;
         if (msg.service !== undefined) sub.service = msg.service;
         if (msg.minLevel !== undefined) sub.minLevel = msg.minLevel;
-        if (msg.search !== undefined) sub.search = msg.search;
+        if (msg.search !== undefined) sub.search = typeof msg.search === 'string' ? msg.search.slice(0, 200) : undefined;
         if (msg.isPaused !== undefined) sub.isPaused = msg.isPaused;
         recompute();
         if (msg.type === 'subscribe') sendInit();          // the client replaces its list with the filtered backlog

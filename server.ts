@@ -43,6 +43,13 @@ app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  if (process.env.NODE_ENV === 'production') {
+    // everything the console loads comes from itself; inline style ATTRIBUTES are used by React components (widths of bars), inline scripts never
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'");
+    if (_req.secure || process.env.PG_ARCA_COOKIE_SECURE === '1') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  }
   next();
 });
 app.use(express.json({ limit: '4mb' }));
