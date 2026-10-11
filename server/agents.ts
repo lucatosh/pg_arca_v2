@@ -181,7 +181,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       if (b.discovery) n.discovery = b.discovery;
       reconcileCluster(d, node.id);
       if (n.clusterId) refreshCluster(d, n.clusterId);
-    });
+    }, { lazy: true });                                    // telemetry: recomputed at every heartbeat, written within seconds (store.ts LAZY_MS)
     const max = Math.max(0, Math.min(Number(b.max_ops ?? 1) || 1, 5));
     // Long-poll: hold the request (<= wait_seconds) until an operation is runnable for this node, so operator
     // actions reach NAT'ed agents in ~a second without any inbound port.

@@ -114,7 +114,7 @@ def sc_schema():
 def promote(scn, obj, stage, mode="replace"):
     o = op("restore_object", {"object": obj, "stage_db": stage, "target_time": TOK[0]}); check(scn, "restore_object %s" % obj, o["status"] == "succeeded", str(o.get("error") or ""))
     if o["status"] != "succeeded": return None
-    o = op("restore_promote", {"stage_db": stage, "object": obj, "mode": mode}); check(scn, "restore_promote %s (%s)" % (obj, mode), o["status"] == "succeeded", str(o.get("error") or ""))
+    o = op("restore_promote", dict({"stage_db": stage, "object": obj, "mode": mode}, **({"confirm": "SOSTITUISCI"} if mode == "replace" else {}))); check(scn, "restore_promote %s (%s)" % (obj, mode), o["status"] == "succeeded", str(o.get("error") or ""))
     return o.get("result")
 
 
@@ -136,7 +136,7 @@ def promote_many(scn, objs, stage, mode="replace"):
     o = op("restore_object", {"object": objs[0], "objects": objs, "stage_db": stage, "target_time": TOK[0]}); check(scn, "restore_object %s" % ", ".join(x.split(".", 1)[1] for x in objs), o["status"] == "succeeded", str(o.get("error") or ""))
     if o["status"] != "succeeded": return None
     d = op("restore_promote", {"stage_db": stage, "mode": mode, "dry_run": True}); check(scn, "promotion dry-run gives a plan", d["status"] == "succeeded" and bool((d.get("result") or {}).get("tables")), str(d.get("error") or ""))
-    o = op("restore_promote", {"stage_db": stage, "mode": mode}); check(scn, "restore_promote (%s)" % mode, o["status"] == "succeeded", str(o.get("error") or ""))
+    o = op("restore_promote", dict({"stage_db": stage, "mode": mode}, **({"confirm": "SOSTITUISCI"} if mode == "replace" else {}))); check(scn, "restore_promote (%s)" % mode, o["status"] == "succeeded", str(o.get("error") or ""))
     return o.get("result")
 
 

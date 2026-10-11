@@ -15,7 +15,17 @@ import { audit } from './ops';
 const SESSION_TTL_MS = 12 * 3600 * 1000;
 const COOKIE = 'arca_session';
 const sessions = new Map<string, { user: string; exp: number }>();
-const failures = new Map<string, { n: number; until: number }>();
+/** Failed logins: back-off per (source address, user name), so that one person mistyping a password (or someone guessing one account) does not lock out
+ *  everybody else behind the same proxy / NAT; plus a loose cap per source address against guessing across many user names. Entries expire on their own. */
+const failures = new Map<string, { n: number; until: number; last: number }>();
+const ipWindow = new Map<string, { n: number; since: number }>();
+const IP_MAX_FAILS = 30, IP_WINDOW_MS = 10 * 60_000;
+function pruneFailures(now: number) {
+  if (failures.size + ipWindow.size < 5000) return;
+  for (const [k, v] of failures) if (now - v.last > 3600_000) failures.delete(k);
+  for (const [k, v] of ipWindow) if (now - v.since > IP_WINDOW_MS) ipWindow.delete(k);
+}
+let DUMMY: { salt: string; hash: string } | null = null;          // an unknown user costs the same scrypt as a known one: no user enumeration by timing
 
 export type Role = 'admin' | 'operator' | 'viewer';
 export const ROLES: Role[] = ['admin', 'operator', 'viewer'];
@@ -146,20 +156,30 @@ export function mountAuthRoutes(app: any, store: Store) {
   });
 
   app.post('/api/auth/login', async (req: Request, res: Response) => {
-    const ip = req.socket.remoteAddress || '?';
-    const f = failures.get(ip);
-    if (f && f.until > Date.now()) return res.status(429).json({ error: 'too_many_attempts', retryAfterSeconds: Math.ceil((f.until - Date.now()) / 1000) });
-    const st = store.peek().settings; const adm = st.admin;
+    const ip = req.ip || req.socket.remoteAddress || '?';
+    const now = Date.now(); pruneFailures(now);
     const { username, password } = req.body || {};
+    const uname = typeof username === 'string' ? username.slice(0, 64) : '?';
+    const fk = ip + '\u0000' + uname.toLowerCase();
+    const f = failures.get(fk); const w = ipWindow.get(ip);
+    const ipBlocked = !!w && now - w.since < IP_WINDOW_MS && w.n >= IP_MAX_FAILS;
+    if ((f && f.until > now) || ipBlocked) {
+      const until = ipBlocked ? w!.since + IP_WINDOW_MS : f!.until;
+      return res.status(429).json({ error: 'too_many_attempts', retryAfterSeconds: Math.ceil((until - now) / 1000) });
+    }
+    const st = store.peek().settings; const adm = st.admin;
     const rec: { salt: string; hash: string } | undefined = typeof username === 'string' ? (adm && username === adm.user ? adm : own(st.users, username)) : undefined;
-    const ok = !!rec && typeof password === 'string' && !!roleOf(store, username) && verifyPassword(password, rec);
+    const pw = typeof password === 'string' ? password : '';
+    const good = verifyPassword(pw, rec || (DUMMY ||= hashPassword('pg_arca-dummy-password')));
+    const ok = !!rec && typeof password === 'string' && !!roleOf(store, username) && good;
     if (!ok) {
       const n = (f?.n || 0) + 1;
-      failures.set(ip, { n, until: Date.now() + Math.min(60_000, 500 * 2 ** n) });
-      await store.mutate(d => audit(d, { actor: String(username || '?').slice(0, 64), action: 'auth.login', status: 'FAILED', details: { ip } }));
+      failures.set(fk, { n, until: now + Math.min(60_000, 500 * 2 ** n), last: now });
+      if (!w || now - w.since >= IP_WINDOW_MS) ipWindow.set(ip, { n: 1, since: now }); else w.n++;
+      await store.mutate(d => audit(d, { actor: uname, action: 'auth.login', status: 'FAILED', details: { ip } }));
       return res.status(401).json({ error: 'invalid_credentials' });
     }
-    failures.delete(ip);
+    failures.delete(fk);
     startSession(req, res, username);
     await store.mutate(d => audit(d, { actor: username, action: 'auth.login', status: 'OK', details: { ip } }));
     res.json({ ok: true, user: username, role: roleOf(store, username) });

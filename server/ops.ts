@@ -154,7 +154,7 @@ export function lease(store: Store, nodeId: string, max = 1, leaseSeconds = 120,
       op.leaseUntil = new Date(now + leaseSeconds * 1000).toISOString();
       push(op, 'leased', `attempt ${op.attempts}`);
       busy.add(laneKey);
-      out.push(structuredClone(op));
+      out.push(JSON.parse(JSON.stringify(op)));   // a detached copy for the wire (op is a live proxy here)
     }
     return out;
   });
@@ -187,7 +187,7 @@ export function report(store: Store, nodeId: string, opId: string, status: 'runn
     op.leaseUntil = undefined;
     audit(draft, { clusterId: op.clusterId, actor: `agent:${nodeId}`, action: `op.${op.type}`, status: status.toUpperCase(), details: { opId, error } });
     return { ok: true, op };
-  });
+  }, { lazy: status === 'running' });          // progress keep-alives: telemetry, written within seconds; outcomes are durable before the reply
 }
 
 /** Operator cancel: only possible before an agent picked it up. */

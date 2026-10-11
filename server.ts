@@ -27,7 +27,8 @@ import { buildDemoCluster } from './server/demo';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.set('case sensitive routing', true);   // defence in depth: the auth gate also lower-cases
+app.set('case sensitive routing', true);
+if (process.env.PG_ARCA_TRUST_PROXY) app.set('trust proxy', /^\d+$/.test(process.env.PG_ARCA_TRUST_PROXY) ? Number(process.env.PG_ARCA_TRUST_PROXY) : process.env.PG_ARCA_TRUST_PROXY);   // behind a reverse proxy: req.ip = the real client (login back-off, audit)   // defence in depth: the auth gate also lower-cases
 process.on('unhandledRejection', (e: any) => console.error('[pg_arca] unhandled rejection (kept running):', e?.stack || e));
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const server = http.createServer(app);
@@ -106,6 +107,9 @@ if (process.env.NODE_ENV === 'production') {
     app.use(vite.middlewares);
   });
 }
+
+// a clean stop writes what is still only in memory (telemetry is written lazily, within seconds)
+for (const sig of ['SIGTERM', 'SIGINT'] as const) process.once(sig, () => { store.flush().catch(() => undefined).finally(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); });
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[pg_arca] Console on http://0.0.0.0:${PORT} (live logs on /ws/logs)`);

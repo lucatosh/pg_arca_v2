@@ -77,6 +77,8 @@ import { mountAuthRoutes, requireAdmin, requiredRole, can } from '../../server/a
   assert.equal((await call('PATCH', '/api/users/ops', { disabled: true }, A)).status, 200);
   assert.equal((await call('GET', '/api/clusters', undefined, O)).status, 401);                          // disabled → session revoked
   assert.equal((await call('POST', '/api/auth/login', { username: 'ops', password: 'operator-password-1' })).status, 401);
+  // the back-off is per user name: someone else behind the same address can still sign in at once
+  await login('viewer1', 'viewer-password-12');
   assert.equal((await call('PATCH', '/api/users/viewer1', { role: 'operator' }, A)).status, 200);
   assert.equal((await call('GET', '/api/clusters', undefined, V)).status, 401);                          // role change → re-login
   assert.equal((await call('DELETE', '/api/users/viewer1', undefined, A)).status, 200);

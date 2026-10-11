@@ -4,10 +4,19 @@
  * Guarantees:
  *  - ATOMIC: every commit is written to a temp file, fsync'ed, then rename()d over the
  *    live file (POSIX-atomic). A crash leaves either the old or the new state, never a mix.
- *  - SERIALIZED: all mutations run one at a time through a promise queue, so concurrent
- *    HTTP requests cannot interleave read-modify-write cycles.
+ *  - SERIALIZED: a mutation function runs synchronously, start to end, on the live state: nothing
+ *    can interleave with it (single thread, no await inside), so read-modify-write cycles never mix.
  *  - RECOVERABLE: previous generation kept as state.json.bak and used if the main file is corrupt.
- *  - TRANSACTIONAL: `mutate(fn)` runs fn on a deep copy; if fn throws, nothing is committed.
+ *  - TRANSACTIONAL: `mutate(fn)` records every change fn makes (undo journal through a Proxy); if fn
+ *    throws, the journal is replayed backwards and the state is exactly what it was.
+ *  - DURABLE BEFORE ACK: the promise of a mutation resolves only once a write that contains it is on
+ *    disk (fsync'ed). Writes are grouped: while one is in flight, the mutations that follow are
+ *    committed together by the next one (group commit). A mutation that changes nothing writes nothing.
+ *
+ * Why not a deep copy per mutation (what this store did before): measured on a 4 MB state (10 nodes,
+ * 300 operations with results, 5000 audit rows) one structuredClone cost ~100 ms of blocked event loop,
+ * and EVERY agent heartbeat is a mutation: tens of nodes would saturate the console. See
+ * tests/server/store.test.ts for the semantics and the timing check.
  */
 import fs from 'fs';
 import path from 'path';
@@ -102,10 +111,71 @@ function emptyState(): AppState {
            directConnections: {}, operations: [], audit: [], settings: {} };
 }
 
+/** One mutation in flight: wraps the live state in proxies that record how to undo each change. */
+class Tx {
+  readonly undo: (() => void)[] = [];
+  private proxies = new WeakMap<object, any>();     // target -> proxy
+  private targets = new WeakMap<object, object>();  // proxy -> target
+  private known = new WeakSet<object>();            // objects that already belong to the state (never walked by unwrap)
+
+  wrap<T>(v: T): T {
+    if (v === null || typeof v !== 'object') return v;
+    if (this.targets.has(v as any)) return v;
+    let p = this.proxies.get(v as any);
+    if (!p) {
+      const tx = this;
+      this.known.add(v as any);
+      p = new Proxy(v as any, {
+        get(t, k) { const x = Reflect.get(t, k); return typeof x === 'object' && x !== null ? tx.wrap(x) : x; },
+        set(t, k, val) {
+          const had = Object.prototype.hasOwnProperty.call(t, k); const old = t[k];
+          const len = Array.isArray(t) ? t.length : -1;        // writing past the end of an array grows `length` implicitly: undo must shrink it back
+          tx.undo.push(() => { if (had) t[k] = old; else delete t[k]; if (len >= 0) t.length = len; });
+          t[k] = tx.unwrap(val); return true;
+        },
+        deleteProperty(t, k) {
+          if (!Object.prototype.hasOwnProperty.call(t, k)) return true;
+          const old = t[k]; tx.undo.push(() => { t[k] = old; });
+          delete t[k]; return true;
+        },
+        defineProperty(t, k, desc) {
+          const had = Object.getOwnPropertyDescriptor(t, k);
+          tx.undo.push(() => { if (had) Object.defineProperty(t, k, had); else delete t[k]; });
+          if ('value' in desc) desc = { ...desc, value: tx.unwrap(desc.value) };
+          return Reflect.defineProperty(t, k, desc);
+        },
+      });
+      this.proxies.set(v as any, p); this.targets.set(p, v as any);
+    }
+    return p;
+  }
+
+  /** The value that goes INTO the state: proxies replaced by what they wrap, also inside freshly built objects/arrays (`{...cluster, x}` copies proxies). */
+  unwrap(v: any, depth = 0): any {
+    if (v === null || typeof v !== 'object') return v;
+    const t = this.targets.get(v);
+    if (t) return t;
+    if (this.known.has(v) || depth > 64) return v;
+    const proto = Object.getPrototypeOf(v);
+    if (!Array.isArray(v) && proto !== Object.prototype && proto !== null) return v;
+    this.known.add(v);
+    for (const k of Object.keys(v)) { const x = v[k]; if (x !== null && typeof x === 'object') { const u = this.unwrap(x, depth + 1); if (u !== x) v[k] = u; } }
+    return v;
+  }
+
+  rollback() { for (let i = this.undo.length - 1; i >= 0; i--) { try { this.undo[i](); } catch { /* keep going: best effort to the last step */ } } }
+}
+
 export class Store {
   private state: AppState;
-  private queue: Promise<unknown> = Promise.resolve();
   readonly file: string;
+  private dirty = false;
+  private writing: Promise<void> | null = null;
+  private waiters: { resolve: () => void; reject: (e: any) => void }[] = [];
+  /** test hook / metrics: how many times the state file was written */
+  writes = 0;
+  static LAZY_MS = 5000;
+  private lazyTimer: NodeJS.Timeout | null = null;
 
   constructor(readonly dir: string) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -140,38 +210,65 @@ export class Store {
   }
 
   /**
-   * Run `fn` on a draft copy. If it returns normally the draft is persisted atomically and
-   * becomes the new state; if it throws, state is untouched. Calls are strictly serialized.
+   * Run `fn` on the state (synchronously: fn must not be async). If it throws, every change it made is undone and the promise rejects.
+   * Otherwise the promise resolves with fn's result once the change is on disk. A fn that changes nothing resolves at once, without a write.
+   * The result never contains proxies: it is the state's own objects (or fn's fresh ones), as with the previous implementation.
    */
-  mutate<T>(fn: (draft: AppState) => T): Promise<T> {
-    const run = async (): Promise<T> => {
-      const draft = structuredClone(this.state);
-      const out = fn(draft);
-      this.persist(draft);
-      this.state = draft;
-      return out;
-    };
-    const p = this.queue.then(run, run);
-    this.queue = p.catch(() => undefined);
-    return p;
+  mutate<T>(fn: (draft: AppState) => T, opts: { lazy?: boolean } = {}): Promise<T> {
+    const tx = new Tx();
+    let out: T;
+    try {
+      out = tx.unwrap(fn(tx.wrap(this.state)));
+    } catch (e) {
+      tx.rollback();
+      return Promise.reject(e);
+    }
+    if (!tx.undo.length) return Promise.resolve(out);
+    this.dirty = true;
+    if (opts.lazy) {                                 // telemetry (heartbeat snapshot, progress counters): losing the last seconds of it in a crash is harmless; written within LAZY_MS
+      if (!this.lazyTimer) { this.lazyTimer = setTimeout(() => { this.lazyTimer = null; if (this.dirty) this.flush().catch(() => undefined); }, Store.LAZY_MS); this.lazyTimer.unref?.(); }
+      return Promise.resolve(out);
+    }
+    return new Promise<T>((resolve, reject) => {
+      this.waiters.push({ resolve: () => resolve(out), reject });
+      this.kick();
+    });
   }
 
-  private persist(s: AppState) {
+  /** Resolves when everything committed so far is on disk. */
+  flush(): Promise<void> {
+    if (!this.dirty && !this.writing) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => { this.waiters.push({ resolve, reject }); this.kick(); });
+  }
+
+  private kick() {
+    if (this.writing) return;                        // the running write will look at `dirty` when it is done
+    const batch = this.waiters; this.waiters = [];
+    this.dirty = false;
+    const data = JSON.stringify(this.state);         // the snapshot of this batch: everything committed up to now
+    this.writing = this.persist(data).then(
+      () => { this.writes++; for (const w of batch) w.resolve(); },
+      (e) => { this.dirty = true; console.error('[store] cannot write the state:', e?.message || e); for (const w of batch) w.reject(e); },
+    ).finally(() => {
+      this.writing = null;
+      if (this.waiters.length) this.kick();          // group commit: everything that arrived meanwhile goes in one write
+    });
+  }
+
+  private async persist(data: string) {
     const tmp = `${this.file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    const data = JSON.stringify(s);
-    const fd = fs.openSync(tmp, 'w', 0o600);
+    const fh = await fs.promises.open(tmp, 'w', 0o600);
     try {
-      fs.writeSync(fd, data);
-      fs.fsyncSync(fd);
+      await fh.writeFile(data);
+      await fh.sync();
     } finally {
-      fs.closeSync(fd);
+      await fh.close();
     }
-    try { fs.copyFileSync(this.file, this.file + '.bak'); } catch { /* first write */ }
-    fs.renameSync(tmp, this.file);
-    try {                                   // make the rename itself durable
-      const dfd = fs.openSync(this.dir, 'r');
-      fs.fsyncSync(dfd);
-      fs.closeSync(dfd);
+    try { await fs.promises.rename(this.file, this.file + '.bak'); } catch { /* first write */ }   // the previous generation (a crash right here leaves only .bak: load() uses it)
+    await fs.promises.rename(tmp, this.file);
+    try {                                   // make the renames themselves durable
+      const dh = await fs.promises.open(this.dir, 'r');
+      try { await dh.sync(); } finally { await dh.close(); }
     } catch { /* not supported on some FS */ }
   }
 }

@@ -68,7 +68,7 @@ sql("postgres", "DROP DATABASE IF EXISTS erp_pitr WITH (FORCE)")
 print("== table in a TABLESPACE: restore_object + promote")
 sql("erp", "DROP TABLE invoices"); sql("postgres", "SELECT pg_switch_wal()"); time.sleep(6)
 o = op("restore_object", {"object": "erp.public.invoices", "stage_db": "pgarca_stage_solo", "target_time": t_ok}); check("restore_object invoices", o["status"] == "succeeded", show(o))
-o2 = op("restore_promote", {"stage_db": "pgarca_stage_solo", "object": "erp.public.invoices", "mode": "replace"}); check("restore_promote", o2["status"] == "succeeded", show(o2))
+o2 = op("restore_promote", {"stage_db": "pgarca_stage_solo", "object": "erp.public.invoices", "mode": "replace", "confirm": "SOSTITUISCI"}); check("restore_promote", o2["status"] == "succeeded", show(o2))
 check("invoices identical", fp("erp", "invoices") == base["invoices"])
 
 print("== restore drill (whole cluster in scratch)")
