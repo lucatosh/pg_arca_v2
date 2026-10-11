@@ -11,7 +11,7 @@ class Advisor(unittest.TestCase):
         return {f["code"]: f["severity"] for f in advise(scan)}
 
     def test_healthy_instance_has_no_findings_beyond_tools(self):
-        scan = {"toolchain": {"psql": "/x", "pg_waldump": "/x", "zstd": "/x"}, "postgres_instances": [{
+        scan = {"toolchain": {"psql": "/x", "pg_waldump": "/x", "zstd": "/x", "python_zstandard": "installed"}, "postgres_instances": [{
             "data_directory": "/d", "major_version": "16", "running": True, "readable_by_agent": True, "settings": {"ssl": "on"},
             "archiving": {"archive_mode": "on", "foreign_tool": None}, "control": {"available": True, "data_checksums": True, "wal_level": "replica"}}]}
         self.assertEqual(self.codes(scan), {})
@@ -19,7 +19,7 @@ class Advisor(unittest.TestCase):
     def test_two_running_instances_on_one_host_are_called_out(self):
         inst = lambda d, p: {"data_directory": d, "port": p, "major_version": "16", "running": True, "readable_by_agent": True, "settings": {"ssl": "on"},
                              "archiving": {"archive_mode": "on", "foreign_tool": None}, "control": {"available": True, "data_checksums": True, "wal_level": "replica"}}
-        base = {"toolchain": {"psql": "/x", "pg_waldump": "/x", "zstd": "/x"}}
+        base = {"toolchain": {"psql": "/x", "pg_waldump": "/x", "zstd": "/x", "python_zstandard": "installed"}}
         self.assertNotIn("MULTI_INSTANCE", self.codes(dict(base, postgres_instances=[inst("/a", 5432)])))
         self.assertEqual(self.codes(dict(base, postgres_instances=[inst("/a", 5432), inst("/b", 5433)])).get("MULTI_INSTANCE"), "warning")
 
@@ -37,7 +37,7 @@ class Advisor(unittest.TestCase):
 
     def test_version_findings_follow_the_compatibility_profile(self):
         def codes(ver):
-            return self.codes({"toolchain": {"psql": "x", "pg_waldump": "x", "zstd": "x"}, "postgres_instances": [{"data_directory": "/d", "major_version": ver, "running": True,
+            return self.codes({"toolchain": {"psql": "x", "pg_waldump": "x", "zstd": "x", "python_zstandard": "installed"}, "postgres_instances": [{"data_directory": "/d", "major_version": ver, "running": True,
                                "readable_by_agent": True, "settings": {"ssl": "on"}, "archiving": {"archive_mode": "on"}, "control": {"available": True, "data_checksums": True, "wal_level": "replica"}}]})
         self.assertEqual(codes("9.6").get("PG_UNSUPPORTED"), "critical")
         self.assertEqual(codes("11").get("PG_LEGACY"), "warning")

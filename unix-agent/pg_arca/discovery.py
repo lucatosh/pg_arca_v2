@@ -202,8 +202,8 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
         add("critical", "NO_PSQL", "psql non trovato", "L'agent usa psql per interrogare PostgreSQL ed eseguire backup e ripristini.", "Installa il pacchetto client di PostgreSQL.", "host")
     if not tc.get("pg_waldump"):
         add("info", "NO_WALDUMP", "pg_waldump non trovato", "Senza pg_waldump non si possono cercare DROP/TRUNCATE nei WAL.", "Installa i binari del server PostgreSQL (postgresql-NN).", "host")
-    if not tc.get("python_zstandard") and not tc.get("zstd"):
-        add("info", "NO_ZSTD", "Compressione zstd non disponibile", "I blocchi verranno compressi con zlib (più grandi e più lenti).", "pip install zstandard (o installa il comando zstd).", "host")
+    if not tc.get("python_zstandard"):                         # the zstd COMMAND only serves the WAL archive: the backup chunks need the python module
+        add("warning", "NO_ZSTD", "Compressione zstd non disponibile per i backup", "I blocchi verranno compressi con zlib: misurato da 5 a 10 volte più lento per core (sul lab un backup di 10 GB ha richiesto 12 minuti a ~14 MB/s).", "Installa il pacchetto python3-zstandard (Debian/Ubuntu; EPEL su RHEL) oppure pip install zstandard per il python dell'agent.", "host")
     running = [i for i in scan.get("postgres_instances") or [] if i.get("running")]
     if len(running) > 1:
         add("warning", "MULTI_INSTANCE", "Più istanze PostgreSQL in esecuzione su questo server",
@@ -327,7 +327,11 @@ class ClusterDiscoveryEngine:
             import zstandard  # noqa: F401
             found["python_zstandard"] = "installed"
         except Exception:
-            found["python_zstandard"] = None
+            try:
+                from compression import zstd  # noqa: F401           Python >= 3.14: in the standard library
+                found["python_zstandard"] = "stdlib"
+            except Exception:
+                found["python_zstandard"] = None
         return found
 
     def _find_bin(self, name: str, bin_dirs: Optional[List[str]] = None) -> Optional[str]:

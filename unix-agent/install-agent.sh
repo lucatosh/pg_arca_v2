@@ -53,6 +53,12 @@ if ! command -v python3 >/dev/null; then
   if command -v dnf >/dev/null; then dnf install -y -q python3; elif command -v apt-get >/dev/null; then apt-get update -qq && apt-get install -y -qq python3; else die "python3 missing"; fi
 fi
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,6) else 1)' || die "Python >= 3.6 required"
+# python zstandard: the chunk compressor of the backups. Without it the agent falls back to zlib, measured 5-10x slower per core on database pages
+# (the lab: zlib ~16-80 MB/s per core). Debian/Ubuntu: python3-zstandard; RHEL/Rocky/Alma: python3-zstandard from EPEL (or AppStream on newer releases).
+if ! python3 -c 'import zstandard' 2>/dev/null && ! python3 -c 'from compression import zstd' 2>/dev/null; then
+  { command -v apt-get >/dev/null && apt-get install -y -qq python3-zstandard >/dev/null 2>&1; } || { command -v dnf >/dev/null && dnf install -y -q python3-zstandard >/dev/null 2>&1; } \
+    || echo "WARN: python3-zstandard not available: backups will use zlib (much slower). Install python3-zstandard (EPEL on RHEL) or 'pip3 install zstandard' for the agent's python."
+fi
 if ! command -v zstd >/dev/null; then
   { command -v dnf >/dev/null && dnf install -y -q zstd; } || { command -v apt-get >/dev/null && apt-get install -y -qq zstd; } || echo "WARN: zstd not installed; WAL/chunks will be stored uncompressed"
 fi
