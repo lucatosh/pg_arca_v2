@@ -102,7 +102,12 @@ class Runtime(object):
             if p and os.path.exists(p):
                 try:
                     st = os.statvfs(p)
-                    disks[label] = {"path": p, "total_bytes": st.f_blocks * st.f_frsize, "free_bytes": st.f_bavail * st.f_frsize, "dev": os.stat(p).st_dev}   # dev: same number = same filesystem
+                    d = {"path": p, "total_bytes": st.f_blocks * st.f_frsize, "free_bytes": st.f_bavail * st.f_frsize, "dev": os.stat(p).st_dev}   # dev: same number = same filesystem
+                    # an overlay / bind mount / container volume has its own device number but the statistics of the disk below it: same size and free space = same disk
+                    twin = next((x for x in disks.values() if x["total_bytes"] == d["total_bytes"] and abs(x["free_bytes"] - d["free_bytes"]) <= max(64 << 20, d["free_bytes"] // 200)), None)
+                    if twin is not None:
+                        d["dev"] = twin["dev"]
+                    disks[label] = d
                 except OSError:
                     pass
         out["disks"] = disks

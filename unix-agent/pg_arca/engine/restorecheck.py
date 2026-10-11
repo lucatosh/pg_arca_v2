@@ -64,7 +64,15 @@ def volumes(needs):
             st = os.statvfs(p); dev = os.stat(p).st_dev
         except OSError:
             continue
-        v = vols.setdefault(dev, {"paths": [], "roles": [], "need": 0, "free": st.f_bavail * st.f_frsize, "total": st.f_blocks * st.f_frsize})
+        free, total = st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize
+        if dev not in vols:
+            # different device numbers can still be ONE disk: an overlay / bind mount / container volume reports the statistics of the filesystem below it.
+            # Same size and (almost) the same free space = treat as the same volume (summing needs is the safe side; two distinct filesystems of identical size
+            # and free space are rare, and the price is only a stricter check)
+            twin = next((k for k, x in vols.items() if x["total"] == total and abs(x["free"] - free) <= max(64 << 20, free // 200)), None)
+            if twin is not None:
+                dev = twin
+        v = vols.setdefault(dev, {"paths": [], "roles": [], "need": 0, "free": free, "total": total})
         if path not in v["paths"]:
             v["paths"].append(path)
         if role not in v["roles"]:

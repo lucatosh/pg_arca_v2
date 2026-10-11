@@ -550,14 +550,20 @@ class OperationExecutor:
             if not re.match(r"^[a-z0-9_]{1,63}$", str(p["primary_slot_name"])):
                 raise OpError("invalid slot name")
             sc["primary_slot_name"] = str(p["primary_slot_name"])
+        patch = {"standby_cluster": sc}
+        drop = [str(x) for x in (p.get("drop_slots") or [])]
+        if any(not re.match(r"^[a-z0-9_]{1,63}$", x) for x in drop):
+            raise OpError("invalid slot name in drop_slots")
+        if drop:                    # permanent slots kept for the site that is becoming primary: a standby site must not retain WAL for it (JSON merge patch: null removes)
+            patch["slots"] = dict((x, None) for x in drop)
         self._progress({"phase": "geo-demote", "msg": "standby_cluster written to the DCS: Patroni turns the leader into a standby leader"})
-        st, d = self.patroni.patch_config({"standby_cluster": sc})
+        st, d = self.patroni.patch_config(patch)
         if st >= 300:
             raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
         ok, leader, members = self._wait_role(("standby_leader",), int(p.get("timeout", 120)))
         if not ok:
             raise OpError("no standby leader within %ss (members: %s)" % (p.get("timeout", 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
-        return {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port)}
+        return {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port), "dropped_slots": drop}
 
     # ------------------------------------------------------------------ handlers: backup / restore (engine)
     def _ctx(self):

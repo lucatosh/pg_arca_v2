@@ -73,5 +73,19 @@ class Volumes(unittest.TestCase):
         self.assertIn(out[0][1], ("ok", "warn") if free - (2 << 20) > max(0.05 * total, 1 << 30) else ("bad",))
 
 
+    def test_overlay_and_volume_of_the_same_disk_count_as_one(self):
+        """Containers: the scratch (overlay) and the data (a volume) have different st_dev but the same disk below: needs must still add up."""
+        from unittest import mock
+        class St(object):
+            f_frsize = 4096; f_blocks = 25 * 2 ** 18; f_bavail = 10 * 2 ** 18          # 100 GiB disk, 40 GiB free
+        devs = {"/scr": 1, "/data": 2}
+        real_stat = os.stat
+        with mock.patch.object(restorecheck, "_existing", lambda p: p), mock.patch("os.statvfs", lambda p: St()), \
+                mock.patch("os.stat", lambda p, *a, **k: type("S", (), {"st_dev": devs[p]})() if p in devs else real_stat(p, *a, **k)):
+            vols = restorecheck.volumes([("scratch", "/scr", 25 << 30), ("data", "/data", 20 << 30)])
+        self.assertEqual(len(vols), 1)
+        self.assertEqual(vols[0]["need"], 45 << 30)
+
+
 if __name__ == "__main__":
     unittest.main()

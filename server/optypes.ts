@@ -67,7 +67,7 @@ export const OP_SPECS: Record<string, OpSpec> = {
   geo_promote: { mutating: true, target: 'patroni_node', needsPatroni: true, cancellable: false,
     validate: p => p.confirm !== 'PROMUOVI' ? 'confirm="PROMUOVI" required (the site becomes writable: if the other site still accepts writes the data diverges)' : (p.slot_for_peer !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.slot_for_peer)) ? 'invalid slot_for_peer' : null) },
   geo_demote: { mutating: true, target: 'patroni_node', needsPatroni: true, cancellable: false,
-    validate: p => p.confirm !== 'DECLASSA' ? 'confirm="DECLASSA" required (writes on this site stop at once)' : (!/^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$/.test(String(p.host || '')) ? 'host of the other site required' : (!(Number(p.port) >= 1 && Number(p.port) <= 65535) ? 'port required' : (p.primary_slot_name !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.primary_slot_name)) ? 'invalid primary_slot_name' : null))) },
+    validate: p => p.confirm !== 'DECLASSA' ? 'confirm="DECLASSA" required (writes on this site stop at once)' : (!/^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$/.test(String(p.host || '')) ? 'host of the other site required' : (!(Number(p.port) >= 1 && Number(p.port) <= 65535) ? 'port required' : (p.primary_slot_name !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.primary_slot_name)) ? 'invalid primary_slot_name' : (p.drop_slots !== undefined && (!Array.isArray(p.drop_slots) || p.drop_slots.some((x: any) => !/^[a-z0-9_]{1,63}$/.test(String(x)))) ? 'invalid drop_slots' : null)))) },
   patroni_config_patch: {
     mutating: true, target: 'patroni_node', needsPatroni: true,
     validate: p => {

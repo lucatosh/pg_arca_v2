@@ -73,6 +73,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         const tone = bad ? 'bad' : warn ? 'warn' : 'ok';
         return <button className={`fleetstate ${tone}`} onClick={() => go('today')} title="Stato complessivo: apri «Oggi» per le cause e i passi successivi"><Dot kind={tone} />
           <span className="lbl">{bad ? `${bad} ${bad === 1 ? 'cluster critico' : 'cluster critici'}` : warn ? `${warn} da controllare` : 'Tutto in ordine'}</span><span className="lbl faint small">{real.length - bad - warn}/{real.length} ok</span></button>; })() : null}
+      <div className="sidescroll">
       <div className="sgroup">Panoramica</div>
       <nav>
         {nav('today', 'today', 'alert', 'Oggi', urgent ? <span className={`navcount ${hc?.critical ? 'bad' : 'warn'}`}>{urgent}</span> : null)}
@@ -101,6 +102,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         {workers.map(w => <button key={w.id} className="citem" title={w.label || w.name} aria-current={route.page === 'worker' && route.id === w.id ? 'page' : undefined} onClick={() => go(`w/${encodeURIComponent(w.id)}`)}>
           <Dot kind={w.online ? 'ok' : 'bad'} /><span className="n lbl">{w.name}</span><span className="faint small lbl">{w.roles.includes('repository') ? 'backup' : w.roles.includes('recovery') ? 'recupero' : ''}</span></button>)}
         {!workers.length ? <button className="citem" onClick={() => go('workers')}><Icon n="server" s={14} /><span className="n lbl small" style={{ color: 'var(--side-ink-2)' }}>Backup server, host di recupero…</span></button> : null}
+      </div>
       </div>
       <div className="foot">
         <span className="trunc who" title={user}><Icon n="user" s={14} /> {user}{role !== 'admin' ? <span className="faint"> · {role === 'viewer' ? 'sola lettura' : 'operatore'}</span> : null}</span>

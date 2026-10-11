@@ -406,3 +406,9 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .replicarow td { background: color-mix(in srgb, var(--surface-2, var(--surface)) 60%, transparent); }
 .fleettable .geotag { font-size: 10px; font-weight: 800; letter-spacing: .05em; padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .fleettable .geotag.p { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--ink-2, var(--ink)); }
+
+/* the whole sidebar body scrolls as one: the cluster tree is never squeezed into a few rows by the navigation above it */
+.side .sidescroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; scrollbar-width: thin; }
+.side .sidescroll .clist { flex: none; overflow: visible; }
+.side .sidescroll .wlist { max-height: none; overflow: visible; }
+.fleettable td strong { white-space: nowrap; }

@@ -19,12 +19,14 @@ import { requiresApproval, requestApproval } from './approvals';
 const ONLINE_MS = 45_000;
 const MB = 1024 * 1024;
 const online = (n: NodeRecord, now = Date.now()) => !!n.lastSeen && now - Date.parse(n.lastSeen) < ONLINE_MS;
-export const geoSlotFor = (name: string) => ('geo_' + String(name).toLowerCase().replace(/[^a-z0-9]+/g, '_')).slice(0, 63).replace(/_+$/, '');
+/** Name of the permanent slot that keeps, on the primary site, the WAL a standby SITE has not received yet: geo_<site> ("geo-dc1" -> geo_dc1, "milano" -> geo_milano). */
+export const geoSlotFor = (name: string) => { const b = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); return (b.startsWith('geo_') ? b : 'geo_' + b).slice(0, 63).replace(/_+$/, ''); };
 
 export interface Site {
   clusterId: string; name: string; environment: string; folder: string; role: 'primary' | 'standby' | 'unknown';
   leader: string | null; leaderNodeId: string | null; online: boolean; lsn: string | null; timeline: number | null;
   endpoint: { host: string; port: number } | null;                 // how the OTHER sites reach this one (configured, or what a standby site points at)
+  endpointSource?: 'configured' | 'detected' | null;
   upstream?: { host: string; port: number; slot?: string } | null; // standby site: where it replicates from
   receiver?: { status: string; sender: string; silentSec: number | null } | null;
   lagBytes?: number | null; replayDelaySec?: number | null; slot?: { name: string; active: boolean; retainedBytes: number | null } | null;
@@ -46,7 +48,7 @@ function siteOf(st: any, c: any, now: number): Site & { _sysid: string | null; _
   return {
     clusterId: c.id, name: c.name, environment: c.environment, folder: c.folder || '', role, leader: lead?.name || null, leaderNodeId: lead?.id || null,
     online: !!lead, lsn: pg.current_lsn || null, timeline: pg.timeline ?? null,
-    endpoint: c.geoEndpoint || null,
+    endpoint: c.geoEndpoint || null, endpointSource: c.geoEndpoint ? (c.geoEndpoint.detected ? 'detected' : 'configured') : null,
     upstream: sc ? { host: String(sc.host), port: Number(sc.port || 5432), slot: sc.primary_slot_name || undefined } : null,
     receiver: wr ? { status: String(wr.status || ''), sender: wr.sender_host ? `${wr.sender_host}:${wr.sender_port}` : '', silentSec: wr.silent_sec != null ? Number(wr.silent_sec) : null } : (role === 'standby' ? { status: 'none', sender: '', silentSec: null } : null),
     replayDelaySec: sl?.snapshot?.postgres?.replay_ts ? Math.max(0, Math.round((now - Date.parse(sl.snapshot.postgres.replay_ts)) / 1000)) : null,
@@ -64,6 +66,8 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
     if (list.length < 2 && !list.some(s => s.role === 'standby')) continue;
     const prim = list.find(s => s.role === 'primary');
     const primNode = prim ? (Object.values(st.nodes) as NodeRecord[]).find(n => n.id === prim.leaderNodeId) : undefined;
+    // the primary site's address as its standby sites use it: no need to type it, and it is what a later switchover back needs
+    if (prim && !prim.endpoint) { const up = list.find(s => s.role === 'standby' && s.upstream)?.upstream; if (up) { prim.endpoint = { host: up.host, port: up.port }; prim.endpointSource = 'detected'; } }
     for (const s of list) {
       if (s.role !== 'standby') continue;
       if (prim && prim._lsn !== null && s._lsn !== null) s.lagBytes = prim._lsn >= s._lsn ? Number(prim._lsn - s._lsn) : 0;
@@ -143,7 +147,9 @@ export async function runSwitchover(store: Store, job: { id: string; from: strin
     if ((to.lagBytes ?? 0) > 16 * MB) throw new Error(`${to.name} è indietro di ${Math.round((to.lagBytes || 0) / MB)} MB: attendi che si allinei`);
     const slot = geoSlotFor(from.name);
     await step(`1/4 ${from.name} diventa sito di replica di ${to.name} (${job.toEndpoint.host}:${job.toEndpoint.port}): le scritture su ${from.name} si fermano`);
-    const d = await submitTo(store, job.from, 'geo_demote', { host: job.toEndpoint.host, port: job.toEndpoint.port, primary_slot_name: slot, confirm: 'DECLASSA' }, `geo:${job.id}:demote`, job.actor);
+    // the slot the target site used on this one is useless once it is primary (and a standby site must not hold WAL for nobody): dropped in the same DCS change
+    const drop = to.upstream?.slot && /^[a-z0-9_]{1,63}$/.test(to.upstream.slot) && to.upstream.slot !== slot ? [to.upstream.slot] : [];
+    const d = await submitTo(store, job.from, 'geo_demote', { host: job.toEndpoint.host, port: job.toEndpoint.port, primary_slot_name: slot, drop_slots: drop, confirm: 'DECLASSA' }, `geo:${job.id}:demote`, job.actor);
     const dr = await waitOp(store, d.id, 240_000);
     if (dr.status !== 'succeeded') throw new Error(`declassamento di ${from.name} non riuscito: ${dr.error || dr.status}`);
     await step(`2/4 attesa che ${to.name} abbia ricevuto e applicato tutto ciò che ${from.name} ha scritto`);
@@ -172,6 +178,10 @@ export async function runSwitchover(store: Store, job: { id: string; from: strin
 export async function startSwitchover(store: Store, from: string, to: string, actor: string): Promise<{ code: number; body: any }> {
   const st = store.peek(); const target = st.clusters.find((c: any) => c.id === to); const src = st.clusters.find((c: any) => c.id === from);
   if (!target || !src) return { code: 404, body: { error: 'cluster_not_found' } };
+  const g0 = geoGroups(st).find(x => x.sites.some(s => s.clusterId === from) && x.sites.some(s => s.clusterId === to));
+  const fromSite = g0?.sites.find(s => s.clusterId === from);
+  if (fromSite?.endpoint && fromSite.endpointSource === 'detected')            // remember how the others reach the current primary: the switchover back will need it
+    await store.mutate(d => { const c = d.clusters.find((x: any) => x.id === from); if (c && !c.geoEndpoint) c.geoEndpoint = { ...fromSite.endpoint!, detected: true }; });
   if (!target.geoEndpoint) return { code: 409, body: { error: 'endpoint_required', message: `Indica prima come ${src.name} raggiunge ${target.name} (indirizzo e porta del suo leader, per esempio l’HAProxy o il VIP del sito).` } };
   if (Object.values(st.settings.geoJobs || {}).some((j: any) => j.status === 'running')) return { code: 409, body: { error: 'busy', message: 'C’è già uno switchover tra siti in corso.' } };
   const id = newId('geo');

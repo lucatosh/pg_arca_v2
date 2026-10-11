@@ -21,7 +21,9 @@ import { deriveCluster } from '../../server/view';
   });
 
   // 1. pairing + replication state
+  assert.strictEqual(geoSlotFor('geo-dc1'), 'geo_dc1'); assert.strictEqual(geoSlotFor('Milano Nord'), 'geo_milano_nord');
   let g = geoGroups(store.peek()); assert.strictEqual(g.length, 1); assert.strictEqual(g[0].primary, 'c1');
+  assert.deepStrictEqual(g[0].sites.find(s => s.clusterId === 'c1')!.endpoint, { host: 'dc1-haproxy', port: 5000 }, 'primary address detected from the standby site');
   let s2 = g[0].sites.find(s => s.clusterId === 'c2')!;
   assert.strictEqual(s2.role, 'standby'); assert.strictEqual(s2.lagBytes, 0); assert.strictEqual(s2.health, 'ok'); assert.strictEqual(s2.slot?.name, 'geo_dc2');
   // a standby cluster is not "degraded" for lacking a primary, and the briefing has no "no primary" / "no backup" for it
@@ -58,8 +60,10 @@ import { deriveCluster } from '../../server/view';
     }
     throw new Error('no ' + type + ' submitted: ' + JSON.stringify(store.peek().settings.geoJobs));
   };
-  const dem = await answer('geo_demote', d => { d.nodes.a.snapshot = { ...snapS('0/9000100'), patroni: { ...snapS('0').patroni, scope: 'geo-dc1', standby_cluster: { host: 'dc2-haproxy', port: 5000, primary_slot_name: 'geo_geo_dc1' } } }; d.nodes.b.snapshot = snapS('0/9000100'); });
-  assert.strictEqual(dem.nodeId, 'a'); assert.deepStrictEqual([dem.params.host, dem.params.port, dem.params.primary_slot_name], ['dc2-haproxy', 5000, geoSlotFor('geo-dc1')]);
+  const dem = await answer('geo_demote', d => { d.nodes.a.snapshot = { ...snapS('0/9000100'), patroni: { ...snapS('0').patroni, scope: 'geo-dc1', standby_cluster: { host: 'dc2-haproxy', port: 5000, primary_slot_name: 'geo_dc1' } } }; d.nodes.b.snapshot = snapS('0/9000100'); });
+  assert.strictEqual(dem.nodeId, 'a'); assert.deepStrictEqual([dem.params.host, dem.params.port, dem.params.primary_slot_name], ['dc2-haproxy', 5000, 'geo_dc1']);
+  assert.deepStrictEqual(dem.params.drop_slots, ['geo_dc2'], 'the slot DC2 used on DC1 is dropped when DC1 becomes a standby site');
+  assert.deepStrictEqual(store.peek().clusters.find((c: any) => c.id === 'c1').geoEndpoint, { host: 'dc1-haproxy', port: 5000, detected: true }, 'DC1 address remembered from what DC2 used');
   const pro = await answer('geo_promote', d => { d.nodes.b.snapshot = snapP('0/9000200'); d.nodes.b.snapshot.patroni.scope = 'geo-dc2'; });
   assert.strictEqual(pro.nodeId, 'b'); assert.strictEqual(pro.params.slot_for_peer, geoSlotFor('geo-dc1'));
   for (let i = 0; i < 50 && store.peek().settings.geoJobs[job].status === 'running'; i++) await new Promise(r => setTimeout(r, 100));

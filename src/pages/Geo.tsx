@@ -40,7 +40,7 @@ function SiteCard({ s, onOpen }: { s: Site; onOpen: () => void }) {
         <dt>Riceve da</dt><dd>{s.upstream ? <span className="mono">{s.upstream.host}:{s.upstream.port}</span> : '—'}{s.upstream?.slot ? <span className="faint"> · slot {s.upstream.slot}</span> : null}</dd>
         <dt>Ricevitore</dt><dd>{s.receiver?.status === 'streaming' ? <Badge kind="ok">in streaming</Badge> : <Badge kind="bad">{s.receiver?.status || 'assente'}</Badge>}{s.receiver?.silentSec != null ? <span className="faint"> · ultimo messaggio {Math.round(s.receiver.silentSec)} s fa</span> : null}</dd>
       </> : null}
-      <dt>Raggiungibile dagli altri siti come</dt><dd>{s.endpoint ? <span className="mono">{s.endpoint.host}:{s.endpoint.port}</span> : <span className="faint">non indicato</span>}</dd>
+      <dt>Raggiungibile dagli altri siti come</dt><dd>{s.endpoint ? <><span className="mono">{s.endpoint.host}:{s.endpoint.port}</span>{s.endpointSource === 'detected' ? <span className="faint small" title="Rilevato dall’indirizzo che il sito di replica usa per raggiungerlo: lo switchover di ritorno lo userà"> · rilevato</span> : null}</> : <span className="faint">non indicato</span>}</dd>
     </dl>
     {s.problems.length ? <div className="small" style={{ color: s.health === 'bad' ? 'var(--bad)' : 'var(--warn)' }}>{s.problems.join(' · ')}</div> : null}
   </div>;
