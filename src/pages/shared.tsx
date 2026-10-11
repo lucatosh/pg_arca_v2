@@ -58,7 +58,7 @@ export function OpPanel({ op, error, cancel, label }: { op: Op | null; error?: s
   </div>;
 }
 
-export const Result = ({ op }: { op: Op | null }) => op?.status === 'succeeded' && op.result ? <details><summary className="small muted" style={{ cursor: 'pointer' }}>Dettagli tecnici</summary><pre className="out">{JSON.stringify(op.result, null, 2)}</pre></details> : null;
+export const Result = ({ op }: { op: Op | null }) => op?.status === 'succeeded' && op.result ? <>{op.result.warning ? <div className="banner warn" role="status" style={{ marginTop: 8 }}><div className="grow small">{String(op.result.warning)}</div></div> : null}{op.result.pending_restart || op.result.restart_required ? <div className="small" style={{ color: 'var(--warn)', marginTop: 6 }}>Il nuovo valore vale dopo un riavvio (Patroni: «Riavvia» nella scheda Alta affidabilità).</div> : null}<details><summary className="small muted" style={{ cursor: 'pointer' }}>Dettagli tecnici</summary><pre className="out">{JSON.stringify(op.result, null, 2)}</pre></details></> : null;
 export { dur };
 
 

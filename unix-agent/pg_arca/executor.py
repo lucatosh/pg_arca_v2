@@ -283,6 +283,7 @@ class OperationExecutor:
             _, why = self.db.validate_param(name, value)         # an unknown / out-of-range value in the DCS would reach EVERY member
             if why:
                 raise OpError("refused before touching the DCS: %s" % why)
+            before, _ = self.db.query_json("SELECT json_build_object('setting', setting, 'unit', unit, 'context', context) FROM pg_settings WHERE name = :'pname';", variables={"pname": name})
             st, d = self.patroni.patch_config({"postgresql": {"parameters": {name: (None if value is None else str(value))}}})
             if st >= 300:
                 raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
@@ -292,7 +293,24 @@ class OperationExecutor:
             ok = (str(applied) == str(value)) if value is not None else (applied is None)
             if not ok:
                 raise OpError("verification failed: DCS has %r after patch" % (applied,))
-            return {"via": "patroni", "applied": True, "restart_required": bool(node.get("pending_restart")) if isinstance(node, dict) else None}
+            res = {"via": "patroni", "applied": True, "restart_required": bool(node.get("pending_restart")) if isinstance(node, dict) else None}
+            # Did PostgreSQL take it? Patroni applies the DCS on its next cycle; a value set in this node's own patroni.yml (postgresql.parameters) wins over the
+            # DCS and the change would silently do nothing here. Watch pg_settings for a change (or a pending restart) for up to ~25 s; say it when nothing moves.
+            if isinstance(before, dict) and before.get("context") not in ("internal",):
+                deadline = time.time() + min(60.0, max(0.0, float(p.get("settle_seconds", 25) or 0)))
+                now_v = None
+                while time.time() < deadline:
+                    now_v, _ = self.db.query_json("SELECT json_build_object('setting', setting, 'pending', pending_restart) FROM pg_settings WHERE name = :'pname';", variables={"pname": name})
+                    if isinstance(now_v, dict) and (now_v.get("setting") != before.get("setting") or now_v.get("pending")):
+                        res["effective"] = now_v.get("setting")
+                        res["pending_restart"] = bool(now_v.get("pending"))
+                        break
+                    time.sleep(1.5)
+                else:
+                    res["effective"] = (now_v or {}).get("setting") if isinstance(now_v, dict) else None
+                    res["warning"] = ("PostgreSQL on this node still reports %s = %s%s: either it already had that value, or a setting in this node's own Patroni "
+                                      "configuration (patroni.yml postgresql.parameters) overrides the DCS" % (name, res["effective"], (" " + before.get("unit")) if before.get("unit") else ""))
+            return res
         self._require_pg()
         try:
             r = self.db.alter_system(name, value)

@@ -63,8 +63,9 @@ def make(up=True, config=None):
 class DcsOnly(unittest.TestCase):
     def test_param_goes_to_the_dcs_not_alter_system(self):
         ex, db, pat, _ = make()
-        r = ex.h_set_param({"name": "work_mem", "value": "8MB"})
+        r = ex.h_set_param({"name": "work_mem", "value": "8MB", "settle_seconds": 0.5})
         self.assertEqual(r["via"], "patroni")
+        self.assertIn("overrides the DCS", r.get("warning", ""), "PostgreSQL did not take the value: said, not hidden")
         self.assertEqual(pat.patches, [{"postgresql": {"parameters": {"work_mem": "8MB"}}}])
         self.assertEqual(db.alter_calls, [])
 
