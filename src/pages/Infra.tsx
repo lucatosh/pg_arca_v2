@@ -22,7 +22,7 @@ interface FormProps { value: Record<string, any>; set: (k: string, v: any) => vo
 interface KindUI { title: string; intro: string; Form: React.FC<FormProps>; summary: (v: Record<string, any>) => React.ReactNode; fields: string[]; labels: Record<string, string> }
 
 /* ---------------------------------------------------------------------------------------------------------------------- ephemeral instance */
-const EPH_LABELS: Record<string, string> = { placement: 'Dove gira', centralNode: 'Nodo centrale', scratchDir: 'Cartella temporanea', binDir: 'Binari PostgreSQL', portMin: 'Porte', sharedBuffersMb: 'Memoria (shared_buffers)', keepOnFailure: 'Conserva se fallisce', installDir: 'Cartella installazioni', installMode: 'Installazione' };
+const EPH_LABELS: Record<string, string> = { placement: 'Dove gira', centralNode: 'Nodo centrale', scratchDir: 'Cartella temporanea', binDir: 'Binari PostgreSQL', portMin: 'Porte', sharedBuffersMb: 'Memoria (shared_buffers)', keepOnFailure: 'Conserva se fallisce', installDir: 'Cartella installazioni', installMode: 'Installazione', centralInto: 'Consegna del risultato' };
 const ephSummary = (v: Record<string, any>) => <>
   {v.placement === 'central' ? <Badge kind="accent">Nodo centrale</Badge> : <Badge>Sul nodo del cluster</Badge>}{' '}
   <span className="small muted">{[v.scratchDir ? `scratch ${v.scratchDir}` : null, v.binDir ? `binari ${v.binDir}` : 'binari automatici per versione', v.portMin ? `porte ${v.portMin}-${v.portMax}` : null, `${v.sharedBuffersMb} MB`].filter(Boolean).join(' · ')}</span></>;
@@ -193,7 +193,7 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
   if (!v) return <div className="stack"><Skeleton h={40} /><Skeleton h={220} /></div>;
   const line = (scope: Scope, k: string, title: string, sub?: string) => { const a = v.assignments[scopeKey(scope, k)]; return <tr key={scopeKey(scope, k)}>
     <td><strong>{title}</strong>{sub ? <div className="small muted">{sub}</div> : null}</td>
-    <td>{a ? <div className="row wrap gap-s">{Object.keys(a).map(f => <Badge key={f} kind="accent" title={JSON.stringify(a[f])}>{ui.labels[f] || f}</Badge>)}</div> : <span className="muted">Eredita</span>}</td>
+    <td>{a ? <div className="row wrap gap-s">{Object.keys(a).filter(f => f !== 'portMax').map(f => <Badge key={f} kind="accent" title={f === 'portMin' ? `${a.portMin}–${a.portMax}` : f === 'centralNode' ? (v.nodes.find(n => n.id === a[f])?.name || a[f]) : JSON.stringify(a[f])}>{f === 'centralNode' ? `Nodo: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : f === 'placement' ? (a[f] === 'central' ? 'Su nodo centrale' : 'Sul nodo del cluster') : ui.labels[f] || f}</Badge>)}</div> : <span className="muted">Eredita</span>}</td>
     <td className="num"><Button sm onClick={() => setDlg({ scope, k, label: title })}>Modifica</Button></td></tr>; };
   return <div className="stack-l">
     <p className="sub" style={{ margin: 0, maxWidth: 820 }}>{ui.intro}</p>
