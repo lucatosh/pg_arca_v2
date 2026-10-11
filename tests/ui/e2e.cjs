@@ -4,7 +4,7 @@ const out = process.argv[2] || '/tmp/claude-0/ui/shots'; require('fs').mkdirSync
 const base = process.env.BASE || 'http://localhost:5188';
 (async () => {
   const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' }); const ctx = await b.newContext({ viewport: { width: 1360, height: 860 } });
-  const p = await ctx.newPage(); const errs = [];
+  const p = await ctx.newPage(); global.__p = p; const errs = [];
   p.on('pageerror', e => errs.push('pageerror: ' + e.message)); p.on('console', m => { if (m.type() === 'error' && !/401|428|Failed to load resource|WebSocket/.test(m.text())) errs.push('console: ' + m.text()); });
   // cluster pages live in four areas: pick the area (pill), then the page (underline tab)
   const tab = async (area, name) => { await p.click(`.gnav >> role=tab[name="${area}"]`); if (name) await p.click(`.clusternav .tabs >> role=tab[name=/${name}/]`); };
@@ -20,22 +20,34 @@ const base = process.env.BASE || 'http://localhost:5188';
   await tab('Protezione', 'Backup'); await p.waitForSelector('text=Esegui un backup'); await shot('04-backup');
   { const b = p.locator('button:has-text("Prova di disaster recovery")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster ripristinato in 13 minuti', { timeout: 10000 }); await shot('04b-drill'); } }
   await p.click('button:has-text("Avvia backup")'); await p.waitForSelector('text=Copia dei dati'); await shot('05-backup-running');
+  // the dock's Log opens a floating window with THIS operation's log (not the database log): movable, minimisable, closable
+  await p.click('.dock-chip'); await p.click('.dock-item button:has-text("Log")'); await p.waitForSelector('.oplog'); await p.waitForSelector('.oplog-body .ln', { timeout: 8000 });
+  assert(/Backup/.test(await p.locator('.oplog-hd .nm').innerText()), 'log window is titled with the operation');
+  { const hd = await p.locator('.oplog-hd').boundingBox(); const x0 = (await p.locator('.oplog').boundingBox()).x; await p.mouse.move(hd.x + 60, hd.y + 10); await p.mouse.down(); await p.mouse.move(hd.x + 160, hd.y - 60, { steps: 4 }); await p.mouse.up();
+    assert(Math.abs((await p.locator('.oplog').boundingBox()).x - x0 - 100) < 6, 'window moves with the header'); }
+  await shot('05a-oplog'); await p.click('.oplog button[aria-label="Riduci a icona"]'); await p.waitForSelector('.oplog.min'); await p.click('.oplog button[aria-label="Espandi il log"]'); await p.waitForSelector('.oplog-body');
+  await p.click('.oplog button[aria-label="Chiudi il log"]'); await p.waitForSelector('.oplog', { state: 'detached' }); await p.keyboard.press('Control+j');
   await p.waitForSelector('text=/Backup .* completato/', { timeout: 15000 }); await shot('06-backup-done');
   // restore wizard: database
   await tab('Protezione', 'Ripristino'); await p.waitForSelector('text=Cosa vuoi ripristinare');
-  await p.waitForSelector('.card select option:has-text("appdb")', { state: 'attached', timeout: 10000 });
-  await p.selectOption('.card select', 'appdb'); await shot('07-restore-what'); await p.click('button:has-text("Avanti")');
+  await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 });
+  // a database that is in the backups and not on the server is DROPPED, in red, with the date found in the WAL
+  await p.waitForSelector('.dbrow.gone:has-text("reports") .dropped', { timeout: 10000 }); await p.waitForSelector('.dbrow.gone:has-text("reports"):has-text("2026"), .dbrow.gone:has-text("reports"):has-text("ott")', { timeout: 10000 });
+  assert(await p.locator('.dbrow:has-text("appdb") .here').count() === 1, 'live database says Presente');
+  assert(await p.locator('.dbrow:has-text("arca_rl_20261010")').count() === 1, 'pg_arca working database is listed (apart)');
+  await p.click('button[role=radio]:has-text("reports")'); await p.waitForSelector('.dropnote'); await shot('07a-restore-dropped');
+  await p.click('button[role=radio]:has-text("appdb")'); await shot('07-restore-what'); await p.click('button:has-text("Avanti")');
   await p.waitForSelector('[role=slider]'); await shot('08-timeline');
   const tr = await p.locator('.rt .track').boundingBox();
   await p.mouse.click(tr.x + tr.width * 0.55, tr.y + 30); await p.waitForTimeout(200); await shot('09-timeline-picked');
-  await p.click('summary:has-text("Hai cancellato")'); await p.click('button:has-text("Cerca eventi distruttivi")'); await p.waitForSelector('text=appdb.public.orders', { timeout: 10000 }); await shot('10-forensics');
+  await p.click('summary:has-text("Hai cancellato")'); await p.click('button:has-text("Avvia analisi")'); await p.waitForSelector('text=appdb.public.orders', { timeout: 10000 }); await shot('10-forensics');
   await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=Nome del nuovo database');
   await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 }); await shot('11-plan');
   await p.click('button:has-text("Avvia ripristino")'); await p.click('.modal button:has-text("Avvia")');
   await p.waitForSelector('text=Ripristino completato', { timeout: 15000 }); await shot('12-restore-done');
   // restore one table, then promote it back
-  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Tabelle o schemi")');
-  await p.waitForSelector('.card select option:has-text("appdb")', { state: 'attached', timeout: 10000 }); await p.selectOption('.card select', 'appdb');
+  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Una o più tabelle")');
+  await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
   await p.click('.tree button:has-text("orders")'); await p.click('button:has-text("Avanti")'); await p.waitForSelector('[role=slider]'); await p.click('button:has-text("Avanti")');
   await p.waitForSelector('text=Quarantena'); await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 });
   await p.click('button:has-text("Avvia ripristino")'); await p.click('.modal button:has-text("Avvia")');
@@ -128,4 +140,4 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.setViewportSize({ width: 390, height: 800 }); await shot('17-mobile');
   console.log(errs.length ? 'ERRORS:\n' + errs.join('\n') : 'no page errors'); assert.strictEqual(errs.length, 0);
   await b.close(); console.log('UI e2e OK');
-})().catch(e => { console.error('FAIL', e.message); process.exit(1); });
+})().catch(async e => { console.error('FAIL', e.message); try { await global.__p.screenshot({ path: `${out}/fail.png` }); } catch { /* no page */ } process.exit(1); });

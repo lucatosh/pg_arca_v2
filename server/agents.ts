@@ -422,7 +422,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       const keep = list.filter(o => !isTerminalStatus(o.status) || Date.parse(o.updatedAt || o.createdAt) >= since);
       return res.json({ operations: keep.slice(-200).reverse().map((o: any) => ({
         id: o.id, type: o.type, status: o.status, clusterId: o.clusterId, nodeId: o.nodeId, createdAt: o.createdAt, updatedAt: o.updatedAt, createdBy: o.createdBy,
-        cancelRequested: !!o.cancelRequested, progress: o.progress || null, subtype: o.params && typeof o.params.type === 'string' ? o.params.type : undefined,
+        cancelRequested: !!o.cancelRequested, progress: o.progress || null, subtype: o.params && typeof o.params.type === 'string' ? o.params.type : undefined, background: o.params && o.params.background === true ? true : undefined,
         error: o.error ? String(o.error).slice(0, 400) : undefined })) });
     }
     res.json({ operations: list.slice(-200).reverse() });

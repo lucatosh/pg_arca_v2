@@ -13,7 +13,7 @@ const KEY = 'arca.dock'; const SEEN = 'arca.dock.seen'; const WIN = 'arca.dock.w
 const read = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const write = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
 
-type SlimOp = Op & { subtype?: string };
+type SlimOp = Op & { subtype?: string; background?: boolean };
 const label = (o: SlimOp) => `${OP_LABEL[o.type] || o.type}${o.subtype ? ` (${o.subtype})` : ''}`;
 const elapsed = (from: string, now: number) => { const s = Math.max(0, Math.round((now - Date.parse(from)) / 1000)); return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`; };
 
@@ -39,7 +39,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
   // Poll fast only while something runs; otherwise a slow heartbeat is enough (the query also pauses with the tab hidden and skips unchanged payloads).
   const [fast, setFast] = useState(false);
   const q = useQuery<{ operations: SlimOp[] }>(OPS_SLIM_KEY, { interval: fast ? 2000 : 8000 });
-  const all = (q.data?.operations || []).filter(o => !QUIET.includes(o.type));
+  const all = (q.data?.operations || []).filter(o => !QUIET.includes(o.type) && !o.background);       // background = lookups the page makes on its own (not worth a card or a toast)
   const running = all.filter(o => !isTerminal(o.status));
   const gset = useMemo(() => new Set(gone), [gone]);
   const finished = all.filter(o => isTerminal(o.status) && Date.parse(o.updatedAt || o.createdAt) >= now - hours * 3_600_000 && !gset.has(o.id));
@@ -59,7 +59,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
     const cur: Record<string, string> = {}; for (const o of q.data.operations) cur[o.id] = o.status;
     if (prev.current) for (const o of q.data.operations) {
       const was = prev.current[o.id];
-      if (!was || isTerminal(was) || !isTerminal(o.status) || o.createdBy !== me || QUIET.includes(o.type)) continue;
+      if (!was || isTerminal(was) || !isTerminal(o.status) || o.createdBy !== me || QUIET.includes(o.type) || o.background) continue;
       if (o.status === 'succeeded') toast(`${label(o)} completato`, 'ok');
       else if (o.status === 'failed') toast(`${label(o)} non riuscito: ${(o.error || '').split('\n')[0].slice(0, 140)}`, 'bad', 9000);
       else if (o.status === 'cancelled') toast(`${label(o)} annullato`, 'info');

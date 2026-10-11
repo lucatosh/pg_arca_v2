@@ -57,11 +57,11 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   useEffect(() => {
     if (!droppedDbs.length || dropsR.op || dropsR.busy) return;
     const oldest = Math.min(...droppedDbs.map(x => Date.parse(x.last_stop || '') || Date.now())); const since = Math.max(oldest - 3600e3, Date.now() - 14 * 86400e3);
-    dropsR.run('wal_forensics', { mode: 'databases', since_iso: new Date(since).toISOString(), limit: 100, budget_sec: 300 });
+    dropsR.run('wal_forensics', { background: true, mode: 'databases', since_iso: new Date(since).toISOString(), limit: 100, budget_sec: 300 });
   }, [droppedDbs.length]);
   const selDb = dbs.find(x => x.name === db); const selDropped = !!selDb && droppedDbs.some(x => x.name === db);
   // tables / schemas of the selected database that exist NOW: whatever the backup knows and the server does not was DROPPED (the database itself may be gone: then everything is)
-  useEffect(() => { if (scope === 'object' && db && live?.has(db)) liveR.run('list_objects', { database: db }); }, [scope, db]);
+  useEffect(() => { if (scope === 'object' && db && live?.has(db)) liveR.run('list_objects', { database: db, background: true }); }, [scope, db]);
   const objLive = useMemo(() => {
     if (!db || selDropped) return db && selDropped ? { tables: new Set<string>(), schemas: new Set<string>(), all: true } : null;
     const r = liveR.op?.status === 'succeeded' ? liveR.op.result : null; if (!r) return null;
@@ -69,7 +69,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   }, [liveR.op, db, selDropped]);
   const catSchemas: any[] = objR.op?.status === 'succeeded' ? objR.op.result.schemas || [] : [];
   const anyTblGone = !!objLive && !objLive.all && catSchemas.some(sc => !objLive.schemas.has(`${db}.${sc.name}`) || (sc.objects || []).some((o: any) => !objLive.tables.has(`${db}.${sc.name}.${o.name}`)));
-  useEffect(() => { if (anyTblGone && !tdropR.op && !tdropR.busy) tdropR.run('wal_forensics', { mode: 'events', hours: 336, limit: 200, detail: true, budget_sec: 300 }); }, [anyTblGone]);
+  useEffect(() => { if (anyTblGone && !tdropR.op && !tdropR.busy) tdropR.run('wal_forensics', { background: true, mode: 'events', hours: 336, limit: 200, detail: true, budget_sec: 300 }); }, [anyTblGone]);
   const tblDrops: Record<string, DropInfo> = useMemo(() => { const m: Record<string, DropInfo> = {}; for (const e of tdropR.op?.result?.events || []) if (e.kind === 'DROP') for (const t of e.tables || []) m[t] = { time: e.time, time_exact: e.time_exact !== false }; return m; }, [tdropR.op]);
   const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && objs.length > 0);
   const okWhere = scope === 'instance' ? dest.startsWith('/') : scope === 'database' ? /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName) : true;
@@ -94,7 +94,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       {scope !== 'instance' ? (dbsR.op && dbsR.op.status === 'succeeded' ? <>
         <Field label="Database"><DbPicker dbs={dbs} live={live} drops={drops} dropsState={dropsR.busy ? 'running' : dropsR.op?.status === 'succeeded' ? 'done' : dropsR.op ? 'failed' : 'idle'} value={db} onChange={n => { setDb(n); setObjs([]); prev.reset(); }} /></Field>
         {selDropped && selDb ? <DroppedNote db={db} info={drops[String(selDb.oid)]} lastStop={selDb.last_stop} /> : null}
-        {scope === 'object' && db ? <ObjectPicker r={objR.op} busy={objR.busy} search={search} setSearch={setSearch} db={db} value={objs} onChange={setObjs} mode={objMode} live={objLive} drops={tblDrops} dropsBusy={tdropR.busy} /> : null}</> :
+        {scope === 'object' && db ? <ObjectPicker r={objR.op} busy={objR.busy} search={search} setSearch={setSearch} db={db} value={objs} onChange={setObjs} mode={objMode} live={objLive} drops={tblDrops} dropsBusy={tdropR.busy} err={objR.error} /> : null}</> :
         <OpPanel op={dbsR.op} error={dbsR.error} label="Lettura del catalogo dei backup" />) : null}
       <div className="row"><div className="grow" /><Button kind="primary" disabled={!okWhat} onClick={() => setStep(1)}>Avanti</Button></div></div></Card>}
 
@@ -113,7 +113,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         <div className="stack" style={{ marginTop: 10 }}>
           <p className="small muted">Individua i comandi che hanno eliminato o svuotato tabelle e database, con data e ora, così puoi tornare a un attimo prima. L’analisi gira in parallelo e non rallenta backup e ripristini; i risultati restano in memoria, quindi la ricerca successiva è quasi immediata.</p>
           <div className="row wrap"><span className="seg" role="group" aria-label="Quanto indietro cercare">{[[24, 'Ultime 24 ore'], [168, '7 giorni'], [720, '30 giorni'], [0, 'Tutto l’archivio']].map(([h, t]) => <button key={h} aria-pressed={fxHours === h} onClick={() => setFxHours(h as number)}>{t}</button>)}</span>
-            <Button sm icon="search" busy={fx.busy} onClick={() => fx.run('wal_forensics', { mode: 'events', hours: fxHours, limit: 30 })}>Cerca</Button></div>
+            <Button sm icon="search" busy={fx.busy} onClick={() => fx.run('wal_forensics', { mode: 'events', hours: fxHours, limit: 30 })}>Avvia analisi</Button></div>
           {fx.op && fx.op.status !== 'succeeded' ? <OpPanel op={fx.op} error={fx.error} cancel={fx.cancel} /> : null}
           {fx.op?.status === 'succeeded' ? <>
             <div className="small muted">{num(fx.op.result.segments_scanned)} segmenti analizzati{fx.op.result.segments_cached ? ` (${num(fx.op.result.segments_cached)} già in memoria)` : ''} in {fx.op.result.elapsed_sec} s · dal {fx.op.result.window?.from}</div>
@@ -173,8 +173,8 @@ function PlanView({ p, scope }: { p: any; scope: Scope }) {
 const Gone = ({ info, busy, lastLabel }: { info?: DropInfo; busy?: boolean; lastLabel?: string }) => { const t = info ? parseWalTime(info.time) : NaN;
   return <span className="gonechip"><span className="dropped">DROPPED</span><span className="when small">{Number.isFinite(t) ? `${info!.time_exact ? '' : 'circa '}${fmtWhen(t)}` : busy ? 'data in calcolo…' : lastLabel || ''}</span></span>; };
 
-function ObjectPicker({ r, busy, search, setSearch, db, value, onChange, mode, live, drops, dropsBusy }: { r: Op | null; busy: boolean; search: string; setSearch: (s: string) => void; db: string; value: string[]; onChange: (v: string[]) => void; mode: 'table' | 'schema';
-  live: { tables: Set<string>; schemas: Set<string>; all: boolean } | null; drops: Record<string, DropInfo>; dropsBusy: boolean }) {
+function ObjectPicker({ r, busy, search, setSearch, db, value, onChange, mode, live, drops, dropsBusy, err }: { r: Op | null; busy: boolean; search: string; setSearch: (s: string) => void; db: string; value: string[]; onChange: (v: string[]) => void; mode: 'table' | 'schema';
+  live: { tables: Set<string>; schemas: Set<string>; all: boolean } | null; drops: Record<string, DropInfo>; dropsBusy: boolean; err?: string | null }) {
   const schemas: any[] = r?.status === 'succeeded' ? r.result.schemas || [] : [];
   const has = (id: string) => value.includes(id);
   const toggleTable = (id: string) => onChange(has(id) ? value.filter(x => x !== id) : [...value, id]);
@@ -193,7 +193,7 @@ function ObjectPicker({ r, busy, search, setSearch, db, value, onChange, mode, l
           {mode === 'table' ? s.objects.map((o: any) => { const id = `${db}.${s.name}.${o.name}`; const on = whole || has(id); const g = tableGone(id);
             return <button key={id} aria-pressed={on} disabled={whole} onClick={() => toggleTable(id)} className={g ? 'gone' : ''}><input type="checkbox" readOnly checked={on} tabIndex={-1} /><span className="grow">{o.name}</span>{g && !sg ? <Gone info={drops[id]} busy={dropsBusy} lastLabel="eliminata" /> : null}<span className="faint small">{o.partitions ? `${o.partitions} partizioni · ` : ''}{bytes(o.size)}</span></button>; }) : null}</div>; })}
       {r?.status === 'succeeded' && !schemas.length ? <div style={{ padding: 12 }} className="muted">Nessuna corrispondenza.</div> : null}
-      {r?.status === 'failed' ? <div style={{ padding: 12 }} className="muted">{r.error}</div> : null}</div>
+      {r?.status === 'failed' ? <div style={{ padding: 12 }} className="muted">{r.error}</div> : null}{!r && err ? <div style={{ padding: 12, color: 'var(--bad)' }}>{err}</div> : null}</div>
     {r?.result?.truncated ? <p className="small muted">Elenco troncato: affina la ricerca.</p> : null}
     {value.length ? <p className="small">Selezione: {value.map(v => <code key={v} style={{ marginRight: 6 }}>{v.split('.').slice(1).join('.')}{v.split('.').length === 2 ? ' (schema)' : ''}</code>)}</p> : null}
     <p className="small muted">Si ripristina ciò che scegli più ciò che serve per farlo funzionare: chiavi esterne, tipi, funzioni, sequenze, viste e permessi.</p></div>;
