@@ -39,7 +39,7 @@ case "${1:-help}" in
     sleep 12; for n in dc1-pg1 dc1-pg2 dc2-pg1 dc2-pg2 bk1; do echo "== $n"; docker exec "$n" tail -n 2 /var/log/pgarca/agent.out; done ;;
   fix-dcs)   # bring both DCS to the intended geo layout, ONLY through Patroni's REST /config (= patronictl edit-config), never files:
              #   DC1: permanent slot geo_dc2; DC2: standby_cluster -> dc1-haproxy:5000 with slot geo_dc2, no permanent slots of its own; pg_hba kept in the DCS on both
-    hba='["local all all trust","host all all 127.0.0.1/32 trust","host replication replicator 172.30.0.0/16 scram-sha-256","host all all 172.30.0.0/16 scram-sha-256"]'
+    hba='["local all all trust","host all all 127.0.0.1/32 trust","host replication replicator 127.0.0.1/32 scram-sha-256","host replication replicator 172.30.0.0/16 scram-sha-256","host all all 172.30.0.0/16 scram-sha-256"]'
     l1=$(site_leader dc1) && docker exec -i "$l1" curl -s -XPATCH -H 'content-type: application/json' --data-binary @- localhost:8008/config <<<"{\"slots\":{\"geo_dc2\":{\"type\":\"physical\"}},\"postgresql\":{\"pg_hba\":$hba}}" >/dev/null && echo "DC1 DCS ok"
     l2=$(site_leader dc2) && docker exec -i "$l2" curl -s -XPATCH -H 'content-type: application/json' --data-binary @- localhost:8008/config <<<"{\"slots\":null,\"standby_cluster\":{\"host\":\"dc1-haproxy\",\"port\":5000,\"primary_slot_name\":\"geo_dc2\",\"create_replica_methods\":[\"basebackup\"]},\"postgresql\":{\"pg_hba\":$hba}}" >/dev/null && echo "DC2 DCS ok"
     sleep 15; ./geo.sh verify ;;

@@ -28,6 +28,7 @@ ${STANDBY}
       pg_hba:                  # in the DCS (patronictl edit-config), shared by every member of the site: pg_arca reads and changes it only there
         - local all all trust
         - host all all 127.0.0.1/32 trust
+        - host replication replicator 127.0.0.1/32 scram-sha-256   # Patroni reads a replica's own timeline through a LOCAL replication connection
         - host replication replicator 172.30.0.0/16 scram-sha-256
         - host all all 172.30.0.0/16 scram-sha-256
   initdb: [encoding: UTF8, data-checksums]
