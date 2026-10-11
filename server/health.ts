@@ -130,6 +130,14 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         const free = d.free_bytes / d.total_bytes;
         if (free < 0.15) add({ severity: free < 0.07 ? 'critical' : 'warning', code: 'disk', detail: `${n.id}:${label}`, nodeId: n.id, nodeName: n.name, title: `Disco ${label} quasi pieno su ${n.name} (${Math.round(free * 100)}% libero)`, cause: label === 'repo' ? 'Il repository dei backup sta finendo lo spazio: riduci la conservazione o amplia il volume.' : label === 'wal_archive' ? 'L’archivio WAL sta finendo lo spazio: controlla la conservazione dei backup.' : 'Se il disco dei dati si riempie PostgreSQL si ferma.', action: { label: 'Apri il cluster', page: 'cluster' } });
       }
+      const pv = n.snapshot?.patroni; const ps = n.snapshot?.postgres?.settings || {};
+      if (pv?.accessible && (pv.members?.length || 0) + (pv.standby_cluster ? 1 : 0) >= 2 && !out.some(x => x.key === `${c.id}:patroni_rewind:dcs`)) {
+        const hints = ps.wal_log_hints === 'on' || ps.data_checksums === 'on' || n.snapshot?.postgres?.checksums === true;
+        if (pv.use_pg_rewind === false || pv.use_pg_rewind == null) add({ severity: 'warning', code: 'patroni_rewind', detail: 'dcs', nodeId: n.id, nodeName: n.name, title: 'Patroni senza pg_rewind (use_pg_rewind spento)',
+          cause: 'Dopo un failover il vecchio leader, o una replica rimasta avanti, non può essere riallineato e Patroni lo ricostruisce copiando tutti i dati (o resta fermo). Attiva postgresql.use_pg_rewind nella configurazione dinamica (patronictl edit-config).', action: { label: 'Apri l’alta affidabilità', page: 'ha' } });
+        else if (pv.use_pg_rewind === true && ps.wal_log_hints !== undefined && !hints) add({ severity: 'warning', code: 'patroni_rewind', detail: 'dcs', nodeId: n.id, nodeName: n.name, title: 'pg_rewind attivo ma inutilizzabile',
+          cause: 'pg_rewind richiede wal_log_hints = on oppure i checksum dei dati: nessuno dei due è attivo, quindi dopo un failover il riallineamento fallisce. Imposta wal_log_hints = on (riavvio necessario).', action: { label: 'Apri i parametri', page: 'params' } });
+      }
       const plc = n.snapshot?.postgres?.hba_patroni_local;
       if (plc && plc.ok === false && !out.some(x => x.key === `${c.id}:patroni_local_replication:hba`)) add({ severity: 'warning', code: 'patroni_local_replication', detail: 'hba', nodeId: n.id, nodeName: n.name,
         title: 'pg_hba non consente a Patroni la connessione di replica locale',

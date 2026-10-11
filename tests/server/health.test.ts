@@ -23,6 +23,23 @@ import { requiredRole } from '../../server/auth';
   const codes = (cid: string) => evaluate(store.peek(), now).filter(i => i.clusterId === cid).map(i => i.code).sort();
   assert.deepStrictEqual(codes('p'), ['archiver_failing', 'backup_failed', 'backup_stale', 'connections', 'disk', 'drill_stale', 'node_offline', 'pending_restart', 'repl_lag', 'slot_stale', 'wal_gap'], JSON.stringify(codes('p')));
   assert.deepStrictEqual(codes('ok'), [], 'a healthy cluster raises nothing');
+  // Patroni readiness for failover: pg_rewind off / unusable, local replication connection refused by pg_hba (one finding per cluster)
+  {
+    const st: any = JSON.parse(JSON.stringify(store.peek()));
+    st.clusters.push({ id: 'pt', name: 'pat', environment: 'dev', source: 'agent' });
+    const snap = (rewind: any, hints: string, plc: any) => ({ postgres: { is_in_recovery: false, settings: { wal_log_hints: hints, data_checksums: 'off' }, hba_patroni_local: plc }, backup: { configured: true, recent_sets: [{ status: 'COMPLETE', type: 'full', start_time: iso(now - 3600_000) }] },
+      patroni: { accessible: true, members: [{ name: 'a' }, { name: 'b' }], use_pg_rewind: rewind } });
+    st.nodes.pa = { id: 'pa', name: 'a', clusterId: 'pt', lastSeen: iso(now), snapshot: snap(false, 'on', { ok: false, denied: ['replicator'], suggest: ['host replication replicator 127.0.0.1/32 scram-sha-256'] }) };
+    st.nodes.pb = { id: 'pb', name: 'b', clusterId: 'pt', lastSeen: iso(now), snapshot: snap(false, 'on', { ok: false, denied: ['replicator'], suggest: [] }) };
+    let c = evaluate(st, now).filter(i => i.clusterId === 'pt');
+    assert.strictEqual(c.filter(i => i.code === 'patroni_rewind').length, 1); assert.strictEqual(c.filter(i => i.code === 'patroni_local_replication').length, 1);
+    assert(/127\.0\.0\.1/.test(c.find(i => i.code === 'patroni_local_replication')!.cause));
+    st.nodes.pa.snapshot = snap(true, 'off', { ok: true }); st.nodes.pb.snapshot = snap(true, 'off', { ok: true });
+    c = evaluate(st, now).filter(i => i.clusterId === 'pt');
+    assert(c.some(i => i.code === 'patroni_rewind' && /wal_log_hints/.test(i.cause))); assert(!c.some(i => i.code === 'patroni_local_replication'));
+    st.nodes.pa.snapshot = snap(true, 'on', { ok: true }); st.nodes.pb.snapshot = snap(true, 'on', { ok: true });
+    assert(!evaluate(st, now).some(i => i.clusterId === 'pt' && /patroni_/.test(i.code)), 'ready: nothing');
+  }
   { // Patroni members without an agent raise node_without_agent (one issue per missing member), enrolled ones don't
     const base = store.peek(); const g1: any = base.nodes.n3;
     const st: any = { ...base, clusters: [...base.clusters, { id: 'q', name: 'q-db', environment: 'dev', source: 'agent' }],

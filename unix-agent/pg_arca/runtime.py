@@ -137,6 +137,9 @@ class Runtime(object):
                     sc = cfg.get("standby_cluster")
                     view["standby_cluster"] = {k: sc.get(k) for k in ("host", "port", "primary_slot_name", "restore_command") if k in sc} if isinstance(sc, dict) else None
                     view["permanent_slots"] = sorted((cfg.get("slots") or {}).keys()) if isinstance(cfg.get("slots"), dict) else []
+                    pgc = cfg.get("postgresql") if isinstance(cfg.get("postgresql"), dict) else {}
+                    view["use_pg_rewind"] = pgc.get("use_pg_rewind")          # without it (or without wal_log_hints / checksums) a diverged old leader is never re-aligned
+                    view["use_slots"] = pgc.get("use_slots")
             except Exception:
                 pass
         return view
