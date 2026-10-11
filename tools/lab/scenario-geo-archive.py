@@ -44,11 +44,11 @@ psql(l1, "CREATE TABLE IF NOT EXISTS geo_arch(id bigserial, at timestamptz defau
 time.sleep(5)
 sh("cd %s && ./geo.sh wan-cut" % HERE)
 tok = int(time.time())
-psql(l1, "INSERT INTO geo_arch(id) SELECT %d*1000+g FROM generate_series(1,500) g" % tok)
+psql(l1, "INSERT INTO geo_arch(id) SELECT %d::bigint*1000+g FROM generate_series(1,500) g" % tok)
 psql(l1, "SELECT pg_switch_wal()"); time.sleep(3); psql(l1, "SELECT pg_switch_wal()")
 seen = "0"
 for _ in range(60):
-    seen = psql(l2, "SELECT count(*) FROM geo_arch WHERE id > %d*1000" % tok) or "0"
+    seen = psql(l2, "SELECT count(*) FROM geo_arch WHERE id > %d::bigint*1000" % tok) or "0"
     if seen == "500": break
     time.sleep(3)
 rcv = psql(l2, "SELECT coalesce(status,'none') FROM pg_stat_wal_receiver") or "none"
