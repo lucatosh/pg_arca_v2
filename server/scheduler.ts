@@ -43,6 +43,7 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     if (lastFail && now - lastFail < pol.retryAfterMinutes * 60_000) continue;
 
     const submit = async (type: string, params: any, key: string) => {
+      if (conflictFor(store.peek().operations, c.id, type, params, 'scheduler')) return false;     // a switchover / promotion / manual run in progress: next tick
       const r = await ops.submit(store, { type, clusterId: c.id, nodeId: target.id, params, idempotencyKey: key, createdBy: 'scheduler', ttlSeconds: 3600 });
       if (r.created) submitted.push(key);
       return r.created;
