@@ -273,14 +273,25 @@ def _commit_time(ctx, exe, multi, tli, start_name, xid, tmp_root, seg_size, canc
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+_ISO_RE = re.compile(r"^(\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d):(\d\d)(?::(\d\d)(?:\.(\d{1,6}))?)?)?\s*(Z|UTC|[+-]\d\d(?::?\d\d)?)?$")
+
+
 def _parse_iso(s):
-    s = (s or "").strip().replace("Z", "+00:00")
-    for f in (None,):
-        try:
-            d = datetime.fromisoformat(s)
-            return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
-        except ValueError:
-            return None
+    """ISO 8601 / "YYYY-MM-DD hh:mm:ss[.ffffff] [UTC|Z|+hh[:mm]]" -> epoch seconds (no tz = UTC). datetime.fromisoformat does not exist before Python 3.7 (RHEL 8 runs 3.6)."""
+    m = _ISO_RE.match((s or "").strip())
+    if not m:
+        return None
+    y, mo, d, hh, mi, ss, frac, tz = m.groups()
+    try:
+        base = datetime(int(y), int(mo), int(d), int(hh or 0), int(mi or 0), int(ss or 0), int((frac or "0").ljust(6, "0")), tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    off = 0
+    if tz and tz not in ("Z", "UTC"):
+        sign = -1 if tz[0] == "-" else 1
+        digits = tz[1:].replace(":", "")
+        off = sign * (int(digits[:2]) * 3600 + int(digits[2:4] or 0) * 60)
+    return base.timestamp() - off
 
 
 def _seg_times(ctx, names):

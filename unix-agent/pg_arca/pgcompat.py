@@ -33,7 +33,7 @@ def _second_thursday_nov(year):
 def eol_date(major):
     """Final minor release of a major: the second Thursday of November, five years after its first release (PostgreSQL versioning policy)."""
     if major in _EOL_FIXED:
-        return datetime.date.fromisoformat(_EOL_FIXED[major])
+        return datetime.datetime.strptime(_EOL_FIXED[major], "%Y-%m-%d").date()    # date.fromisoformat needs Python 3.7
     if major < 10:
         return datetime.date(2021, 11, 11)
     return _second_thursday_nov(2012 + int(major))        # 10 -> 2022, 12 -> 2024, 18 -> 2030

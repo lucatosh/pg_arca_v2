@@ -247,5 +247,38 @@ class LogFiles(unittest.TestCase):
         self.assertTrue(any(f.endswith("patroni.log") for f in files), files)
 
 
+class Python36(unittest.TestCase):
+    """RHEL 8 / Rocky 8 / Amazon Linux run Python 3.6 by default: the agent must not use anything newer (it would die at import or at the first call, on the customer's machine)."""
+    BAD_ATTRS = {"fromisoformat", "removeprefix", "removesuffix", "isascii", "is_relative_to", "cached_property", "nullcontext", "time_ns", "isqrt"}
+    BAD_KW = {"capture_output", "text", "missing_ok", "dirs_exist_ok", "process_group"}
+    CALLS = {"run", "Popen", "check_output", "check_call", "call"}
+
+    def test_no_syntax_or_api_newer_than_3_6(self):
+        import ast
+        root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pg_arca")
+        bad = []
+        for dp, _dn, fs in os.walk(root):
+            for fn in fs:
+                if not fn.endswith(".py"):
+                    continue
+                path = os.path.join(dp, fn)
+                with open(path, encoding="utf-8") as f:
+                    src = f.read()
+                tree = ast.parse(src)
+                for n in ast.walk(tree):
+                    where = "%s:%d" % (os.path.relpath(path, root), getattr(n, "lineno", 0))
+                    if isinstance(n, ast.NamedExpr):
+                        bad.append(where + " walrus operator")
+                    elif isinstance(n, ast.Attribute) and n.attr in self.BAD_ATTRS:
+                        bad.append("%s .%s (Python >= 3.7)" % (where, n.attr))
+                    elif isinstance(n, ast.Call):
+                        fname = n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
+                        if fname in self.CALLS:
+                            bad.extend("%s %s(%s=...) (Python >= 3.7)" % (where, fname, k.arg) for k in n.keywords if k.arg in self.BAD_KW)
+                    elif isinstance(n, ast.arguments) and n.posonlyargs:
+                        bad.append(where + " positional-only parameters")
+        self.assertEqual(bad, [])
+
+
 if __name__ == "__main__":
     unittest.main()
