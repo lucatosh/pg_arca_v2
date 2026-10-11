@@ -74,6 +74,11 @@ import { requiredRole } from '../../server/auth';
   await store.mutate(d => { d.settings.scoped = { ephemeral: { global: { placement: 'central', centralNode: en.body.node_id } } }; d.clusters.push({ id: 'cx', name: 'pg17', environment: 'prod', pgVersion: '17.2', source: 'agent' }); d.nodes[en.body.node_id].lastSeen = new Date(Date.now() - 600_000).toISOString(); });
   const iss = evaluate(store.peek()).filter(i => i.clusterId === `worker:${en.body.node_id}`);
   assert(iss.some(i => i.code === 'worker_offline' && i.severity === 'critical'), JSON.stringify(iss));
-  assert(iss.some(i => i.code === 'worker_pg_missing' && i.title.includes('17')));
+  assert(iss.some(i => i.code === 'worker_pg_missing' && i.title.includes('17') && i.cause.includes('pg17')));
+  // lab finding: a cluster that restores ELSEWHERE (its own folder/cluster scope says node) must not make this machine "miss" its version
+  await store.mutate(d => { d.clusters.push({ id: 'cy', name: 'pg15solo', environment: 'prod', pgVersion: '15.8', source: 'agent' }); d.settings.scoped.ephemeral['cluster:cy'] = { placement: 'node' };
+                            d.nodes[en.body.node_id].snapshot = { worker: { pg_installations: [{ major: 17 }] } }; });
+  const iss2 = evaluate(store.peek()).filter(i => i.clusterId === `worker:${en.body.node_id}` && i.code === 'worker_pg_missing');
+  assert.strictEqual(iss2.length, 0, JSON.stringify(iss2));
   console.log('workers tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

@@ -6,6 +6,7 @@
 import { resolvePolicy } from './policies';
 import { classify } from './pgcompat';
 import { geoIssues } from './geo';
+import { resolveScoped } from './scoped';
 
 export type Severity = 'critical' | 'warning' | 'info';
 export interface Issue {
@@ -166,10 +167,18 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     }
     if (users.length && Array.isArray(w.pg_installations)) {
       const have = new Set((w.pg_installations as any[]).map(i => Number(i.major)));
-      const need = new Set<number>();
-      for (const c of st.clusters as any[]) { const m = parseInt(String(c.pgVersion || ''), 10); if (m && !c.isSandbox) need.add(m); }
-      const missing = [...need].filter(m => !have.has(m));
-      if (missing.length) add({ severity: 'warning', code: 'worker_pg_missing', title: `${n.name}: mancano i binari di PostgreSQL ${missing.join(', ')}`, cause: 'È il nodo dei ripristini, ma non potrà recuperare i backup di quelle versioni finché non installi i binari (dalla pagina della macchina, un clic).', action: { label: 'Apri la macchina' } });
+      // only the clusters that really restore HERE (their effective configuration says central + this machine): another cluster's version is not this machine's business
+      const need = new Map<number, string[]>();
+      for (const c of st.clusters as any[]) {
+        const m = parseInt(String(c.pgVersion || ''), 10);
+        if (!m || c.isSandbox) continue;
+        let eff: any; try { eff = resolveScoped(st, 'ephemeral', c).value; } catch { continue; }
+        if (eff.placement !== 'central' || eff.centralNode !== n.id) continue;
+        need.set(m, [...(need.get(m) || []), c.name]);
+      }
+      const missing = [...need.keys()].filter(m => !have.has(m)).sort((a, b) => a - b);
+      if (missing.length) add({ severity: 'warning', code: 'worker_pg_missing', title: `${n.name}: mancano i binari di PostgreSQL ${missing.join(', ')}`,
+        cause: `È il nodo dei ripristini di ${missing.map(m => `${(need.get(m) || []).slice(0, 3).join(', ')} (PostgreSQL ${m})`).join('; ')}: non potrà recuperarne i backup finché non installi i binari (dalla pagina della macchina, un clic).`, action: { label: 'Apri la macchina' } });
     }
   }
   return out.sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || a.clusterName.localeCompare(b.clusterName));
