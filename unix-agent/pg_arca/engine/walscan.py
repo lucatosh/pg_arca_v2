@@ -354,6 +354,42 @@ def _catalog_names(ctx, sets=4):
     return rel, dbs
 
 
+def _live_names(ctx, pairs, rel, dbs):
+    """Names the backup catalogs do not know (relations created after the last backup, and the NEW files a TRUNCATE gave a table) from the running
+    cluster itself: pg_relation_filenode() in each database concerned. Read-only, bounded; any failure just leaves the numbers."""
+    want = {}
+    for d, f in pairs:
+        if (str(d), str(f)) not in rel:
+            want.setdefault(str(d), set()).add(str(f))
+    if not want or not getattr(ctx, "conn", None):
+        return
+    try:
+        from pg_arca.engine.pgsession import PgSession
+        s = PgSession(ctx.conn, read_only=True)
+        try:
+            names = dict((str(r[0]), r[1]) for r in s.query("SELECT oid, datname FROM pg_database WHERE datallowconn") if len(r) >= 2)
+        finally:
+            s.close()
+        for d, files in list(want.items())[:50]:
+            dn = names.get(d)
+            if not dn:
+                continue
+            nums = ",".join(sorted(x for x in files if x.isdigit())[:500])
+            if not nums:
+                continue
+            s = PgSession(ctx.conn.with_db(dn), read_only=True)
+            try:
+                for r in s.query("SELECT pg_relation_filenode(c.oid), n.nspname, c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                                 "WHERE pg_relation_filenode(c.oid) IN (%s)" % nums):
+                    if len(r) >= 4 and r[0]:
+                        rel[(d, str(r[0]))] = ("%s.%s.%s" % (dn, r[1], r[2]), r[3])
+                dbs.setdefault(d, dn)
+            finally:
+                s.close()
+    except Exception:
+        pass
+
+
 def window_start(ctx, hours=None, since_backup=False, since_iso=None):
     """Epoch seconds from which segments are considered. since_backup: the start of the latest complete backup (a database that exists in it and not today was dropped after it)."""
     t = _parse_iso(since_iso) if since_iso else None
@@ -491,6 +527,8 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
         events = events[-max(1, int(limit or 20)) * (3 if mode == "events" else 5):]      # head-room: names / filters below may drop some
         # names
         rel_names, db_names = _catalog_names(ctx)
+        # only the files of TRUNCATE events exist now (a dropped file number found alive would be a reuse, i.e. a wrong name)
+        _live_names(ctx, [tuple(r) for e in events if e["kind"] == "TRUNCATE" for r in e["rels"]], rel_names, db_names)
         # exact time of DROP DATABASE (and of events without one): approximated by the segment's archive time when the commit cannot be found
         report("risolvo date e nomi")
         out = []

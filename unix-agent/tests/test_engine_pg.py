@@ -560,6 +560,19 @@ class EngineTests(unittest.TestCase):
         ev = walscan.scan(F.ctx, mode="events", hours=1, cache_dir=os.path.join(F.scratch, "fx"))
         self.assertIn("DROP DATABASE", [e["kind"] for e in ev["events"]])
 
+    def test_13c_walscan_truncate_named_after_the_table(self):
+        """TRUNCATE gives the table new files and drops the old ones at COMMIT, in the same transaction: reported as TRUNCATE, named after the table."""
+        from pg_arca.engine import walscan
+        q("postgres", "CREATE TABLE trunc_me(a int primary key, b text); INSERT INTO trunc_me SELECT g, 'x' FROM generate_series(1, 500) g")
+        q("postgres", "SELECT pg_switch_wal()")
+        q("postgres", "TRUNCATE trunc_me")
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(7)
+        ev = walscan.scan(F.ctx, mode="events", hours=1, cache_dir=os.path.join(F.scratch, "fx2"))
+        tr = [e for e in ev["events"] if e["kind"] == "TRUNCATE"]
+        self.assertTrue(any(any("trunc_me" in n for n in e.get("names", [])) for e in tr), [(e["kind"], e.get("names")) for e in ev["events"]])
+        self.assertTrue(all(e.get("rewrite_possible") for e in tr))
+
     def test_14_crashed_backup_does_not_poison_dedup(self):
         # simulate a crashed run: RUNNING meta + a torn chunk newer than it
         rep = F.ctx.repo
