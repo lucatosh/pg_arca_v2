@@ -7,7 +7,7 @@ usage (VM): sg docker python3 tools/lab/scenario-big.py [steps]      steps: comm
 import http.cookiejar, json, os, shutil, subprocess, sys, threading, time, urllib.request, uuid
 BASE = os.environ.get("PG_ARCA_URL", "http://localhost:3000")
 U = os.environ.get("ARCA_USER", "claude-test"); P = os.environ.get("ARCA_PASS", "claude-lab-test-pass-1")
-STEPS = (sys.argv[1] if len(sys.argv) > 1 else "full,expire0,verify,churn,incr,diff,damage,forensics,plan,table,schema,database,instance,expire").split(",")
+STEPS = (sys.argv[1] if len(sys.argv) > 1 else "full,expire0,verify,churn,incr,diff,damage,forensics,plan,table,schema,database,live,instance,expire").split(",")
 STATE = "/tmp/scenario-big.json"
 jar = http.cookiejar.CookieJar(); opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
@@ -159,6 +159,44 @@ if "database" in STEPS and t_ok:
             check("%s identical in bigdb_pitr" % t, fp("bigdb_pitr", t) == base.get(t))
         check("documents back (TRUNCATE undone)", fp("bigdb_pitr", "docs.documents") == base.get("docs.documents"))
     sql("postgres", "DROP DATABASE IF EXISTS bigdb_pitr WITH (FORCE)")
+if "live" in STEPS:
+    # backup AND restore while the application keeps writing: one row per transaction (id, commit-time stamp, payload, checksum) at full speed.
+    # Consistency = the recovered copy holds EXACTLY a prefix 1..N of the ledger (no gap, no torn row), all stamped before the target, and the writer never stopped.
+    print("== live: backup and restore under continuous inserts", flush=True)
+    sql("bigdb", "DROP SCHEMA IF EXISTS live CASCADE; CREATE SCHEMA live; CREATE TABLE live.ledger(id bigint PRIMARY KEY, ts timestamptz NOT NULL, payload text NOT NULL, chk text NOT NULL); CREATE TABLE live.stop(x int)")
+    sql("bigdb", """CREATE OR REPLACE PROCEDURE live.writer() LANGUAGE plpgsql AS $w$ DECLARE i bigint := 0; BEGIN
+        LOOP i := i + 1; INSERT INTO live.ledger VALUES (i, clock_timestamp(), repeat(md5(i::text), 20), md5(i::text)); COMMIT;
+             IF i % 200 = 0 THEN EXIT WHEN EXISTS (SELECT 1 FROM live.stop); END IF; END LOOP; END $w$""")
+    wr = subprocess.Popen(["docker", "exec", "solo1", "gosu", "postgres", "psql", "-X", "-h", "/run/pg15", "-p", "5433", "-d", "bigdb", "-c", "CALL live.writer()"],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    time.sleep(20)
+    n0 = int(sql("bigdb", "SELECT count(*) FROM live.ledger"))
+    o = timed("incremental backup DURING inserts", "backup_run", {"type": "incr"}); check("backup while writing", o["status"] == "succeeded")
+    t_live = sql("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US')||'+00'"); time.sleep(15)
+    sql("postgres", "SELECT pg_switch_wal()"); time.sleep(10)
+    o = timed("restore live.ledger at a point DURING inserts", "restore_object", {"object": "bigdb.live.ledger", "stage_db": "pgarca_stage_live", "target_time": t_live})
+    check("restore while writing", o["status"] == "succeeded")
+    if o["status"] == "succeeded":
+        r = sql("pgarca_stage_live", "SELECT count(*), coalesce(min(id),0), coalesce(max(id),0), count(*) FILTER (WHERE chk <> md5(id::text) OR payload <> repeat(md5(id::text), 20)), count(*) FILTER (WHERE ts > '%s') FROM live.ledger" % t_live).split("|")
+        cnt, lo, hi, torn, late = (int(x) for x in r)
+        print("   recovered %d rows (ids %d..%d), torn %d, stamped after the target %d; live table now %s rows" % (cnt, lo, hi, torn, late, sql("bigdb", "SELECT count(*) FROM live.ledger")), flush=True)
+        check("recovered rows are an exact prefix 1..N (no gap)", cnt == hi and lo == 1)
+        check("no torn row", torn == 0)
+        check("nothing committed after the target", late == 0)
+        nxt = sql("bigdb", "SELECT ts > '%s' FROM live.ledger WHERE id = %d" % (t_live, hi + 1))
+        check("the next row in the live table is after the target (the cut is exactly at the target)", nxt == "t", nxt)
+        before = int(sql("bigdb", "SELECT count(*) FROM live.ledger"))
+        p = timed("promote as_new DURING inserts", "restore_promote", {"stage_db": "pgarca_stage_live", "mode": "as_new"})
+        check("promotion while writing", p["status"] == "succeeded")
+        check("the writer kept writing during the promotion", int(sql("bigdb", "SELECT count(*) FROM live.ledger")) > before)
+    sql("postgres", "DROP DATABASE IF EXISTS pgarca_stage_live WITH (FORCE)")
+    sql("bigdb", "INSERT INTO live.stop VALUES (1)")
+    try:
+        out, err = wr.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        wr.kill(); out, err = wr.communicate()
+    check("the writer never failed", wr.returncode == 0 and "ERROR" not in (err or ""), (err or "")[:300])
+    print("   writer: %s rows written, %d before the backup started" % (sql("bigdb", "SELECT count(*) FROM live.ledger"), n0))
 if "instance" in STEPS:
     dest = "/srv/restore_big"
     subprocess.run(["docker", "exec", "solo1", "rm", "-rf", dest, dest + "_tblspc"])
