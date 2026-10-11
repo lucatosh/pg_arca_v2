@@ -61,4 +61,27 @@ import * as ops from '../../server/ops';
     assert.deepStrictEqual(s2.peek().operations.map((o: any) => o.id).sort(), ['new', 'old-running']);
     for (const bad of [0, 91, 'x', null, 1.5]) { const x: any = { activity: { retentionDays: bad } }; assert.strictEqual(ops.retentionDays(x), bad === 1.5 ? 1 : 7); }
   }
+  // analysis lane: a WAL analysis never waits behind a backup (and a backup never behind an analysis); two analyses on one cluster do queue
+  {
+    const s3 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'st-')));
+    await ops.submit(s3, { type: 'backup_run', clusterId: 'c9', nodeId: 'n9', idempotencyKey: 'l1' });
+    await ops.submit(s3, { type: 'wal_forensics', clusterId: 'c9', nodeId: 'n9', idempotencyKey: 'l2' });
+    await ops.submit(s3, { type: 'wal_forensics', clusterId: 'c9', nodeId: 'n9', idempotencyKey: 'l3', params: { hours: 1 } });
+    await ops.submit(s3, { type: 'pg_reload', clusterId: 'c9', nodeId: 'n9', idempotencyKey: 'l4' });
+    const got = await ops.lease(s3, 'n9', 5);
+    assert.deepStrictEqual(got.map(o => o.type).sort(), ['backup_run', 'pg_reload', 'wal_forensics']);
+    assert.strictEqual((await ops.lease(s3, 'n9', 5)).length, 0, 'the second analysis waits for the first');
+    const { validateOp } = await import('../../server/optypes');
+    assert.strictEqual(validateOp('wal_forensics', { mode: 'databases', hours: 0 }), null);
+    assert.ok(validateOp('wal_forensics', { mode: 'x' }) && validateOp('wal_forensics', { hours: -1 }) && validateOp('wal_forensics', { limit: 0 }));
+    // operation log: phase changes are lines, counters of the same phase are throttled
+    const id = got.find(o => o.type === 'backup_run')!.id;
+    await ops.report(s3, 'n9', id, 'running', undefined, undefined, 120, { phase: 'checkpoint' });
+    await ops.report(s3, 'n9', id, 'running', undefined, undefined, 120, { phase: 'checkpoint', elapsed_sec: 2 });
+    await ops.report(s3, 'n9', id, 'running', undefined, undefined, 120, { phase: 'copy', files: 1, files_total: 10 });
+    const op = s3.peek().operations.find((o: any) => o.id === id)!;
+    assert.deepStrictEqual((op.log || []).map(l => l.text.split(' · ')[0]), ['checkpoint', 'copy']);
+    const tl = ops.opTimeline(op);
+    assert.ok(tl.some(x => x.kind === 'status') && tl.some(x => x.kind === 'log') && tl.every((x, i) => i === 0 || tl[i - 1].at <= x.at));
+  }
 })().catch(e=>{console.error(e);process.exit(1)});

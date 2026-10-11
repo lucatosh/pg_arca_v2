@@ -461,6 +461,14 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     op ? res.json({ operation: op }) : res.status(404).json({ error: 'not_found' });
   });
 
+  /** Log of one operation (status changes + what the agent reported); `after` = number of lines already shown, for cheap polling. */
+  app.get('/api/operations/:id/log', (req: Request, res: Response) => {
+    const op = store.peek().operations.find(o => o.id === req.params.id);
+    if (!op) return res.status(404).json({ error: 'not_found' });
+    const all = ops.opTimeline(op); const after = Math.max(0, parseInt(String((req.query as any).after), 10) || 0);
+    res.json({ id: op.id, type: op.type, status: op.status, total: all.length, lines: all.slice(after), progress: op.progress || null, error: op.error || undefined });
+  });
+
   app.post('/api/operations/:id/cancel', async (req: Request, res: Response) => {
     const r = await ops.cancel(store, req.params.id, actorOf(req));
     res.status(r.ok ? 200 : (r.reason === 'unknown operation' ? 404 : 409)).json(r);

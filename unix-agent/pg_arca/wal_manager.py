@@ -214,8 +214,9 @@ class WalManager:
                         pass
 
     # ------------------------------------------------------------------ retrieve
-    def retrieve_segment(self, name, dest_path):
-        """restore_command %f %p. Returns (exit_code, message). 0=ok, 1=not found, 126=corrupt (abort recovery)."""
+    def retrieve_segment(self, name, dest_path, verify=True):
+        """restore_command %f %p. Returns (exit_code, message). 0=ok, 1=not found, 126=corrupt (abort recovery).
+        verify=False (read-only analysis such as pg_waldump scans): no sha256 check and no fsync, which are what a recovery needs and an analysis does not."""
         path, codec = self._find(name)
         if not path:
             return EXIT_NOT_FOUND, "not in archive"
@@ -242,11 +243,12 @@ class WalManager:
             finally:
                 if src != path and os.path.exists(src):
                     os.unlink(src)
-            if meta and _sha256_file(tmp) != meta.get("sha256"):
-                os.unlink(tmp)
-                return EXIT_CORRUPT, "PGA-WAL-050 checksum mismatch for %s: archive object is corrupt" % name
-            with open(tmp, "rb") as f:
-                os.fsync(f.fileno())
+            if verify:
+                if meta and _sha256_file(tmp) != meta.get("sha256"):
+                    os.unlink(tmp)
+                    return EXIT_CORRUPT, "PGA-WAL-050 checksum mismatch for %s: archive object is corrupt" % name
+                with open(tmp, "rb") as f:
+                    os.fsync(f.fileno())
             os.rename(tmp, dest_path)
             return 0, "retrieved"
         except WalArchiveError as e:

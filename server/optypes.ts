@@ -7,6 +7,7 @@ export interface OpSpec {
   target: 'primary' | 'any_node' | 'node' | 'patroni_node';  // where it must run
   needsPatroni?: boolean;
   lane?: 'control' | 'data';                                   // control ops (HA/params) never wait behind hours-long backups
+  laneKey?: string;                                            // own queue inside the lane: read-only analyses (WAL forensics) do not hold up a backup or a restore, and vice versa
   cancellable?: boolean;
   validate: (p: Record<string, any>) => string | null;       // null = ok, else error message
 }
@@ -148,7 +149,10 @@ Object.assign(OP_SPECS, {
   restore_drill:    { ...dataOp, mutating: false, validate: (p: any) => (p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null) },
   restore_diff:     { ...dataOp, mutating: false, cancellable: false, validate: (p: any) => stageErr(p) || intoErr(p) },
   restore_apply_rows: { ...dataOp, cancellable: false, validate: (p: any) => stageErr(p) || keysErr(p) || intoErr(p) },
-  wal_forensics:    { ...dataOp, mutating: false, validate: () => null },
+  wal_forensics:    { ...dataOp, mutating: false, laneKey: 'analysis', validate: (p: any) => (p.mode !== undefined && !['events', 'databases'].includes(p.mode) ? 'mode must be events|databases'
+                      : (p.hours !== undefined && !(Number(p.hours) >= 0 && Number(p.hours) <= 87600) ? 'hours must be 0 (whole archive) to 87600'
+                      : (p.limit !== undefined && !(Number.isInteger(Number(p.limit)) && Number(p.limit) >= 1 && Number(p.limit) <= 200) ? 'limit must be 1-200'
+                      : (p.budget_sec !== undefined && !(Number(p.budget_sec) >= 30 && Number(p.budget_sec) <= 7200) ? 'budget_sec must be 30-7200' : null)))) },
   destination_check:   { mutating: false, target: 'node', lane: 'control', validate: (p: any) => !['local', 'nfs', 'smb'].includes(p.type ?? 'local') ? 'type must be local|nfs|smb (object storage is not supported by the engine yet)'
                                 : (!p.repo_path && !p.wal_path ? 'repo_path and/or wal_path required' : ([p.repo_path, p.wal_path].some((x: any) => x !== undefined && x !== null && (typeof x !== 'string' || !x.startsWith('/') || !noCtl(x) || x.split('/').includes('..'))) ? 'paths must be absolute, without ..' : null)) },
   ephemeral_preflight: { mutating: false, target: 'node', lane: 'control', validate: (p: any) => (p.major !== undefined && !(Number.isInteger(Number(p.major)) && Number(p.major) >= 10 && Number(p.major) <= 40) ? 'major must be a PostgreSQL major version' : (p.need_bytes !== undefined && !(Number(p.need_bytes) >= 0) ? 'need_bytes must be a number' : intoErr(p))) },
@@ -156,7 +160,7 @@ Object.assign(OP_SPECS, {
 } as Record<string, OpSpec>);
 
 /** Lane of an operation type: 'data' ops (backup/restore) run in parallel to 'control' ops (HA, parameters). */
-export const laneOf = (type: string): 'control' | 'data' => OP_SPECS[type]?.lane || 'control';
+export const laneOf = (type: string): string => OP_SPECS[type]?.laneKey || OP_SPECS[type]?.lane || 'control';
 
 export function validateOp(type: string, params: Record<string, any>): string | null {
   const spec = OP_SPECS[type];

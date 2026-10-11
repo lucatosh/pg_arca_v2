@@ -297,3 +297,21 @@ pre.out { background: var(--surface-2); border: 1px solid var(--line); padding: 
 .dock-tools .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .dock-item .x { margin-left: 2px; width: 24px; height: 24px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--ink-3); cursor: pointer; flex: none; }
 .dock-item .x:hover { background: var(--bg-2); color: var(--ink); } .dock-item .x:focus-visible { outline: 2px solid var(--accent); }
+
+/* ---------- operation log window (floating, movable, resizable, minimisable) ---------- */
+.oplog { position: fixed; z-index: 70; min-width: 300px; min-height: 160px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: var(--sh-2); resize: both; overflow: hidden; animation: dockin .16s ease-out; }
+.oplog.min { resize: none; min-height: 0; }
+.oplog-hd { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--line); cursor: grab; user-select: none; touch-action: none; background: var(--surface-2); }
+.oplog.min .oplog-hd { border-bottom: 0; } .oplog-hd:active { cursor: grabbing; }
+.oplog-hd .pip { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.oplog.live .pip { background: var(--now); animation: ping 1.8s ease-out infinite; } .oplog.ok .pip { background: var(--ok); } .oplog.bad .pip { background: var(--bad); } .oplog.warn .pip { background: var(--warn); }
+.oplog-hd .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.oplog-hd .st { color: var(--ink-3); white-space: nowrap; }
+.oplog-pr { padding: 8px 14px 2px; display: grid; gap: 4px; }
+.oplog-tools { display: flex; align-items: center; gap: 12px; padding: 6px 14px; color: var(--ink-2); }
+.oplog-tools .chk { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; } .oplog-tools .lnk { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; }
+.oplog-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--surface-2); border-top: 1px solid var(--line); padding: 6px 0; font-size: 12px; line-height: 1.55; }
+.oplog-body .ln { display: grid; grid-template-columns: 62px 1fr; gap: 8px; padding: 1px 12px; } .oplog-body .ln:hover { background: var(--surface-3); }
+.oplog-body .ln .t { color: var(--ink-3); } .oplog-body .ln .x { overflow-wrap: anywhere; white-space: pre-wrap; }
+.oplog-body .ln.status .x { color: var(--info); } .oplog-body .ln.err .x { color: var(--bad); }
+@media (max-width: 520px) { .oplog { left: 8px !important; right: 8px; width: auto !important; } }

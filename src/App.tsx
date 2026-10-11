@@ -7,6 +7,7 @@ import { TAB_ITEMS } from './tabs';
 import { TodayPage, useHealth } from './pages/Today';
 import { JoinBanner } from './pages/Join';
 import { ActivityDock } from './Dock';
+import { OpLogHost } from './OpLog';
 
 // Everything but the shell, "Oggi" and the first page is loaded on demand: a first paint of a few tens of KB, not the whole console.
 const Clusters = lazy(() => import('./pages/Clusters').then(m => ({ default: m.Clusters })));
@@ -120,6 +121,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
       </main>
     </div>
     <ActivityDock me={user} clusters={clusters} />
+    <OpLogHost />
     {pal ? <Palette onClose={() => setPal(false)} clusters={clusters} route={route} cycle={cycle} /> : null}
   </div>;
 }

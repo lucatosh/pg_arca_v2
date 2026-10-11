@@ -3,6 +3,7 @@ import { api } from './api';
 import { Icon, Button, Progress, ago } from './ui';
 import { Op, OPS_SLIM_KEY, isTerminal, revalidateOps, toast, useQuery, useRole } from './hooks';
 import { go } from './router';
+import { openOpLog } from './OpLog';
 import { OP_LABEL, PHASE, STATUS_LABEL, pctOf } from './pages/shared';
 import { WINDOWS } from './pages/History';
 
@@ -104,7 +105,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
             <div className="small muted">{o.cancelRequested ? 'Annullamento in corso…' : p?.phase ? PHASE[p.phase] || p.phase : o.status === 'queued' ? 'In coda: parte appena l’agent è libero' : 'In esecuzione…'}</div>
             <div className="m"><span>{names[o.clusterId] || o.clusterId}</span>{o.createdBy ? <span>da {o.createdBy}</span> : null}<span>{STATUS_LABEL[o.status] || o.status}</span></div>
             <div className="acts">{to ? <Button sm icon="external" onClick={() => go(to)}>Apri</Button> : null}
-              {to ? <Button sm icon="logs" onClick={() => go(to.replace('/operations', '/logs'))}>Log</Button> : null}
+              <Button sm icon="logs" onClick={() => openOpLog(o.id, label(o))}>Log</Button>
               {canAct && !o.cancelRequested ? <Button sm kind="danger" icon="stop" busy={busy === o.id} onClick={() => cancel(o)}>Annulla</Button> : null}</div>
           </div>;
         })}
@@ -123,7 +124,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
               <button className="x" onClick={() => dismiss([o.id])} aria-label={`Rimuovi dall’elenco: ${label(o)}`} title="Rimuovi dall’elenco (resta nello storico)"><Icon n="x" s={14} /></button></div>
             <div className="m"><span>{STATUS_LABEL[o.status] || o.status}</span><span>{names[o.clusterId] || o.clusterId}</span>{o.createdBy ? <span>da {o.createdBy}</span> : null}</div>
             {o.status === 'failed' && o.error ? <div className="err">{o.error}</div> : null}
-            {to ? <div className="acts"><Button sm icon="external" onClick={() => go(to)}>Dettagli</Button></div> : null}
+            <div className="acts">{to ? <Button sm icon="external" onClick={() => go(to)}>Dettagli</Button> : null}<Button sm icon="logs" onClick={() => openOpLog(o.id, label(o))}>Log</Button></div>
           </div>;
         })}
       </div>

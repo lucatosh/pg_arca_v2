@@ -203,8 +203,15 @@ def _gc_cas(repo):
 
 
 # --------------------------------------------------------------------------- forensics
-def forensics(ctx, limit=20, since=None, until=None):
-    """Locate DROP / TRUNCATE events in archived WAL (pg_waldump) and map relfilenodes back to names via the catalog."""
+def forensics(ctx, limit=20, since=None, until=None, **kw):
+    """DROP / TRUNCATE / DROP DATABASE events in the archived WAL (see engine/walscan.py: parallel, filtered, cached). Whole archive unless `hours` says otherwise."""
+    from pg_arca.engine import walscan
+    kw.setdefault("hours", 0)
+    return walscan.scan(ctx, limit=limit, since=since, until=until, **kw)
+
+
+def forensics_legacy(ctx, limit=20, since=None, until=None):
+    """The first implementation (one pg_waldump over a full copy of the archive, parsed in Python). Kept only so tests/bench_forensics.py can measure the difference."""
     exe = ctx.conn.exe("pg_waldump")
     segs = ctx.wal.list_segments()
     if not segs:

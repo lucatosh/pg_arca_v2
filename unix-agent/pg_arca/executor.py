@@ -658,8 +658,17 @@ class OperationExecutor:
                                    into=p.get("into"), dry_run=bool(p.get("dry_run")))
 
     def h_forensics(self, p):
-        from pg_arca.engine.maintenance import forensics
-        return forensics(self._ctx_ro(), int(p.get("limit", 20)), p.get("since"), p.get("until"))
+        from pg_arca.engine import walscan
+        mode = "databases" if p.get("mode") == "databases" else "events"
+        hours = p.get("hours")
+        try:
+            hours = float(hours) if hours is not None else (0 if mode == "databases" else 24)
+        except (TypeError, ValueError):
+            raise OpError("hours must be a number (0 = the whole archive)")
+        return walscan.scan(self._ctx_ro(), mode=mode, hours=max(0, hours), since_backup=bool(p.get("since_backup", mode == "databases")),
+                            limit=max(1, min(int(p.get("limit", 20)), 200)), since=p.get("since"), until=p.get("until"),
+                            cache_dir=os.path.join(self.config.get("state_dir", "/var/lib/pgarca/state"), "forensics"),
+                            progress=self._progress, cancel=self._cancelled, budget_sec=max(30, min(int(p.get("budget_sec", 900)), 7200)))
 
     def h_hba_read(self, p):
         from pg_arca import hba_ops

@@ -66,6 +66,7 @@ export interface Operation {
   progress?: any;             // live progress reported by the agent while running (phase, pct, bytes...)
   cancelRequested?: boolean;  // cooperative cancel of a running data operation
   history: { at: string; status: OpStatus; note?: string }[];
+  log?: { at: string; text: string; k?: string }[];   // what the agent reported while running (phase changes, messages, periodic counters); capped
 }
 
 export interface DirectConnection {

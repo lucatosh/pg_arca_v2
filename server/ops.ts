@@ -57,6 +57,38 @@ export interface SubmitInput {
   ttlSeconds?: number;
 }
 
+export const OP_LOG_MAX = 400;
+/** One human line for a progress report: the agent's own `msg` if any, otherwise the phase with its counters. */
+export function progressLine(p: any): string {
+  if (!p || typeof p !== 'object') return '';
+  const bits: string[] = [];
+  if (p.phase) bits.push(String(p.phase));
+  if (p.msg) bits.push(String(p.msg).slice(0, 300));
+  if (p.files_total) bits.push(`${p.files ?? 0}/${p.files_total} file`);
+  if (p.bytes_total) bits.push(`${p.bytes ?? 0}/${p.bytes_total} byte`);
+  if (p.chunks) bits.push(`${p.chunks} chunk`);
+  if (p.segments_total) bits.push(`${p.segments ?? 0}/${p.segments_total} segmenti`);
+  if (p.elapsed_sec != null) bits.push(`${p.elapsed_sec} s`);
+  return bits.join(' · ');
+}
+/** Append what the agent just reported to the operation's log: a new line when the phase or the message changes, otherwise a counters snapshot at most every 15 s. */
+export function logProgress(op: Operation, p: any, now = Date.now()) {
+  const text = progressLine(p); if (!text) return;
+  const log = (op.log ||= []);
+  const last = log[log.length - 1];
+  const key = (x: any) => `${x?.phase || ''}|${x?.msg || ''}`;
+  const changed = !last || last.k !== key(p);
+  if (!changed && now - Date.parse(last!.at) < 15_000) return;
+  log.push({ at: new Date(now).toISOString(), text, k: key(p) });
+  if (log.length > OP_LOG_MAX) log.splice(0, log.length - OP_LOG_MAX);
+}
+/** Status transitions + agent log, oldest first (what the operator sees in the operation log window). */
+export function opTimeline(op: Operation): { at: string; text: string; kind: 'status' | 'log' }[] {
+  const st = op.history.map(h => ({ at: h.at, text: `${h.status}${h.note ? ': ' + h.note : ''}`, kind: 'status' as const }));
+  const lg = (op.log || []).map(l => ({ at: l.at, text: l.text, kind: 'log' as const }));
+  return [...st, ...lg].sort((a, b) => a.at.localeCompare(b.at));
+}
+
 function push(op: Operation, status: OpStatus, note?: string) {
   op.status = status;
   op.updatedAt = nowIso();
@@ -143,7 +175,7 @@ export function report(store: Store, nodeId: string, opId: string, status: 'runn
       if (op.status === 'queued') return { ok: false, op, reason: 'not leased' };
       op.leaseUntil = new Date(Date.now() + extendLeaseSeconds * 1000).toISOString();
       if (op.status !== 'running') push(op, 'running');
-      if (progress && typeof progress === 'object') op.progress = progress;
+      if (progress && typeof progress === 'object') { op.progress = progress; logProgress(op, progress); }
       return { ok: true, op, cancel: !!op.cancelRequested };
     }
     if (status === 'failed' && op.cancelRequested) { push(op, 'cancelled', 'cancelled by operator while running'); op.error = error; op.leaseUntil = undefined; op.progress = undefined;

@@ -32,6 +32,8 @@ class ConsoleError(Exception):
         self.body = body
 
 
+WORKERS = 3                  # operations in flight at once: control lane + data lane + analysis lane (the server leases at most one per lane)
+
 class ConsoleClient(threading.Thread):
     def __init__(self, config, runtime, executor, wal, cas, logshipper=None):
         super(ConsoleClient, self).__init__(daemon=True, name="console-client")
@@ -39,7 +41,7 @@ class ConsoleClient(threading.Thread):
         self.base = config["web_server_url"].rstrip("/")
         self.stop_ev = threading.Event()
         self.creds = load_credentials(config)
-        self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="op")
+        self.pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="op")   # control lane + data lane + analysis lane
         self.inflight = {}           # op_id -> future
         self.unreported = {}         # op_id -> (status, result, error)
         self.last_discovery = 0
@@ -215,7 +217,7 @@ class ConsoleClient(threading.Thread):
                 if r.get("cancel"):
                     self.executor.request_cancel(op_id)
 
-        free_slots = max(0, 2 - len(self.inflight))
+        free_slots = max(0, WORKERS - len(self.inflight))
         wait = 0 if self.inflight or not free_slots else min(8, int(self.config.get("heartbeat_interval_seconds", 10)))
         resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "max_ops": free_slots,
                                                    "discovery": full_discovery, "wait_seconds": wait}, timeout=wait + 15)
