@@ -145,6 +145,20 @@ export function geoOf(st: any, clusterId: string) {
   return null;
 }
 
+/** Parameters a hot standby must have at least as high as its primary: raising one on the primary SITE first stops the standby sites
+ *  ("hot standby is not possible because ... = N is a lower setting than on the primary server"). Patroni keeps the members of ONE site in step, not the sites. */
+export const STANDBY_MIN_PARAMS = ['max_connections', 'max_prepared_transactions', 'max_locks_per_transaction', 'max_wal_senders', 'max_worker_processes'];
+export function geoParamGuard(st: any, clusterId: string, name: string, value: any): string | null {
+  if (!STANDBY_MIN_PARAMS.includes(name) || value === null || value === undefined) return null;
+  const v = Number(value); if (!Number.isFinite(v)) return null;
+  const me = geoOf(st, clusterId); if (!me || me.role !== 'primary') return null;
+  const low = me.peers.filter(p => p.role === 'standby').map(p => {
+    const vals = (Object.values(st.nodes) as NodeRecord[]).filter(n => n.clusterId === p.clusterId).map(n => Number(n.snapshot?.postgres?.settings?.[name])).filter(Number.isFinite);
+    return { name: p.name, cur: vals.length ? Math.min(...vals) : null };
+  }).filter(x => x.cur !== null && x.cur < v);
+  return low.length ? `${name} = ${v} sul sito primario supera il valore dei siti di replica (${low.map(x => `${x.name}: ${x.cur}`).join(', ')}): i loro standby si fermerebbero ("hot standby is not possible"). Alza prima ${name} sui siti di replica, poi qui.` : null;
+}
+
 /** Health findings for the briefing ("Oggi"): one per standby site in trouble. */
 export function geoIssues(st: any, now = Date.now()) {
   const out: any[] = [];

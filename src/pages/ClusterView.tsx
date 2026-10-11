@@ -186,17 +186,18 @@ function Params({ c }: { c: any }) {
   const valid = /^[a-z_][a-z0-9_.]*$/i.test(name) && (reset || value !== '');
   const nodes = c.agentNodes || [];
   return <div className="stack-l">
-    <Card title="Modifica un parametro" actions={<Badge>ALTER SYSTEM</Badge>}>
+    <Card title="Modifica un parametro" actions={<Badge title={c.haState?.managedByPatroni ? 'Cluster Patroni: il parametro va nella configurazione dinamica (come patronictl edit-config) e vale per tutti i membri; mai ALTER SYSTEM o postgresql.conf.' : undefined}>{c.haState?.managedByPatroni ? 'DCS Patroni (edit-config)' : 'ALTER SYSTEM'}</Badge>}>
       <div className="stack"><div className="grid g2">
         <Field label="Parametro"><input className="input" list="pgparams" value={name} onChange={e => setName(e.target.value)} placeholder="work_mem" /><datalist id="pgparams">{PARAMS.map(p => <option key={p} value={p} />)}</datalist></Field>
         <Field label="Valore" hint={reset ? 'Il parametro tornerà al valore predefinito.' : undefined}><input className="input" disabled={reset} value={value} onChange={e => setValue(e.target.value)} placeholder="64MB" /></Field>
-        {nodes.length > 1 ? <Field label="Nodo" hint="Il parametro vale per il nodo scelto."><select className="input" value={node} onChange={e => setNode(e.target.value)}><option value="">Primario (automatico)</option>{nodes.map((n: any) => <option key={n.id} value={n.id}>{n.name}</option>)}</select></Field> : null}</div>
+        {nodes.length > 1 && !c.haState?.managedByPatroni ? <Field label="Nodo" hint="Il parametro vale per il nodo scelto."><select className="input" value={node} onChange={e => setNode(e.target.value)}><option value="">Primario (automatico)</option>{nodes.map((n: any) => <option key={n.id} value={n.id}>{n.name}</option>)}</select></Field> : null}</div>
         <label className="check"><input type="checkbox" checked={reset} onChange={e => setReset(e.target.checked)} />Ripristina il valore predefinito</label>
         <div className="row"><Button kind="primary" disabled={!valid || r.busy} onClick={() => setAsk(true)}>Applica</Button>
           <Button disabled={r.busy} onClick={() => r.run('pg_reload', {}, { nodeId: node || undefined })}>Ricarica configurazione</Button></div></div></Card>
-    {(r.op || r.error) ? <Card><OpPanel op={r.op} error={r.error} /><Result op={r.op} /></Card> : null}
+    {r.conflict?.overridable ? <Banner kind="warn" title={r.conflict.error === 'geo_standby_lower' ? 'Prima i siti di replica' : 'Conflitto con un’altra operazione'} actions={<Button sm kind="danger" onClick={() => r.runForced()}>Applica comunque</Button>}>{r.conflict.message}</Banner>
+      : (r.op || r.error) ? <Card><OpPanel op={r.op} error={r.error} /><Result op={r.op} /></Card> : null}
     {ask ? <Confirm title="Applicare il parametro?" confirmLabel="Applica" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); r.run('pg_set_param', { name, value: reset ? null : value }, { nodeId: node || undefined }); }}>
-      <p><code>{name}</code> → <code>{reset ? 'DEFAULT' : value}</code>. Verrà salvato con ALTER SYSTEM e la configurazione ricaricata. Se il parametro richiede un riavvio, l’esito lo indicherà e il riavvio resta una tua scelta.</p></Confirm> : null}
+      <p><code>{name}</code> → <code>{reset ? 'DEFAULT' : value}</code>. {c.haState?.managedByPatroni ? 'Verrà scritto nella configurazione dinamica di Patroni (DCS) e applicato da tutti i membri.' : 'Verrà salvato con ALTER SYSTEM e la configurazione ricaricata.'} Se il parametro richiede un riavvio, l’esito lo indicherà e il riavvio resta una tua scelta.</p></Confirm> : null}
   </div>;
 }
 

@@ -21,6 +21,7 @@ SNAPSHOT_SETTINGS = (
     "shared_buffers", "work_mem", "maintenance_work_mem", "effective_cache_size", "checkpoint_timeout",
     "checkpoint_completion_target", "synchronous_standby_names", "synchronous_commit", "wal_compression",
     "wal_keep_size", "autovacuum", "cluster_name", "data_directory", "unix_socket_directories",
+    "max_prepared_transactions", "max_locks_per_transaction", "max_worker_processes",     # must be <= on every standby (geo sites): checked by the console
 )
 
 SNAPSHOT_SQL = """

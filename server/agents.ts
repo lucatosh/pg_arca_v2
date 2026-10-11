@@ -18,7 +18,7 @@ import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
 import { conflictFor, activityOf } from './conflicts';
-import { startSwitchover } from './geo';
+import { startSwitchover, geoParamGuard } from './geo';
 
 export interface Deps {
   /** executes an operation server-side for clusters attached without an agent */
@@ -305,6 +305,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
     if (type === 'agent_config_set' && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Solo un amministratore può cambiare percorsi e impostazioni dell’agent.' });
     const spec = OP_SPECS[type];
+    if (type === 'pg_set_param' && !params.force) { const g = geoParamGuard(st, cluster.id, String(params.name), params.value); if (g) return res.status(409).json({ error: 'geo_standby_lower', message: g, overridable: true }); }
     if (requiresApproval(st, cluster, type, params)) {
       const reqRec = await requestApproval(store, ops.audit, { cluster, type, params, nodeId, ttlSeconds, key, actor: actorOf(req) });
       return res.status(202).json({ approval: reqRec, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });

@@ -90,7 +90,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
       setOp(r.operation); revalidateOps();
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); } else poll(r.operation.id);
       return r.operation;
-    } catch (e: any) { setBusy(false); setError(e.body?.message || e.message); if (e.body?.error === 'conflict') { setConflict(e.body); keyRef.current = null; } return null; }
+    } catch (e: any) { setBusy(false); setError(e.body?.message || e.message); if (e.body?.error === 'conflict' || e.body?.overridable) { setConflict(e.body); keyRef.current = null; } return null; }
   }, [clusterId, poll, onDone]);
   /** after an overridable conflict (an HA action while data work runs), the operator confirmed: same request with force */
   const runForced = useCallback(() => { const l = last.current; if (l) return run(l.type, { ...l.params, force: true }, l.extra); return Promise.resolve(null); }, [run]);

@@ -3,7 +3,7 @@
 import assert from 'assert'; import fs from 'fs'; import os from 'os'; import path from 'path';
 import { MiniApp } from './mini-express';
 import { Store } from '../../server/store';
-import { geoGroups, mountGeoRoutes, geoSlotFor } from '../../server/geo';
+import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard } from '../../server/geo';
 import { evaluate } from '../../server/health';
 import { deriveCluster } from '../../server/view';
 
@@ -30,6 +30,12 @@ import { deriveCluster } from '../../server/view';
   const view = deriveCluster({ id: 'c2', name: 'geo-dc2', environment: 'prod', nodes: [store.peek().nodes.b as any] });
   assert.strictEqual(view.status, 'healthy'); assert(view.haState.standbyCluster);
   assert(!evaluate(store.peek()).some(i => i.clusterId === 'c2' && ['no_primary', 'no_backup'].includes(i.code)));
+  // parameters a standby needs at least as high: raising them on the primary site first is refused
+  await store.mutate(d => { d.nodes.b.snapshot.postgres.settings = { max_connections: '100' }; });
+  assert(/siti di replica/.test(geoParamGuard(store.peek(), 'c1', 'max_connections', 200) || ''), 'raise on the primary above the standby site: refused');
+  assert.strictEqual(geoParamGuard(store.peek(), 'c1', 'max_connections', 100), null);
+  assert.strictEqual(geoParamGuard(store.peek(), 'c2', 'max_connections', 300), null, 'raising on the standby site first is the right order');
+  assert.strictEqual(geoParamGuard(store.peek(), 'c1', 'work_mem', '64MB'), null);
   // 2. the WAN breaks: receiver down, lag grows -> critical finding on the standby site
   await store.mutate(d => { d.nodes.a.snapshot = snapP('0/9000000'); d.nodes.b.snapshot = snapS('0/5000000', 'stopping', 300); });
   s2 = geoGroups(store.peek())[0].sites.find(s => s.clusterId === 'c2')!;
