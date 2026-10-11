@@ -1,0 +1,91 @@
+# pg_arca lab: GEO-REDUNDANT PostgreSQL. Two "data centres" on separate Docker networks joined by a "WAN" network, and a backup server.
+#   DC1 (primary site):  etcd-dc1 + dc1-pg1/dc1-pg2 (Patroni scope geo-dc1, PostgreSQL 16) + dc1-haproxy (:5000 -> leader)
+#   DC2 (standby site):  etcd-dc2 + dc2-pg1/dc2-pg2 (Patroni scope geo-dc2, standby_cluster replicating from dc1-haproxy:5000 over the WAN, permanent slot geo_dc2)
+#   bk1 (backup server): pg_arca agent in WORKER role; the volume geo-backup (repository + WAL archive) is mounted on every node at /backup, like an NFS export
+# Each site has its OWN DCS (as in real geo deployments: one etcd cluster per site, no quorum across the WAN). Driven by ../geo.sh.
+name: arca-geo
+x-pg: &pg
+  image: pg-arca-lab-node:16
+  init: true
+  entrypoint: ["/bin/bash", "/geo/entrypoint-geo.sh"]
+  extra_hosts: ["host.docker.internal:host-gateway"]
+  cap_add: [NET_ADMIN]                                   # tc netem: WAN latency between the sites (geo.sh latency <ms>)
+  restart: unless-stopped
+services:
+  etcd-dc1:
+    image: quay.io/coreos/etcd:v3.5.17
+    hostname: etcd-dc1
+    command: etcd --name etcd-dc1 --data-dir /data --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://etcd-dc1:2379 --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://etcd-dc1:2380 --initial-cluster etcd-dc1=http://etcd-dc1:2380
+    volumes: ["etcd-dc1:/data"]
+    networks: [dc1]
+    restart: unless-stopped
+  etcd-dc2:
+    image: quay.io/coreos/etcd:v3.5.17
+    hostname: etcd-dc2
+    command: etcd --name etcd-dc2 --data-dir /data --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://etcd-dc2:2379 --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://etcd-dc2:2380 --initial-cluster etcd-dc2=http://etcd-dc2:2380
+    volumes: ["etcd-dc2:/data"]
+    networks: [dc2]
+    restart: unless-stopped
+  dc1-pg1:
+    <<: *pg
+    hostname: dc1-pg1
+    container_name: dc1-pg1
+    environment: { NODE: dc1-pg1, SITE: dc1, PG_SUPER_PASSWORD: "${PG_SUPER_PASSWORD}", PG_REPL_PASSWORD: "${PG_REPL_PASSWORD}", ARCA_URL: "${ARCA_URL:-}", ARCA_ENROLL_TOKEN: "${TOKEN_DC1_PG1:-}" }
+    volumes: ["geo-dc1-pg1:/var/lib/postgresql/data", "geo-agent-dc1-pg1:/etc/pg-arca", "geo-backup:/backup", "./:/geo:ro,z", "../../..:/work:ro,z"]
+    networks: [dc1, wan]
+    depends_on: [etcd-dc1]
+  dc1-pg2:
+    <<: *pg
+    hostname: dc1-pg2
+    container_name: dc1-pg2
+    environment: { NODE: dc1-pg2, SITE: dc1, PG_SUPER_PASSWORD: "${PG_SUPER_PASSWORD}", PG_REPL_PASSWORD: "${PG_REPL_PASSWORD}", ARCA_URL: "${ARCA_URL:-}", ARCA_ENROLL_TOKEN: "${TOKEN_DC1_PG2:-}" }
+    volumes: ["geo-dc1-pg2:/var/lib/postgresql/data", "geo-agent-dc1-pg2:/etc/pg-arca", "geo-backup:/backup", "./:/geo:ro,z", "../../..:/work:ro,z"]
+    networks: [dc1, wan]
+    depends_on: [etcd-dc1]
+  dc1-haproxy:
+    image: haproxy:2.9-alpine
+    hostname: dc1-haproxy
+    volumes: ["./haproxy-dc1.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro,z"]
+    networks: [dc1, wan]
+    depends_on: [dc1-pg1, dc1-pg2]
+    restart: unless-stopped
+  dc2-pg1:
+    <<: *pg
+    hostname: dc2-pg1
+    container_name: dc2-pg1
+    environment: { NODE: dc2-pg1, SITE: dc2, PG_SUPER_PASSWORD: "${PG_SUPER_PASSWORD}", PG_REPL_PASSWORD: "${PG_REPL_PASSWORD}", ARCA_URL: "${ARCA_URL:-}", ARCA_ENROLL_TOKEN: "${TOKEN_DC2_PG1:-}" }
+    volumes: ["geo-dc2-pg1:/var/lib/postgresql/data", "geo-agent-dc2-pg1:/etc/pg-arca", "geo-backup:/backup", "./:/geo:ro,z", "../../..:/work:ro,z"]
+    networks: [dc2, wan]
+    depends_on: [etcd-dc2, dc1-haproxy]
+  dc2-pg2:
+    <<: *pg
+    hostname: dc2-pg2
+    container_name: dc2-pg2
+    environment: { NODE: dc2-pg2, SITE: dc2, PG_SUPER_PASSWORD: "${PG_SUPER_PASSWORD}", PG_REPL_PASSWORD: "${PG_REPL_PASSWORD}", ARCA_URL: "${ARCA_URL:-}", ARCA_ENROLL_TOKEN: "${TOKEN_DC2_PG2:-}" }
+    volumes: ["geo-dc2-pg2:/var/lib/postgresql/data", "geo-agent-dc2-pg2:/etc/pg-arca", "geo-backup:/backup", "./:/geo:ro,z", "../../..:/work:ro,z"]
+    networks: [dc2, wan]
+    depends_on: [etcd-dc2, dc1-haproxy]
+  dc2-haproxy:
+    image: haproxy:2.9-alpine
+    hostname: dc2-haproxy
+    volumes: ["./haproxy-dc2.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro,z"]
+    networks: [dc2, wan]
+    depends_on: [dc2-pg1, dc2-pg2]
+    restart: unless-stopped
+  bk1:
+    image: pg-arca-lab-node:16
+    hostname: bk1
+    container_name: bk1
+    init: true
+    entrypoint: ["/bin/bash", "/geo/entrypoint-bk.sh"]
+    environment: { NODE: bk1, ARCA_URL: "${ARCA_URL:-}", ARCA_ENROLL_TOKEN: "${TOKEN_BK1:-}" }
+    volumes: ["geo-backup:/backup", "geo-agent-bk1:/etc/pg-arca", "./:/geo:ro,z", "../../..:/work:ro,z"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [wan]
+    restart: unless-stopped
+networks:
+  dc1: { ipam: { config: [{ subnet: 172.30.1.0/24 }] } }
+  dc2: { ipam: { config: [{ subnet: 172.30.2.0/24 }] } }
+  wan: { ipam: { config: [{ subnet: 172.30.0.0/24 }] } }
+volumes: { etcd-dc1: {}, etcd-dc2: {}, geo-dc1-pg1: {}, geo-dc1-pg2: {}, geo-dc2-pg1: {}, geo-dc2-pg2: {}, geo-backup: {},
+           geo-agent-dc1-pg1: {}, geo-agent-dc1-pg2: {}, geo-agent-dc2-pg1: {}, geo-agent-dc2-pg2: {}, geo-agent-bk1: {} }
