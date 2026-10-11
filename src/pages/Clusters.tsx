@@ -5,7 +5,7 @@ import { revalidate, toast, useQuery } from '../hooks';
 import { summarize } from './Strategy';
 import { go } from '../router';
 import { statusKind } from '../App';
-import { buildFleet, toneOf, useFold, FolderNode } from '../Fleet';
+import { buildFleet, toneOf, useFold, FolderNode, replicaText } from '../Fleet';
 import { useHealth } from './Today';
 
 const ENVS = [['prod', 'Produzione'], ['prep', 'Pre-produzione'], ['int', 'Integrazione'], ['dev', 'Sviluppo'], ['test', 'Test']];
@@ -46,27 +46,31 @@ export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]
 function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; onOrganize: (c: any) => void }) {
   const h = useHealth(30000).data; const health = Object.fromEntries(((h?.clusters || []) as any[]).map((c: any) => [c.id, c.worst]));
   const groups = buildFleet(clusters, health); const fold = useFold('arca.fleet.table');
+  // a standby site holds a copy of its primary: it counts for nodes, not again for data size
   const size = (n: FolderNode): number => n.clusters.reduce((a, c) => a + (c.totalSizeBytes || 0), 0) + n.children.reduce((a, x) => a + size(x), 0);
-  const nodes = (n: FolderNode): number => n.clusters.reduce((a, c) => a + (c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0), 0) + n.children.reduce((a, x) => a + nodes(x), 0);
+  const nn = (c: any) => c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0;
+  const nodes = (n: FolderNode): number => n.clusters.reduce((a, c) => a + nn(c) + (c.replicas || []).reduce((b: number, r: any) => b + nn(r), 0), 0) + n.children.reduce((a, x) => a + nodes(x), 0);
   const summary = (n: { count: number; bad: number; warn: number }) => <span className="small muted">{n.count} {n.count === 1 ? 'cluster' : 'cluster'}{n.bad ? <> · <span style={{ color: 'var(--bad)', fontWeight: 600 }}>{n.bad} critici</span></> : null}{n.warn ? <> · <span style={{ color: 'var(--warn)', fontWeight: 600 }}>{n.warn} da controllare</span></> : null}{!n.bad && !n.warn ? ' · tutti in salute' : ''}</span>;
-  const row = (c: any, depth: number) => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>
-    <td style={{ paddingLeft: 14 + depth * 18 }}><span className="row gap-s"><Dot kind={toneOf(c, health)} /><a href={`#/c/${encodeURIComponent(c.id)}`} onClick={e => e.stopPropagation()}><strong>{c.name}</strong></a></span></td>
-    <td><span className="small">{c.status === 'healthy' ? 'In salute' : c.status === 'degraded' ? 'Degradato' : c.status}{health[c.id] === 'critical' || health[c.id] === 'warning' ? <span className="faint"> · {health[c.id] === 'critical' ? 'problemi critici' : 'da controllare'}</span> : null}</span></td>
+  const one = (c: any, depth: number, replica = false) => <tr key={c.id} className={`click${replica ? ' replicarow' : ''}`} onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>
+    <td style={{ paddingLeft: 14 + depth * 18 }}><span className="row gap-s">{replica ? <span className="branch" aria-hidden /> : null}<Dot kind={toneOf(c, health)} /><a href={`#/c/${encodeURIComponent(c.id)}`} onClick={e => e.stopPropagation()}><strong>{c.name}</strong></a>
+      {replica ? <span className="geotag" title="Sito di replica (standby cluster): riceve i dati dal primario sopra">DR</span> : c.replicas?.length ? <span className="geotag p" title={`Sito primario, replicato su ${c.replicas.map((r: any) => r.name).join(', ')}`}>GEO</span> : null}</span></td>
+    <td><span className="small">{replica ? <>Replica di {c.geo.peers?.find((p: any) => p.role === 'primary')?.name} · <span style={{ color: c.geo.health === 'ok' ? undefined : `var(--${c.geo.health})` }}>{replicaText(c)}</span></> : c.status === 'healthy' ? 'In salute' : c.status === 'degraded' ? 'Degradato' : c.status}{health[c.id] === 'critical' || health[c.id] === 'warning' ? <span className="faint"> · {health[c.id] === 'critical' ? 'problemi critici' : 'da controllare'}</span> : null}</span></td>
     <td>{modeOf(c)}</td><td>{stratOf(c, pol)}</td><td>{c.pgVersion || '—'}</td>
     <td className="num">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num">{bytes(c.totalSizeBytes)}</td><td className="num">{num(c.tps)}</td>
     <td className="num">{c.isSandbox ? null : <button className="btn ghost sm" onClick={e => { e.stopPropagation(); onOrganize(c); }} title="Ambiente e cartella">Sposta…</button>}</td></tr>;
+  const row = (c: any, depth: number) => [one(c, depth), ...(c.replicas || []).map((r: any) => one(r, depth + 1, true))];
   const folder = (n: FolderNode, env: string, depth: number): React.ReactNode[] => {
     const k = `${env}:${n.path}`; const open = fold.isOpen(k, true);
     return [<tr key={'f' + k} className="frow" onClick={() => fold.toggle(k, true)}><td colSpan={9} style={{ paddingLeft: 14 + depth * 18 }}>
       <span className="row gap-s"><Icon n={open ? 'down' : 'chev'} s={12} /><Icon n="folder" s={14} /><strong>{n.name}</strong><Dot kind={n.tone} />{summary(n)}<span className="small faint"> · {nodes(n)} {nodes(n) === 1 ? 'nodo' : 'nodi'} · {bytes(size(n))}</span></span></td></tr>,
-      ...(open ? [...n.children.flatMap(ch => folder(ch, env, depth + 1)), ...n.clusters.map(c => row(c, depth + 1))] : [])];
+      ...(open ? [...n.children.flatMap(ch => folder(ch, env, depth + 1)), ...n.clusters.flatMap(c => row(c, depth + 1))] : [])];
   };
   return <div className="tablewrap"><table className="t fleettable">
     <thead><tr><th>Cluster</th><th>Stato</th><th>Modalità</th><th>Backup</th><th>PostgreSQL</th><th className="num">Nodi</th><th className="num">Dimensione</th><th className="num">TPS</th><th /></tr></thead>
     <tbody>{groups.flatMap(g => {
       const k = `env:${g.env}`; const open = fold.isOpen(k, true);
       return [<tr key={k} className={`erow ${g.tone}`} onClick={() => fold.toggle(k, true)}><td colSpan={9}><span className="row gap-s"><Icon n={open ? 'down' : 'chev'} s={13} /><span className={`envmark ${g.env}`} /><strong>{g.label}</strong><Dot kind={g.tone} />{summary(g)}<span className="small faint"> · {nodes(g.root)} {nodes(g.root) === 1 ? 'nodo' : 'nodi'} · {bytes(size(g.root))}</span></span></td></tr>,
-        ...(open ? [...g.root.children.flatMap(ch => folder(ch, g.env, 1)), ...g.root.clusters.map(c => row(c, 1))] : [])];
+        ...(open ? [...g.root.children.flatMap(ch => folder(ch, g.env, 1)), ...g.root.clusters.flatMap(c => row(c, 1))] : [])];
     })}</tbody></table></div>;
 }
 
@@ -80,6 +84,7 @@ function Organize({ c, all, onClose }: { c: any; all: any[]; onClose: () => void
       <Field label="Ambiente"><select className="input" value={env} onChange={e => setEnv(e.target.value)}>{ENVS.map(e => <option key={e[0]} value={e[0]}>{e[1]}</option>)}</select></Field>
       <Field label="Cartella" hint="Per applicazione o servizio, anche su più livelli: «fatturazione» oppure «fatturazione/api». Vuota = direttamente sotto l’ambiente.">
         <input className="input" list="folders-known" value={folder} onChange={e => setFolder(e.target.value)} placeholder="nome_app" /><datalist id="folders-known">{known.map(f => <option key={f} value={f} />)}</datalist></Field>
+      {c.geo?.role === 'standby' ? <Banner kind="info">{c.name} è un sito di replica: nell’elenco e nella barra laterale compare sempre sotto il suo primario ({c.geo.peers?.find((p: any) => p.role === 'primary')?.name || '—'}), ovunque sia archiviato. Ambiente e cartella qui decidono le strategie e le impostazioni che eredita, e la sua posizione se diventa primario.</Banner> : null}
       <p className="small muted">La cartella raggruppa i cluster nella barra laterale e nell’elenco, e le strategie di backup e le impostazioni di recupero assegnate a una cartella valgono per tutti i cluster che contiene.</p>
       {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
 }

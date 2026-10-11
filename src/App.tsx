@@ -8,7 +8,7 @@ import { TodayPage, useHealth } from './pages/Today';
 import { JoinBanner } from './pages/Join';
 import { ActivityDock } from './Dock';
 import { OpLogHost } from './OpLog';
-import { FleetTree, toneOf } from './Fleet';
+import { FleetTree, toneOf, primaryOf } from './Fleet';
 
 // Everything but the shell, "Oggi" and the first page is loaded on demand: a first paint of a few tens of KB, not the whole console.
 const Clusters = lazy(() => import('./pages/Clusters').then(m => ({ default: m.Clusters })));
@@ -115,7 +115,8 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         <select className="input mobnav" aria-label="Vai a" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
           <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Oggi</option><option value="strategy">Strategie di backup</option><option value="infra">Ripristino e archivi</option><option value="discovery">Rilevamento</option><option value="workers">Macchine operative</option><option value="geo">Georidondanza</option><option value="history">Storico operazioni</option><option value="audit">Registro attività</option></select>
         <div className="crumbs" aria-label="Posizione">
-          {route.page === 'cluster' ? <><a href="#/">Cluster</a><Icon n="chev" s={12} /><strong className="trunc">{cur?.name || '…'}</strong></> : <strong>{PAGE_TITLE[route.page] || ''}</strong>}
+          {route.page === 'cluster' ? <><a href="#/">Cluster</a>{(() => { const p = cur ? primaryOf(cur, clusters) : null; const base = p || cur;
+            return <>{base?.folder ? <><Icon n="chev" s={12} /><span className="faint trunc">{base.folder}</span></> : null}{p ? <><Icon n="chev" s={12} /><a className="trunc" href={`#/c/${encodeURIComponent(p.id)}`} title="Sito primario">{p.name}</a></> : null}</>; })()}<Icon n="chev" s={12} /><strong className="trunc">{cur?.name || '…'}</strong></> : <strong>{PAGE_TITLE[route.page] || ''}</strong>}
         </div>
         <div className="grow" />
         <button className="btn palbtn" onClick={() => setPal(true)} aria-label="Cerca cluster e azioni"><Icon n="search" /><span className="pt">Cerca cluster, azioni…</span><span className="kbd end">Ctrl K</span></button>
