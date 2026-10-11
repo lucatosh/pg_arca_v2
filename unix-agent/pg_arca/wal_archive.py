@@ -36,6 +36,27 @@ def _settings():
     return d or "/var/lib/pgarca/wal", comp or "zstd", c.get("compression_level", 3), c.get("wal_segment_size", 16 * 1024 * 1024)
 
 
+LAST_ERROR = ".last_archive_error.json"
+
+
+def _last_error(wal_dir, name, message):
+    """Why archiving fails, where the agent can read it (PostgreSQL only counts failures): written on failure, removed on the next success. Best effort:
+    on a full or read-only volume it cannot be written, and the agent then falls back to pg_stat_archiver alone."""
+    p = os.path.join(wal_dir, LAST_ERROR)
+    try:
+        if message is None:
+            if os.path.exists(p):
+                os.unlink(p)
+            return
+        import time
+        tmp = "%s.%d" % (p, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"segment": name, "error": message[:600], "at": time.time()}, f)
+        os.rename(tmp, p)
+    except Exception:
+        pass
+
+
 def main(argv):
     if len(argv) != 4 or argv[1] not in ("archive", "get", "prefetch"):
         sys.stderr.write("usage: wal_archive archive <%p> <%f> | get <%f> <%p>\n")
@@ -69,6 +90,7 @@ def main(argv):
             ok, dest, sha, msg = wm.archive_segment(argv[2], argv[3])
         except WalArchiveError as e:
             sys.stderr.write("pg_arca archive FAILED: %s\n" % e)
+            _last_error(d, argv[3], str(e))
             return 1
         except OSError as e:
             import errno
@@ -81,7 +103,9 @@ def main(argv):
             return 1
         except Exception as e:
             sys.stderr.write("pg_arca archive FAILED: PGA-WAL-099 %s\n" % e)
+            _last_error(d, argv[3], "PGA-WAL-099 %s" % e)
             return 1
+        _last_error(d, None, None)
         return 0
     try:
         code, msg = wm.retrieve_segment(argv[2], argv[3])

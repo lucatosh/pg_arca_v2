@@ -2,6 +2,7 @@
 
 import collections
 import glob
+import json
 import logging
 import os
 import re
@@ -164,6 +165,9 @@ class Runtime(object):
         pg["checksums"] = (inst.get("control") or {}).get("data_checksums")
         pg["archiving"] = inst.get("archiving")
         pg["compat"] = self.compat(pg, inst)
+        ae = _archive_error(self.config.get("wal_archive_dir"))
+        if ae:
+            pg["archive_error"] = ae
         return {
             "node_name": self.config["node_name"], "agent_version": AGENT_VERSION,
             "postgres": pg, "patroni": self.patroni_view(),
@@ -175,6 +179,18 @@ class Runtime(object):
             "storage": {"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))},
             "cluster_key": inst.get("cluster_key") or (("patroni:%s" % self.patroni_info["scope"]) if (self.patroni_info or {}).get("scope") else None),
         }
+
+
+def _archive_error(wal_dir):
+    """Last archive_command failure as pg-arca-wal recorded it (pg_arca/wal_archive.py), with the reason PostgreSQL does not keep."""
+    if not wal_dir:
+        return None
+    try:
+        with open(os.path.join(wal_dir, ".last_archive_error.json"), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return {"segment": d.get("segment"), "error": str(d.get("error") or "")[:600], "at": d.get("at")}
+    except (IOError, OSError, ValueError):
+        return None
 
 
 def storage_id(path):
