@@ -177,7 +177,12 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         walrm = 0
         if oldest_lsn is not None:
             seg = keep[0].get("wal_segment_size") or ctx.seg_size
-            floor = wal_segno(min([oldest_lsn] + _sibling_floors(repo, keep)), seg)
+            floor_lsn = min([oldest_lsn] + _sibling_floors(repo, keep))
+            floor = wal_segno(floor_lsn, seg)
+            try:                                       # tell gap detection and the WAL rescue: below this the archive is empty ON PURPOSE
+                ctx.wal.set_retention_floor(floor, "%X/%08X" % (floor_lsn >> 32, floor_lsn & 0xFFFFFFFF))
+            except (OSError, AttributeError):
+                pass
             for name in ctx.wal.list_segments():
                 p = parse_wal_name(name, seg)
                 if p and p[1] < floor:

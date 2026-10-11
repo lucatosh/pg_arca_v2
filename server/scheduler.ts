@@ -34,8 +34,12 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
 
     const bk = target.snapshot?.backup;
     const sets: any[] = (bk?.recent_sets || []).filter((s: any) => s.status === 'COMPLETE');
-    const lastAny = sets.length ? ts(sets[sets.length - 1].start_time) : NaN;
-    const lastFull = (() => { const f = sets.filter(s => s.type === 'full'); return f.length ? ts(f[f.length - 1].start_time) : NaN; })();
+    // the telemetry lags behind: a backup that has just succeeded may not be in the agent's snapshot yet. Without counting it the next tick saw "no full this
+    // week" again and took a second full 10 s later, which with retention 2 left only today's two fulls (seen on the lab: the PITR window was lost)
+    const okRuns = myOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').map(o => ({ type: String(o.result?.type || o.params?.type || 'incr'), at: ts(o.createdAt) }));
+    const newest = (xs: number[]) => { const f = xs.filter(Number.isFinite); return f.length ? Math.max(...f) : NaN; };
+    const lastAny = newest([sets.length ? ts(sets[sets.length - 1].start_time) : NaN, ...okRuns.map(r => r.at)]);
+    const lastFull = newest([(() => { const f = sets.filter(s => s.type === 'full'); return f.length ? ts(f[f.length - 1].start_time) : NaN; })(), ...okRuns.filter(r => r.type === 'full').map(r => r.at)]);
     const h = 3600_000;
 
     // back-off after a failed scheduled backup

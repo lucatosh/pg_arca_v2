@@ -68,10 +68,19 @@ class WalRescue(object):
             names = sorted(n for n in os.listdir(pg_wal) if SEG_RE.match(n))
         except OSError:
             return out
+        floor = self.wal.retention_floor() if hasattr(self.wal, "retention_floor") else 0
+        for n in os.listdir(self.stage):                  # staged copies below what the retention removed on purpose: never published
+            pp = _parse(n, per_id)
+            if pp and pp[1] < floor:
+                try:
+                    os.unlink(os.path.join(self.stage, n))
+                    out["pruned"] += 1
+                except OSError:
+                    pass
         complete = []
         for n in names:
             p = _parse(n, per_id)
-            if p and (p[0] < cur_tli or (p[0] == cur_tli and p[1] < cur_segno)):
+            if p and p[1] >= floor and (p[0] < cur_tli or (p[0] == cur_tli and p[1] < cur_segno)):
                 complete.append(n)
         if in_recovery:
             # 2a. standby: keep a copy of completed segments the archive still lacks after MIN_AGE
@@ -108,7 +117,7 @@ class WalRescue(object):
                 candidates.setdefault(n, os.path.join(pg_wal, n))
         for n, src in sorted(candidates.items()):
             p = _parse(n, per_id)
-            if not p or p[0] >= cur_tli or self.wal.has_segment(n):
+            if not p or p[0] >= cur_tli or p[1] < floor or self.wal.has_segment(n):
                 continue
             try:
                 if os.path.getsize(src) != seg:

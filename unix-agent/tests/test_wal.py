@@ -139,4 +139,36 @@ class WalTests(unittest.TestCase):
         self.assertTrue(self.wm.verify_continuity(max_age=0)["continuous"])
 
 
+    def test_fork_exactly_at_a_segment_start_needs_nothing_of_it_on_the_old_timeline(self):
+        """lab geo: timeline 6 ended at 0/23000000 (a segment boundary); segment 23 of timeline 6 does not exist and is not a hole"""
+        for tl, s in [(1, 1), (1, 2), (1, 3), (2, 4), (2, 5)]:
+            n = seg(tl, 0, s); self.wm.archive_segment(self.mk(n), n)
+        open(os.path.join(self.wm.wal_dir, "00000002.history"), "w").write("1\t0/400000\tno recovery target specified\n")
+        self.assertTrue(self.wm.verify_continuity(max_age=0)["continuous"], self.wm.verify_continuity(max_age=0))
+
+    def test_what_the_retention_removed_is_not_a_hole(self):
+        """lab geo: the retention removed old WAL; leftovers re-archived below its floor made the console report 'holes' and ask for a new full backup"""
+        for tl, s in [(1, 1), (1, 2), (2, 3), (2, 8), (2, 9)]:              # 4..7 removed by the retention (floor 8); 1..3 are leftovers below it
+            n = seg(tl, 0, s); self.wm.archive_segment(self.mk(n), n)
+        open(os.path.join(self.wm.wal_dir, "00000002.history"), "w").write("1\t0/300000\tno recovery target specified\n")
+        self.assertFalse(self.wm.verify_continuity(max_age=0)["continuous"])
+        self.wm.set_retention_floor(8)
+        rep = self.wm.verify_continuity(max_age=0)
+        self.assertTrue(rep["continuous"], rep); self.assertEqual(rep["below_retention_floor"], 3)
+        self.assertNotIn(".retention_floor.json", self.wm.list_segments())
+
+    def test_rescue_never_republishes_below_the_retention_floor(self):
+        from pg_arca.wal_rescue import WalRescue
+        pgwal = os.path.join(self.t, "pg_wal"); os.makedirs(pgwal)
+        for s_ in (2, 3, 9):
+            with open(os.path.join(pgwal, seg(1, 0, s_)), "wb") as f: f.write(b"z" * MB)
+            os.utime(os.path.join(pgwal, seg(1, 0, s_)), (1, 1))
+        self.wm.set_retention_floor(8)
+        r = WalRescue(None, self.wm, {"state_dir": os.path.join(self.t, "st")}, min_age=0)
+        out = r.pass_once(pgwal, in_recovery=False, cur_tli=2, cur_segno=10)
+        self.assertEqual(out["published"], 1)                               # only segment 9: 2 and 3 were removed on purpose
+        self.assertFalse(self.wm.has_segment(seg(1, 0, 2)))
+        self.assertTrue(self.wm.has_segment(seg(1, 0, 9)))
+
+
 if __name__ == "__main__": unittest.main()

@@ -360,6 +360,27 @@ class WalManager:
         return self.retrieve_segment(name, dest_path)
 
     # ------------------------------------------------------------------ continuity
+    FLOOR_FILE = ".retention_floor.json"
+
+    def set_retention_floor(self, segno, lsn_text=None):
+        """Written by the retention (expire): segments below `segno` were removed ON PURPOSE. Gap detection ignores them and the WAL rescue never re-archives
+        them (on the lab, standbys kept re-publishing old-timeline segments the retention had just removed, which then showed up as 'holes' in the archive)."""
+        tmp = os.path.join(self.wal_dir, ".retention_floor.tmp.%d" % os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"segno": int(segno), "lsn": lsn_text, "at": time.time()}, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, os.path.join(self.wal_dir, self.FLOOR_FILE))
+        _fsync_dir(self.wal_dir)
+        self._cont_cache = (0, None, None)
+
+    def retention_floor(self):
+        try:
+            with open(os.path.join(self.wal_dir, self.FLOOR_FILE), "r", encoding="utf-8") as f:
+                return int(json.load(f).get("segno") or 0)
+        except (IOError, OSError, ValueError, TypeError):
+            return 0
+
     def verify_continuity(self, max_age=30):
         """Timeline-aware gap detection. Cached (dir mtime + max_age) so heartbeats stay cheap on huge archives."""
         now = time.time()
@@ -406,11 +427,13 @@ class WalManager:
         prev = None
         for t in chain + [latest]:
             first = (forks[prev] // seg) if prev is not None else 0
-            last = (forks[t] // seg) if t in forks else (1 << 62)
+            last = (((forks[t] - 1) // seg) if forks[t] % seg == 0 else (forks[t] // seg)) if t in forks else (1 << 62)   # a fork exactly at a segment start needs nothing of that segment on the old timeline
             span[t] = (first, last)
             prev = t
         have = {t: set(timelines.get(t, [])) for t in span}
         lo = min((min(v) for v in have.values() if v), default=None)
+        if lo is not None:
+            lo = max(lo, self.retention_floor())
         hi = max(have[latest]) if have[latest] else None
         if lo is None or hi is None or hi < lo:
             return []
@@ -435,6 +458,7 @@ class WalManager:
     def _compute_continuity(self):
         per_id = 0x100000000 // self.segment_size
         names, timelines, histories = [], {}, []
+        floor, below = self.retention_floor(), 0
         for n in os.listdir(self.wal_dir):
             if n.startswith("."):
                 continue                      # .pgarca-id (storage identity) and other hidden bookkeeping
@@ -449,6 +473,9 @@ class WalManager:
             m = SEG_RE.match(base)
             if m and (n == base or n.endswith((".zst", ".lz4", ".gz"))):
                 tli, log, seg = (int(x, 16) for x in m.groups())
+                if log * per_id + seg < floor:
+                    below += 1                # left over below what the retention removed on purpose (re-archived by an old agent, copied by hand): not part of any chain
+                    continue
                 timelines.setdefault(tli, []).append(log * per_id + seg)
                 names.append(base)
         if not names:
@@ -464,5 +491,5 @@ class WalManager:
         names.sort()
         return {"continuous": not gaps, "total_segments": len(names), "gaps": gaps[:50], "gap_count": len(gaps),
                 "timelines": sorted(timelines), "histories": sorted(histories), "first_segment": names[0], "last_segment": names[-1],
-                "conflicts": len(os.listdir(os.path.join(self.wal_dir, "conflicts"))),
+                "conflicts": len(os.listdir(os.path.join(self.wal_dir, "conflicts"))), "below_retention_floor": below,
                 "status": "continuous" if not gaps else "%d gap(s) detected" % len(gaps)}

@@ -23,9 +23,11 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   assert.strictEqual((await tick(now + 60_000)).length, 0, 'back-off window');
   const s2 = await tick(now + 31 * 60_000); assert.strictEqual(s2.length, 1); assert(s2[0].endsWith(':1'), 'new attempt key');
   const op2 = st.peek().operations.find(o => o.idempotencyKey === s2[0])!; await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', op2.id, 'succeeded', {});
+  // stale snapshot: the full just succeeded but the agent has not reported it yet -> NO second full (lab: two fulls 10 s apart + retention wiped PITR history)
+  const sx = await tick(now + 31 * 60_000 + 10_000); assert(!sx.some(k => k.includes(':full:')), 'duplicate full on stale snapshot: ' + JSON.stringify(sx));
   // agent now reports a complete full 1h ago; incr not due; retention expire is scheduled once for the successful backup
   await st.mutate(d => { d.nodes['n1'].snapshot.backup.recent_sets = [{ id: 'x', type: 'full', status: 'COMPLETE', start_time: iso(now + 32 * 60_000 - 3600_000) }]; });
-  const s3 = await tick(now + 33 * 60_000); assert(s3.length === 1 && s3[0].includes(':expire:'), JSON.stringify(s3));
+  const s3 = [...sx, ...(await tick(now + 33 * 60_000))]; assert(s3.length === 1 && s3[0].includes(':expire:'), JSON.stringify(s3));
   const e = st.peek().operations.find(o => o.idempotencyKey === s3[0])!; await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', e.id, 'succeeded', {});
   const s4 = await tick(now + 34 * 60_000); assert(s4.length === 1 && s4[0].includes(':verify:'), JSON.stringify(s4));
   const v = st.peek().operations.find(o => o.idempotencyKey === s4[0])!; await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', v.id, 'succeeded', {});
