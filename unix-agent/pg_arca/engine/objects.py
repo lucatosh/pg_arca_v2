@@ -129,6 +129,19 @@ SELECT COALESCE(jsonb_agg(jsonb_build_object('oid', s.oid::int, 'schema', n.nspn
 FROM pg_depend d JOIN pg_class s ON s.oid = d.objid AND s.relkind = 'S' JOIN pg_namespace n ON n.oid = s.relnamespace
 WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a','i') AND d.refobjid = ANY(ARRAY[%s]::oid[])
 """ % ",".join(str(t["oid"]) for t in tables)) if tables else []
+    # sequences the columns' defaults use without owning them (one sequence shared by several tables): the table cannot be created without them.
+    # Promotion creates them only if missing and never moves an existing one backwards.
+    if tables:
+        owned_oids = {x["oid"] for x in (own_seq or [])} | {x["oid"] for x in seqs}
+        for x in (_jq(src, """
+SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('oid', s.oid::int, 'schema', n.nspname, 'name', s.relname, 'kind', 'S', 'part', false, 'owner', pg_get_userbyid(s.relowner),
+       'acl', %s, 'comment', obj_description(s.oid, 'pg_class'), 'opts', s.reloptions, 'owned', false, 'referenced', true)), '[]'::jsonb)::text
+FROM pg_attrdef ad JOIN pg_depend d ON d.classid = 'pg_attrdef'::regclass AND d.objid = ad.oid AND d.refclassid = 'pg_class'::regclass
+     JOIN pg_class s ON s.oid = d.refobjid AND s.relkind = 'S' JOIN pg_namespace n ON n.oid = s.relnamespace
+WHERE ad.adrelid = ANY(ARRAY[%s]::oid[])""" % (ACL_SQL % "s.relacl", ",".join(str(t["oid"]) for t in tables))) or []):
+            if x["oid"] not in owned_oids:
+                seqs.append(x)
+                owned_oids.add(x["oid"])
     info["tables"], info["views"], info["sequences"] = tables, views, seqs
     info["owned_sequences"] = own_seq or []
     toids = [t["oid"] for t in tables]
@@ -303,14 +316,16 @@ FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.oid = %d"""
     lvl = _toposort([r["oid"] for r in tlist], edges)
     out["types"] = sorted(tlist, key=lambda r: lvl.get(r["oid"], 0))
     # ---- functions the objects use (defaults, checks, triggers, index expressions, views) + every function of the involved schemas
+    doms = [r["oid"] for r in tlist if r["kind"] == "d"]
     used = [int(x[0]) for x in src.query("""
 SELECT DISTINCT p.oid::int FROM pg_depend d JOIN pg_proc p ON p.oid = d.refobjid WHERE d.refclassid = 'pg_proc'::regclass AND d.deptype = 'n' AND (
+  (d.classid = 'pg_constraint'::regclass AND d.objid IN (SELECT oid FROM pg_constraint WHERE contypid = ANY(%s))) OR
   (d.classid = 'pg_attrdef'::regclass AND d.objid IN (SELECT oid FROM pg_attrdef WHERE adrelid = ANY(%s))) OR
   (d.classid = 'pg_constraint'::regclass AND d.objid IN (SELECT oid FROM pg_constraint WHERE conrelid = ANY(%s))) OR
   (d.classid = 'pg_trigger'::regclass AND d.objid IN (SELECT oid FROM pg_trigger WHERE tgrelid = ANY(%s) AND NOT tgisinternal)) OR
   (d.classid = 'pg_class'::regclass AND d.objid IN (SELECT indexrelid FROM pg_index WHERE indrelid = ANY(%s))) OR
-  (d.classid = 'pg_rewrite'::regclass AND d.objid IN (SELECT oid FROM pg_rewrite WHERE ev_class = ANY(%s))))""" % (arr(toids), arr(toids), arr(toids), arr(toids), arr(voids)))] if (toids or voids) else []
-    schemas = {t["schema"] for t in tables} | {v["schema"] for v in info["views"]} | {r["schema"] for r in tlist}
+  (d.classid = 'pg_rewrite'::regclass AND d.objid IN (SELECT oid FROM pg_rewrite WHERE ev_class = ANY(%s))))""" % (arr(doms), arr(toids), arr(toids), arr(toids), arr(toids), arr(voids)))] if (toids or voids) else []
+    schemas = {t["schema"] for t in tables} | {v["schema"] for v in info["views"]} | {r["schema"] for r in tlist} | {x["schema"] for x in info.get("sequences") or []}
     if used:
         schemas |= {x[0] for x in src.query("SELECT DISTINCT n.nspname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE p.oid = ANY(%s)" % arr(used))}
     schemas = {s for s in schemas if s not in SYS_SCHEMAS}
@@ -405,13 +420,14 @@ def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None):
             extra.append("ALTER SCHEMA %s OWNER TO %s" % (quote_ident(s["name"]), quote_ident(s["owner"])))
         extra += [x for x in _acl_stmts("SCHEMA", quote_ident(s["name"]), [a for a in (s.get("acl") or []) if a["g"] == "PUBLIC" or roles_ok is None or a["g"] in roles_ok])]
         run("schema %s" % s["name"], "CREATE SCHEMA %s" % quote_ident(s["name"]), extra)
+    pending = []
     for t in p["types"]:
         if only_missing and prereq_exists(sess, "type", t):
             continue
         extra = []
         if t.get("owner") and (roles_ok is None or t["owner"] in roles_ok):
             extra.append("ALTER TYPE %s OWNER TO %s" % (qi(t["schema"], t["name"]), quote_ident(t["owner"])))
-        run("type %s.%s" % (t["schema"], t["name"]), t["ddl"], extra)
+        pending.append(("type %s.%s" % (t["schema"], t["name"]), t["ddl"], extra))
     for f in p["functions"]:
         if only_missing and prereq_exists(sess, "function", f):
             continue
@@ -420,7 +436,29 @@ def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None):
         if f.get("owner") and (roles_ok is None or f["owner"] in roles_ok):
             extra.append("ALTER %s %s OWNER TO %s" % (kw, f["sig"], quote_ident(f["owner"])))
         extra += _acl_stmts(kw, f["sig"], [a for a in (f.get("acl") or []) if a["g"] == "PUBLIC" or roles_ok is None or a["g"] in roles_ok])
-        run("function %s" % f["sig"], f["ddl"], extra)
+        pending.append(("function %s" % f["sig"], f["ddl"], extra))
+    # types and functions can need each other (a domain whose CHECK calls a function, a function taking a composite type): passes until nothing more
+    # can be created; what still fails is reported with its last error
+    last = {}
+    while pending:
+        nxt = []
+        for label, sql, extra in pending:
+            try:
+                sess.query(sql)
+            except EngineError as e:
+                last[label] = e.message[:200]
+                nxt.append((label, sql, extra))
+                continue
+            created.append(label)
+            for x in extra:
+                try:
+                    sess.query(x)
+                except EngineError as e:
+                    problems.append("%s (owner/grants): %s" % (label, e.message[:160]))
+        if len(nxt) == len(pending):
+            problems += ["%s: %s" % (label, last.get(label, "?")) for label, _, _ in nxt]
+            break
+        pending = nxt
     return created, problems
 
 
@@ -759,6 +797,25 @@ def _recreate_view(live, v, roles_ok):
             live.query(ix)
 
 
+def _seq_forward(live, seqs, pos_of):
+    """Existing sequences: set to the recovered position only when that is AHEAD of the live one (never backwards). Returns the ones moved."""
+    moved = []
+    for x in seqs:
+        p = pos_of.get((x["schema"], x["name"]))
+        if not p:
+            continue
+        fq = qi(x["schema"], x["name"])
+        try:
+            r = live.query("SELECT last_value, is_called FROM %s" % fq)
+            cur = (int(r[0][0]), r[0][1] == "t") if r and r[0] else None
+            if cur is None or (p["last"], p["called"]) > cur:
+                live.query("SELECT setval(%s, %d, %s)" % (sql_lit(fq), p["last"], "true" if p["called"] else "false"))
+                moved.append("%s.%s" % (x["schema"], x["name"]))
+        except EngineError:
+            continue
+    return moved
+
+
 def _compat(res):
     """Keep the single-table answer of the first version (`promoted_as`, `old_kept_as` as strings) next to the lists."""
     pr, ok = res.get("promoted") or [], res.get("old_kept_as") or []
@@ -810,6 +867,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
     sfx_new, sfx_old = "_pitr_" + ts, "_old_" + ts
     result = {"mode": mode, "database": dbname, "suffix": ts}
     created_tmp = []                                         # live objects created in phase 1 (dropped again if anything fails)
+    created_seq = []
     try:
         plan = _live_plan(live, meta, mode, ts)
         if target_schema:
@@ -828,8 +886,15 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
             plan["dry_run"] = True
             return _slim(plan)
         todo = [r for r in plan["tables"] if r["action"] != "skip"]
-        if not todo:
-            result.update(plan=_slim(plan), promoted=[], skipped=[("%s.%s" % (r["schema"], r["name"])) for r in plan["tables"]], note="nothing to do: every selected table exists already")
+        # sequences selected alone or used by the tables' defaults: created when missing; an existing one is never replaced (other tables use it)
+        # and never moves backwards (ids handed out since the target may be referenced elsewhere)
+        seq_new = [x for x in meta.get("sequences") or [] if not _exists(live, x["schema"], x["name"])] if mode != "as_new" else []
+        seq_live = [x for x in meta.get("sequences") or [] if x not in seq_new] if mode != "as_new" else []
+        pos_of = {(x["schema"], x["name"]): x for x in meta.get("positions") or []}
+        if not todo and not seq_new and not plan.get("recovered_views"):
+            moved = _seq_forward(live, seq_live, pos_of)
+            result.update(plan=_slim(plan), promoted=[], skipped=[("%s.%s" % (r["schema"], r["name"])) for r in plan["tables"]], sequences_advanced=moved,
+                          note="nothing to do: every selected object exists already")
             return _compat(result)
         # ---- phase 0: additive prerequisites (schemas, extensions, types, functions): only what is missing
         if progress:
@@ -864,13 +929,13 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                 ss.query("ALTER TABLE %s RENAME TO %s" % (qi(sch, nm), quote_ident(nn)))
                 renamed.append(("TABLE", sch, nn, nm))
                 names.append(qi(sch, nn))
-            for sq in meta.get("sequences") or []:        # sequences selected on their own
+            for sq in seq_new:                           # missing sequences come back under their own name (additive: nothing live has that name)
                 names.append(qi(sq["schema"], sq["name"]))
             dumpfile = os.path.join(tmp, "p.dump")
             args = stage_conn.args() + ["-f", dumpfile, "-d", stage_db]
             for n in names:
                 args += ["-t", n]
-            rc, out, err = run_dump(stage_conn, args)
+            rc, out, err = run_dump(stage_conn, args) if names else (0, "", "")
         finally:
             try:
                 for kind, sch, cur, orig in reversed(renamed):                # leave the quarantine database exactly as we found it (it can be promoted again)
@@ -884,8 +949,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
             args += ["--no-owner", "--no-acl"]
         for r in todo:
             created_tmp.append((r["schema"], _short(r["name"], sfx_new)))
-        rc, out, err = run_tool(admin, "pg_restore", args + [dumpfile], timeout=None)
+        created_seq = [(x["schema"], x["name"]) for x in seq_new]
+        rc, out, err = run_tool(admin, "pg_restore", args + [dumpfile], timeout=None) if names else (0, "", "")
         if rc != 0:
+            created_seq = []                                   # -1: the single transaction rolled back, nothing was created
             raise EngineError("PGA-GEN-071", "loading the recovered tables into %s failed: %s" % (dbname, (err.strip() or out.strip())[:900]), "nothing was changed in the live database")
         # verify what arrived
         for r in todo:
@@ -1044,7 +1111,8 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                 raise EngineError("PGA-GEN-088", "the swap was not applied (rolled back, nothing changed): %s" % e.message[:500],
                                   "the recovered tables stay in %s; fix the cause and promote again" % stage_db)
             raise
-        created_tmp = []
+        created_tmp, created_seq = [], []
+        moved = _seq_forward(live, seq_live, pos_of)
         # ---- after the swap: validate the re-attached keys, refresh statistics, verify
         invalid = []
         for f in validate_later:
@@ -1074,7 +1142,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                       skipped=["%s.%s" % (r["schema"], r["name"]) for r in plan["tables"] if r["action"] == "skip"],
                       foreign_keys_reattached=len(validate_later) - len(invalid), foreign_keys_unvalidated=len(invalid),
                       attached=["%s.%s -> %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan["attach"]],
-                      views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]))
+                      views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]),
+                      sequences_created=["%s.%s" % (x["schema"], x["name"]) for x in seq_new], sequences_advanced=moved)
+        if any(v.get("kind") == "m" for v in plan["recovered_views"]):
+            result["note"] = "materialized views were recreated from the CURRENT data of their tables (their content is derived, not restored)"
         return _compat(result)
     finally:
         if created_tmp:                                      # phase 1 left temporary tables behind and the swap did not happen: remove them
@@ -1083,4 +1154,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     live.query("DROP TABLE IF EXISTS %s CASCADE" % qi(sch, nm))
             except Exception:
                 pass
+        if created_seq:                                      # sequences created in phase 1 for a swap that did not happen
+            for sch, nm in created_seq:
+                try:
+                    live.query("DROP SEQUENCE IF EXISTS %s" % qi(sch, nm))
+                except Exception:
+                    pass
         live.close()

@@ -5,7 +5,7 @@
 # A major version may be added to VERIFIED in unix-agent/pg_arca/pgcompat.py ONLY when its line here says PASS (that is what "verified" means in the product).
 cd "$(dirname "$0")/../.."; ROOT=$(pwd)
 VERS=${*:-14 15 16 17 18}
-SUITES="tests.test_pgcompat tests.test_engine_pg tests.test_objects_v2 tests.test_objects_exotic_pg tests.test_late_created_pg tests.test_restore_database_props_pg tests.test_restorecheck tests.test_walscan tests.test_walprefetch tests.test_worker tests.test_engine_standby_pg tests.test_engine_failover_pg tests.test_engine_targets_pg tests.test_wal_rescue_pg tests.test_engine_layout_pg tests.test_discovery_layouts_pg tests.test_archive_enable_pg tests.test_hba_pg tests.test_wal tests.test_restore_safety tests.test_crypto tests.test_live_pg tests.test_params_pg tests.test_engine_enospc_pg tests.test_patroni_dcs_only tests.test_snapshot_busy tests.test_hba"
+SUITES="tests.test_pgcompat tests.test_engine_pg tests.test_objects_v2 tests.test_objects_exotic_pg tests.test_objects_deps_pg tests.test_late_created_pg tests.test_restore_database_props_pg tests.test_restorecheck tests.test_walscan tests.test_walprefetch tests.test_worker tests.test_engine_standby_pg tests.test_engine_failover_pg tests.test_engine_targets_pg tests.test_wal_rescue_pg tests.test_engine_layout_pg tests.test_discovery_layouts_pg tests.test_archive_enable_pg tests.test_hba_pg tests.test_wal tests.test_restore_safety tests.test_crypto tests.test_live_pg tests.test_params_pg tests.test_engine_enospc_pg tests.test_patroni_dcs_only tests.test_snapshot_busy tests.test_hba"
 : > /tmp/matrix-summary.txt
 for v in $VERS; do
   case $v in 10|11) tag="$v-bullseye";; *) tag="$v-bookworm";; esac
