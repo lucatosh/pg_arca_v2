@@ -91,9 +91,13 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
     const wasSiteC = (x: { clusterId: string }) => { const c = cl.find(k => k.id === x.clusterId); return !!(c?.geoStanza || c?.geoEndpoint) && !c?.geoLink?.none; };
     const splitBrain = list.filter(s => s.role === 'primary' && wasSiteC(s)).length >= 2;
     if (!declared && !splitBrain && !list.some(s => s.role === 'standby')) continue;
+    const invalid = new Set<string>();
     for (const s of list) if (manual.has(s.clusterId)) {
       s.link = 'manual';
       if (s.role === 'unknown') s.role = 'standby';                               // declared by the operator, no telemetry to say otherwise
+      const dp = list.find(x => x.clusterId === s.declaredPrimary);
+      // declared as replica of ANOTHER database: keep the declaration visible (so it can be corrected) but never let it compete as a primary site
+      if (dp && dp._sysid && s._sysid && dp._sysid !== s._sysid) { s.role = 'standby'; invalid.add(s.clusterId); }
     }
     const prims = list.filter(s => s.role === 'primary');
     const upHosts = new Set(list.filter(s => s.role === 'standby' && s.upstream).map(s => s.upstream!.host));
@@ -116,7 +120,7 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
       const p: string[] = []; let h: Site['health'] = 'ok';
       const bad = (m: string) => { p.push(m); h = 'bad'; }; const warn = (m: string) => { p.push(m); if (h === 'ok') h = 'warn'; };
       const blind = manual.has(s.clusterId) && !s._sysid;                 // declared site with no agent telemetry: nothing to measure, not a failure
-      if (blind) { /* see the manual-link note below */ }
+      if (blind || invalid.has(s.clusterId)) { /* see the manual-link note below */ }
       else if (!s.online) bad('il sito non ha un nodo raggiungibile');
       else if (prim && prim.timeline != null && s.timeline != null && s.timeline < prim.timeline && s.receiver?.status !== 'streaming')
         // the primary site failed over (new timeline) from a point this site had already passed: it cannot follow until Patroni rewinds it
@@ -124,11 +128,12 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
       else if (!s.receiver || s.receiver.status !== 'streaming') bad(`non riceve WAL dal sito primario (ricevitore: ${s.receiver?.status || 'assente'})`);
       if (s.receiver?.silentSec != null && s.receiver.silentSec > 120) bad(`nessun messaggio dal sito primario da ${Math.round(s.receiver.silentSec)} s`);
       else if (s.receiver?.silentSec != null && s.receiver.silentSec > 30) warn(`ultimo messaggio dal sito primario ${Math.round(s.receiver.silentSec)} s fa`);
+      if (invalid.has(s.clusterId)) s.lagBytes = null;
       if (s.lagBytes != null && s.lagBytes > 1024 * MB) bad(`indietro di ${Math.round(s.lagBytes / MB)} MB`);
       else if (s.lagBytes != null && s.lagBytes > 64 * MB) warn(`indietro di ${Math.round(s.lagBytes / MB)} MB`);
       if (s.slot && !s.slot.active) warn(`lo slot ${s.slot.name} sul sito primario non è attivo: il primario conserva i WAL (${s.slot.retainedBytes != null ? Math.round(s.slot.retainedBytes / MB) + ' MB' : '?'})`);
       if (s.slot?.retainedBytes != null && s.slot.retainedBytes > 8 * 1024 * MB) bad(`lo slot ${s.slot.name} trattiene ${Math.round(s.slot.retainedBytes / MB)} MB di WAL sul sito primario: rischio di disco pieno`);
-      if (!prim) warn('nessun sito primario visibile tra i cluster collegati');
+      if (!prim && !invalid.has(s.clusterId)) warn('nessun sito primario visibile tra i cluster collegati');
       if (s.link === 'manual' && s.declaredPrimary) {
         const dp = list.find(x => x.clusterId === s.declaredPrimary);
         if (dp && dp._sysid && s._sysid && dp._sysid !== s._sysid) bad(`impostato come replica di ${dp.name}, ma è un altro database (identificativo di sistema diverso): non può ricevere i suoi dati`);

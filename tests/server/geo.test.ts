@@ -120,6 +120,15 @@ import { deriveCluster } from '../../server/view';
   assert.strictEqual((await app.call('PUT', '/api/clusters/c5/geo-link', { body: { primary: prim } })).status, 200);
   const c5 = geoGroups(st0()).flatMap(x => x.sites).find(s => s.clusterId === 'c5')!;
   assert.strictEqual(c5.health, 'bad'); assert(c5.problems.some(p => /altro database/.test(p)));
+  // the lab case: a WRITABLE cluster of another database declared as replica -> still shown, flagged, never a second primary site
+  await store.mutate(d => { d.clusters.push({ id: 'c6', name: 'erp', environment: 'prod', source: 'agent' } as any);
+    d.nodes.f = { id: 'f', name: 'erp-pg1', clusterId: 'c6', lastSeen: now(), snapshot: { postgres: { alive: true, is_in_recovery: false, current_lsn: '0/2000', system_identifier: '2222', timeline: 1 } } } as any; });
+  assert.strictEqual((await app.call('PUT', '/api/clusters/c6/geo-link', { body: { primary: prim } })).status, 200);
+  const g6 = geoGroups(st0()).find(x => x.sites.some(s => s.clusterId === 'c6'))!;
+  const c6 = g6.sites.find(s => s.clusterId === 'c6')!;
+  assert.strictEqual(c6.health, 'bad'); assert(c6.problems.some(p => /altro database/.test(p)), JSON.stringify(c6.problems)); assert.strictEqual(g6.primary, prim);
+  assert(!g6.sites.find(s => s.clusterId === prim)!.problems.some(p => /DUE SITI PRIMARI|erp/.test(p)), 'not a split-brain nor a copy');
+  await app.call('PUT', '/api/clusters/c6/geo-link', { body: { primary: null } });
   // cycles and self links refused; back to automatic; detach
   assert.strictEqual((await app.call('PUT', '/api/clusters/c5/geo-link', { body: { primary: 'c5' } })).status, 400);
   assert.strictEqual((await app.call('PUT', `/api/clusters/${prim}/geo-link`, { body: { primary: 'c4' } })).status, 400, 'cycle');
