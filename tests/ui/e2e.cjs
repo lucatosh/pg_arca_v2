@@ -44,6 +44,25 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('label:has-text("[200]") input'); await p.click('label:has-text("[1]") input'); await shot('12a-rows');
   await p.click('button:has-text("Applica (2)")'); await p.click('.modal button:has-text("Applica")'); await p.waitForSelector('text=Righe recuperate', { timeout: 10000 });
   await p.getByRole('button', { name: 'Riporta', exact: true }).click(); await p.click('.modal button:has-text("Riporta")'); await p.waitForSelector('text=Riportato nel database', { timeout: 10000 }); await shot('12c-promoted');
+  // ripristino e archivi: istanza di recupero (globale -> cluster, verifica, installazione) e destinazione dei backup (controllo, applicazione)
+  await p.goto(base + '/#/infra'); await p.waitForSelector('text=Ripristino e archivi'); await p.waitForSelector('text=Tutti i cluster');
+  await p.locator('tr:has-text("Tutti i cluster") button:has-text("Modifica")').click(); await p.waitForSelector('text=Dove gira l’istanza di recupero');
+  await p.fill('input[placeholder="/var/tmp/pg_arca_scratch"]', '/data/scratch'); await p.fill('input[placeholder="es. 55000"]', '55000'); await p.fill('input[placeholder="es. 55100"]', '55100');
+  await p.click('.modal button:has-text("Salva")'); await p.waitForSelector('text=Impostazioni salvate'); await p.waitForSelector('text=porte 55000-55100'); await shot('15-infra-eph');
+  await p.locator('tr:has-text("prodpg") button:has-text("Verifica")').click(); await p.waitForSelector('text=Il recupero non può partire da questo nodo', { timeout: 10000 }); await p.waitForSelector('text=Installare PostgreSQL 15'); await shot('16-infra-preflight');
+  await p.click('button:has-text("Installa PostgreSQL 15")'); await p.fill('.modal input >> nth=-1', 'INSTALL'); await p.click('.modal button:has-text("Installa") >> nth=-1'); await p.waitForSelector('text=Installazione dei binari', { timeout: 10000 });
+  await p.click('.modal button:has-text("Chiudi")');
+  await p.click('role=tab[name="Destinazione dei backup"]'); await p.waitForSelector('text=Dove finiscono repository e archivio WAL');
+  await p.locator('tr:has-text("Tutti i cluster") button:has-text("Modifica")').click(); await p.waitForSelector('text=Dove vengono scritti i backup');
+  await p.selectOption('.modal select >> nth=0', 'nfs'); await p.fill('input[placeholder="/mnt/backup/pgarca"]', '/mnt/backup/pgarca'); await p.fill('input[placeholder="/mnt/backup/wal/{env}/{cluster}"]', '/mnt/backup/wal/{env}/{cluster}');
+  assert(await p.locator('.modal option[disabled]:has-text("Anteprima")').count() >= 4, 'object stores are listed as preview and disabled');
+  await p.click('.modal button:has-text("Salva")'); await p.waitForSelector('text=Impostazioni salvate'); await shot('17-infra-dest');
+  await p.locator('tr:has-text("prodpg") button:has-text("Controlla e applica")').click(); await p.waitForSelector('text=/Destinazione dei backup . prodpg/');
+  assert(await p.locator('button:has-text("Applica ai nodi")').isDisabled(), 'apply needs a check first');
+  await p.click('button:has-text("Controlla su tutti i nodi")'); await p.waitForSelector('text=is on nfs4', { timeout: 15000 }); await p.waitForSelector('text=controllo riuscito', { timeout: 15000 });
+  await p.click('button:has-text("Applica ai nodi")'); await p.waitForSelector('text=Applicazione avviata', { timeout: 10000 }); await shot('18-infra-applied');
+  await p.click('.modal button:has-text("Chiudi")');
+  await p.click('.side button.navbtn:has-text("Tutti i cluster")'); await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Protezione dei dati');
   // ops tab, logs tab, preview tab
   await tab('Operatività', 'Operazioni'); await p.waitForSelector('text=Registro operazioni'); await shot('13-ops');
   await tab('Operatività', 'Log'); await p.waitForSelector('text=Log in tempo reale');

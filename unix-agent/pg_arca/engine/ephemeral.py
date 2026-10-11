@@ -12,10 +12,11 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
 import uuid
 
-from pg_arca.engine import ENGINE_VERSION
+from pg_arca.engine import ENGINE_VERSION, ephcfg
 from pg_arca.engine.backup import _check_cancel, build_chain
 from pg_arca.engine.pgsession import PgConn, PgSession, run_tool
 from pg_arca.pgcompat import Profile, binary_profile, require_same_major, require_supported, set_profile
@@ -56,11 +57,7 @@ def death_error(logfile, where):
 
 
 def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
+    return ephcfg.free_port()
 
 
 def read_pg_control(conn, datadir):
@@ -158,7 +155,13 @@ class Ephemeral(object):
         os.makedirs(self.dir, mode=0o700)
         self.sock = os.path.join(self.dir, ".s")
         os.makedirs(self.sock, mode=0o700)
-        self.port = free_port()
+        eph = getattr(ctx, "eph", None) or {}
+        self.port = ephcfg.free_port(eph)
+        self.bindir = ctx.conn.bindir                              # re-chosen in build() once the major version of the backup is known
+        self.bin_source = "node"
+        self.keep_on_failure = bool(eph.get("keep_on_failure"))
+        if shared_buffers == "256MB" and eph.get("shared_buffers_mb"):
+            shared_buffers = "%dMB" % eph["shared_buffers_mb"]
         self.proc = None
         self.logf = None
         self.shared_buffers = shared_buffers
@@ -167,14 +170,15 @@ class Ephemeral(object):
 
     # ------------------------------------------------------------------ build
     def conn(self, dbname="postgres"):
-        return PgConn(host=self.sock, port=self.port, user=self.ctx.conn.user, dbname=dbname, bindir=self.ctx.conn.bindir)
+        return PgConn(host=self.sock, port=self.port, user=self.ctx.conn.user, dbname=dbname, bindir=self.bindir)
 
     def build(self, chain, keep_oids=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True, immediate=False,
               progress=None, cancel=None):
         repo = self.ctx.repo
         prof = set_profile(chain[0]) or Profile(160000)
         require_supported(prof, "recovering this backup")
-        require_same_major(prof, binary_profile(self.ctx.conn.exe("postgres")), "starting a recovery instance for this backup")
+        self.bindir, self.bin_source = ephcfg.pick_bindir(int(prof.major), getattr(self.ctx, "eph", None), self.ctx.conn.bindir)
+        require_same_major(prof, binary_profile(os.path.join(self.bindir, "postgres") if self.bindir else "postgres"), "starting a recovery instance for this backup")
         cat = repo.load_catalog(chain[-1])
         sparse = keep_oids is not None
         include = None
@@ -198,7 +202,7 @@ class Ephemeral(object):
             p = os.path.join(self.dir, junk)
             if os.path.exists(p):
                 os.remove(p)
-        ctl = read_pg_control(self.ctx.conn, self.dir)
+        ctl = read_pg_control(self.conn(), self.dir)
         removed, forced = quarantine_config(self.dir, ctl, self.port, self.sock, self.ctx.restore_command, sparse, self.shared_buffers, profile=prof)
         from pg_arca.engine.restore import effective_targets
         t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, self.ctx)
@@ -217,7 +221,7 @@ class Ephemeral(object):
     def start(self, wait=900, cancel=None):
         logfile = os.path.join(self.dir, "pg_arca-ephemeral.log")
         self.logf = open(logfile, "ab")
-        cmd = [self.ctx.conn.exe("postgres"), "-D", self.dir]
+        cmd = [os.path.join(self.bindir, "postgres") if self.bindir else "postgres", "-D", self.dir]
         try:
             self.proc = subprocess.Popen(cmd, stdout=self.logf, stderr=self.logf, preexec_fn=os.setsid, close_fds=True)
         except OSError as e:
@@ -305,6 +309,9 @@ class Ephemeral(object):
                 self.logf.close()
         except Exception:
             pass
+        if not keep and self.keep_on_failure and sys.exc_info()[0] is not None:
+            keep = True
+            self.ctx.log("warn", "ephemeral instance kept for inspection (keep_on_failure): %s" % self.dir)
         if keep:
             return
         shutil.rmtree(self.dir, ignore_errors=True)

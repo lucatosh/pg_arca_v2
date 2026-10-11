@@ -149,6 +149,10 @@ Object.assign(OP_SPECS, {
   restore_diff:     { ...dataOp, mutating: false, cancellable: false, validate: (p: any) => stageErr(p) || intoErr(p) },
   restore_apply_rows: { ...dataOp, cancellable: false, validate: (p: any) => stageErr(p) || keysErr(p) || intoErr(p) },
   wal_forensics:    { ...dataOp, mutating: false, validate: () => null },
+  destination_check:   { mutating: false, target: 'node', lane: 'control', validate: (p: any) => !['local', 'nfs', 'smb'].includes(p.type ?? 'local') ? 'type must be local|nfs|smb (object storage is not supported by the engine yet)'
+                                : (!p.repo_path && !p.wal_path ? 'repo_path and/or wal_path required' : ([p.repo_path, p.wal_path].some((x: any) => x !== undefined && x !== null && (typeof x !== 'string' || !x.startsWith('/') || !noCtl(x) || x.split('/').includes('..'))) ? 'paths must be absolute, without ..' : null)) },
+  ephemeral_preflight: { mutating: false, target: 'node', lane: 'control', validate: (p: any) => (p.major !== undefined && !(Number.isInteger(Number(p.major)) && Number(p.major) >= 10 && Number(p.major) <= 40) ? 'major must be a PostgreSQL major version' : (p.need_bytes !== undefined && !(Number(p.need_bytes) >= 0) ? 'need_bytes must be a number' : intoErr(p))) },
+  ephemeral_install:   { mutating: true, target: 'node', lane: 'data', cancellable: false, validate: (p: any) => !(Number.isInteger(Number(p.major)) && Number(p.major) >= 10 && Number(p.major) <= 40) ? 'major (PostgreSQL major version) required' : (p.mode && !['private', 'system'].includes(p.mode) ? 'mode must be private|system' : (p.confirm !== 'INSTALL' ? 'type INSTALL to confirm' : null)) },
 } as Record<string, OpSpec>);
 
 /** Lane of an operation type: 'data' ops (backup/restore) run in parallel to 'control' ops (HA, parameters). */

@@ -15,6 +15,7 @@ const HistoryPage = lazy(() => import('./pages/History').then(m => ({ default: m
 const Audit = lazy(() => import('./pages/Global').then(m => ({ default: m.Audit })));
 const Discovery = lazy(() => import('./pages/Global').then(m => ({ default: m.Discovery })));
 const StrategyPage = lazy(() => import('./pages/Strategy').then(m => ({ default: m.StrategyPage })));
+const InfraPage = lazy(() => import('./pages/Infra').then(m => ({ default: m.InfraPage })));
 const UsersPage = lazy(() => import('./pages/Users').then(m => ({ default: m.UsersPage })));
 const SettingsPage = lazy(() => import('./pages/Settings').then(m => ({ default: m.SettingsPage })));
 
@@ -30,7 +31,7 @@ export function App() {
 
 const rd = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
 const wr = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
-const PAGE_TITLE: Record<string, string> = { today: 'Oggi', clusters: 'Cluster', strategy: 'Strategie di backup', discovery: 'Rilevamento', settings: 'Impostazioni', users: 'Utenti', audit: 'Registro attività', history: 'Storico operazioni' };
+const PAGE_TITLE: Record<string, string> = { today: 'Oggi', clusters: 'Cluster', strategy: 'Strategie di backup', infra: 'Ripristino e archivi', discovery: 'Rilevamento', settings: 'Impostazioni', users: 'Utenti', audit: 'Registro attività', history: 'Storico operazioni' };
 
 function Shell({ user, role, logout }: { user: string; role: string; logout: () => void }) {
   const route = useRoute();
@@ -66,7 +67,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         {nav('clusters', '', 'layers', 'Tutti i cluster')}
       </nav>
       <div className="sgroup">Protezione</div>
-      <nav>{nav('strategy', 'strategy', 'shield', 'Strategie di backup')}{nav('discovery', 'discovery', 'search', 'Rilevamento')}</nav>
+      <nav>{nav('strategy', 'strategy', 'shield', 'Strategie di backup')}{nav('infra', 'infra', 'restore', 'Ripristino e archivi')}{nav('discovery', 'discovery', 'search', 'Rilevamento')}</nav>
       <div className="sgroup">Amministrazione</div>
       <nav>
         {role === 'admin' ? nav('settings', 'settings', 'settings', 'Impostazioni') : null}
@@ -95,7 +96,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
     <div className="main">
       <div className="topbar">
         <select className="input mobnav" aria-label="Vai a" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
-          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Oggi</option><option value="strategy">Strategie di backup</option><option value="discovery">Rilevamento</option><option value="history">Storico operazioni</option><option value="audit">Registro attività</option></select>
+          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Oggi</option><option value="strategy">Strategie di backup</option><option value="infra">Ripristino e archivi</option><option value="discovery">Rilevamento</option><option value="history">Storico operazioni</option><option value="audit">Registro attività</option></select>
         <div className="crumbs" aria-label="Posizione">
           {route.page === 'cluster' ? <><a href="#/">Cluster</a><Icon n="chev" s={12} /><strong className="trunc">{cur?.name || '…'}</strong></> : <strong>{PAGE_TITLE[route.page] || ''}</strong>}
         </div>
@@ -111,6 +112,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
           {route.page === 'history' && <HistoryPage clusters={clusters} />}
           {route.page === 'discovery' && <Discovery />}
           {route.page === 'strategy' && <StrategyPage />}
+          {route.page === 'infra' && <InfraPage tab={route.tab} />}
           {route.page === 'today' && <TodayPage me={user} role={role} />}
           {route.page === 'settings' && (role === 'admin' ? <SettingsPage /> : <Empty icon="lock" title="Solo per gli amministratori" />)}
           {route.page === 'users' && (role === 'admin' ? <UsersPage me={user} /> : <Empty icon="lock" title="Solo per gli amministratori" />)}
@@ -129,7 +131,7 @@ function Palette({ onClose, clusters, route, cycle }: { onClose: () => void; clu
     for (const c of clusters) a.push({ label: c.name, hint: c.environment, icon: 'db', run: () => go(`c/${encodeURIComponent(c.id)}`) });
     const cid = route.page === 'cluster' ? route.id : clusters[0]?.id;
     if (cid) for (const t of TAB_ITEMS) if (!t.preview) a.push({ label: `${clusters.find(c => c.id === cid)?.name || ''} › ${t.label}`, icon: t.icon || 'chev', run: () => go(`c/${encodeURIComponent(cid)}/${t.id}`) });
-    a.push({ label: 'Oggi: cosa richiede attenzione', icon: 'alert', run: () => go('today') }, { label: 'Tutti i cluster', icon: 'layers', run: () => go('') }, { label: 'Strategie di backup', icon: 'shield', run: () => go('strategy') }, { label: 'Rilevamento', icon: 'search', run: () => go('discovery') }, { label: 'Storico operazioni', icon: 'activity', run: () => go('history') }, { label: 'Registro attività', icon: 'list', run: () => go('audit') }, { label: 'Mostra le attività in corso', hint: 'Ctrl J', icon: 'activity', run: () => window.dispatchEvent(new Event('arca:dock')) }, { label: 'Cambia tema', icon: 'settings', run: cycle });
+    a.push({ label: 'Oggi: cosa richiede attenzione', icon: 'alert', run: () => go('today') }, { label: 'Tutti i cluster', icon: 'layers', run: () => go('') }, { label: 'Strategie di backup', icon: 'shield', run: () => go('strategy') }, { label: 'Ripristino e archivi: istanza di recupero e destinazione dei backup', icon: 'restore', run: () => go('infra') }, { label: 'Rilevamento', icon: 'search', run: () => go('discovery') }, { label: 'Storico operazioni', icon: 'activity', run: () => go('history') }, { label: 'Registro attività', icon: 'list', run: () => go('audit') }, { label: 'Mostra le attività in corso', hint: 'Ctrl J', icon: 'activity', run: () => window.dispatchEvent(new Event('arca:dock')) }, { label: 'Cambia tema', icon: 'settings', run: cycle });
     const s = q.trim().toLowerCase();
     return s ? a.filter(x => x.label.toLowerCase().includes(s)) : a;
   }, [q, clusters, route, cycle]);

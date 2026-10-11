@@ -9,7 +9,7 @@ export const APPROVABLE_ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 
 /** What counts as risky: it changes live access, live parameters, the HA topology or overwrites/deletes live data. */
 export function isRisky(type: string, params: any = {}): boolean {
-  if (['hba_cluster_apply', 'hba_apply', 'hba_rollback', 'pg_set_param', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'patroni_reinit', 'archive_enable', 'patroni_config_patch', 'patroni_pause'].includes(type)) return true;
+  if (['hba_cluster_apply', 'hba_apply', 'hba_rollback', 'pg_set_param', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'patroni_reinit', 'archive_enable', 'patroni_config_patch', 'patroni_pause', 'ephemeral_install'].includes(type)) return true;
   if (type === 'restore_promote') return params.mode === 'replace';
   if (type === 'restore_apply_rows') return (params.delete_keys || []).length > 0 || (params.restore_keys || []).length > 0;
   return false;
@@ -20,7 +20,7 @@ export const requiresApproval = (st: any, cluster: any, type: string, params: an
 export function describeOp(type: string, params: any = {}): string {
   const m: Record<string, string> = { hba_cluster_apply: 'Modifica delle regole di accesso (pg_hba) su tutto il cluster', hba_apply: 'Modifica delle regole di accesso (pg_hba)', hba_rollback: 'Ripristino delle regole di accesso precedenti', pg_set_param: `Cambio del parametro ${params.name ?? ''} = ${params.value ?? ''}`,
     patroni_switchover: 'Switchover pianificato', patroni_failover: 'Failover forzato', patroni_restart: 'Riavvio via Patroni', patroni_reinit: 'Ricostruzione di una replica', archive_enable: 'Attivazione archiviazione WAL', patroni_config_patch: 'Modifica della configurazione Patroni', patroni_pause: 'Manutenzione Patroni',
-    restore_promote: 'Sostituzione di una tabella con quella ripristinata', restore_apply_rows: `Recupero righe in ${params.object ?? ''}` };
+    restore_promote: 'Sostituzione di tabelle con quelle ripristinate', ephemeral_install: `Installazione dei binari PostgreSQL ${params.major ?? ''} per i ripristini`, restore_apply_rows: `Recupero righe in ${params.object ?? ''}` };
   return m[type] || type;
 }
 

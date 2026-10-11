@@ -97,6 +97,9 @@ class OperationExecutor:
         r("hba_expire", self.h_hba_expire, False)
         r("agent_config_get", self.h_cfg_get, True)
         r("agent_config_set", self.h_cfg_set, True)       # same input -> same file: idempotent
+        r("destination_check", self.h_destination_check, True)
+        r("ephemeral_preflight", self.h_ephemeral_preflight, True)
+        r("ephemeral_install", self.h_ephemeral_install, False)
         r("restore_drill", self.h_restore_drill, False)
         r("restore_diff", self.h_restore_diff, False)
         r("restore_apply_rows", self.h_restore_apply_rows, False)
@@ -153,6 +156,7 @@ class OperationExecutor:
 
         atomic_write_json(self._path(op_id), {"id": op_id, "type": op_type, "status": "running", "started": time.time(), "attempt": (prior or {}).get("attempt", 0) + 1})
         self._tl.op_id = op_id
+        self._tl.eph = params.get("ephemeral") if isinstance(params.get("ephemeral"), dict) else None
         try:
             result = fn(params)
             return self._finish(op_id, op_type, "succeeded", result, None)
@@ -477,7 +481,13 @@ class OperationExecutor:
             raise OpError("no PostgreSQL instance found on this host")
         if not self.runtime.instance.get("running"):
             raise OpError("PostgreSQL is not running on this host (backups need a running instance; restores can still target a directory)")
-        return Ctx.from_config(self.config, self.runtime, log=lambda lv, m: logger.log({"warn": logging.WARNING, "error": logging.ERROR}.get(lv, logging.INFO), "[engine] %s", m))
+        return self._with_eph(Ctx.from_config(self.config, self.runtime, log=lambda lv, m: logger.log({"warn": logging.WARNING, "error": logging.ERROR}.get(lv, logging.INFO), "[engine] %s", m)))
+
+    def _with_eph(self, ctx):
+        """Ephemeral-instance settings: agent.conf `ephemeral` first, then what the console resolved for this operation (global < environment < folder < cluster)."""
+        merged = dict(self.config.get("ephemeral") or {})
+        merged.update(getattr(self._tl, "eph", None) or {})
+        return ctx.set_ephemeral(merged) if merged else ctx
 
     def _engine_refresh_summary(self, ctx):
         try:
@@ -510,7 +520,7 @@ class OperationExecutor:
             raise OpError("executor has no runtime binding")
         if not self.runtime.instance:
             self.runtime.refresh()
-        return Ctx.from_config(self.config, self.runtime)
+        return self._with_eph(Ctx.from_config(self.config, self.runtime))
 
     def h_backup_verify(self, p):
         from pg_arca.engine.maintenance import verify
@@ -572,6 +582,34 @@ class OperationExecutor:
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
         return granular.promote_object(ctx, str(p.get("stage_db")), str(p.get("object") or ""), mode=p.get("mode", "as_new"), drop_stage=bool(p.get("drop_stage", True)), into=p.get("into"),
                                        dry_run=bool(p.get("dry_run")), progress=self._progress)
+
+    def h_destination_check(self, p):
+        """Is the configured backup destination safe to use from THIS node? Mount type, exclusive create + fsync + atomic rename, free space, what already lives there.
+        Creates a directory only when the mount looks right, writes and removes one small probe file; with bench=true also measures sequential write/read speed."""
+        from pg_arca.engine import destcheck
+        from pg_arca.engine.ctx import _stanza_name
+        inst = (self.runtime.instance if self.runtime else None) or {}
+        prot = [self.config.get("pg_data"), inst.get("data_directory"), self.config.get("state_dir"), os.path.dirname(self.config.get("credentials_file") or "") or None]
+        q = dict(p)
+        q.setdefault("stanza", self.config.get("stanza") or _stanza_name(inst) or "main")
+        return destcheck.check_destination(q, protected=[x for x in prot if x], current_repo=self.config.get("repo_path"), current_wal=self.config.get("wal_archive_dir"))
+
+    def h_ephemeral_preflight(self, p):
+        """Can this host run the ephemeral recovery instance for the cluster's backups? Read-only: reports binaries, scratch, memory, ports, repository access and, when
+        binaries for the needed PostgreSQL major are missing, the installation plan with the permissions it needs."""
+        from pg_arca.engine import ephcfg
+        ctx = self._ctx_ro()
+        major = int(p["major"]) if p.get("major") else None
+        return ephcfg.preflight(ctx, major, ctx.eph, need_bytes=int(p["need_bytes"]) if p.get("need_bytes") else None)
+
+    def h_ephemeral_install(self, p):
+        """Install PostgreSQL server binaries for ephemeral recovery. Only with confirm == 'INSTALL'; mode private (no root, unpacked under pg_arca's directory) or system (packages)."""
+        from pg_arca.engine import ephcfg
+        if p.get("confirm") != "INSTALL":
+            raise OpError("type INSTALL to confirm: this downloads and installs PostgreSQL server binaries on %s" % os.uname().nodename)
+        ctx = self._ctx_ro()
+        major = int(p["major"])
+        return ephcfg.install(major, p.get("mode") or "private", ctx.eph, progress=self._progress)
 
     def h_restore_drill(self, p):
         from pg_arca.engine import granular

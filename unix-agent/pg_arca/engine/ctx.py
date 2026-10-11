@@ -30,6 +30,15 @@ class Ctx(object):
         self._log = log
         self.agent_path = agent_path or os.environ.get("PG_ARCA_WAL_BIN", "/usr/local/bin/pg-arca-wal")
         self.protected_extra = protected_extra or []
+        self.eph = {}                                              # ephemeral-instance settings (engine/ephcfg.py): scratch dir, binaries, ports, memory
+
+    def set_ephemeral(self, settings):
+        """Apply validated ephemeral-instance settings (from the console's global/environment/cluster configuration or agent.conf)."""
+        from pg_arca.engine import ephcfg
+        self.eph = ephcfg.normalize(settings)
+        if self.eph.get("scratch_dir"):
+            self.scratch_dir = self.eph["scratch_dir"]
+        return self
 
     def log(self, level, msg):
         if self._log:

@@ -16,6 +16,7 @@ import { OP_SPECS, validateOp } from './optypes';
 import { requiresApproval, requestApproval } from './approvals';
 import { hbaFanout } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
+import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
 
 export interface Deps {
   /** executes an operation server-side for clusters attached without an agent */
@@ -86,6 +87,27 @@ export function reconcileCluster(d: any, nodeId: string) {
 
 export interface AgentHooks {
   onLogs?: (node: NodeRecord, clusterName: string, logs: any[]) => void;
+}
+
+/** The ephemeral-instance settings are resolved when the operation is HANDED to the agent (not when it was queued): what is configured at that moment applies, and the stored
+ *  parameters (idempotency) stay exactly what the operator asked for. The agent validates them again against its own filesystem. */
+export function withEphemeral(store: Store, o: { type: string; clusterId: string; params: any }): any {
+  if (!EPHEMERAL_OPS.includes(o.type)) return o.params;
+  const st = store.peek(); const c = st.clusters.find((x: any) => x.id === o.clusterId);
+  if (!c) return o.params;
+  const eph = ephemeralForAgent(resolveScoped(st, 'ephemeral', c));
+  return Object.keys(eph).length ? { ...o.params, ephemeral: eph } : o.params;
+}
+
+/** Where a central ephemeral recovery delivers its result: the cluster's primary (derived from what the agents report), overridable with centralInto. */
+export function centralInto(st: any, cluster: any, eph: Record<string, any>): { host: string; port: number; user: string } | null {
+  const nodes = Object.values(st.nodes as Record<string, NodeRecord>).filter(n => n.clusterId === cluster.id);
+  const prim = nodes.find(n => n.snapshot?.postgres?.is_in_recovery === false) || nodes[0];
+  const o = (eph.centralInto || {}) as Record<string, any>;
+  const host = o.host || String(prim?.remoteIp || '').replace(/^::ffff:/, '');
+  if (!host) return null;
+  const pg = prim?.snapshot?.postgres || {};
+  return { host, port: Number(o.port || pg.port || pg.settings?.port || 5432), user: String(o.user || 'postgres') };
 }
 
 export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {}) {
@@ -170,7 +192,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       await new Promise(r => setTimeout(r, 250));
       if (store.peek().operations.some(o => o.nodeId === node.id && o.status === 'queued')) todo = await ops.lease(store, node.id, max);
     }
-    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, log_mode: logModeFor(node.clusterId), ops: todo.map(o => ({ id: o.id, type: o.type, params: o.params, attempt: o.attempts, cluster_id: o.clusterId })) });
+    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, log_mode: logModeFor(node.clusterId), ops: todo.map(o => ({ id: o.id, type: o.type, params: withEphemeral(store, o), attempt: o.attempts, cluster_id: o.clusterId })) });
   });
 
   // ---- log ingest (authenticated, size-bounded) -----------------------------
@@ -289,6 +311,18 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       const online = (n: NodeRecord) => !!n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000;
       let target: NodeRecord | undefined = nodeId ? nodes.find(n => n.id === nodeId) : undefined;
       if (nodeId && !target) return { code: 404, body: { error: 'node_not_found' } };
+      // central ephemeral recovery: the instance runs on the chosen node, the recovered data is delivered to this cluster's primary
+      const eph = resolveScoped(st, 'ephemeral', cluster).value;
+      if (!target && eph.placement === 'central' && CENTRAL_OPS.includes(type)) {
+        const cn = eph.centralNode ? st.nodes[eph.centralNode] : undefined;
+        if (!cn) return { code: 409, body: { error: 'central_node_missing', message: 'Il ripristino è configurato su un nodo centrale, ma quel nodo non esiste più: scegline un altro nelle impostazioni dell’istanza effimera.' } };
+        target = cn;
+        if (type !== 'restore_drill' && params?.into === undefined) {
+          const into = centralInto(st, cluster, eph);
+          if (!into) return { code: 409, body: { error: 'central_no_primary', message: 'Non conosco l’indirizzo del primario di questo cluster: indicalo nelle impostazioni (consegna del risultato).' } };
+          params = { ...params, into };
+        }
+      }
       if (!target) {
         const pick = (pred: (n: NodeRecord) => boolean) => nodes.find(n => online(n) && pred(n));
         // Patroni ops about a named member run on that member's own agent when it has one (the rest is reached through its REST API by any other node)

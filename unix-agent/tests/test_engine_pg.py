@@ -231,6 +231,35 @@ class EngineTests(unittest.TestCase):
             restore_database(F.ctx, "app", target_time=F.t1, new_name="app_at_t1")
         self.assertEqual(cm.exception.code, "PGA-SEC-030")
 
+    def test_05a_ephemeral_settings_are_honoured(self):
+        # configured binaries (wrapped so we can see they were used), a port from the configured range, the configured scratch directory, shared_buffers
+        from pg_arca.engine import ephcfg
+        wrap = os.path.join(F.base, "wrapbin")
+        os.makedirs(wrap)
+        log = os.path.join(F.base, "wrap.log")
+        for t in ephcfg.TOOLS:
+            with open(os.path.join(wrap, t), "w") as f:
+                f.write("#!/bin/sh\necho %s >> %s\nexec %s/%s \"$@\"\n" % (t, log, BIN, t))
+            os.chmod(os.path.join(wrap, t), 0o755)
+        scratch = os.path.join(F.base, "my-scratch")
+        pmin = 57000 + (os.getpid() % 500)
+        F.ctx.set_ephemeral({"bin_dir": wrap, "scratch_dir": scratch, "port_min": pmin, "port_max": pmin + 20, "shared_buffers_mb": 64})
+        try:
+            self.assertEqual(F.ctx.scratch_dir, scratch)
+            plan = restore_database(F.ctx, "app", target_time=F.t1, new_name="app_eph_cfg", jobs=2)
+            self.assertEqual(int(q("app_eph_cfg", "SELECT count(*) FROM customers")[0][0]), 500)
+            used = set(open(log).read().split())
+            self.assertIn("postgres", used, "the configured binaries started the instance")
+            self.assertTrue(os.path.isdir(scratch), "scratch directory created where configured")
+            self.assertEqual(os.listdir(scratch), [], "and cleaned afterwards")
+            pre = ephcfg.preflight(F.ctx, None, F.ctx.eph, need_bytes=plan["extract_bytes"])
+            self.assertTrue(pre["ok"], pre["checks"])
+            self.assertEqual(pre["chosen"]["bindir"], wrap)
+        finally:
+            F.ctx.eph = {}
+            F.ctx.scratch_dir = os.path.join(F.base, "scratch")
+            q("postgres", "DROP DATABASE IF EXISTS app_eph_cfg")
+
     def test_05b_target_beyond_the_archive_recovers_to_its_end_and_says_so(self):
         # field report: "now"/a time after the last archived WAL made the ephemeral instance die with 'recovery ended before configured recovery target was reached'
         import datetime

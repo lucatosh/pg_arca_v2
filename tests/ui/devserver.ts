@@ -12,6 +12,8 @@ import { mountClusterRoutes, seedDemoOnFirstRun } from '../../server/clusters';
 import { mountPlatformRoutes } from '../../server/platform';
 import { mountHbaRoutes } from '../../server/hba';
 import { mountPolicyRoutes } from '../../server/policies';
+import { mountScopedRoutes } from '../../server/scoped';
+import { mountDestinationRoutes } from '../../server/destinations';
 import { mountAuthRoutes, requireAdmin } from '../../server/auth';
 import { mountNotifyRoutes } from '../../server/notify';
 import { mountAdvancedRoutes } from '../../server/approvals';
@@ -28,7 +30,7 @@ const withAgent = process.env.NO_AGENT !== '1';
   const demo = () => ({ id: 'cluster-demo', name: 'Cluster demo', environment: 'dev', isSandbox: true, status: 'healthy', pgVersion: '16', databases: [{ name: 'demo', size: 1e9 }], totalSizeBytes: 1e9, tps: 0, haState: { nodes: [{ name: 'demo-1', role: 'primary', online: true, state: 'running', host: 'demo', port: 5432, replicationLagBytes: 0, cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 100, source: 'agent' }] } });
   app.use(requireAdmin(store));
   mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec });
-  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountNotifyRoutes(app, store, async () => ({ ok: true })); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store);
+  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountScopedRoutes(app, store); mountDestinationRoutes(app, store); mountNotifyRoutes(app, store, async () => ({ ok: true })); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store);
   app.get('/api/briefing', (_q: any, r: any) => r.json(briefing(store.peek())));
   await seedDemoOnFirstRun(store, demo);
 
@@ -66,6 +68,15 @@ const withAgent = process.env.NO_AGENT !== '1';
       if (op.type === 'restore_diff') { await sleep(300); return report(op.id, { status: 'succeeded', result: { object: p.object, primary_key: ['id'], restored_rows: 500, live_rows: 6, columns_only_in_one_side: [], counts: { missing_now: 2, added_since: 1, changed: 1 }, limit: 200,
         missing_now: [{ key: [200], restored: { id: 200, name: 'c200' } }, { key: [201], restored: { id: 201, name: 'c201' } }], added_since: [{ key: [900], live: { id: 900, name: 'new' } }], changed: [{ key: [1], restored: { id: 1, name: 'old' }, live: { id: 1, name: 'live1' } }] } }); }
       if (op.type === 'restore_apply_rows') { await sleep(300); return report(op.id, { status: 'succeeded', result: { object: p.object, inserted: (p.restore_keys || []).length, updated: 0, deleted: (p.delete_keys || []).length, safety_copy: 'public.pgarca_rowsafe_20260101_orders' } }); }
+      if (op.type === 'ephemeral_preflight') { await sleep(400); return report(op.id, { status: 'succeeded', result: { ok: false, level: 'bad', major: 15, host: { os: 'Ubuntu 24.04', cpus: 4, mem_available: 8e9, root: false, sudo_nopasswd: false }, settings: p.ephemeral || {},
+        checks: [{ id: 'user', level: 'ok', text: 'runs as an unprivileged user (uid 1000)' }, { id: 'binaries', level: 'bad', text: 'no PostgreSQL 15 binaries on this host (found: 16)', fix: 'install PostgreSQL 15: see the installation plan below', missing_major: 15 }, { id: 'scratch', level: 'ok', text: 'scratch /var/tmp/pg_arca_scratch: 80.0 GiB free' }, { id: 'memory', level: 'ok', text: '8.0 GiB of memory available' }],
+        installations: [{ bindir: '/usr/lib/postgresql/16/bin', major: 16, version: '16.4', missing_tools: [], complete: true, source: 'system' }],
+        install_plan: { major: 15, recommended: 'private', host: { os: 'Ubuntu 24.04', family: 'debian' }, modes: {
+          private: { possible: true, needs: ['network access to the package repository', 'about 150-300 MB of disk under /var/lib/pgarca/pg'], commands: ['apt-get download postgresql-15 postgresql-client-15', 'dpkg-deb -x <each .deb> /var/lib/pgarca/pg/15'], result_bindir: '/var/lib/pgarca/pg/15/usr/lib/postgresql/15/bin', blockers: [], warnings: ['the unpacked server is used ONLY for ephemeral recovery instances; it is not a database service'] },
+          system: { possible: false, needs: ['root or passwordless sudo'], commands: ['apt-get install -y postgresql-15 postgresql-client-15'], result_bindir: '/usr/lib/postgresql/15/bin', blockers: ['needs root or passwordless sudo for the agent user'], warnings: ['installs a PostgreSQL server package system-wide'] } } } } }); }
+      if (op.type === 'ephemeral_install') { await sleep(500); return report(op.id, { status: 'succeeded', result: { mode: p.mode, bindir: '/var/lib/pgarca/pg/15/usr/lib/postgresql/15/bin', version: '15.8' } }); }
+      if (op.type === 'destination_check') { await sleep(400); return report(op.id, { status: 'succeeded', result: { type: p.type, ok: true, paths: [p.repo_path && { kind: 'repo', path: p.repo_path, ok: true, mount: { mountpoint: '/mnt/backup', fstype: 'nfs4', source: 'nas:/export' }, free_bytes: 5e11, checks: [{ id: 'fs', level: 'ok', text: `${p.repo_path} is on nfs4 (nas:/export)` }, { id: 'write', level: 'ok', text: 'writable: exclusive create, fsync and atomic rename work (3.1 ms)' }], bench: p.bench ? { mb: 32, write_mb_s: 212.4, read_mb_s: 480.1, note: 'read may be served from the page cache' } : undefined }, p.wal_path && { kind: 'wal', path: p.wal_path, ok: true, mount: { mountpoint: '/mnt/backup', fstype: 'nfs4', source: 'nas:/export' }, free_bytes: 5e11, checks: [{ id: 'fs', level: 'ok', text: `${p.wal_path} is on nfs4 (nas:/export)` }, { id: 'write', level: 'ok', text: 'writable' }] }].filter(Boolean) } }); }
+      if (op.type === 'agent_config_set') { await sleep(300); return report(op.id, { status: 'succeeded', result: { changed: p.set } }); }
       if (op.type === 'restore_promote') {
         await sleep(300);
         const plan = { mode: p.mode, tables: [{ schema: 'public', name: 'orders', kind: 'r', action: p.mode === 'as_new' ? 'copy' : 'swap', exists_now: true, rows_at_target: 1234, old_kept_as: 'orders_old_20260101000000', new_name: 'orders_pitr_20260101000000' }],
