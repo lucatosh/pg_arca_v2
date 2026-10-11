@@ -16,6 +16,13 @@ class Advisor(unittest.TestCase):
             "archiving": {"archive_mode": "on", "foreign_tool": None}, "control": {"available": True, "data_checksums": True, "wal_level": "replica"}}]}
         self.assertEqual(self.codes(scan), {})
 
+    def test_two_running_instances_on_one_host_are_called_out(self):
+        inst = lambda d, p: {"data_directory": d, "port": p, "major_version": "16", "running": True, "readable_by_agent": True, "settings": {"ssl": "on"},
+                             "archiving": {"archive_mode": "on", "foreign_tool": None}, "control": {"available": True, "data_checksums": True, "wal_level": "replica"}}
+        base = {"toolchain": {"psql": "/x", "pg_waldump": "/x", "zstd": "/x"}}
+        self.assertNotIn("MULTI_INSTANCE", self.codes(dict(base, postgres_instances=[inst("/a", 5432)])))
+        self.assertEqual(self.codes(dict(base, postgres_instances=[inst("/a", 5432), inst("/b", 5433)])).get("MULTI_INSTANCE"), "warning")
+
     def test_problems_are_reported_with_severity(self):
         scan = {"toolchain": {}, "postgres_instances": [{
             "data_directory": "/d", "major_version": "12", "running": False, "readable_by_agent": False, "settings": {"ssl": "off", "fsync": "off"},

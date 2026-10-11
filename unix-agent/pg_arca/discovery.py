@@ -204,6 +204,11 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
         add("info", "NO_WALDUMP", "pg_waldump non trovato", "Senza pg_waldump non si possono cercare DROP/TRUNCATE nei WAL.", "Installa i binari del server PostgreSQL (postgresql-NN).", "host")
     if not tc.get("python_zstandard") and not tc.get("zstd"):
         add("info", "NO_ZSTD", "Compressione zstd non disponibile", "I blocchi verranno compressi con zlib (più grandi e più lenti).", "pip install zstandard (o installa il comando zstd).", "host")
+    running = [i for i in scan.get("postgres_instances") or [] if i.get("running")]
+    if len(running) > 1:
+        add("warning", "MULTI_INSTANCE", "Più istanze PostgreSQL in esecuzione su questo server",
+            "L'agent ne gestisce UNA (%s); le altre non vengono salvate né mostrate come cluster." % ", ".join("%s:%s" % (i.get("data_directory"), i.get("port")) for i in running),
+            "Imposta pg_data o la porta nelle impostazioni dell'agent per scegliere quale gestire, oppure installa un agent separato per ogni istanza (stesso utente OS, file di configurazione e cartelle di stato diversi).", "host")
     for i in scan.get("postgres_instances") or []:
         tgt = i.get("data_directory", "")
         st = i.get("settings") or {}

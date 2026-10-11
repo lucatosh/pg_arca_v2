@@ -16,6 +16,7 @@ Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguit
 | Scheduler backup | `server/scheduler.ts` | Reale | `scheduler.test.ts` |
 | Restore oggetti v2 (dipendenze, schemi, replace/missing_only/as_new, dry-run) | `unix-agent/pg_arca/engine/objects.py`, `src/pages/Restore.tsx` | Reale su PG16 locale; **lab Patroni non ancora** | `test_objects_v2.py` (10) |
 | Configurazione istanza di recupero a più livelli, preflight e installazione PG | `engine/ephcfg.py`, `server/scoped.ts` | Config + preflight reali; installazione apt/dnf e posizionamento centrale **non provati su rete reale** | `test_ephcfg.py` (15), `scoped.test.ts` |
+| Indipendenza dal layout (psql, ruolo, archiviatore, Patroni REST, cgroup, validazione parametri) | `unix-agent/pg_arca/pgaccess.py`, `sysres.py`, `wal_archive.py`, `discovery.py` | Reale; provato su PG16 locale e sul lab (Patroni + nodo con layout insolito) | `test_universal.py` (22), `test_params_pg.py` (5) |
 | Destinazione backup (local/NFS/SMB montati) con controllo per nodo | `engine/destcheck.py`, `server/destinations.ts` | Controllo reale su filesystem locale; **mount NFS/SMB non provati**; oggetti = Anteprima | `test_destcheck.py` (11), `destinations.test.ts` |
 | Audit e rilevamento aggregato | `server/platform.ts` | Reale | `api.test.ts` |
 | Log in tempo reale (WebSocket), scansione di rete | `server/logs.ts`, `server/netscan.ts` | Scritti; **non eseguiti** (mancano `ws`/`express` nell’ambiente di sviluppo): solo controllo sintattico | — |
