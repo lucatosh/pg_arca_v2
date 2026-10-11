@@ -114,7 +114,8 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
     const b1 = await call('POST', `/api/clusters/${cid}/operations`, { type: 'backup_run', params: { type: 'full' } }, H({ 'idempotency-key': 'pick-1' }));
     assert.strictEqual(b1.status, 202, JSON.stringify(b1.body)); assert.notStrictEqual(b1.body.operation.nodeId, 'n-sick', 'never the node without a running PostgreSQL');
     assert.strictEqual(b1.body.operation.nodeId, 'n-prim', 'primary preferred over a replica');
-    await store.mutate((d: any) => { for (const n of Object.values(d.nodes) as any[]) if (n.clusterId === cid) n.snapshot = { postgres: { alive: false } }; });
+    await store.mutate((d: any) => { for (const n of Object.values(d.nodes) as any[]) if (n.clusterId === cid) n.snapshot = { postgres: { alive: false } };
+      for (const o of d.operations) if (o.clusterId === cid) o.status = 'succeeded'; });          // the first backup is done (a queued one would be a conflict, not the point here)
     const b2 = await call('POST', `/api/clusters/${cid}/operations`, { type: 'backup_run', params: { type: 'full' } }, H({ 'idempotency-key': 'pick-2' }));
     assert.strictEqual(b2.status, 409); assert.strictEqual(b2.body.error, 'no_suitable_node');
   }

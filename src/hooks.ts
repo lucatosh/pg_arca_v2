@@ -62,6 +62,8 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
   const [op, setOp] = useState<Op | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [conflict, setConflict] = useState<any>(null);          // 409 from the console: a colleague's operation collides with this one (who, what, since)
+  const last = useRef<{ type: string; params: any; extra: any } | null>(null);
   const keyRef = useRef<{ sig: string; key: string } | null>(null);
   const timer = useRef<any>(null);
   const alive = useRef(true);
@@ -80,7 +82,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
   const run = useCallback(async (type: string, params: Record<string, any> = {}, extra: { nodeId?: string } = {}) => {
     const sig = type + JSON.stringify(params) + (extra.nodeId || '');
     if (!keyRef.current || keyRef.current.sig !== sig) keyRef.current = { sig, key: uid('op') };
-    setBusy(true); setError(null); setOp(null);
+    setBusy(true); setError(null); setOp(null); setConflict(null); last.current = { type, params, extra };
     try {
       const url = clusterId.startsWith('worker:') ? `/api/workers/${encodeURIComponent(clusterId.slice(7))}/operations` : `/api/clusters/${clusterId}/operations`;   // operational machines have their own endpoint
       const r = await api<{ operation: Op; approval?: any }>('POST', url, { type, params, nodeId: extra.nodeId }, { key: keyRef.current.key });
@@ -88,12 +90,14 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
       setOp(r.operation); revalidateOps();
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); } else poll(r.operation.id);
       return r.operation;
-    } catch (e: any) { setBusy(false); setError(e.body?.message || e.message); return null; }
+    } catch (e: any) { setBusy(false); setError(e.body?.message || e.message); if (e.body?.error === 'conflict') { setConflict(e.body); keyRef.current = null; } return null; }
   }, [clusterId, poll, onDone]);
+  /** after an overridable conflict (an HA action while data work runs), the operator confirmed: same request with force */
+  const runForced = useCallback(() => { const l = last.current; if (l) return run(l.type, { ...l.params, force: true }, l.extra); return Promise.resolve(null); }, [run]);
 
   const cancel = useCallback(async () => { if (op) { try { await api('POST', `/api/operations/${op.id}/cancel`); } catch (e: any) { setError(e.message); } } }, [op]);
-  const reset = useCallback(() => { setOp(null); setError(null); setBusy(false); keyRef.current = null; clearTimeout(timer.current); }, []);
-  return { op, error, busy, run, cancel, reset };
+  const reset = useCallback(() => { setOp(null); setError(null); setConflict(null); setBusy(false); keyRef.current = null; clearTimeout(timer.current); }, []);
+  return { op, error, busy, run, cancel, reset, conflict, runForced };
 }
 
 /** Role of the logged-in user ('admin' | 'operator' | 'viewer' | null while loading). The server enforces it; this only hides actions that would be refused. */

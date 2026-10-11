@@ -364,3 +364,5 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .side .wlist { padding: 0 10px 6px; max-height: 30vh; overflow: auto; flex: none; }
 .side .sgadd { background: none; border: 0; color: var(--side-ink-2); cursor: pointer; padding: 2px; border-radius: 5px; display: grid; place-items: center; } .side .sgadd:hover { color: #fff; background: var(--side-hover); }
 .shell[data-rail="1"] .sgadd { display: none; }
+.activitystrip { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: var(--r); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); }
+.activitystrip > span { flex: 1; min-width: 0; }

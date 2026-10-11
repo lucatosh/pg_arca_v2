@@ -19,7 +19,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   // backup tab
   await tab('Protezione', 'Backup'); await p.waitForSelector('text=Esegui un backup'); await p.waitForSelector('.placement code:has-text("/mnt/backup/repo/prodpg")'); await shot('04-backup');
   { const b = p.locator('button:has-text("Prova di disaster recovery")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster ripristinato in 13 minuti', { timeout: 10000 }); await shot('04b-drill'); } }
-  await p.click('button:has-text("Avvia backup")'); await p.waitForSelector('text=Copia dei dati'); await shot('05-backup-running');
+  await p.click('button:has-text("Avvia backup")'); await p.waitForSelector('text=Copia dei dati'); await p.waitForSelector('.activitystrip:has-text("un backup")', { timeout: 8000 }); await shot('05-backup-running');
   // the dock's Log opens a floating window with THIS operation's log (not the database log): movable, minimisable, closable
   await p.click('.dock-chip'); await p.click('.dock-item button:has-text("Log")'); await p.waitForSelector('.oplog'); await p.waitForSelector('.oplog-body .ln', { timeout: 8000 });
   assert(/Backup/.test(await p.locator('.oplog-hd .nm').innerText()), 'log window is titled with the operation');

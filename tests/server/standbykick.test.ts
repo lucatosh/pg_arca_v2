@@ -3,7 +3,8 @@ import { Store } from '../../server/store';
 import { standbyKickTick } from '../../server/scheduler';
 (async () => {
   const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'sk-')));
-  const now = Date.now(); const iso = (ms: number) => new Date(ms).toISOString();
+  const now = Math.floor(Date.now() / 20_000) * 20_000 + 1_000;   // start of a 20 s window: +5 s stays in it (the test was flaky near a boundary)
+  const iso = (ms: number) => new Date(ms).toISOString();
   await store.mutate(d => {
     d.clusters.push({ id: 'c', name: 'c', environment: 'prod', source: 'agent' } as any);
     d.nodes.p = { id: 'p', name: 'pg-p', clusterId: 'c', lastSeen: iso(now), snapshot: { postgres: { is_in_recovery: false, alive: true } } } as any;

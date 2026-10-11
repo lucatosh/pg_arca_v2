@@ -17,6 +17,7 @@ import { requiresApproval, requestApproval } from './approvals';
 import { hbaFanout } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
+import { conflictFor, activityOf } from './conflicts';
 
 export interface Deps {
   /** executes an operation server-side for clusters attached without an agent */
@@ -312,6 +313,11 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     ttlSeconds = ttlSeconds === undefined || ttlSeconds === null ? undefined : (Number.isFinite(Number(ttlSeconds)) ? Math.min(86400, Math.max(30, Math.floor(Number(ttlSeconds)))) : 600);   // NaN would mean 'never expires'
     const spec = OP_SPECS[type];
     const st = store.peek();
+    // several DBAs, one cluster: refuse what would collide with work already queued or running (a replay of the SAME request is not a conflict)
+    if (!st.operations.some(o => o.idempotencyKey === key)) {
+      const c = conflictFor(st.operations, cluster.id, type, params, actor);
+      if (c) return { code: 409, body: c };
+    }
     try {
       if (cluster.source === 'direct') {
         if (spec.lane === 'data') return { code: 409, body: { error: 'agent_required', message: 'Backup, restore and PITR run on the database host: install the agent on a node of this cluster (agentless attach cannot read the data directory).' } };
@@ -362,6 +368,12 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       throw e;
     }
   }
+
+  app.get('/api/clusters/:id/activity', (req: Request, res: Response) => {
+    const st = store.peek();
+    if (!st.clusters.some((c: any) => c.id === req.params.id)) return res.status(404).json({ error: 'cluster_not_found' });
+    res.json({ activity: activityOf(st.operations, req.params.id) });
+  });
 
   // ---- four-eyes approvals --------------------------------------------------
   const pendingView = () => {

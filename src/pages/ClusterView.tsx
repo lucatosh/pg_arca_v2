@@ -43,6 +43,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
       <Button icon="trash" onClick={() => setDetach(true)}>Scollega</Button></div>
     {c.isSandbox ? <Banner kind="info" title="Cluster demo">Dati di esempio: le operazioni non vengono eseguite. Puoi eliminarlo quando hai collegato un cluster reale.</Banner> : null}
     {agentic ? <ProtectionRibbon c={c} /> : null}
+    {agentic ? <ActivityStrip id={c.id} /> : null}
     <div className="clusternav">
       <div className="gnav" role="tablist" aria-label="Aree del cluster">{TAB_GROUPS.map(g => <button key={g.id} role="tab" aria-selected={grp.id === g.id} onClick={() => go(`c/${encodeURIComponent(id)}/${grp.id === g.id ? cur : g.tabs[0]}`)}><Icon n={g.icon} />{g.label}</button>)}</div>
       <Tabs value={cur} onChange={t => go(`c/${encodeURIComponent(id)}/${t}`)} items={grp.tabs.map(tid => TAB_ITEMS.find(t => t.id === tid)!).map(t => ({ id: t.id, label: t.label, icon: t.icon, preview: t.preview }))} />
@@ -152,7 +153,8 @@ function HA({ c }: { c: any }) {
       {sickCount > 0 ? <p className="small" style={{ marginTop: 8, color: 'var(--warn, #d9a441)' }}>{sickCount} {sickCount === 1 ? 'replica non è' : 'repliche non sono'} in salute (stato diverso da running): non {sickCount === 1 ? 'può' : 'possono'} essere scelte{standbys.length ? '' : ', quindi lo switchover e il failover sono disattivati'}.</p> : null}</Card>
     <Card title="Membri" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Membro</th><th>Ruolo</th><th>Stato</th><th /></tr></thead><tbody>
       {nodes.map(n => <tr key={n.name}><td>{n.name}</td><td>{n.role === 'primary' ? 'Leader' : 'Replica'}</td><td>{n.online ? n.state : 'offline'}</td><td className="num"><Button sm disabled={r.busy} onClick={() => start({ kind: 'restart', member: n.name })}>Riavvia</Button></td></tr>)}</tbody></table></div></Card>
-    {(r.op || r.error) ? <Card><OpPanel op={r.op} error={r.error} cancel={undefined} /><Result op={r.op} /></Card> : null}
+    {r.conflict?.overridable ? <Banner kind="warn" title="Conflitto con un’altra operazione">{r.conflict.message} <Button sm kind="danger" onClick={() => r.runForced()}>Procedi comunque</Button></Banner>
+      : (r.op || r.error) ? <Card><OpPanel op={r.op} error={r.error} cancel={undefined} /><Result op={r.op} /></Card> : null}
     {act ? <Modal2 act={act} leader={leader?.name} standbys={standbys} cand={cand} setCand={setCand} typed={typed} setTyped={setTyped} onClose={() => setAct(null)} onGo={exec} maint={!!c.haState.maintenanceMode} /> : null}
   </div>;
 }
@@ -206,4 +208,13 @@ function Operations({ c }: { c: any }) {
           {open === o.id ? <tr><td colSpan={5}><div className="stack"><OpPanel op={o} /><Result op={o} /><details><summary className="small muted" style={{ cursor: 'pointer' }}>Cronologia e parametri</summary><pre className="out">{JSON.stringify({ params: o.params, history: (o as any).history }, null, 2)}</pre></details></div></td></tr> : null}</React.Fragment>)}
       </tbody></table></div>}
   </Card>;
+}
+
+/** Who is doing what on this cluster right now (every DBA sees the others' work before starting something that would collide). */
+function ActivityStrip({ id }: { id: string }) {
+  const q = useQuery<{ activity: { id: string; what: string; status: string; createdBy: string; createdAt: string; progress: string | null }[] }>(`/api/clusters/${encodeURIComponent(id)}/activity`, { interval: 5000 });
+  const a = q.data?.activity || [];
+  if (!a.length) return null;
+  return <div className="activitystrip" role="status"><Icon n="activity" s={14} /><span className="small"><strong>In corso su questo cluster:</strong> {a.map((x, i) => <span key={x.id}>{i ? ' · ' : ''}{x.what} <span className="faint">({x.status === 'queued' ? 'in coda' : x.progress || 'in esecuzione'}, {x.createdBy}, {ago(x.createdAt)})</span></span>)}</span>
+    <button className="btn ghost sm" onClick={() => window.dispatchEvent(new Event('arca:dock'))}>Dettagli</button></div>;
 }
