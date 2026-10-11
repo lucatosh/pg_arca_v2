@@ -33,7 +33,8 @@ def hba_apply(rules):
     s, d = call("POST", "/api/clusters/%s/hba/apply" % CL, {"rules": rules, "force": False}, {"Idempotency-Key": str(uuid.uuid4())})
     if s >= 300: return s, d, None
     return s, d, [wait(x["operation"]["id"]) for x in d["operations"]]
-print("== pg_hba via DCS (Patroni): apply one rule")
+DATA = (dx("pg1", "grep -m1 data_dir /etc/patroni.yml").split(":", 1) + ["/var/lib/postgresql/data"])[1].strip()
+print("== pg_hba via DCS (Patroni): apply one rule; data_dir", DATA)
 before = dx("pg1", "patronictl -c /etc/patroni.yml show-config")
 print("   DCS has pg_hba before:", "pg_hba" in before)
 s, d, ops = hba_apply([RULE]); check("apply accepted", s == 202, str(d)[:200] if s != 202 else "")
@@ -44,8 +45,7 @@ check("DCS now holds pg_hba with the probe rule", "pgarca_probe_user" in cfg)
 check("DCS list kept rules in force (replication/local lines)", "replication" in cfg, "")
 time.sleep(15)
 for n in ("pg1", "pg2", "pg3"):
-    t = dx(n, "cat /var/lib/postgresql/data/pg_hba.conf") or dx(n, "sh -c 'cat $(psql -U postgres -Atc \"show hba_file\")'")
-    rules = dx(n, "psql -h localhost -U postgres -Atc \"select count(*) from pg_hba_file_rules where user_name::text like '%pgarca_probe_user%'\"") if False else ""
+    t = dx(n, "cat %s/pg_hba.conf" % DATA)
     check("%s pg_hba.conf follows the DCS" % n, "pgarca_probe_user" in t, "")
 print(dx("pg1", "patronictl -c /etc/patroni.yml list"))
 print("== remove the rule again")
