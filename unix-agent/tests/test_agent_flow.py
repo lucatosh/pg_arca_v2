@@ -87,7 +87,7 @@ class AgentFlow(unittest.TestCase):
         atomic_write_json(os.path.join(self.ex.dir, "op-000000000006.json"), {"id": "op-000000000006", "type": "pg_reload", "status": "running"})
         self.assertEqual(self.ex.execute({"id": "op-000000000006", "type": "pg_reload", "params": {}})[0], "succeeded")
     def test_param_via_patroni_when_managed_and_verified(self):
-        st, res, err = self.ex.execute({"id": "op-000000000007", "type": "pg_set_param", "params": {"name": "work_mem", "value": "64MB"}})
+        st, res, err = self.ex.execute({"id": "op-000000000007", "type": "pg_set_param", "params": {"name": "work_mem", "value": "64MB", "settle_seconds": 0.5}})
         self.assertEqual(st, "succeeded", err); self.assertEqual(res["via"], "patroni")
         self.assertEqual(FakePatroni.posts[0][1], {"postgresql": {"parameters": {"work_mem": "64MB"}}})
         self.assertFalse(any("ALTER SYSTEM" in c["sql"] for c in self.psql_calls()))      # DCS owns parameters
