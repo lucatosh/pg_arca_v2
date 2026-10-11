@@ -58,7 +58,7 @@ class Late(unittest.TestCase):
         self.assertIn("late_db", [c["id"] for c in p["preflight"]["checks"]])
         self.assertTrue(p["preflight"]["ok"], p["preflight"])
         o = restore_object(F.ctx, "old_db.public.t_new", target_time=S["t_ok"], dry_run=True)
-        self.assertIn("late_obj", [c["id"] for c in o["preflight"]["checks"]], o["preflight"])
+        self.assertIn("late_obj_unknown", [c["id"] for c in o["preflight"]["checks"]], o["preflight"])   # t_new was dropped after the target: unknown now too
 
     def test_02_database_created_after_the_backup(self):
         r = restore_database(F.ctx, "new_db", target_time=S["t_ok"], new_name="new_db_back")

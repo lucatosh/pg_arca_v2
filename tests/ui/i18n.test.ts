@@ -9,4 +9,11 @@ assert.strictEqual(itFix('make sure it has about 3 GiB free'), 'assicurati che a
 assert.strictEqual(itCheck("the agent's user (postgres) cannot create restore destination /srv/restore_big: /srv is not writable for it"), 'l’utente dell’agent (postgres) non può creare la destinazione del ripristino /srv/restore_big: /srv non è scrivibile per lui');
 assert.match(itFix('create it for the agent: mkdir -p /srv/x && chown postgres: /srv/x (or choose a destination under a directory it owns)'), /^creala per l’agent: mkdir -p/);
 assert.match(itCheck('the recovery host cannot reach the cluster that receives the result (172.30.1.2:5432): timeout expired'), /^l’host di recupero non raggiunge/);
+// exact texts the agent produces (engine/granular.py) for things created after the backup and for owners/privileges
+assert.match(itCheck("database 'new_db' is not in backup 20261011-234032F: it was created after that backup, so it is rebuilt from the WAL alone (size unknown in advance)"), /^il database 'new_db' non è nel backup 20261011-234032F: è stato creato dopo/);
+assert.match(itCheck("object 'public.t_new' is not in backup 20261011-234032F: it was created after that backup and is rebuilt from the WAL"), /^l’oggetto 'public\.t_new' non è nel backup/);
+assert.match(itCheck("object 'public.t_new' is not in backup 20261011-234032F and it does not exist in old_db now: it comes back only if it was created after that backup (and dropped since)"), /oggi non esiste in old_db: torna solo se/);
+assert.match(itCheck("schema 'x y' has no tables in backup 20261011-234032F: it was created after that backup and is rebuilt from the WAL"), /^lo schema 'x y' non è nel backup/);
+assert.match(itCheck('roles missing on this server (gone_role): object owners and privileges were NOT restored; create the roles and restore again to keep them'), /^ruoli assenti su questo server \(gone_role\)/);
+assert.match(itFix('check the name: a wrong one is only found after the recovery; tables created and dropped after the backup are listed by the WAL forensics'), /^controlla il nome/);
 console.log('i18n OK');

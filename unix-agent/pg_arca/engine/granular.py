@@ -4,6 +4,7 @@ Nothing existing is ever overwritten: databases are restored under a NEW name, o
 Failure after the destination DB was created drops it again (all-or-nothing from the operator's point of view).
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -78,7 +79,101 @@ def _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_
     return target, chain, tt, None
 
 
-def _create_db(admin, name, entry):
+# GUCs whose value is a list of quoted items (pg_dump's variable_is_guc_list_quote): ALTER DATABASE ... SET needs each item as its own literal
+_GUC_LIST_QUOTE = ("local_preload_libraries", "search_path", "session_preload_libraries", "shared_preload_libraries", "temp_tablespaces", "unix_socket_directories")
+
+
+def _guc_set_value(name, value):
+    if name.lower() in _GUC_LIST_QUOTE:
+        items, cur, q = [], "", False
+        for ch in value:
+            if ch == '"':
+                q = not q
+                cur += ch
+            elif ch == "," and not q:
+                items.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+        items.append(cur.strip())
+        return ", ".join(sql_lit(x) for x in items if x != "") or "''"
+    return sql_lit(value)
+
+
+def db_props(eph, db):
+    """What pg_dump (without --create) leaves out about a DATABASE: owner, privileges, connection limit, comment, locale provider, database-wide and
+    per-role settings. Read from the recovered instance (the state at the target)."""
+    s = PgSession(eph.conn("postgres"), read_only=True)
+    try:
+        major = int(s.scalar("SHOW server_version_num")) // 10000
+        loc = "NULL::text, NULL::text, NULL::text"
+        if major >= 17:
+            loc = "d.datlocprovider::text, d.datlocale, d.daticurules"
+        elif major >= 16:
+            loc = "d.datlocprovider::text, d.daticulocale, d.daticurules"
+        elif major >= 15:
+            loc = "d.datlocprovider::text, d.daticulocale, NULL::text"
+        r = s.scalar("""SELECT json_build_object('owner', pg_get_userbyid(d.datdba), 'connlimit', d.datconnlimit, 'comment', shobj_description(d.oid, 'pg_database'),
+  'acl', CASE WHEN d.datacl IS NULL THEN NULL ELSE (SELECT coalesce(json_agg(json_build_object('g', CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END,
+         'p', a.privilege_type, 'o', a.is_grantable)), '[]'::json) FROM aclexplode(d.datacl) a) END,
+  'provider', x.p, 'locale', x.l, 'rules', x.r,
+  'settings', (SELECT coalesce(json_agg(json_build_object('role', CASE WHEN st.setrole = 0 THEN NULL ELSE pg_get_userbyid(st.setrole) END, 'config', st.setconfig)), '[]'::json)
+               FROM pg_db_role_setting st WHERE st.setdatabase = d.oid))::text
+FROM pg_database d, LATERAL (SELECT %s) x(p, l, r) WHERE d.datname = %s""" % (loc, sql_lit(db)))
+        return json.loads(r) if r else None
+    except EngineError:
+        return None
+    finally:
+        s.close()
+
+
+def _apply_db_props(admin, name, props, warnings):
+    """Give the new database the properties of the original (roles that do not exist here are skipped and reported). Never fails the restore."""
+    if not props:
+        return
+    s = PgSession(admin.with_db("postgres"))
+    try:
+        roles = {r[0] for r in s.query("SELECT rolname FROM pg_roles")}
+        qn = quote_ident(name)
+
+        def run(sql, what):
+            try:
+                s.query(sql)
+            except EngineError as e:
+                warnings.append("database %s: %s not applied (%s)" % (name, what, e.message[:160]))
+        own = props.get("owner")
+        if own and own in roles:
+            run("ALTER DATABASE %s OWNER TO %s" % (qn, quote_ident(own)), "owner %s" % own)
+        elif own:
+            warnings.append("database %s: owner %s does not exist on this server, the database belongs to %s" % (name, own, admin.user or "the connecting user"))
+        if props.get("connlimit") not in (None, -1):
+            run("ALTER DATABASE %s CONNECTION LIMIT %d" % (qn, int(props["connlimit"])), "connection limit")
+        if props.get("comment"):
+            run("COMMENT ON DATABASE %s IS %s" % (qn, sql_lit(props["comment"])), "comment")
+        if props.get("acl") is not None:                    # NULL = the defaults (CONNECT + TEMP to PUBLIC), already what a new database has
+            run("REVOKE ALL ON DATABASE %s FROM PUBLIC" % qn, "privileges")
+            for a in props["acl"]:
+                if a["g"] != "PUBLIC" and a["g"] not in roles:
+                    warnings.append("database %s: %s for role %s not granted (the role does not exist here)" % (name, a["p"], a["g"]))
+                    continue
+                run("GRANT %s ON DATABASE %s TO %s%s" % (a["p"], qn, "PUBLIC" if a["g"] == "PUBLIC" else quote_ident(a["g"]), " WITH GRANT OPTION" if a.get("o") else ""),
+                    "%s for %s" % (a["p"], a["g"]))
+        for st in props.get("settings") or []:
+            role = st.get("role")
+            if role and role not in roles:
+                warnings.append("database %s: settings of role %s not applied (the role does not exist here)" % (name, role))
+                continue
+            for kv in st.get("config") or []:
+                k, _, v = kv.partition("=")
+                if not _re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", k):
+                    continue
+                pre = ("ALTER ROLE %s IN DATABASE %s" % (quote_ident(role), qn)) if role else ("ALTER DATABASE %s" % qn)
+                run("%s SET %s = %s" % (pre, k, _guc_set_value(k, v)), "setting %s" % k)
+    finally:
+        s.close()
+
+
+def _create_db(admin, name, entry, props=None):
     s = PgSession(admin.with_db("postgres"))
     try:
         if s.scalar("SELECT 1 FROM pg_database WHERE datname=%s" % sql_lit(name)) == "1":
@@ -87,10 +182,20 @@ def _create_db(admin, name, entry):
         extra = ""
         if entry.get("collate") and entry.get("ctype"):
             extra = " LC_COLLATE %s LC_CTYPE %s" % (sql_lit(entry["collate"]), sql_lit(entry["ctype"]))
+        dmajor = int(s.scalar("SHOW server_version_num")) // 10000
+        prov = (props or {}).get("provider")
+        if prov == "i" and (props or {}).get("locale") and dmajor >= 15:         # ICU: same provider and locale (sorting / unique indexes on text behave the same)
+            extra += " LOCALE_PROVIDER icu ICU_LOCALE %s" % sql_lit(props["locale"])
+            if props.get("rules") and dmajor >= 16:
+                extra += " ICU_RULES %s" % sql_lit(props["rules"])
+        elif prov == "b" and (props or {}).get("locale") and dmajor >= 17:
+            extra += " LOCALE_PROVIDER builtin BUILTIN_LOCALE %s" % sql_lit(props["locale"])
         try:
             s.query("CREATE DATABASE %s TEMPLATE template0 ENCODING %s%s" % (quote_ident(name), sql_lit(enc), extra))
         except EngineError:
             s.query("CREATE DATABASE %s TEMPLATE template0 ENCODING %s" % (quote_ident(name), sql_lit(enc)))
+            if prov in ("i", "b"):
+                (props.setdefault("_warnings", [])).append("database %s: created WITHOUT the original locale provider (%s %s): not available on this server" % (name, "ICU" if prov == "i" else "builtin", props.get("locale")))
     finally:
         s.close()
 
@@ -106,8 +211,36 @@ def _drop_db(admin, name):
         pass
 
 
-def _pg_restore(admin, dbname, dumpfile, jobs, extra=()):
-    args = admin.args() + ["-d", dbname, "--no-owner", "--no-acl", "--exit-on-error", "-j", str(max(1, jobs))] + list(extra) + [dumpfile]
+ROLES_USED_SQL = """
+WITH o(r) AS (
+  SELECT relowner FROM pg_class WHERE oid >= 16384 UNION SELECT nspowner FROM pg_namespace WHERE oid >= 16384 UNION SELECT proowner FROM pg_proc WHERE oid >= 16384
+  UNION SELECT typowner FROM pg_type WHERE oid >= 16384 UNION SELECT oprowner FROM pg_operator WHERE oid >= 16384 UNION SELECT collowner FROM pg_collation WHERE oid >= 16384
+  UNION SELECT conowner FROM pg_conversion WHERE oid >= 16384 UNION SELECT defaclrole FROM pg_default_acl UNION SELECT lomowner FROM pg_largeobject_metadata
+  UNION SELECT evtowner FROM pg_event_trigger UNION SELECT stxowner FROM pg_statistic_ext UNION SELECT pubowner FROM pg_publication
+  UNION SELECT fdwowner FROM pg_foreign_data_wrapper WHERE oid >= 16384 UNION SELECT srvowner FROM pg_foreign_server
+  UNION SELECT umuser FROM pg_user_mapping WHERE umuser <> 0 UNION SELECT unnest(polroles) FROM pg_policy
+), a(acl) AS (
+  SELECT relacl FROM pg_class WHERE relacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT attacl FROM pg_attribute WHERE attacl IS NOT NULL AND attrelid >= 16384
+  UNION ALL SELECT nspacl FROM pg_namespace WHERE nspacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT proacl FROM pg_proc WHERE proacl IS NOT NULL AND oid >= 16384
+  UNION ALL SELECT typacl FROM pg_type WHERE typacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT defaclacl FROM pg_default_acl
+  UNION ALL SELECT lomacl FROM pg_largeobject_metadata WHERE lomacl IS NOT NULL UNION ALL SELECT srvacl FROM pg_foreign_server WHERE srvacl IS NOT NULL
+  UNION ALL SELECT fdwacl FROM pg_foreign_data_wrapper WHERE fdwacl IS NOT NULL AND oid >= 16384
+), g(r) AS (SELECT (aclexplode(acl)).grantee FROM a UNION SELECT (aclexplode(acl)).grantor FROM a)
+SELECT DISTINCT rolname FROM pg_roles WHERE oid IN (SELECT r FROM o UNION SELECT r FROM g) ORDER BY 1"""
+
+
+def roles_used(conn):
+    """Every role a database's objects mention (owners, grantees and grantors, policy roles, default privileges): restoring owners and privileges
+    needs all of them on the destination."""
+    s = PgSession(conn, read_only=True)
+    try:
+        return [r[0] for r in s.query(ROLES_USED_SQL) if r and r[0]]
+    finally:
+        s.close()
+
+
+def _pg_restore(admin, dbname, dumpfile, jobs, extra=(), keep_owners=False):
+    args = admin.args() + ["-d", dbname] + ([] if keep_owners else ["--no-owner", "--no-acl"]) + ["--exit-on-error", "-j", str(max(1, jobs))] + list(extra) + [dumpfile]
     rc, out, err = run_tool(admin, "pg_restore", args, timeout=None)
     if rc != 0:
         raise EngineError("PGA-GEN-071", "pg_restore failed: %s" % (err.strip() or out.strip())[:800])
@@ -274,6 +407,32 @@ def _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name):
     return {"name": db, "oid": None, "size": 0, "relations": [], "late": True, "base_set": target["id"]}
 
 
+def _all_live(ctx, db, sel, dbentry):
+    """True when every selected object that the base backup's catalog does not know exists in the live database now."""
+    rels = dbentry.get("relations", [])
+    try:
+        s = PgSession(ctx.conn.with_db(db), read_only=True)
+    except EngineError:
+        return False
+    try:
+        for o in sel:
+            if o["kind"] == "schema":
+                if any(r["schema"] == o["schema"] for r in rels):
+                    continue
+                if s.scalar("SELECT to_regnamespace(%s) IS NOT NULL" % sql_lit(quote_ident(o["schema"]))) != "t":
+                    return False
+            else:
+                if any(r["schema"] == o["schema"] and r["name"] == o["name"] for r in rels):
+                    continue
+                if s.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit(objmod.qi(o["schema"], o["name"]))) != "t":
+                    return False
+        return True
+    except EngineError:
+        return False
+    finally:
+        s.close()
+
+
 def _late_check(entry, what):
     return {"id": "late_db", "level": "warn",
             "text": "%s is not in backup %s: it was created after that backup, so it is rebuilt from the WAL alone (size unknown in advance)" % (what, entry.get("base_set") or "?"),
@@ -395,9 +554,32 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
             raise EngineError("PGA-GEN-070", "pg_dump from the recovered instance failed: %s" % err.strip()[:600],
                               "the sparse extraction may lack a page needed by this database; retry with a different base set")
         info["dump_bytes"] = os.path.getsize(dumpfile)
-        _create_db(admin, new_name, entry)
+        props = db_props(eph, db)
+        warns = []
+        # owners and privileges come back too, unless the destination lacks some of the roles they name (then: none of them, and the list says which roles)
+        try:
+            used = roles_used(eph.conn(db))
+        except EngineError as e:
+            used, warns = None, ["could not list the roles the database uses (%s): owners and privileges were NOT restored" % e.message[:120]]
+        missing = []
+        if used is not None:
+            d = PgSession(admin.with_db("postgres"), read_only=True)
+            try:
+                have = {r[0] for r in d.query("SELECT rolname FROM pg_roles")}
+            finally:
+                d.close()
+            missing = [r for r in used if r not in have]
+        keep = used is not None and not missing
+        if missing:
+            warns.append("roles missing on this server (%s): object owners and privileges were NOT restored; create the roles and restore again to keep them" % ", ".join(missing[:8]))
+        info["owners_and_privileges"] = keep
+        _create_db(admin, new_name, entry, props)
         created = True
-        _pg_restore(admin, new_name, dumpfile, jobs)
+        _pg_restore(admin, new_name, dumpfile, jobs, keep_owners=keep)
+        warns += list((props or {}).pop("_warnings", []) if props else [])
+        _apply_db_props(admin, new_name, props, warns)
+        if warns:
+            info["warnings"] = (info.get("warnings") or []) + warns
         v = PgSession(admin.with_db(new_name), read_only=True)
         try:
             info["tables_restored"] = int(v.scalar("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') "
@@ -427,13 +609,16 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     target, chain, tt, _note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
     dbentry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name)
-    late_objs = None
+    late_objs, late_live = None, False
     try:
         nrel = objmod.selection_in_catalog(dbentry, sel) if not dbentry.get("late") else None
     except EngineError as e:
         if e.code != "PGA-GEN-032":
             raise
-        nrel, late_objs = None, e.message            # created after the base backup (a new table/schema): the recovery replays it from the WAL; analyze() checks it exists
+        # not in the base backup: created after it (the recovery replays it from the WAL). Typical: made this morning, dropped by mistake at noon - so it
+        # is NOT refused when it is missing now too; the plan says clearly that a wrong name is only found after the recovery
+        nrel, late_objs = None, e.message
+        late_live = _all_live(ctx, db, sel, dbentry)
     label = ", ".join(("%s.%s" % (o["schema"], o["name"])) if o["kind"] == "rel" else ("schema %s" % o["schema"]) for o in sel)
     stage = stage_db or ("pgarca_stage_" + now_utc().strftime("%Y%m%dt%H%M%S"))
     if not stage.startswith("pgarca_stage_"):
@@ -466,8 +651,13 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
         checks.append(_late_check(dbentry, "database '%s'" % db))
         plan["created_after_backup"] = True
     elif late_objs:
-        checks.append({"id": "late_obj", "level": "warn", "text": "%s in backup %s: it was created after that backup and is rebuilt from the WAL" % (late_objs, target["id"]),
-                       "fix": "if it did not exist yet at the chosen time the restore stops after the recovery and says so"})
+        if late_live:
+            checks.append({"id": "late_obj", "level": "warn", "text": "%s %s: it was created after that backup and is rebuilt from the WAL" % (late_objs, target["id"]),
+                           "fix": "if it did not exist yet at the chosen time the restore stops after the recovery and says so"})
+        else:
+            checks.append({"id": "late_obj_unknown", "level": "warn",
+                           "text": "%s %s and it does not exist in %s now: it comes back only if it was created after that backup (and dropped since)" % (late_objs, target["id"], db),
+                           "fix": "check the name: a wrong one is only found after the recovery; tables created and dropped after the backup are listed by the WAL forensics"})
         plan["created_after_backup"] = True
     if dest_err:
         where = ("%s:%s" % (into.get("host"), into.get("port", 5432))) if isinstance(into, dict) else "the local PostgreSQL"
@@ -488,8 +678,10 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
         finally:
             src.close()
 
+        sprops = db_props(eph, db)
+
         def make():
-            _create_db(admin, stage, dbentry)
+            _create_db(admin, stage, dbentry, {k: v for k, v in (sprops or {}).items() if k in ("provider", "locale", "rules")})
         created = True
         meta = objmod.build_stage(admin, eph, dbentry, sel, label, stage, an, plan, progress, create_db=make)
         info["rows_restored"] = sum(meta["counts"].values())

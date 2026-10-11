@@ -71,11 +71,11 @@ def selection_in_catalog(cat_db, sel):
         if o["kind"] == "schema":
             hits = [r for r in rels if r["schema"] == o["schema"] and r["kind"] in ("r", "p", "m", "S", "v", "f")]
             if not hits:
-                raise EngineError("PGA-GEN-032", "schema '%s' has no tables in the backup" % o["schema"], "it may not exist in this backup; pick a later set or another target time")
+                raise EngineError("PGA-GEN-032", "schema '%s' has no tables in backup" % o["schema"], "it may not exist in this backup; pick a later set or another target time")
             n += len(hits)
         else:
             if not any(r["schema"] == o["schema"] and r["name"] == o["name"] and r["kind"] in ("r", "p", "m", "S", "v", "f") for r in rels):
-                raise EngineError("PGA-GEN-032", "object '%s.%s' not found in the backup" % (o["schema"], o["name"]))
+                raise EngineError("PGA-GEN-032", "object '%s.%s' is not in backup" % (o["schema"], o["name"]))
             n += 1
     return n
 

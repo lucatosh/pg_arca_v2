@@ -264,7 +264,7 @@ type PMode = 'as_new' | 'replace' | 'missing_only';
 function Notices({ r }: { r: any }) {
   return <>{r.target_clamped ? <Banner kind="warn" title="Ripristinato fino alla fine dell’archivio">{r.target_clamped.message}</Banner> : null}
     {r.stopped_before_drop ? <Banner kind="info" title="Fermato subito prima del DROP DATABASE">{r.stopped_before_drop.message}</Banner> : null}
-    {(r.warnings || []).length ? <Banner kind="warn" title="Da sapere">{(r.warnings as string[]).map((w, i) => <div key={i} className="small">{w}</div>)}</Banner> : null}</>;
+    {(r.warnings || []).length ? <Banner kind="warn" title="Da sapere">{(r.warnings as string[]).map((w, i) => <div key={i} className="small">{itCheck(w)}</div>)}</Banner> : null}</>;
 }
 
 const ACTION: Record<string, string> = { swap: 'sostituisce', create: 'viene creata', copy: 'copia accanto', skip: 'già presente: invariata' };

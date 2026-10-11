@@ -127,8 +127,12 @@ class ObjectsV2(unittest.TestCase):
         self.assertTrue(plan["dry_run"])
         self.assertLess(plan["extract_bytes"], plan["cluster_bytes"])
         self.assertEqual(q("postgres", "SELECT count(*) FROM pg_database WHERE datname LIKE 'pgarca_stage_%'")[0][0], "0")
-        with self.assertRaises(EngineError):
-            restore_object(F.ctx, DB, objects=["%s.shop.does_not_exist" % DB], target_time=S["t_ok"], dry_run=True)
+        # unknown to the backup AND to the live database: maybe created after the backup and dropped since (it would come back), maybe a typo -> said in the plan
+        p2 = restore_object(F.ctx, DB, objects=["%s.shop.does_not_exist" % DB], target_time=S["t_ok"], dry_run=True)
+        self.assertIn("late_obj_unknown", [c["id"] for c in p2["preflight"]["checks"]], p2["preflight"])
+        with self.assertRaises(EngineError):                                  # ... and the real run stops (after the recovery) with a clear error
+            restore_object(F.ctx, DB, objects=["%s.shop.does_not_exist" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_typo")
+        self.assertEqual(q("postgres", "SELECT count(*) FROM pg_database WHERE datname = 'pgarca_stage_typo'")[0][0], "0")
 
     # ------------------------------------------------------------------ the hard one: DROP TABLE ... CASCADE takes FKs, views and the matview with it
     def test_02_dropped_table_comes_back_with_foreign_keys_views_triggers(self):
