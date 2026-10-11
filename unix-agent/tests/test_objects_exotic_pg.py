@@ -73,13 +73,13 @@ def snap():
     out["constraints"] = q(DB, "SELECT conrelid::regclass::text, conname, contype, pg_get_constraintdef(oid), condeferrable, condeferred, convalidated FROM pg_constraint "
                                "WHERE connamespace = (SELECT oid FROM pg_namespace WHERE nspname = %s) AND conrelid::regclass::text !~ '_(old|pitr)_[0-9]' ORDER BY 1, 2" % lit)
     out["indexes"] = q(DB, "SELECT tablename, indexdef FROM pg_indexes WHERE schemaname = %s AND tablename !~ '_(old|pitr)_[0-9]' ORDER BY 1, 2" % lit)
-    out["policies"] = q(DB, "SELECT tablename, policyname, permissive, roles::text, cmd, coalesce(qual, ''), coalesce(with_check, '') FROM pg_policies WHERE schemaname = %s ORDER BY 1, 2" % lit)
+    out["policies"] = q(DB, "SELECT tablename, policyname, permissive, roles::text, cmd, coalesce(qual, ''), coalesce(with_check, '') FROM pg_policies WHERE schemaname = %s AND tablename !~ '_(old|pitr)_[0-9]' ORDER BY 1, 2" % lit)
     out["triggers"] = q(DB, "SELECT tgrelid::regclass::text, pg_get_triggerdef(oid) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid IN "
-                            "(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s) ORDER BY 1, 2" % lit)
-    out["rules"] = q(DB, "SELECT tablename, rulename, definition FROM pg_rules WHERE schemaname = %s ORDER BY 1, 2" % lit)
-    out["statistics"] = q(DB, "SELECT stxname, pg_get_statisticsobjdef(oid) FROM pg_statistic_ext WHERE stxnamespace = (SELECT oid FROM pg_namespace WHERE nspname = %s) ORDER BY 1" % lit)
+                            "(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s AND c.relname !~ '_(old|pitr)_[0-9]') ORDER BY 1, 2" % lit)
+    out["rules"] = q(DB, "SELECT tablename, rulename, definition FROM pg_rules WHERE schemaname = %s AND tablename !~ '_(old|pitr)_[0-9]' ORDER BY 1, 2" % lit)
+    out["statistics"] = q(DB, "SELECT stxname, pg_get_statisticsobjdef(oid) FROM pg_statistic_ext WHERE stxnamespace = (SELECT oid FROM pg_namespace WHERE nspname = %s) AND stxname !~ '_(old|pitr)_[0-9]' ORDER BY 1" % lit)
     out["inherits"] = q(DB, "SELECT inhrelid::regclass::text, inhparent::regclass::text FROM pg_inherits WHERE inhrelid IN "
-                            "(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s) ORDER BY 1" % lit)
+                            "(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s AND c.relname !~ '_(old|pitr)_[0-9]') ORDER BY 1" % lit)
     out["rows"] = {}
     for (rel,) in q(DB, "SELECT format('%%I.%%I', n.nspname, c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s "
                         "AND c.relkind IN ('r') AND c.relname !~ '_(old|pitr)_[0-9]' ORDER BY 1" % lit):
@@ -144,8 +144,42 @@ class Exotic(unittest.TestCase):
         self.switch()
         self.go(["%s.%s.secret" % (DB, SCH), "%s.%s.room_booking" % (DB, SCH), "%s.%s.lines" % (DB, SCH), "%s.%s.audit" % (DB, SCH)])
         self.back("rls / exclusion / rule")
-        q(DB, "DROP TABLE IF EXISTS %s" % ", ".join(r[0] for r in q(DB, "SELECT format('%%I.%%I', n.nspname, c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        q(DB, "DROP TABLE IF EXISTS %s" % ", ".join(r[0] for r in q(DB, "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
                                                                            "WHERE c.relname ~ '_old_[0-9]' AND c.relkind IN ('r','p') AND NOT c.relispartition")) or "pg_temp.none")
+
+    def test_05_one_partition_of_a_multilevel_tree(self):
+        # the most common real request: "give me back last month's partition" - the partition alone, attached again to the LIVE parent with its bound
+        q(DB, "DELETE FROM %s.orders_2025_eu WHERE id %% 4 = 0" % QS)
+        self.switch()
+        r = self.go(["%s.%s.orders_2025_eu" % (DB, SCH)])
+        self.assertIn('%s.orders_2025_eu -> %s.orders_2025' % (SCH, SCH), r.get("attached") or [], r)
+        self.back("one partition")
+        old = q(DB, "SELECT c.relname, c.relispartition FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '%s' AND c.relname ~ '^orders_2025_eu_old_'" % SCH)
+        self.assertEqual(len(old), 1, old)                  # (test_04 removed the copies kept by the earlier tests)
+        self.assertEqual(old[0][1], "f", "the replaced partition is kept, detached")
+
+    def test_06_inheritance_child_with_rows_deleted(self):
+        q(DB, 'DELETE FROM %s."Child" WHERE extra > 25' % QS)
+        self.switch()
+        self.go(["%s.%s.Child" % (DB, SCH)])
+        self.back("inheritance child replaced")
+        self.assertEqual(q(DB, 'SELECT count(*) FROM %s."Parent"' % QS)[0][0], "350", "the parent sees the recovered child rows exactly once")
+
+    def test_07_dropped_partition_comes_back_attached(self):
+        q(DB, "DROP TABLE %s.orders_2025_us" % QS)
+        self.switch()
+        r = self.go(["%s.%s.orders_2025_us" % (DB, SCH)], mode="missing_only")
+        self.assertIn('%s.orders_2025_us -> %s.orders_2025' % (SCH, SCH), r.get("attached") or [], r)
+        self.back("dropped partition")
+
+    def test_08_partition_as_new_copy_stays_standalone(self):
+        before = snap()
+        r = self.go(["%s.%s.orders_2025_eu" % (DB, SCH)], mode="as_new")
+        self.assertEqual(r.get("attached") or [], [])
+        cp = q(DB, "SELECT c.relname, c.relispartition FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '%s' AND c.relname ~ '^orders_2025_eu_pitr_'" % SCH)
+        self.assertEqual(len(cp), 1, cp)
+        self.assertEqual(cp[0][1], "f", "a copy is never attached to the live tree")
+        self.assertEqual(snap(), before, "as_new must not touch anything live")
 
 
 if __name__ == "__main__":

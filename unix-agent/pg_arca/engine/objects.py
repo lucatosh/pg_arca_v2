@@ -131,6 +131,28 @@ WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass A
     toids = [t["oid"] for t in tables]
     allrel = toids + [v["oid"] for v in views]
     arr = lambda xs: "ARRAY[%s]::oid[]" % ",".join(str(x) for x in xs) if xs else "ARRAY[]::oid[]"
+    # ---- tables selected WITHOUT their parent (one partition of a partitioned table, a child of plain inheritance): the stage keeps them standalone,
+    #      promotion detaches the live one and attaches the recovered one to the live parent with the same bound
+    info["detached"], info["ancestors"] = [], []
+    if toids:
+        info["detached"] = _jq(src, """
+SELECT COALESCE(jsonb_agg(jsonb_build_object('schema', n.nspname, 'name', c.relname, 'parent_schema', pn.nspname, 'parent', pc.relname, 'part', c.relispartition,
+       'bound', CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) END) ORDER BY c.oid, i.inhseqno), '[]'::jsonb)::text
+FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_class pc ON pc.oid = i.inhparent JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+WHERE i.inhrelid = ANY(%s) AND NOT (i.inhparent = ANY(%s))""" % (arr(toids), arr(toids))) or []
+        if info["detached"]:
+            # every ancestor (transitively): the stage needs their definitions as empty shells so that the selection can be loaded exactly as dumped
+            info["ancestors"] = _jq(src, """
+WITH RECURSIVE a(oid) AS (SELECT i.inhparent FROM pg_inherits i WHERE i.inhrelid = ANY(%s) AND NOT (i.inhparent = ANY(%s))
+                          UNION SELECT i.inhparent FROM pg_inherits i JOIN a ON i.inhrelid = a.oid)
+SELECT COALESCE(jsonb_agg(jsonb_build_object('schema', n.nspname, 'name', c.relname, 'kind', c.relkind) ORDER BY c.oid), '[]'::jsonb)::text
+FROM a JOIN pg_class c ON c.oid = a.oid JOIN pg_namespace n ON n.oid = c.relnamespace""" % (arr(toids), arr(toids))) or []
+    # ---- extended statistics (CREATE STATISTICS): pg_dump -t does not carry them, promotion recreates them
+    info["statistics"] = _jq(src, """
+SELECT COALESCE(jsonb_agg(jsonb_build_object('schema', n.nspname, 'name', s.stxname, 'table_schema', tn.nspname, 'table', c.relname, 'def', pg_get_statisticsobjdef(s.oid),
+       'target', s.stxstattarget::int, 'owner', pg_get_userbyid(s.stxowner), 'comment', obj_description(s.oid, 'pg_statistic_ext')) ORDER BY s.oid), '[]'::jsonb)::text
+FROM pg_statistic_ext s JOIN pg_namespace n ON n.oid = s.stxnamespace JOIN pg_class c ON c.oid = s.stxrelid JOIN pg_namespace tn ON tn.oid = c.relnamespace
+WHERE s.stxrelid = ANY(%s)""" % arr(toids)) or [] if toids else []
     # ---- foreign keys: from/to the selected tables (those of a partition are inherited from its parent)
     info["fks"] = _jq(src, """
 SELECT COALESCE(jsonb_agg(jsonb_build_object('name', k.conname, 'schema', n.nspname, 'table', c.relname, 'ref_schema', rn.nspname, 'ref_table', rc.relname,
@@ -158,7 +180,7 @@ WHERE k.contype = 'f' AND k.conparentid = 0 AND (k.conrelid = ANY(%s) OR k.confr
         for a in r.get("acl") or []:
             if a["g"] != "PUBLIC":
                 roles.add(a["g"])
-    for t in info["types"]:
+    for t in info["types"] + info["statistics"]:
         roles.add(t["owner"])
     for f in info["functions"]:
         roles.add(f["owner"])
@@ -400,7 +422,15 @@ def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None):
 
 
 # ============================================================================================================== stage
-FK_TOC = re.compile(r"FK CONSTRAINT (\S+) (\S+) (\S+) (\S+)\s*$")
+TOC_DESC = re.compile(r"^\s*\d+; \d+ \d+ (TABLE ATTACH|TABLE DATA|TABLE|INDEX ATTACH|INDEX|FK CONSTRAINT|CHECK CONSTRAINT|CONSTRAINT|DEFAULT ACL|DEFAULT|"
+                      r"SEQUENCE OWNED BY|SEQUENCE SET|SEQUENCE|[A-Z][A-Z ]*?) ")
+SHELL_KEEP = ("TABLE", "TABLE ATTACH", "DEFAULT", "SEQUENCE", "SEQUENCE OWNED BY", "CONSTRAINT", "CHECK CONSTRAINT", "INDEX", "INDEX ATTACH")
+
+
+def toc_desc(line):
+    """The object type of a `pg_restore -l` line (None for comments). Schema and names may contain spaces, so they are never split."""
+    m = TOC_DESC.match(line)
+    return m.group(1) if m else None
 
 
 def _roles_present(sess, names):
@@ -433,9 +463,9 @@ def filtered_toc(admin, dumpfile, tmp, drop_fks):
     if rc != 0:
         raise EngineError("PGA-GEN-071", "cannot read the dump: %s" % err.strip()[:300])
     keep, dropped = [], 0
+    marks = {" FK CONSTRAINT %s %s %s " % k: k for k in drop_fks}      # names may contain spaces: match the whole "schema table name" run, never split it
     for line in out.splitlines():
-        m = FK_TOC.search(line)
-        if m and (m.group(1), m.group(2), m.group(3)) in drop_fks:
+        if toc_desc(line) == "FK CONSTRAINT" and any(m in line for m in marks):
             dropped += 1
             continue
         keep.append(line)
@@ -443,6 +473,25 @@ def filtered_toc(admin, dumpfile, tmp, drop_fks):
     with open(path, "w") as f:
         f.write("\n".join(keep) + "\n")
     return path, dropped
+
+
+def shell_toc(admin, eph_conn, dbname, ancestors, tmp):
+    """Schema-only dump of the ancestors of the selected tables (structure, defaults, keys and indexes: what a child needs to be created and
+    attached exactly as it was dumped). Returns (dumpfile, toc path)."""
+    dumpfile = os.path.join(tmp, "shell.dump")
+    args = eph_conn.args() + ["--schema-only", "--strict-names", "-f", dumpfile, "-d", dbname]
+    for a in ancestors:
+        args += ["-t", qi(a["schema"], a["name"])]
+    rc, out, err = run_dump(eph_conn, args)
+    if rc != 0:
+        raise EngineError("PGA-GEN-072", "pg_dump of the parent tables failed: %s" % err.strip()[:600])
+    rc, out, err = run_tool(admin, "pg_restore", ["-l", dumpfile], timeout=120)
+    if rc != 0:
+        raise EngineError("PGA-GEN-071", "cannot read the dump: %s" % err.strip()[:300])
+    path = os.path.join(tmp, "shell.lst")
+    with open(path, "w") as f:
+        f.write("\n".join(l for l in out.splitlines() if toc_desc(l) in SHELL_KEEP) + "\n")
+    return dumpfile, path
 
 
 def write_meta(sess, meta):
@@ -474,6 +523,7 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
                 "sequences": [{"schema": s["schema"], "name": s["name"], "owner": s["owner"], "acl": s["acl"]} for s in info["sequences"]],
                 "owned_sequences": info.get("owned_sequences") or [],
                 "views": info["views"], "fks": info["fks"], "positions": info["sequence_positions"], "roles": info["roles"],
+                "detached": info.get("detached") or [], "statistics": info.get("statistics") or [],
                 "prereq": {"types": info["types"], "functions": info["functions"], "extensions": info["extensions"], "schemas": info["schemas"]},
                 "warnings": list(info["warnings"]), "counts": {}}
         create_db()
@@ -488,13 +538,34 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
                 meta["warnings"] += ["prerequisite not recreated - %s" % p for p in problems]
             if dumpfile:
                 toc, dropped = filtered_toc(admin, dumpfile, tmp, drop_fks)
-                args = admin.args() + ["-d", stage, "--exit-on-error", "-L", toc]
+                args = admin.args() + ["-d", stage, "--exit-on-error"]
                 if missing_roles:
                     args += ["--no-owner", "--no-acl"]
                     meta["warnings"].append("roles missing on this server (%s): owners and grants of the recovered tables were NOT applied" % ", ".join(missing_roles[:6]))
-                rc, out, err = run_tool(admin, "pg_restore", args + [dumpfile], timeout=None)
-                if rc != 0:
-                    raise EngineError("PGA-GEN-071", "pg_restore into the quarantine database failed: %s" % (err.strip() or out.strip())[:900])
+
+                def load(df, lst, section=None):
+                    rc, out, err = run_tool(admin, "pg_restore", args + ["-L", lst] + (["--section", section] if section else []) + [df], timeout=None)
+                    if rc != 0:
+                        raise EngineError("PGA-GEN-071", "pg_restore into the quarantine database failed: %s" % (err.strip() or out.strip())[:900])
+                shells = info.get("ancestors") or []
+                if shells:
+                    # parents first as empty shells, in the order pg_dump itself would use: the selection is created/attached before the parents get their
+                    # keys and indexes (otherwise ATTACH would build duplicate indexes), then the selection's own keys attach to the parents' ones
+                    sdump, slst = shell_toc(admin, eph.conn(dbname), dbname, shells, tmp)
+                    load(sdump, slst, "pre-data")
+                    load(dumpfile, toc, "pre-data")
+                    load(dumpfile, toc, "data")
+                    load(sdump, slst, "post-data")
+                    load(dumpfile, toc, "post-data")
+                    for d in info["detached"]:          # the stage keeps the recovered tables standalone: promotion attaches them to the LIVE parent
+                        if d["part"]:
+                            sess.query("ALTER TABLE %s DETACH PARTITION %s" % (qi(d["parent_schema"], d["parent"]), qi(d["schema"], d["name"])))
+                        else:
+                            sess.query("ALTER TABLE %s NO INHERIT %s" % (qi(d["schema"], d["name"]), qi(d["parent_schema"], d["parent"])))
+                    # the empty shells stay in the stage (a child's column default may use a parent's sequence); they are never promoted
+                    meta["shells"] = [{"schema": a["schema"], "name": a["name"]} for a in shells]
+                else:
+                    load(dumpfile, toc)
                 meta["fks_deferred"] = dropped
             for p in info["sequence_positions"]:
                 if sess.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit(qi(p["schema"], p["name"]))) == "t":
@@ -561,6 +632,7 @@ def _slim(plan):
     out["recovered_views"] = [{k: v[k] for k in ("schema", "name", "kind")} for v in plan.get("recovered_views") or []]
     out["inbound_fks"] = [{k: f.get(k) for k in ("name", "schema", "table", "ref_schema", "ref_table", "source")} for f in plan.get("inbound_fks") or []]
     out["outbound_fks"] = [{k: f.get(k) for k in ("name", "schema", "table", "ref_schema", "ref_table", "source")} for f in plan.get("outbound_fks") or []]
+    out["statistics"] = [{k: x.get(k) for k in ("schema", "name", "table_schema", "table")} for x in plan.get("statistics") or []]
     out.pop("old_outbound_fks", None)
     return out
 
@@ -623,6 +695,20 @@ WHERE k.contype = 'f' AND k.conparentid = 0 AND k.conrelid = ANY(%s) AND NOT (k.
             if not _exists(live, v["schema"], v["name"]):
                 plan["recovered_views"].append(v)
                 plan["views"].append({"schema": v["schema"], "name": v["name"], "kind": v["kind"], "source": "recovered"})
+    # tables recovered without their parent: the live copy is detached (kept) and the recovered one attached to the live parent with the same bound
+    plan["attach"] = []
+    if mode != "as_new":
+        for d in meta.get("detached") or []:
+            row = next((r for r in plan["tables"] if r["schema"] == d["schema"] and r["name"] == d["name"]), None)
+            if not row or row["action"] not in ("swap", "create"):
+                continue
+            if not _exists(live, d["parent_schema"], d["parent"]):
+                plan["warnings"].append("%s.%s comes back standalone: its parent %s.%s does not exist now" % (d["schema"], d["name"], d["parent_schema"], d["parent"]))
+                continue
+            attached_now = row["action"] == "swap" and live.scalar(
+                "SELECT 1 FROM pg_inherits WHERE inhrelid = %s::regclass AND inhparent = %s::regclass" % (sql_lit(qi(d["schema"], d["name"])), sql_lit(qi(d["parent_schema"], d["parent"])))) == "1"
+            plan["attach"].append(dict(d, detach_old=attached_now))
+    plan["statistics"] = [x for x in (meta.get("statistics") or []) if (x["table_schema"], x["table"]) in acting] if mode != "as_new" else []
     # prerequisites the destination lacks
     pq = meta["prereq"]
     missing = {"extensions": [e for e in pq["extensions"] if not prereq_exists(live, "extension", e)],
@@ -638,7 +724,8 @@ WHERE k.contype = 'f' AND k.conparentid = 0 AND k.conrelid = ANY(%s) AND NOT (k.
         f.pop("def_full", None)
     plan["counts"] = {"tables": len(plan["tables"]), "swap": sum(1 for r in plan["tables"] if r["action"] == "swap"), "create": sum(1 for r in plan["tables"] if r["action"] == "create"),
                       "copy": sum(1 for r in plan["tables"] if r["action"] == "copy"), "skip": sum(1 for r in plan["tables"] if r["action"] == "skip"),
-                      "inbound_fks": len(plan["inbound_fks"]), "outbound_fks": len(plan["outbound_fks"]), "views": len(plan["views"])}
+                      "inbound_fks": len(plan["inbound_fks"]), "outbound_fks": len(plan["outbound_fks"]), "views": len(plan["views"]),
+                      "attach": len(plan["attach"]), "statistics": len(plan["statistics"])}
     return plan
 
 
@@ -860,6 +947,16 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     live.query("ALTER TABLE %s DROP CONSTRAINT %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"])))
             for f in plan.get("old_outbound_fks") or []:
                 live.query("ALTER TABLE %s DROP CONSTRAINT %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"])))     # the kept copy must not pin rows of other tables
+            for a in plan["attach"]:                          # the live table leaves its parent first (it is kept, standalone, as <name>_old_<ts>)
+                if a.get("detach_old"):
+                    if a["part"]:
+                        live.query("ALTER TABLE %s DETACH PARTITION %s" % (qi(a["parent_schema"], a["parent"]), qi(a["schema"], a["name"])))
+                    else:
+                        live.query("ALTER TABLE %s NO INHERIT %s" % (qi(a["schema"], a["name"]), qi(a["parent_schema"], a["parent"])))
+            for r in swapped:
+                for (sn, stn) in live.query("SELECT n.nspname, s.stxname FROM pg_statistic_ext s JOIN pg_namespace n ON n.oid = s.stxnamespace WHERE s.stxrelid = %s::regclass"
+                                            % sql_lit(qi(r["schema"], r["name"]))):
+                    live.query("ALTER STATISTICS %s RENAME TO %s" % (qi(sn, stn), quote_ident(_short(stn, sfx_old))))   # the kept copy keeps its statistics, renamed
             for r in swapped:
                 sch, nm = r["schema"], r["name"]
                 idx, seq = _idx_and_seqs(live, sch, nm)
@@ -883,6 +980,29 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     orig = orig_of.get((ssch, sq)) or (sq[:len(sq) - len(sfx_new)] if sq.endswith(sfx_new) else sq)
                     live.query("ALTER SEQUENCE %s RENAME TO %s" % (qi(ssch, sq), quote_ident(orig)))
                 live.query("ALTER TABLE %s RENAME TO %s" % (qi(sch, tmpn), quote_ident(nm)))
+            for a in plan["attach"]:                          # failing here undoes the whole swap (e.g. another partition now covers the same values)
+                try:
+                    if a["part"]:
+                        live.query("ALTER TABLE %s ATTACH PARTITION %s %s" % (qi(a["parent_schema"], a["parent"]), qi(a["schema"], a["name"]), a["bound"]))
+                    else:
+                        live.query("ALTER TABLE %s INHERIT %s" % (qi(a["schema"], a["name"]), qi(a["parent_schema"], a["parent"])))
+                except EngineError as e:
+                    raise EngineError(e.code, "%s.%s cannot be attached to %s.%s again: %s" % (a["schema"], a["name"], a["parent_schema"], a["parent"], e.message[:300]))
+            for x in plan["statistics"]:                      # extended statistics (pg_dump -t does not carry them)
+                live.query("SAVEPOINT pgarca_st")
+                try:
+                    if live.scalar("SELECT 1 FROM pg_statistic_ext s JOIN pg_namespace n ON n.oid = s.stxnamespace WHERE n.nspname = %s AND s.stxname = %s" % (sql_lit(x["schema"]), sql_lit(x["name"]))) != "1":
+                        live.query(x["def"])
+                        if x.get("target") is not None and int(x["target"]) >= 0:
+                            live.query("ALTER STATISTICS %s SET STATISTICS %d" % (qi(x["schema"], x["name"]), int(x["target"])))
+                        if x.get("owner") and x["owner"] in _roles_present(live, [x["owner"]]):
+                            live.query("ALTER STATISTICS %s OWNER TO %s" % (qi(x["schema"], x["name"]), quote_ident(x["owner"])))
+                        if x.get("comment"):
+                            live.query("COMMENT ON STATISTICS %s IS %s" % (qi(x["schema"], x["name"]), sql_lit(x["comment"])))
+                    live.query("RELEASE SAVEPOINT pgarca_st")
+                except EngineError as e:
+                    live.query("ROLLBACK TO SAVEPOINT pgarca_st")
+                    plan["warnings"].append("statistics object %s.%s was not recreated: %s" % (x["schema"], x["name"], e.message[:160]))
             for r in todo:                                    # sequences never go backwards: ids handed out after the target may already be referenced elsewhere
                 idx, seq = _idx_and_seqs(live, r["schema"], r["name"])
                 for ssch, sq in seq:
@@ -950,6 +1070,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                       old_kept_as=["%s.%s" % (r["schema"], r["old_kept_as"]) for r in swapped],
                       skipped=["%s.%s" % (r["schema"], r["name"]) for r in plan["tables"] if r["action"] == "skip"],
                       foreign_keys_reattached=len(validate_later) - len(invalid), foreign_keys_unvalidated=len(invalid),
+                      attached=["%s.%s -> %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan["attach"]],
                       views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]))
         return _compat(result)
     finally:
