@@ -7,7 +7,7 @@ usage (VM): sg docker python3 tools/lab/scenario-big.py [steps]      steps: comm
 import http.cookiejar, json, os, shutil, subprocess, sys, threading, time, urllib.request, uuid
 BASE = os.environ.get("PG_ARCA_URL", "http://localhost:3000")
 U = os.environ.get("ARCA_USER", "claude-test"); P = os.environ.get("ARCA_PASS", "claude-lab-test-pass-1")
-STEPS = (sys.argv[1] if len(sys.argv) > 1 else "full,verify,churn,incr,diff,damage,forensics,plan,table,schema,database,instance,expire").split(",")
+STEPS = (sys.argv[1] if len(sys.argv) > 1 else "full,expire0,verify,churn,incr,diff,damage,forensics,plan,table,schema,database,instance,expire").split(",")
 STATE = "/tmp/scenario-big.json"
 jar = http.cookiejar.CookieJar(); opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
@@ -103,6 +103,9 @@ print("== bigdb on solo1: %s, VM free %.1f GB" % (sql("postgres", "select pg_siz
 if "full" in STEPS:
     o = timed("full backup", "backup_run", {"type": "full"}); check("full backup", o["status"] == "succeeded")
     print("   result:", json.dumps({k: v for k, v in (o.get("result") or {}).items() if k in ("set_id", "stats", "bytes", "elapsed_sec", "duration_sec")})[:600])
+if "expire0" in STEPS:                                           # the WAL of the initial load predates the first full backup: retention frees it (and that is a test too)
+    o = timed("expire after the first full (WAL of the load)", "backup_expire", {}); check("expire", o["status"] == "succeeded")
+    print("   ", json.dumps({k: v for k, v in (o.get("result") or {}).items() if k in ("wal_removed", "bytes_freed", "delete_sets", "keep_sets")})[:300], "VM free %.1f GB" % free_gb())
 if "verify" in STEPS:
     o = timed("verify", "backup_verify", {}); check("verify", o["status"] == "succeeded" and (o.get("result") or {}).get("ok") is not False)
 if "churn" in STEPS:
