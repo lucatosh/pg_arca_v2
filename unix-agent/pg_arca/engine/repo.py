@@ -13,6 +13,7 @@ import errno
 import fcntl
 import os
 import socket
+import threading
 import time
 import uuid
 
@@ -44,6 +45,7 @@ class Lock(object):
 class Repo(object):
     def __init__(self, path, stanza, wal=None, algo=None, level=3, crypto=None):
         self.path = os.path.realpath(path)
+        self._dirs_ok = set()
         self.stanza = stanza
         self.wal = wal                       # WalManager
         self.algo = algo
@@ -171,9 +173,12 @@ class Repo(object):
                 pass
         except OSError:
             pass
-        os.makedirs(os.path.dirname(dst), mode=0o750, exist_ok=True)
+        d = os.path.dirname(dst)
+        if d not in self._dirs_ok:                                 # 65 536 fan-out directories: create each once per process, not per chunk
+            os.makedirs(d, mode=0o750, exist_ok=True)
+            self._dirs_ok.add(d)
         blob = self._pack(compress(data, self.algo, self.level), h)
-        tmp = "%s.tmp.%s" % (dst, uuid.uuid4().hex[:8])
+        tmp = "%s.tmp.%d.%d" % (dst, os.getpid(), threading.get_ident())   # unique per writer thread; a crashed writer's leftovers are swept by the repair
         with open(tmp, "wb") as f:
             f.write(blob)
         os.rename(tmp, dst)
