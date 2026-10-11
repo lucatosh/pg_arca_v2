@@ -3,7 +3,9 @@
 set -e; cd "$(dirname "$0")/../.."
 git pull -q --ff-only; git log --oneline | head -1
 npm run build 2>&1 | grep -E "error|built" || true
+[ -d dist ] || { echo "UI build missing"; exit 1; }
 sudo systemctl restart pg-arca-console
 cd tools/lab; ./lab.sh agent-update 2>&1 | tail -1
 [ -n "$(docker ps -q -f name=solo1)" ] && ./lab.sh solo-agent-update 2>&1 | tail -2 || true
+[ -n "$(docker ps -q -f name=dc1-pg1)" ] && ./geo.sh agent-update 2>&1 | grep -E "^==|FAILED|ERROR" || true
 echo deployed
