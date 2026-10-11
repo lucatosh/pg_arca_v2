@@ -658,7 +658,10 @@ class EngineTests(unittest.TestCase):
                 except BaseException as e:
                     out["e"] = e
             t0 = time.time(); th = threading.Thread(target=run); th.start()
-            time.sleep(4); flag["c"] = True; th.join(30)
+            w0 = time.time()                                    # cancel once the backup is really waiting for the checkpoint (the catalog phase before it is slower on a busy host)
+            while "checkpoint" not in phases and th.is_alive() and time.time() - w0 < 60:
+                time.sleep(0.2)
+            time.sleep(1); t0 = time.time(); flag["c"] = True; th.join(30)
             self.assertFalse(th.is_alive(), "cancel did not interrupt the checkpoint wait")
             self.assertIsInstance(out.get("e"), Cancelled, out)
             self.assertLess(time.time() - t0, 25)
