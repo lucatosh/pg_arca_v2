@@ -534,6 +534,13 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
             if k.startswith("pg_tblspc/"):
                 oid = k.split("/")[1]
                 tb_bytes[oid] = tb_bytes.get(oid, 0) + int(v.get("size") or 0)
+        acc = restorecheck.access_check(dest)
+        if acc:
+            chk.append(acc)
+        for oid, tp in (plan.get("tablespaces") or {}).items():
+            a2 = restorecheck.access_check(tp, "tablespace destination")
+            if a2:
+                chk.append(a2)
         needs = [("dest", dest, int((plan["bytes"] - sum(tb_bytes.values())) * 1.05) + (64 << 20) if not delta else 0)]
         needs += [("tablespace", plan["tablespaces"][oid], int(b * 1.05)) for oid, b in tb_bytes.items() if oid in plan["tablespaces"] and not delta]
         if ctx.pgdata:

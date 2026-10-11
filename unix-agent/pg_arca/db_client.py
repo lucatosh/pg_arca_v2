@@ -33,7 +33,7 @@ SELECT json_build_object(
   'timeline', (CASE WHEN pg_is_in_recovery() THEN (SELECT timeline_id FROM pg_control_checkpoint()) ELSE ('x' || substr(pg_walfile_name(pg_current_wal_insert_lsn()), 1, 8))::bit(32)::int END),
   'system_identifier', (SELECT system_identifier::text FROM pg_control_system()),
   'port', current_setting('port')::int,
-  'databases', (SELECT COALESCE(json_agg(json_build_object('oid', oid::int, 'name', datname, 'size', pg_database_size(oid)) ORDER BY datname), '[]'::json)
+  'databases', (SELECT COALESCE(json_agg(json_build_object('oid', oid::int, 'name', datname) ORDER BY datname), '[]'::json)
                   FROM pg_database WHERE NOT datistemplate AND datallowconn),
   'connections', json_build_object('used', (SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'),
                                    'max', current_setting('max_connections')::int),
@@ -50,6 +50,18 @@ SELECT json_build_object(
   'wal_receiver', (SELECT row_to_json(w) FROM (SELECT status, slot_name, sender_host, sender_port, latest_end_lsn::text AS latest_end_lsn, latest_end_time,
                      last_msg_receipt_time, EXTRACT(EPOCH FROM (now() - last_msg_receipt_time))::numeric(12,1) AS silent_sec FROM pg_stat_wal_receiver) w)
 );
+"""
+
+# database sizes stat every file of every database: under heavy I/O (a bulk load, a restore) that alone can exceed the telemetry timeout, and a slow
+# answer must never make a busy server look DOWN. Measured separately, cached, refreshed every few minutes.
+DB_SIZES_SQL = ("SELECT COALESCE(json_object_agg(oid::int, pg_database_size(oid)), '{}'::json) FROM pg_database WHERE NOT datistemplate AND datallowconn;")
+# when the full telemetry query fails but the server answers: the few facts the console needs to keep treating the node as alive and in its role
+LITE_SQL = """
+SELECT json_build_object(
+  'version', current_setting('server_version'), 'is_in_recovery', pg_is_in_recovery(),
+  'role', CASE WHEN pg_is_in_recovery() THEN 'standby' ELSE 'primary' END,
+  'current_lsn', CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn()::text ELSE pg_current_wal_lsn()::text END,
+  'system_identifier', (SELECT system_identifier::text FROM pg_control_system()), 'port', current_setting('port')::int);
 """
 
 REPLICATION_SQL = """
@@ -132,6 +144,16 @@ class PostgresClient:
         """Full telemetry for the console. Never raises; on failure returns {'alive': False, 'error': ...}."""
         snap, err = self.query_json(SNAPSHOT_SQL, variables={"keys": ",".join(SNAPSHOT_SETTINGS)})
         if not isinstance(snap, dict):
+            lite, _ = self.query_json(LITE_SQL, timeout=10)
+            if isinstance(lite, dict) and lite.get("version"):
+                try:
+                    from pg_arca.pgcompat import Profile
+                    supported = Profile.from_text(lite["version"]).tier != "unsupported"
+                except Exception:
+                    supported = True
+                if supported:                              # busy, not down: keep the node usable, say that the full telemetry is missing
+                    lite.update(alive=True, partial=True, telemetry_error=str(err or "telemetry query failed")[:300], replication=[], databases=self._sized([]))
+                    return lite
             ok, out, _ = self.run_psql("SHOW server_version;", read_only=True)
             if ok and out.strip():                       # the server answers but the telemetry query failed: say WHY when the version is the reason
                 try:
@@ -144,11 +166,36 @@ class PostgresClient:
                     pass
             return {"alive": False, "error": err or "no data"}
         snap["alive"] = True
+        snap["databases"] = self._sized(snap.get("databases") or [])
         snap["replication"] = []
         if not snap.get("is_in_recovery"):
             rep, _ = self.query_json(REPLICATION_SQL)
             snap["replication"] = rep if isinstance(rep, list) else []
         return snap
+
+    def _sized(self, dbs):
+        """Attach the cached database sizes (refreshed every 5 minutes, own timeout; a failure keeps the previous values)."""
+        import threading
+        import time as _t
+        now = _t.time()
+        if now - getattr(self, "_sizes_at", 0) > 300:             # measured in the background: never holds the heartbeat back
+            self._sizes_at = now
+
+            def measure():
+                sz, _ = self.query_json(DB_SIZES_SQL, timeout=120)
+                if isinstance(sz, dict):
+                    self._sizes = sz
+            t = threading.Thread(target=measure, name="db-sizes", daemon=True)
+            t.start()
+            if not getattr(self, "_sizes", None):
+                t.join(5)                                          # first time: give it a moment so the very first snapshot usually has sizes
+        sizes = getattr(self, "_sizes", {}) or {}
+        if not dbs and sizes:
+            return getattr(self, "_last_dbs", [])
+        out = [dict(d, size=sizes.get(str(d.get("oid")))) if sizes.get(str(d.get("oid"))) is not None else d for d in dbs]
+        if dbs:
+            self._last_dbs = out
+        return out
 
     def get_cluster_state(self):  # backwards-compatible light view
         s = self.get_snapshot()

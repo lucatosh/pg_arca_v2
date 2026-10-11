@@ -6,4 +6,6 @@ assert.strictEqual(itCheck('all 172377 backup chunks needed are present in the r
 assert.match(itCheck('not enough space on the volume of /srv (scratch of the recovery instance (extraction, WAL read-ahead, dump) + data directory of the live cluster (restored database / quarantine copy)): 5 GiB free, about 9 GiB needed'), /^spazio insufficiente sul volume di \/srv \(cartella temporanea .* \+ cartella dati .*\): 5 GiB liberi, ne servono circa 9 GiB$/);
 assert.strictEqual(itCheck('something new from a newer agent'), 'something new from a newer agent');
 assert.strictEqual(itFix('make sure it has about 3 GiB free'), 'assicurati che abbia circa 3 GiB liberi');
+assert.strictEqual(itCheck("the agent's user (postgres) cannot create restore destination /srv/restore_big: /srv is not writable for it"), 'l’utente dell’agent (postgres) non può creare la destinazione del ripristino /srv/restore_big: /srv non è scrivibile per lui');
+assert.match(itFix('create it for the agent: mkdir -p /srv/x && chown postgres: /srv/x (or choose a destination under a directory it owns)'), /^creala per l’agent: mkdir -p/);
 console.log('i18n OK');

@@ -7,7 +7,7 @@ usage (VM): sg docker python3 tools/lab/scenario-big.py [steps]      steps: comm
 import http.cookiejar, json, os, shutil, subprocess, sys, threading, time, urllib.request, uuid
 BASE = os.environ.get("PG_ARCA_URL", "http://localhost:3000")
 U = os.environ.get("ARCA_USER", "claude-test"); P = os.environ.get("ARCA_PASS", "claude-lab-test-pass-1")
-STEPS = (sys.argv[1] if len(sys.argv) > 1 else "full,expire0,verify,churn,incr,diff,damage,forensics,plan,table,schema,database,live,instance,expire").split(",")
+STEPS = (sys.argv[1] if len(sys.argv) > 1 else "full,expire0,verify,churn,incr,diff,damage,forensics,plan,table,schema,database,live,instance,expire").split(",")   # + recover: find the damage with the forensics and undo it
 STATE = "/tmp/scenario-big.json"
 jar = http.cookiejar.CookieJar(); opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
@@ -126,7 +126,7 @@ if "damage" in STEPS:
     save(base=base, t_ok=t_ok)
 st = load(); base = st.get("base") or {}; t_ok = st.get("t_ok")
 if "forensics" in STEPS:
-    o = timed("WAL forensics (last 2 h)", "wal_forensics", {"mode": "events", "hours": 2, "limit": 50})
+    o = timed("WAL forensics (last 24 h)", "wal_forensics", {"mode": "events", "hours": 24, "limit": 50})
     kinds = [e.get("kind") for e in (o.get("result") or {}).get("events", [])]
     check("forensics finds the DROP and the TRUNCATE", "DROP" in kinds and "TRUNCATE" in kinds, str(kinds[:8]))
 if "plan" in STEPS and t_ok:
@@ -143,6 +143,26 @@ if "table" in STEPS and t_ok:
         check("promote order_lines", p["status"] == "succeeded")
         check("order_lines identical to before the DROP", fp("bigdb", "sales.order_lines") == base.get("sales.order_lines"))
     sql("postgres", "DROP DATABASE IF EXISTS pgarca_stage_big WITH (FORCE)")
+if ("schema" in STEPS or "database" in STEPS) and not t_ok:
+    print("   SKIP schema/database: no damage point saved (run 'damage' first, or 'recover' to find it with the WAL forensics)")
+if "recover" in STEPS:
+    # the customer case: the damage happened hours ago, nobody wrote down when. The WAL forensics finds it; the restore stops just BEFORE it.
+    o = timed("WAL forensics to find the damage (24 h)", "wal_forensics", {"mode": "events", "hours": 24, "limit": 50, "detail": True})
+    ev = [e for e in (o.get("result") or {}).get("events", []) if e.get("kind") in ("DROP", "TRUNCATE")]
+    for e in ev[-6:]:
+        print("   event", e.get("kind"), e.get("lsn"), e.get("time"), (e.get("names") or [])[:4], "rewrite?" if e.get("rewrite_possible") else "")
+    tr = [e for e in ev if e["kind"] == "TRUNCATE" and any("documents" in n for n in (e.get("names") or []))]
+    check("forensics finds the TRUNCATE of docs.documents by name", bool(tr), str([(e["kind"], e.get("names")) for e in ev][-6:]))
+    if tr:
+        lsn = tr[-1]["lsn"]
+        o = timed("restore docs.documents + schema telemetry just BEFORE %s" % lsn, "restore_object", {"objects": ["bigdb.docs.documents", "bigdb.telemetry"], "stage_db": "pgarca_stage_rec", "target_lsn": lsn, "inclusive": False})
+        check("restore_object before the damage", o["status"] == "succeeded")
+        if o["status"] == "succeeded":
+            p = timed("promote (replace)", "restore_promote", {"stage_db": "pgarca_stage_rec", "mode": "replace", "confirm": "SOSTITUISCI"})
+            check("promote", p["status"] == "succeeded")
+            check("docs.documents back: 109350 rows", sql("bigdb", "SELECT count(*) FROM docs.documents") == "109350")
+            check("telemetry.events back: 1896000 rows", sql("bigdb", "SELECT count(*) FROM telemetry.events") == "1896000")
+        sql("postgres", "DROP DATABASE IF EXISTS pgarca_stage_rec WITH (FORCE)")
 if "schema" in STEPS and t_ok:
     o = timed("restore schema telemetry (tablespace) (PITR)", "restore_object", {"object": "bigdb.telemetry", "stage_db": "pgarca_stage_bigs", "target_time": t_ok})
     check("restore_object schema telemetry", o["status"] == "succeeded")
@@ -198,7 +218,10 @@ if "live" in STEPS:
     check("the writer never failed", wr.returncode == 0 and "ERROR" not in (err or ""), (err or "")[:300])
     print("   writer: %s rows written, %d before the backup started" % (sql("bigdb", "SELECT count(*) FROM live.ledger"), n0))
 if "instance" in STEPS:
-    dest = "/srv/restore_big"
+    # a destination the agent's user cannot create: refused at once with the command to fix it (it used to fail later with a bare 'Errno 13')
+    o = timed("restore whole instance to /srv/restore_big (not writable for the agent)", "restore_instance", {"destination": "/srv/restore_big", "action": "pause"})
+    check("not-writable destination refused before extracting, with the fix", o["status"] == "failed" and "PGA-RST-033" in str(o.get("error")) and "chown" in str(o.get("error")), str(o.get("error"))[:300])
+    dest = "/var/lib/postgresql/restore_big"
     subprocess.run(["docker", "exec", "solo1", "rm", "-rf", dest, dest + "_tblspc"])
     o = timed("restore whole instance to %s" % dest, "restore_instance", {"destination": dest, "action": "pause"})
     check("restore_instance", o["status"] == "succeeded")

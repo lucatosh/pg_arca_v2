@@ -188,6 +188,27 @@ def summarize(checks):
     return {"ok": worst != "bad", "level": worst, "checks": checks}
 
 
+def access_check(path, role="restore destination"):
+    """Can the agent's OS user create / write `path`? None when yes, else a blocker. Found before anything is extracted, with the exact command to fix it
+    (a destination under /srv, /data, a mount point owned by root is the usual case)."""
+    import getpass
+    try:
+        me = getpass.getuser()
+    except Exception:
+        me = str(os.getuid())
+    p = os.path.abspath(path)
+    if os.path.isdir(p):
+        if os.access(p, os.W_OK | os.X_OK):
+            return None
+        return {"id": "dest_access", "level": "bad", "code": "PGA-RST-033", "text": "%s %s exists but the agent's user (%s) cannot write into it" % (role, p, me),
+                "fix": "chown %s: %s (or choose another destination)" % (me, p)}
+    anc = _existing(p)
+    if os.access(anc, os.W_OK | os.X_OK):
+        return None
+    return {"id": "dest_access", "level": "bad", "code": "PGA-RST-033", "text": "the agent's user (%s) cannot create %s %s: %s is not writable for it" % (me, role, p, anc),
+            "fix": "create it for the agent: mkdir -p %s && chown %s: %s (or choose a destination under a directory it owns)" % (p, me, p)}
+
+
 def enforce(checks):
     """The restore is really starting: a blocker stops it NOW, before any extraction."""
     bad = [c for c in checks if c["level"] == "bad"]

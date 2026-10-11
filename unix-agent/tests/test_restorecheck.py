@@ -87,5 +87,23 @@ class Volumes(unittest.TestCase):
         self.assertEqual(vols[0]["need"], 45 << 30)
 
 
+
+class Access(unittest.TestCase):
+    """The lab case: restore_instance to /srv/restore_big failed with a bare 'internal error: [Errno 13]' halfway in; now a blocker with the fix, before anything."""
+    def test_destination_not_creatable_is_a_blocker_with_the_command(self):
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        with mock.patch("os.access", lambda p, m: False):
+            c = restorecheck.access_check(os.path.join(d, "restore_big"))
+        self.assertEqual((c["level"], c["code"]), ("bad", "PGA-RST-033"))
+        self.assertIn("mkdir -p %s" % os.path.join(d, "restore_big"), c["fix"])
+        with self.assertRaises(Exception) as cm:
+            restorecheck.enforce([c])
+        self.assertIn("PGA-RST-033", str(getattr(cm.exception, "code", "")) + str(cm.exception))
+
+    def test_writable_is_fine(self):
+        self.assertIsNone(restorecheck.access_check(os.path.join(tempfile.mkdtemp(), "x", "y")))
+
+
 if __name__ == "__main__":
     unittest.main()

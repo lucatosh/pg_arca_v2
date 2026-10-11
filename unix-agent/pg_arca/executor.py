@@ -171,6 +171,21 @@ class OperationExecutor:
             return self._finish(op_id, op_type, "failed", None, "cancelled by operator")
         except EngineError as e:
             return self._finish(op_id, op_type, "failed", None, e.as_text())
+        except (IOError, OSError) as e:
+            import errno as _errno
+            logger.exception("operation %s failed on the file system", op_id)
+            if getattr(e, "errno", None) in (_errno.EACCES, _errno.EPERM, _errno.EROFS):
+                try:
+                    import getpass
+                    me = getpass.getuser()
+                except Exception:
+                    me = str(os.getuid())
+                where = getattr(e, "filename", None) or "?"
+                return self._finish(op_id, op_type, "failed", None, "PGA-SYS-013: permission denied on %s: the agent runs as %s and cannot %s there. Fix: give %s access "
+                                    "(chown %s: %s) or choose another path" % (where, me, "write" if e.errno != _errno.EROFS else "write (read-only file system)", me, me, where))
+            if getattr(e, "errno", None) == _errno.ENOSPC:
+                return self._finish(op_id, op_type, "failed", None, "PGA-SYS-014: no space left on device%s" % (" (%s)" % e.filename if getattr(e, "filename", None) else ""))
+            return self._finish(op_id, op_type, "failed", None, "internal error: %s" % e)
         except Exception as e:  # unexpected: still a clean failure, with detail in the log
             logger.exception("operation %s crashed", op_id)
             return self._finish(op_id, op_type, "failed", None, "internal error: %s" % e)
