@@ -259,14 +259,19 @@ function RuleLine({ r, n, issues, manual, onMove, onRemove }: { r: Row; n: numbe
 /** Suggestions derived from live data: replication clients that no rule would currently allow. */
 function Suggestions({ rows, existing, first, add, c }: { rows: Rule[]; existing: Rule[]; first: any; add: (r: Rule[]) => number; c: any }) {
   const cur = [...rows, ...existing];
+  const plc = first.patroni_local;
+  const local: Rule[] = (plc?.ok === false ? (plc.denied as string[]) : []).map(u => ({ type: 'host', database: 'replication', user: u, address: '127.0.0.1/32', method: 'scram-sha-256', comment: 'Patroni: replica locale (timeline delle repliche, pg_rewind)' }))
+    .filter(r => !cur.some(e => covers(e, r) && e.method !== 'reject'));
+  const patroniBanner = local.length ? <Banner kind="bad" icon="alert" title="Patroni non può aprire la connessione di replica locale" actions={<Button sm onClick={() => add(local)}>Aggiungi la regola</Button>}>
+    <span>Patroni legge la timeline delle repliche con una connessione di replica su 127.0.0.1 ({local.map(r => r.user).join(', ')}). Senza questa regola, dopo un failover una replica rimasta avanti non viene riallineata con pg_rewind e resta ferma; su un sito di replica si blocca l’intero sito.</span></Banner> : null;
   const items = ((first.suggest?.replication_clients || []) as any[]).map(x => {
     const addr = String(x.address).split('/')[0]; const ip = addr.includes(':') ? `${addr}/128` : `${addr}/32`;
     const rule: Rule = { type: x.ssl ? 'hostssl' : 'host', database: 'replication', user: x.user, address: ip, method: 'scram-sha-256', comment: `Replica da ${addr}` };
     return { rule, ok: cur.some(e => covers(e, rule) && e.method !== 'reject') };
   }).filter(x => !x.ok);
-  if (!items.length) return null;
-  return <Banner kind="warn" icon="zap" title="Repliche attive senza una regola esplicita" actions={<Button sm onClick={() => add(items.map(i => i.rule))}>Aggiungi {items.length > 1 ? 'tutte' : ''}</Button>}>
-    <span>{items.map(i => `${i.rule.user} da ${i.rule.address.replace(/\/\d+$/, '')}`).join(', ')}. Si connettono oggi perché una regola più ampia o manuale le copre; con una regola precisa, restano protette anche se quella cambia.</span></Banner>;
+  if (!items.length) return patroniBanner;
+  return <>{patroniBanner}<Banner kind="warn" icon="zap" title="Repliche attive senza una regola esplicita" actions={<Button sm onClick={() => add(items.map(i => i.rule))}>Aggiungi {items.length > 1 ? 'tutte' : ''}</Button>}>
+    <span>{items.map(i => `${i.rule.user} da ${i.rule.address.replace(/\/\d+$/, '')}`).join(', ')}. Si connettono oggi perché una regola più ampia o manuale le copre; con una regola precisa, restano protette anche se quella cambia.</span></Banner></>;
 }
 
 function AddRule({ rows, existing, first, hosts, order, onAdd }: { rows: Row[]; existing: Rule[]; first: any; hosts: string[]; order: Order; onAdd: (r: Rule) => void }) {

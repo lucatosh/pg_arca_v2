@@ -145,10 +145,40 @@ def _json(ex, sql, err, default):
 def _live_probes(ex, err):
     me = getattr(ex.db, "user", None) or "postgres"                        # the role the agent really connects with (not always "postgres")
     probes = [{"label": "locale: utente %s (peer)" % me, "type": "local", "database": "postgres", "user": me, "ssl": False, "critical": True}]
+    if getattr(ex.patroni, "configured", False):
+        users, _ = ex.db.query_json(SQL_REPL_USERS)
+        probes += _patroni_local_probes([u for u in (users or []) if isinstance(u, str) and u])
     for r in _json(ex, SQL_REPL, err, []):
         probes.append({"label": "replica %s (%s)" % (r["address"], r["user"]), "type": "host", "ssl": bool(r.get("ssl")), "database": "replication", "user": r["user"],
                        "address": str(r["address"]).split("/")[0], "replication": True, "critical": True})
     return probes
+
+
+SQL_REPL_USERS = ("SELECT COALESCE(json_agg(DISTINCT u),'[]'::json) FROM (SELECT usename AS u FROM pg_stat_replication WHERE usename IS NOT NULL "
+                  "UNION SELECT substring(conninfo from 'user=([^ ]+)') FROM pg_stat_wal_receiver) x WHERE u IS NOT NULL;")
+
+
+def _patroni_local_probes(users):
+    """Patroni reads a replica's own timeline / LSN through a LOCAL replication connection (host localhost, the replication user). Without a pg_hba rule
+    for it Patroni cannot tell that a replica diverged after a failover and never runs pg_rewind: the replica (or a whole standby site) stays stuck."""
+    return [{"label": "Patroni: replica locale 127.0.0.1 (%s)" % u, "type": "host", "ssl": False, "database": "replication", "user": u, "address": "127.0.0.1",
+             "replication": True, "critical": True, "patroni_local": True} for u in users]
+
+
+def patroni_local_check(db):
+    """{ok, users, denied, suggest} for the local replication connection Patroni needs, decided on the rules PostgreSQL has loaded; None when it cannot be told
+    (no replication in progress to learn the user from, or pg_hba_file_rules not readable by the agent's role)."""
+    rows, e = db.query_json(SQL_RULES)
+    if rows is None:
+        return None
+    users, _ = db.query_json(SQL_REPL_USERS)
+    users = [u for u in (users or []) if u]
+    if not users:
+        return None
+    rules = [r for r in (hba.parse_rule_line(rule_from_effective(x) or "") for x in rows if not x.get("error")) if r]
+    denied = [u for u in users if hba.decide(rules, _patroni_local_probes([u])[0])["allowed"] is False]
+    return {"ok": not denied, "users": users, "denied": denied,
+            "suggest": ["host  replication  %s  127.0.0.1/32  scram-sha-256" % u for u in denied]}
 
 
 def _extra_probes(p, err):
@@ -211,7 +241,8 @@ def read(ex, p, err):
                 "suggest": {"replication_clients": [], "roles": [], "databases": []}, "backups": []}
     eff = _json(ex, SQL_RULES, err, [])
     ext = src.external_hba_file() if src.patroni else None
-    return {"hba_file": src.path, "mode": "patroni" if src.patroni else "file", "dcs_seed": src.seed, "seed_skipped": src.seed_skipped, "rev": hba.file_rev(text), "raw": text[:200000], "truncated": len(text) > 200000,
+    plc = patroni_local_check(ex.db) if src.patroni else None
+    return {"patroni_local": plc, "hba_file": src.path, "mode": "patroni" if src.patroni else "file", "dcs_seed": src.seed, "seed_skipped": src.seed_skipped, "rev": hba.file_rev(text), "raw": text[:200000], "truncated": len(text) > 200000,
             "dcs_rules": [x["rule"] for x in rules if not x["in_block"]] if src.patroni else None, "external_hba_file": ext,
             "managed": {"present": managed is not None, "rules": managed or [], "rev": hba.rules_rev(managed) if managed else None},
             "effective": eff, "errors": hard_errors(eff), "ssl": _ssl_on(ex), "has_includes": includes, "rule_count": len(rules),

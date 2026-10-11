@@ -162,6 +162,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('.geojob:has-text("completato")', { timeout: 30000 }); await p.waitForSelector('.geosite.primary:has-text("geo-dc2")', { timeout: 15000 }); await shot('19b-geo-switched');
   // pg_hba on a Patroni site: DCS only, previous versions kept by the console and restorable
   await p.goto(base + '/#/'); const g1 = await p.locator('.fleettable a:has(strong:text-is("geo-dc1"))').getAttribute('href'); await p.goto(base + '/' + g1 + '/hba');
+  await p.waitForSelector('text=Patroni non può aprire la connessione di replica locale', { timeout: 20000 }); await shot('14f2-hba-patroni-local');
   await p.waitForSelector('text=Patroni · configurazione condivisa (DCS)'); await p.waitForSelector('text=Altre regole della lista nel DCS');
   await p.click('button:has-text("Aggiungi una regola")'); await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '172.30.9.0/24');
   await p.click('button:has-text("Aggiungi alla lista")'); await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata');

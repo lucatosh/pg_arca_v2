@@ -118,6 +118,9 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
       const blind = manual.has(s.clusterId) && !s._sysid;                 // declared site with no agent telemetry: nothing to measure, not a failure
       if (blind) { /* see the manual-link note below */ }
       else if (!s.online) bad('il sito non ha un nodo raggiungibile');
+      else if (prim && prim.timeline != null && s.timeline != null && s.timeline < prim.timeline && s.receiver?.status !== 'streaming')
+        // the primary site failed over (new timeline) from a point this site had already passed: it cannot follow until Patroni rewinds it
+        bad(`il sito primario è passato alla timeline ${prim.timeline} (failover) e questo sito, fermo alla timeline ${s.timeline}, non riesce a seguirlo: Patroni deve riallinearlo con pg_rewind (serve la regola pg_hba di replica locale e use_pg_rewind), altrimenti i membri vanno ricostruiti`);
       else if (!s.receiver || s.receiver.status !== 'streaming') bad(`non riceve WAL dal sito primario (ricevitore: ${s.receiver?.status || 'assente'})`);
       if (s.receiver?.silentSec != null && s.receiver.silentSec > 120) bad(`nessun messaggio dal sito primario da ${Math.round(s.receiver.silentSec)} s`);
       else if (s.receiver?.silentSec != null && s.receiver.silentSec > 30) warn(`ultimo messaggio dal sito primario ${Math.round(s.receiver.silentSec)} s fa`);

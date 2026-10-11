@@ -130,6 +130,11 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         const free = d.free_bytes / d.total_bytes;
         if (free < 0.15) add({ severity: free < 0.07 ? 'critical' : 'warning', code: 'disk', detail: `${n.id}:${label}`, nodeId: n.id, nodeName: n.name, title: `Disco ${label} quasi pieno su ${n.name} (${Math.round(free * 100)}% libero)`, cause: label === 'repo' ? 'Il repository dei backup sta finendo lo spazio: riduci la conservazione o amplia il volume.' : label === 'wal_archive' ? 'L’archivio WAL sta finendo lo spazio: controlla la conservazione dei backup.' : 'Se il disco dei dati si riempie PostgreSQL si ferma.', action: { label: 'Apri il cluster', page: 'cluster' } });
       }
+      const plc = n.snapshot?.postgres?.hba_patroni_local;
+      if (plc && plc.ok === false && !out.some(x => x.key === `${c.id}:patroni_local_replication:hba`)) add({ severity: 'warning', code: 'patroni_local_replication', detail: 'hba', nodeId: n.id, nodeName: n.name,
+        title: 'pg_hba non consente a Patroni la connessione di replica locale',
+        cause: `Patroni legge la timeline delle repliche con una connessione di replica locale (127.0.0.1, utente ${plc.denied.join(', ')}), che pg_hba rifiuta. Dopo un failover una replica (o un intero sito di replica) rimasta avanti rispetto al nuovo leader non viene riallineata con pg_rewind e resta ferma. Regola da aggiungere: ${plc.suggest[0] || ''}.`,
+        action: { label: 'Apri le regole di accesso', page: 'hba' } });
       if (n.snapshot?.postgres?.pending_restart?.length) add({ severity: 'info', code: 'pending_restart', detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: riavvio in sospeso`, cause: `Parametri modificati ma non ancora attivi: ${n.snapshot.postgres.pending_restart.slice(0, 5).join(', ')}.` });
     }
   }

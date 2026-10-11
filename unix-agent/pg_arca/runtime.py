@@ -165,6 +165,17 @@ class Runtime(object):
         pg["checksums"] = (inst.get("control") or {}).get("data_checksums")
         pg["archiving"] = inst.get("archiving")
         pg["compat"] = self.compat(pg, inst)
+        if pg.get("alive") and (self.patroni_info or {}).get("scope"):
+            now = time.time()                                    # every 5 minutes: is the local replication connection Patroni needs allowed by pg_hba?
+            if now - getattr(self, "_hba_check_at", 0) > 300:
+                self._hba_check_at = now
+                try:
+                    from pg_arca.hba_ops import patroni_local_check
+                    self._hba_check = patroni_local_check(self.db)
+                except Exception:
+                    self._hba_check = None
+            if getattr(self, "_hba_check", None) is not None:
+                pg["hba_patroni_local"] = self._hba_check
         ae = _archive_error(self.config.get("wal_archive_dir"))
         if ae:
             pg["archive_error"] = ae

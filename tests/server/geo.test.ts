@@ -49,6 +49,11 @@ import { deriveCluster } from '../../server/view';
   assert.strictEqual(s2.health, 'bad'); assert.strictEqual(s2.lagBytes, 0x4000000);
   assert(evaluate(store.peek()).some(i => i.code === 'geo_replication' && i.severity === 'critical'));
 
+  // 2b. the primary site failed over to timeline 2 from a point DC2 had passed: DC2 stays on timeline 1, receiver waiting -> named as a divergence
+  await store.mutate(d => { d.nodes.a.snapshot = { ...snapP('0/9000000'), postgres: { ...snapP('0/9000000').postgres, timeline: 2 } }; d.nodes.b.snapshot = snapS('0/9000100', 'waiting', 3); });
+  s2 = geoGroups(store.peek())[0].sites.find(s => s.clusterId === 'c2')!;
+  assert.strictEqual(s2.health, 'bad'); assert(/timeline 2/.test(s2.problems[0]) && /pg_rewind/.test(s2.problems[0]), s2.problems[0]);
+  await store.mutate(d => { d.nodes.a.snapshot = snapP('0/9000000'); d.nodes.b.snapshot = snapS('0/5000000', 'stopping', 300); });
   // 3. DR promotion refused while the primary site is alive (split-brain), accepted when the operator states it is lost
   const k = (x: string) => ({ 'idempotency-key': x });
   const r1 = await app.call('POST', '/api/geo/promote', { body: { clusterId: 'c2', confirm: 'PROMUOVI' }, headers: k('p1') });

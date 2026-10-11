@@ -256,5 +256,33 @@ class EffectiveRows(unittest.TestCase):
         self.assertEqual(hba_ops._norm_key("host all all 10.0.0.1 255.255.255.255 md5"), hba_ops._norm_key("host all all 10.0.0.1/32 md5"))
 
 
+
+class PatroniLocalReplication(unittest.TestCase):
+    """The lab case: a DC1 failover left the standby site and the old leader stuck because Patroni could not open its local replication connection
+    (no pg_hba rule for 127.0.0.1 replication) and so never ran pg_rewind."""
+    def db(self, rows):
+        class D(object):
+            def query_json(self, sql, **kw):
+                if "pg_hba_file_rules" in sql:
+                    return rows, ""
+                return ["replicator"], ""
+        return D()
+
+    def row(self, t, db, user, addr, mask, m):
+        return {"type": t, "database": [db], "user_name": [user], "address": addr, "netmask": mask, "auth_method": m, "options": None, "error": None}
+
+    def test_missing_rule_is_reported_with_the_fix(self):
+        rows = [self.row("local", "all", "all", None, None, "trust"), self.row("host", "all", "all", "127.0.0.1", "255.255.255.255", "trust"),
+                self.row("host", "replication", "replicator", "172.30.0.0", "255.255.0.0", "scram-sha-256")]
+        r = hba_ops.patroni_local_check(self.db(rows))
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["denied"], ["replicator"])
+        self.assertIn("127.0.0.1/32", r["suggest"][0])
+
+    def test_rule_present(self):
+        rows = [self.row("host", "replication", "replicator", "127.0.0.1", "255.255.255.255", "scram-sha-256")]
+        self.assertTrue(hba_ops.patroni_local_check(self.db(rows))["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()
