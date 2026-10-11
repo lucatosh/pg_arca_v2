@@ -46,6 +46,11 @@ class T(unittest.TestCase):
         self.assertEqual(sorted(plan["space"][0]["roles"]), ["data", "scratch"])          # same filesystem: ONE volume, the needs add up
         c = restorecheck.check(FakeCtx(self.d, self.d), {"extract_bytes": 10}, None, need_dest=1 << 60, into={"host": "other"})
         self.assertEqual([x for x in c if x["id"] == "dest_space"][0]["level"], "warn")       # another cluster: cannot be measured from here
+        G = 1 << 30                                                                             # ... unless the console sends what its agent reports
+        c = restorecheck.check(FakeCtx(self.d, self.d), {"extract_bytes": 10}, None, need_dest=10 * G, into={"host": "other", "disk": {"free_bytes": 8 * G, "total_bytes": 100 * G}})
+        self.assertEqual([x for x in c if x["id"] == "dest_space"][0]["level"], "bad")
+        c = restorecheck.check(FakeCtx(self.d, self.d), {"extract_bytes": 10}, None, need_dest=10 * G, into={"host": "other", "disk": {"free_bytes": 80 * G, "total_bytes": 100 * G}})
+        self.assertEqual([x for x in c if x["id"] == "dest_space"][0]["level"], "ok")
 
     def test_taken_name_keeps_its_code(self):
         c = restorecheck.check(FakeCtx(self.d, self.d), {"extract_bytes": 10}, None, name_taken="x_restored")

@@ -169,7 +169,21 @@ def check(ctx, plan, merged_sel=None, target_set=None, need_dest=0, into=None, n
         if "data" in v["roles"]:
             plan["dest_free_bytes"] = v["free"]
     if need_dest and into:
-        add("dest_space", "warn", "the destination is another cluster: its free disk space cannot be checked from here", "make sure it has about %s free" % human(int(need_dest * 1.15)))
+        disk = into.get("disk") if isinstance(into, dict) else None     # what the destination's own agent reports (sent by the console), when known
+        need = int(need_dest * 1.15)
+        if isinstance(disk, dict) and disk.get("free_bytes") is not None and disk.get("total_bytes"):
+            free, total = int(disk["free_bytes"]), int(disk["total_bytes"])
+            keep = max(int(0.05 * total), 1 << 30)
+            plan["dest_free_bytes"] = free
+            if free - need < 0:
+                add("dest_space", "bad", "not enough space on the data volume of the destination cluster: %s free, about %s needed" % (human(free), human(need)),
+                    "free space there, or restore fewer objects")
+            elif free - need < keep:
+                add("dest_space", "bad", "the data volume of the destination cluster would be left with %s free: a full data volume stops PostgreSQL" % human(free - need), "free space there first")
+            else:
+                add("dest_space", "ok", "destination cluster data volume: %s free, about %s needed" % (human(free), human(need)))
+        else:
+            add("dest_space", "warn", "the destination is another cluster: its free disk space cannot be checked from here", "make sure it has about %s free" % human(need))
     if name_taken:
         add("name", "bad", "destination database '%s' already exists" % name_taken, "choose another name; existing databases are never overwritten", code="PGA-SEC-030")
     return out

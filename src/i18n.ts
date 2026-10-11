@@ -9,6 +9,9 @@ const ROLE: Record<string, string> = {
 const roles = (s: string) => s.split(' + ').map(r => ROLE[r] || r).join(' + ');
 const SRC: Record<string, string> = { configured: 'configurati', "this node's own": 'quelli del nodo', 'installed package': 'pacchetto installato', 'installed by pg_arca': 'installati da pg_arca' };
 const RULES: Rule[] = [
+  [/^not enough space on the data volume of the destination cluster: (.+) free, about (.+) needed$/, m => `spazio insufficiente sul volume dati del cluster di destinazione: ${m[1]} liberi, ne servono circa ${m[2]}`],
+  [/^the data volume of the destination cluster would be left with (.+) free: a full data volume stops PostgreSQL$/, m => `sul volume dati del cluster di destinazione resterebbero ${m[1]} liberi: un volume dati pieno ferma PostgreSQL`],
+  [/^destination cluster data volume: (.+) free, about (.+) needed$/, m => `volume dati del cluster di destinazione: ${m[1]} liberi, ne servono circa ${m[2]}`],
   [/^the recovery host cannot reach the cluster that receives the result \((.+?)\): (.+)$/, m => `l’host di recupero non raggiunge il cluster che riceve il risultato (${m[1]}): ${m[2]}`],
   [/^the agent's user \((.+?)\) cannot create (restore destination|tablespace destination) (.+): (.+) is not writable for it$/, m => `l’utente dell’agent (${m[1]}) non può creare la ${ROLE[m[2]] || m[2]} ${m[3]}: ${m[4]} non è scrivibile per lui`],
   [/^(restore destination|tablespace destination) (.+) exists but the agent's user \((.+)\) cannot write into it$/, m => `la ${ROLE[m[1]] || m[1]} ${m[2]} esiste ma l’utente dell’agent (${m[3]}) non può scriverci`],

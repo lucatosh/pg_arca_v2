@@ -103,7 +103,7 @@ export function withEphemeral(store: Store, o: { type: string; clusterId: string
 }
 
 /** Where a central ephemeral recovery delivers its result: the cluster's primary (derived from what the agents report), overridable with centralInto. */
-export function centralInto(st: any, cluster: any, eph: Record<string, any>): { host: string; port: number; user: string } | null {
+export function centralInto(st: any, cluster: any, eph: Record<string, any>): { host: string; port: number; user: string; disk?: { free_bytes: number; total_bytes: number } } | null {
   const o = (eph.centralInto || {}) as Record<string, any>;
   // a standby SITE is read-only: what is recovered for it is delivered to the primary site of the pair
   let target = cluster;
@@ -115,7 +115,8 @@ export function centralInto(st: any, cluster: any, eph: Record<string, any>): { 
   const ep = target.geoEndpoint && !o.host ? target.geoEndpoint : null;
   const host = o.host || ep?.host || String(prim?.remoteIp || '').replace(/^::ffff:/, '');
   if (!host) return null;
-  return { host, port: Number(o.port || ep?.port || pg.port || pg.settings?.port || 5432), user: String(o.user || 'postgres') };
+  const disk = (prim?.snapshot as any)?.system?.disks?.pgdata;          // the destination's data volume as its own agent reports it: the plan checks the space there too
+  return { host, port: Number(o.port || ep?.port || pg.port || pg.settings?.port || 5432), user: String(o.user || 'postgres'), ...(disk?.total_bytes ? { disk: { free_bytes: disk.free_bytes, total_bytes: disk.total_bytes } } : {}) };
 }
 
 export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {}) {
