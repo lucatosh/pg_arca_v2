@@ -229,5 +229,21 @@ class HbaPatroniFlow(unittest.TestCase):
         self.assertEqual(r["raw"], "local all all peer\n")
 
 
+class EffectiveRows(unittest.TestCase):
+    def test_ipv6_and_netmask_rows_render_back(self):
+        f = hba_ops.rule_from_effective
+        self.assertEqual(f({"type": "host", "database": ["all"], "user_name": ["all"], "address": "::1", "netmask": "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "auth_method": "scram-sha-256"}),
+                         "host  all  all  ::1/128  scram-sha-256")
+        self.assertEqual(f({"type": "host", "database": ["replication"], "user_name": ["rep"], "address": "172.30.0.0", "netmask": "255.255.0.0", "auth_method": "trust"}),
+                         "host  replication  rep  172.30.0.0/16  trust")
+        self.assertEqual(f({"type": "host", "database": ["all"], "user_name": ["all"], "address": "all", "netmask": None, "auth_method": "md5"}), "host  all  all  all  md5")
+        self.assertEqual(f({"type": "hostssl", "database": ["db1", "db2"], "user_name": ["+grp"], "address": "samenet", "netmask": None, "auth_method": "cert", "options": ["clientcert=verify-full"]}),
+                         "hostssl  db1,db2  +grp  samenet  cert  clientcert=verify-full")
+        self.assertIsNone(f({"type": "host", "error": "invalid"}))
+        # what Patroni wrote vs what PostgreSQL loaded: equal after normalisation (IPv6 and "addr mask" forms included)
+        self.assertEqual(hba_ops._norm_key("host all all ::1/128 scram-sha-256"), hba_ops._norm_key(f({"type": "host", "database": ["all"], "user_name": ["all"], "address": "::1", "netmask": "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "auth_method": "scram-sha-256"})))
+        self.assertEqual(hba_ops._norm_key("host all all 10.0.0.1 255.255.255.255 md5"), hba_ops._norm_key("host all all 10.0.0.1/32 md5"))
+
+
 if __name__ == "__main__":
     unittest.main()

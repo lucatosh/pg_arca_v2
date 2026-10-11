@@ -48,8 +48,9 @@ def rule_from_effective(r):
         nm = r.get("netmask")
         if addr and nm:
             import ipaddress
-            try:
-                addr = str(ipaddress.ip_network("%s/%s" % (addr, nm), strict=False))
+            try:                                # "addr/netmask" is not accepted for IPv6 by ipaddress: count the bits of the mask (both families)
+                bits = bin(int(ipaddress.ip_address(nm))).count("1")
+                addr = str(ipaddress.ip_network((addr, bits), strict=False))
             except ValueError:
                 return None
         if not addr:
@@ -323,7 +324,17 @@ def loaded_matches(ex, text, err):
     want = [k for k in (_norm_key(hba.render_rule(dict(x["rule"], comment=""))) for x in hba.parse_file(text)[0]) if k]
     rows = _json(ex, SQL_RULES, err, [])
     have = [k for k in (_norm_key(rule_from_effective(r) or "") for r in rows if not r.get("error")) if k]
-    return want == have and not hard_errors(rows)
+    ok = want == have and not hard_errors(rows)
+    if not ok:
+        miss = [" ".join(k) for k in want if k not in have][:3]
+        extra = [" ".join(k) for k in have if k not in want][:3]
+        loaded_matches.last = "PostgreSQL has %d rule(s) loaded, the DCS list %d%s%s%s" % (len(have), len(want), "; not loaded: %s" % miss if miss else "",
+                                                                                        "; loaded but not in the DCS: %s" % extra if extra else "",
+                                                                                        "; errors: %s" % hard_errors(rows)[:2] if hard_errors(rows) else "")
+    return ok
+
+
+loaded_matches.last = ""
 
 
 def _patch_dcs(ex, src, lst, err, wait=45):
@@ -351,7 +362,7 @@ def _apply_patroni(ex, src, clean, new_text, cur_rev, err, old_text=None):
     res = {"changed": True, "mode": "patroni", "rev": hba.file_rev(new_text), "rules": len(clean), "dcs_seed": src.seed, "previous": previous, "previous_rev": cur_rev,
            "seed_list": (old_text.rstrip("\n").split("\n") if src.seed and old_text else None), "list": lst}
     if loaded is None:
-        raise err("the DCS was updated but PostgreSQL on this node has not loaded the new rules within 45 s; Patroni will still propagate them (check the Patroni log and `patronictl show-config`)")
+        raise err("the DCS was updated but PostgreSQL on this node has not loaded the new rules within 45 s (%s); Patroni will still propagate them (check the Patroni log and `patronictl show-config`)" % loaded_matches.last)
     res["note"] = ("written to the DCS and loaded by PostgreSQL; every member follows" if loaded else "written to the DCS (PostgreSQL is not running on this node: verify on another member)") + \
         (" (the DCS had no pg_hba: the rules in force were copied into it first)" if src.seed else "")
     return res
@@ -384,7 +395,7 @@ def restore_dcs(ex, p, err):
         raise err("refused: restoring this list would lock out: %s" % "; ".join(crit))
     loaded = _patch_dcs(ex, src, lst, err)
     if loaded is None:
-        raise err("the DCS was updated but PostgreSQL on this node has not loaded the restored rules within 45 s")
+        raise err("the DCS was updated but PostgreSQL on this node has not loaded the restored rules within 45 s (%s)" % loaded_matches.last)
     return {"changed": True, "mode": "patroni", "rev": hba.file_rev(new), "previous": src.dcs_list, "previous_rev": cur_rev, "list": lst, "restored": True}
 
 
