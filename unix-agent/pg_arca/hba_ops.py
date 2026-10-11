@@ -81,6 +81,7 @@ class _Src(object):
             if st != 200 or not isinstance(cfg, dict):
                 raise err("cannot read the Patroni DCS configuration (HTTP %s)" % st)
             self.patroni = True
+            self.cfg = cfg
             cur = (cfg.get("postgresql") or {}).get("pg_hba")
             if isinstance(cur, list):
                 self.dcs_list = [str(x) for x in cur]
@@ -94,6 +95,27 @@ class _Src(object):
         if not ok or not out.strip():
             raise err("cannot determine hba_file: %s" % e)
         self.path = out.strip()
+
+    def external_hba_file(self):
+        """Patroni generates pg_hba.conf from postgresql.pg_hba ONLY when no hba_file is configured: with a custom hba_file a DCS change would be ignored
+        silently. Detected from what PostgreSQL reports (SHOW, not the file) and from the DCS parameters. Returns the path or None."""
+        params = ((getattr(self, "cfg", None) or {}).get("postgresql") or {}).get("parameters") or {}
+        if params.get("hba_file"):
+            return str(params["hba_file"])
+        try:
+            ok1, hf, _ = self.ex.db.run_psql("SHOW hba_file;")
+            ok2, dd, _ = self.ex.db.run_psql("SHOW data_directory;")
+        except Exception:
+            return None
+        if ok1 and ok2 and hf.strip() and dd.strip() and os.path.realpath(hf.strip()) != os.path.realpath(os.path.join(dd.strip(), "pg_hba.conf")):
+            return hf.strip()
+        return None
+
+    def require_managed(self):
+        ext = self.external_hba_file()
+        if ext:
+            raise self.err("Patroni does not generate pg_hba on this cluster: hba_file is set to %s, so postgresql.pg_hba in the DCS would be ignored. "
+                           "Remove hba_file from the Patroni configuration (then Patroni writes pg_hba.conf from the DCS list) or manage that file outside pg_arca" % ext)
 
     def text(self):
         if self.patroni:
@@ -188,8 +210,9 @@ def read(ex, p, err):
                 "effective": [], "errors": [], "ssl": None, "has_includes": includes, "rule_count": len(rules),
                 "suggest": {"replication_clients": [], "roles": [], "databases": []}, "backups": []}
     eff = _json(ex, SQL_RULES, err, [])
+    ext = src.external_hba_file() if src.patroni else None
     return {"hba_file": src.path, "mode": "patroni" if src.patroni else "file", "dcs_seed": src.seed, "seed_skipped": src.seed_skipped, "rev": hba.file_rev(text), "raw": text[:200000], "truncated": len(text) > 200000,
-            "dcs_rules": [x["rule"] for x in rules if not x["in_block"]] if src.patroni else None,
+            "dcs_rules": [x["rule"] for x in rules if not x["in_block"]] if src.patroni else None, "external_hba_file": ext,
             "managed": {"present": managed is not None, "rules": managed or [], "rev": hba.rules_rev(managed) if managed else None},
             "effective": eff, "errors": hard_errors(eff), "ssl": _ssl_on(ex), "has_includes": includes, "rule_count": len(rules),
             "suggest": {"replication_clients": _json(ex, SQL_REPL, err, []), "roles": _json(ex, SQL_ROLES, err, []), "databases": _json(ex, SQL_DBS, err, [])},
@@ -280,6 +303,7 @@ def apply(ex, p, err):
     if crit and not p.get("force"):
         raise err("refused: this change would lock out: %s" % "; ".join(crit))
     if src.patroni:
+        src.require_managed()
         return _apply_patroni(ex, src, clean, new, cur_rev, err, old_text=old)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     bak = "%s.pgarca-%s" % (src.path, stamp)
@@ -396,6 +420,7 @@ def restore_dcs(ex, p, err):
         raise err("pg_hba changed since this restore was prepared (expected %s, found %s): reload the page" % (p["base_rev"], cur_rev))
     if old == new:
         return {"changed": False, "mode": "patroni", "rev": cur_rev}
+    src.require_managed()
     rows, lock = _simulate(old, new, _live_probes(ex, err))
     crit = [r["label"] for r in lock if r["critical"]]
     if crit and not p.get("force"):

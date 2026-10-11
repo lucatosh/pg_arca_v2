@@ -150,6 +150,8 @@ class PatroniPg(object):
     def run_psql(self, sql, **kw):
         if "ssl" in sql:
             return True, "off", ""
+        if "data_directory" in sql:
+            return True, os.path.dirname(self.hba_file), ""
         return True, self.hba_file, ""
 
     def query_json(self, sql, **kw):
@@ -217,6 +219,14 @@ class HbaPatroniFlow(unittest.TestCase):
             hba_ops.restore_dcs(ex, {"list": ["include /etc/evil.conf"]}, OpError)
         with self.assertRaises(OpError):
             hba_ops.restore_dcs(ex, {"list": ["host all @users 0.0.0.0/0 trust"]}, OpError)
+
+    def test_custom_hba_file_means_patroni_ignores_the_dcs_list(self):
+        ex, pat, hf = self.mk(config={"postgresql": {"pg_hba": ["local all all peer"], "parameters": {"hba_file": "/etc/postgresql/hba.conf"}}})
+        self.assertEqual(hba_ops.read(ex, {}, OpError)["external_hba_file"], "/etc/postgresql/hba.conf")
+        with self.assertRaises(OpError) as cm:
+            hba_ops.apply(ex, {"rules": [self.RULE]}, OpError)
+        self.assertIn("would be ignored", str(cm.exception))
+        self.assertEqual(pat.patches, [], "nothing written to the DCS")
 
     def test_read_with_postgres_down_uses_the_dcs(self):
         ex, pat, hf = self.mk(config={"postgresql": {"pg_hba": ["local all all peer"]}})
