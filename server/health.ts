@@ -128,6 +128,31 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       if (n.snapshot?.postgres?.pending_restart?.length) add({ severity: 'info', code: 'pending_restart', detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: riavvio in sospeso`, cause: `Parametri modificati ma non ancora attivi: ${n.snapshot.postgres.pending_restart.slice(0, 5).join(', ')}.` });
     }
   }
+  // ---- operational machines: a recovery host that is down or full stops every restore that depends on it
+  const centralUsers = (id: string) => Object.entries(((st.settings?.scoped || {}).ephemeral || {}) as Record<string, any>).filter(([, v]) => v?.placement === 'central' && v?.centralNode === id).map(([k]) => k);
+  for (const n of Object.values(st.nodes || {}) as any[]) {
+    if (n.kind !== 'worker') continue;
+    const users = centralUsers(n.id);
+    const add = (i: Omit<Issue, 'clusterId' | 'clusterName' | 'environment' | 'key'> & { detail?: string }) => {
+      const { detail, ...rest } = i;
+      out.push({ ...rest, key: `worker:${n.id}:${i.code}${detail ? ':' + detail : ''}`, clusterId: `worker:${n.id}`, clusterName: n.name, environment: '', nodeId: n.id, nodeName: n.name });
+    };
+    const isOn = !!n.lastSeen && now - Date.parse(n.lastSeen) < ONLINE_MS;
+    if (!isOn) add({ severity: users.length ? 'critical' : 'warning', code: 'worker_offline', title: `Macchina operativa ${n.name} non raggiungibile`, cause: users.length ? `È il nodo dei ripristini per ${users.length} livelli di configurazione: finché non torna, quei ripristini non possono partire.` : 'L’agent non risponde da più di 45 secondi.', action: { label: 'Apri la macchina' } });
+    const w = n.snapshot?.worker || {};
+    for (const m of (w.mounts || []) as any[]) {
+      if (!m.total_bytes) continue;
+      const free = m.free_bytes / m.total_bytes;
+      if (free < 0.15) add({ severity: free < 0.07 ? 'critical' : 'warning', code: 'worker_disk', detail: m.mount, title: `${n.name}: ${m.mount} quasi pieno (${Math.round(free * 100)}% libero)`, cause: m.remote ? 'Una condivisione di rete usata per i backup sta finendo lo spazio.' : 'Su questa macchina girano ripristini o backup: senza spazio falliscono.', action: { label: 'Apri la macchina' } });
+    }
+    if (users.length && Array.isArray(w.pg_installations)) {
+      const have = new Set((w.pg_installations as any[]).map(i => Number(i.major)));
+      const need = new Set<number>();
+      for (const c of st.clusters as any[]) { const m = parseInt(String(c.pgVersion || ''), 10); if (m && !c.isSandbox) need.add(m); }
+      const missing = [...need].filter(m => !have.has(m));
+      if (missing.length) add({ severity: 'warning', code: 'worker_pg_missing', title: `${n.name}: mancano i binari di PostgreSQL ${missing.join(', ')}`, cause: 'È il nodo dei ripristini, ma non potrà recuperare i backup di quelle versioni finché non installi i binari (dalla pagina della macchina, un clic).', action: { label: 'Apri la macchina' } });
+    }
+  }
   return out.sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || a.clusterName.localeCompare(b.clusterName));
 }
 

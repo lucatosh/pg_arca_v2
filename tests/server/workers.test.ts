@@ -69,5 +69,11 @@ import { requiredRole } from '../../server/auth';
   assert.strictEqual(ap.status, 200, JSON.stringify(ap.body)); assert.strictEqual(ap.body.kind, 'worker');
   const js = (await call('POST', '/api/agent/join-status', { fingerprint: fp, secret })).body; assert.strictEqual(js.node_kind, 'worker'); assert.strictEqual(js.cluster_id, null);
   assert.strictEqual(store.peek().clusters.length, 0);
+  // 7. health: a recovery host that is used and offline is critical; missing binaries for the clusters' versions are reported
+  const { evaluate } = await import('../../server/health');
+  await store.mutate(d => { d.settings.scoped = { ephemeral: { global: { placement: 'central', centralNode: en.body.node_id } } }; d.clusters.push({ id: 'cx', name: 'pg17', environment: 'prod', pgVersion: '17.2', source: 'agent' }); d.nodes[en.body.node_id].lastSeen = new Date(Date.now() - 600_000).toISOString(); });
+  const iss = evaluate(store.peek()).filter(i => i.clusterId === `worker:${en.body.node_id}`);
+  assert(iss.some(i => i.code === 'worker_offline' && i.severity === 'critical'), JSON.stringify(iss));
+  assert(iss.some(i => i.code === 'worker_pg_missing' && i.title.includes('17')));
   console.log('workers tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });
