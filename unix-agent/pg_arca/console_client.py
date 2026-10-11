@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import random
+import re
 import secrets
 import ssl
 import threading
@@ -229,6 +230,15 @@ class ConsoleClient(threading.Thread):
                                                    "discovery": full_discovery, "wait_seconds": wait}, timeout=wait + 15)
         if self.logs:
             self.logs.set_mode(resp.get("log_mode"))
+        sh = resp.get("stanza") if "stanza" in resp else self.config.get("stanza_shared")
+        if sh is not None and not (isinstance(sh, str) and re.match(r"^[A-Za-z0-9_.-]{1,60}$", sh)):
+            sh = None
+        if (sh or None) != self.config.get("stanza_shared"):
+            logger.info("backup catalogue (stanza) assigned by the console: %s", sh or "(own)")
+            if sh:
+                self.config["stanza_shared"] = sh
+            else:
+                self.config.pop("stanza_shared", None)
         kind = resp.get("node_kind")
         if kind in ("worker", "db") and (kind == "worker") != bool(self.rt.worker):
             self.rt.set_worker(kind == "worker")                   # decided in the console (enrolled / converted as an operational machine)

@@ -89,7 +89,8 @@ class Ctx(object):
         db = runtime.db if runtime else None
         conn = PgConn(host=(getattr(db, "socket_dir", None) or getattr(db, "host", "") or ""), port=getattr(db, "port", 5432) or 5432,
                       user=getattr(db, "user", None) or config.get("pg_user") or "postgres", bindir=config.get("pg_bin_dir", "") or _guess_bindir(inst))
-        stanza = config.get("stanza") or _stanza_name(inst) or "main"
+        # explicit stanza (agent.conf) > the one the console assigns to every site of a geo-redundant database (one catalogue per database) > derived
+        stanza = config.get("stanza") or config.get("stanza_shared") or _stanza_name(inst) or "main"
         seg = ((inst.get("control") or {}).get("wal_segment_size")) or 16 * 1024 * 1024
         here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         wal_bin = config.get("wal_bin") or (os.path.join(here, "pg-arca-wal") if os.path.exists(os.path.join(here, "pg-arca-wal")) else None)

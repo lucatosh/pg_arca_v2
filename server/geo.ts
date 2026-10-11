@@ -145,6 +145,28 @@ export function geoOf(st: any, clusterId: string) {
   return null;
 }
 
+/** Stanza name the agent derives from a cluster key (pg_arca/engine/ctx.py _stanza_name): "patroni:geo-dc1" -> "patroni-geo-dc1". */
+export const stanzaOf = (key: string) => key.replace(/:/g, '-').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 60);
+
+/** One database = one backup catalogue, whichever site takes the backup: the sites of a geo group share a stanza (decided once, kept across switchovers):
+ *  the one that already holds the most backups, else the primary site's own. Sent to the agents in the heartbeat answer. Pure: the caller applies it. */
+export function geoStanzaPlan(d: any, clusterId: string): { ids: string[]; stanza: string } | null {
+  const c = d.clusters.find((x: any) => x.id === clusterId);
+  if (!c || c.isSandbox || c.geoStanza) return null;
+  const g = geoGroups(d).find(x => x.sites.some(s => s.clusterId === clusterId));
+  if (!g || g.sites.length < 2) return null;
+  const sites = g.sites.map(s => d.clusters.find((x: any) => x.id === s.clusterId)).filter(Boolean);
+  let pick = sites.map((x: any) => x.geoStanza).find(Boolean) as string | undefined;
+  if (!pick) {
+    const reported = (Object.values(d.nodes) as NodeRecord[]).filter(n => g.sites.some(s => s.clusterId === n.clusterId) && n.snapshot?.backup?.stanza && (n.snapshot.backup.sets || 0) > 0)
+      .sort((a, b) => (b.snapshot!.backup.sets || 0) - (a.snapshot!.backup.sets || 0));
+    pick = reported[0]?.snapshot?.backup?.stanza;
+  }
+  if (!pick && g.primary) { const key = (Object.values(d.nodes) as NodeRecord[]).find(n => n.clusterId === g.primary && n.clusterKey)?.clusterKey; if (key) pick = stanzaOf(key); }
+  if (!pick || !/^[A-Za-z0-9_.-]{1,60}$/.test(pick)) return null;
+  return { ids: sites.filter((x: any) => !x.geoStanza).map((x: any) => x.id), stanza: pick };
+}
+
 /** Parameters a hot standby must have at least as high as its primary: raising one on the primary SITE first stops the standby sites
  *  ("hot standby is not possible because ... = N is a lower setting than on the primary server"). Patroni keeps the members of ONE site in step, not the sites. */
 export const STANDBY_MIN_PARAMS = ['max_connections', 'max_prepared_transactions', 'max_locks_per_transaction', 'max_wal_senders', 'max_worker_processes'];
@@ -256,7 +278,7 @@ export function mountGeoRoutes(app: any, store: Store) {
   const actor = (req: Request) => (req as any).actor || 'admin';
   app.get('/api/geo', (_req: Request, res: Response) => {
     const st = store.peek();
-    res.json({ groups: geoGroups(st), jobs: Object.values(st.settings.geoJobs || {}).sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 10) });
+    res.json({ groups: geoGroups(st).map(g => ({ ...g, stanza: g.sites.map(x => st.clusters.find((c: any) => c.id === x.clusterId)?.geoStanza).find(Boolean) || null })), jobs: Object.values(st.settings.geoJobs || {}).sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 10) });
   });
   app.get('/api/clusters/:id/geo', (req: Request, res: Response) => res.json({ geo: geoOf(store.peek(), req.params.id) }));
 

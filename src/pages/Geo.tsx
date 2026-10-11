@@ -52,7 +52,7 @@ function SiteCard({ s, onOpen }: { s: Site; onOpen: () => void }) {
 function GroupCard({ g, role, running }: { g: Group; role: string; running: boolean }) {
   const prim = g.sites.find(s => s.role === 'primary'); const stand = g.sites.filter(s => s.role === 'standby');
   const [dlg, setDlg] = useState<{ kind: 'switch' | 'promote' | 'endpoint'; site: Site } | null>(null);
-  return <Card title={<span className="row gap-s"><Icon n="swap" s={16} />{prim?.name || '?'}{stand.map(s => <span key={s.clusterId} className="faint"> ⇄ {s.name}</span>)}<span className="small faint mono">· database {g.sysid}</span></span>}>
+  return <Card title={<span className="row gap-s"><Icon n="swap" s={16} />{prim?.name || '?'}{stand.map(s => <span key={s.clusterId} className="faint"> ⇄ {s.name}</span>)}<span className="small faint mono">· database {g.sysid}</span>{(g as any).stanza ? <span className="small faint" title="I backup di tutti i siti finiscono nello stesso catalogo: un ripristino vede tutta la storia, da qualunque sito sia stato fatto il backup">· catalogo backup comune <span className="mono">{(g as any).stanza}</span></span> : null}</span>}>
     <div className="geogrid">
       {prim ? <SiteCard s={prim} onOpen={() => go(`c/${encodeURIComponent(prim.clusterId)}`)} /> : <div className="geosite bad"><strong>Sito primario non visibile</strong><p className="small muted">Nessun cluster collegato accetta scritture per questo database.</p></div>}
       <div className="geolinks">{stand.map(s => <div key={s.clusterId} className={`geolink ${s.health}`}>

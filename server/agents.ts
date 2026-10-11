@@ -18,7 +18,8 @@ import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
 import { conflictFor, activityOf } from './conflicts';
-import { startSwitchover, geoParamGuard } from './geo';
+import { startSwitchover, geoParamGuard, geoStanzaPlan } from './geo';
+const geoStanzaChecked = new Map<string, number>();
 
 export interface Deps {
   /** executes an operation server-side for clusters attached without an agent */
@@ -196,7 +197,14 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       if (n.kind === 'worker') return;                     // operational machine: no cluster to derive
       reconcileCluster(d, node.id);
       if (n.clusterId) refreshCluster(d, n.clusterId);
-    }, { lazy: true });                                    // telemetry: recomputed at every heartbeat, written within seconds (store.ts LAZY_MS)
+    }, { lazy: true });
+    // geo sites of one database share one backup catalogue: decided once per group (checked at most once a minute per cluster, outside the hot mutation)
+    const cid = store.peek().nodes[node.id]?.clusterId;
+    if (cid && !store.peek().clusters.find((c: any) => c.id === cid)?.geoStanza && Date.now() - (geoStanzaChecked.get(cid) || 0) > 60_000) {
+      geoStanzaChecked.set(cid, Date.now());
+      const plan = geoStanzaPlan(store.peek(), cid);
+      if (plan) await store.mutate(d => { for (const id of plan.ids) { const c = d.clusters.find((x: any) => x.id === id); if (c && !c.geoStanza) { c.geoStanza = plan.stanza; ops.audit(d, { clusterId: id, actor: 'console', action: 'geo.stanza', status: 'OK', details: { stanza: plan.stanza } }); } } });
+    }                                    // telemetry: recomputed at every heartbeat, written within seconds (store.ts LAZY_MS)
     const max = Math.max(0, Math.min(Number(b.max_ops ?? 1) || 1, 5));
     // Long-poll: hold the request (<= wait_seconds) until an operation is runnable for this node, so operator
     // actions reach NAT'ed agents in ~a second without any inbound port.
@@ -207,7 +215,8 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       await new Promise(r => setTimeout(r, 250));
       if (store.peek().operations.some(o => o.nodeId === node.id && o.status === 'queued')) todo = await ops.lease(store, node.id, max);
     }
-    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, node_kind: store.peek().nodes[node.id]?.kind === 'worker' ? 'worker' : 'db', log_mode: logModeFor(node.clusterId), ops: todo.map(o => ({ id: o.id, type: o.type, params: withEphemeral(store, o), attempt: o.attempts, cluster_id: o.clusterId })) });
+    const myCluster = store.peek().clusters.find((c: any) => c.id === store.peek().nodes[node.id]?.clusterId);
+    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, stanza: myCluster?.geoStanza || null, node_kind: store.peek().nodes[node.id]?.kind === 'worker' ? 'worker' : 'db', log_mode: logModeFor(node.clusterId), ops: todo.map(o => ({ id: o.id, type: o.type, params: withEphemeral(store, o), attempt: o.attempts, cluster_id: o.clusterId })) });
   });
 
   // ---- log ingest (authenticated, size-bounded) -----------------------------

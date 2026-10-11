@@ -3,7 +3,7 @@
 import assert from 'assert'; import fs from 'fs'; import os from 'os'; import path from 'path';
 import { MiniApp } from './mini-express';
 import { Store } from '../../server/store';
-import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard } from '../../server/geo';
+import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, stanzaOf } from '../../server/geo';
 import { evaluate } from '../../server/health';
 import { deriveCluster } from '../../server/view';
 
@@ -30,6 +30,13 @@ import { deriveCluster } from '../../server/view';
   const view = deriveCluster({ id: 'c2', name: 'geo-dc2', environment: 'prod', nodes: [store.peek().nodes.b as any] });
   assert.strictEqual(view.status, 'healthy'); assert(view.haState.standbyCluster);
   assert(!evaluate(store.peek()).some(i => i.clusterId === 'c2' && ['no_primary', 'no_backup'].includes(i.code)));
+  // one backup catalogue for the database: the primary site's own stanza, or the one that already holds backups
+  assert.strictEqual(stanzaOf('patroni:geo-dc1'), 'patroni-geo-dc1');
+  await store.mutate(d => { d.nodes.a.clusterKey = 'patroni:geo-dc1'; d.nodes.b.clusterKey = 'patroni:geo-dc2'; });
+  assert.deepStrictEqual(geoStanzaPlan(store.peek(), 'c2'), { ids: ['c1', 'c2'], stanza: 'patroni-geo-dc1' });
+  await store.mutate(d => { d.nodes.b.snapshot.backup = { stanza: 'patroni-geo-dc2', sets: 4 }; });
+  assert.strictEqual(geoStanzaPlan(store.peek(), 'c1')!.stanza, 'patroni-geo-dc2', 'the catalogue that already has backups wins');
+  await store.mutate(d => { delete d.nodes.b.snapshot.backup; });
   // parameters a standby needs at least as high: raising them on the primary site first is refused
   await store.mutate(d => { d.nodes.b.snapshot.postgres.settings = { max_connections: '100' }; });
   assert(/siti di replica/.test(geoParamGuard(store.peek(), 'c1', 'max_connections', 200) || ''), 'raise on the primary above the standby site: refused');
