@@ -506,6 +506,33 @@ class EngineTests(unittest.TestCase):
                 f.write(good)
         self.assertTrue(verify(F.ctx, deep=True)["ok"])
 
+    def test_12b_missing_chunk_stops_every_restore_before_it_starts(self):
+        # a chunk that vanished from the repository: the plan says so (blocker) and the real restore refuses BEFORE extracting or recovering anything
+        man = F.ctx.repo.load_manifest(F.ctx.repo.resolve_set())
+        h = [c[2] for e in man["files"].values() for c in e["chunks"]][0]
+        p = F.ctx.repo.cas_path(h)
+        good = open(p, "rb").read()
+        dest = os.path.join(F.base, "never-created")
+        os.unlink(p)
+        try:
+            plan = restore_instance(F.ctx, dest=dest, dry_run=True)
+            self.assertFalse(plan["preflight"]["ok"], plan["preflight"])
+            self.assertEqual([c["id"] for c in plan["preflight"]["checks"] if c["level"] == "bad"], ["chunks"])
+            with self.assertRaises(EngineError) as cm:
+                restore_instance(F.ctx, dest=dest, immediate=True)
+            self.assertEqual(cm.exception.code, "PGA-RST-031")
+            self.assertFalse(os.path.exists(dest), "nothing was created")
+            dp = restore_database(F.ctx, "app", dry_run=True, new_name="app_never")
+            self.assertFalse(dp["preflight"]["ok"], dp["preflight"])
+            with self.assertRaises(EngineError) as cm:
+                restore_database(F.ctx, "app", new_name="app_never")
+            self.assertEqual(cm.exception.code, "PGA-RST-031")
+            self.assertEqual(q("postgres", "SELECT count(*) FROM pg_database WHERE datname='app_never'")[0][0], "0")
+        finally:
+            with open(p, "wb") as f:
+                f.write(good)
+        self.assertTrue(restore_instance(F.ctx, dest=dest, dry_run=True)["preflight"]["ok"])
+
     def test_13_forensics_finds_the_drop(self):
         r = forensics(F.ctx, limit=50)
         kinds = [e["kind"] for e in r["events"]]

@@ -500,6 +500,23 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
                               "choose a destination on a larger volume (the plan lists the sizes), or restore just one database / table instead of the whole cluster")
         if (tbs or delta) and free < plan["bytes"] * 0.2:
             plan["space_warning"] = "only %.1f GiB free at the destination for %.1f GiB of data (tablespaces / delta make an exact check impossible): the restore may run out of space" % (free / 2.0 ** 30, plan["bytes"] / 2.0 ** 30)
+    try:                                                           # every chunk of the chain must be in the repository: found now, not halfway through the extraction
+        from pg_arca.engine import restorecheck
+        checked, nmiss, ex, sampled = restorecheck.missing_chunks(repo, merged)
+        if nmiss:
+            chk = [{"id": "chunks", "level": "bad", "text": "%d of the %d backup chunks this restore needs are missing from the repository (e.g. %s)" % (nmiss, checked, ", ".join(ex[:3])),
+                    "fix": "restore the repository from its copy, or choose an older backup set that does not depend on them; run a deep verify"}]
+        else:
+            chk = [{"id": "chunks", "level": "ok", "text": "all %d backup chunks needed are present in the repository%s" % (checked, " (random sample)" if sampled else "")}]
+        if "space_warning" in plan:
+            chk.append({"id": "dest_space", "level": "warn", "text": plan["space_warning"]})
+        plan["preflight"] = restorecheck.summarize(chk)
+        if not dry_run:
+            restorecheck.enforce(chk)
+    except EngineError:
+        raise
+    except Exception as e:                                         # the pre-flight must never be the thing that breaks a restore
+        ctx.log("warning", "restore pre-flight skipped: %s" % e)
     if dry_run:
         plan["dry_run"] = True
         return plan
