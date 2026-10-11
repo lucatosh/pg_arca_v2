@@ -37,10 +37,16 @@ def _settings():
 
 
 def main(argv):
-    from pg_arca.wal_manager import WalManager, WalArchiveError
-    if len(argv) != 4 or argv[1] not in ("archive", "get"):
+    if len(argv) != 4 or argv[1] not in ("archive", "get", "prefetch"):
         sys.stderr.write("usage: wal_archive archive <%p> <%f> | get <%f> <%p>\n")
         return 2
+    spool = os.environ.get("PG_ARCA_SPOOL") if argv[1] == "get" else None
+    if spool:                                                # read-ahead (pg_arca/walprefetch.py): a segment already prepared is served without importing anything else
+        from pg_arca import walprefetch
+        if walprefetch.take(spool, argv[2], argv[3]):
+            walprefetch.kick(spool, argv[2])
+            return 0
+    from pg_arca.wal_manager import WalManager, WalArchiveError
     d, comp, lvl, seg = _settings()
     crypto = None
     kf = os.environ.get("PG_ARCA_KEY_FILE")
@@ -54,6 +60,10 @@ def main(argv):
             sys.stderr.write("pg_arca %s FAILED: %s\n" % (argv[1], e))
             return 1 if argv[1] == "archive" else 126        # for restore_command 1 means "end of archive": a key error must ABORT recovery, not end it early
     wm = WalManager(d, comp, lvl, seg, crypto=crypto)
+    if argv[1] == "prefetch":                                # detached read-ahead worker: pg-arca-wal prefetch <spool> <segments ahead>
+        from pg_arca import walprefetch
+        walprefetch.run(wm, argv[2], argv[3])
+        return 0
     if argv[1] == "archive":
         try:
             ok, dest, sha, msg = wm.archive_segment(argv[2], argv[3])
@@ -80,6 +90,9 @@ def main(argv):
         return 126
     if code not in (0, 1):
         sys.stderr.write("pg_arca restore FAILED: %s\n" % msg)
+    if code == 0 and spool:
+        from pg_arca import walprefetch
+        walprefetch.kick(spool, argv[2])
     return code
 
 

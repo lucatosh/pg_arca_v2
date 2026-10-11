@@ -50,7 +50,24 @@ class Ctx(object):
         import pg_arca
         home = os.path.dirname(os.path.dirname(os.path.realpath(pg_arca.__file__)))      # the directory that contains the pg_arca package (/opt/pg-arca when installed): pg-arca-wal itself may live in /usr/local/bin
         kf = " PG_ARCA_KEY_FILE=%s" % _shq(self.key_file) if self.key_file else ""
-        return "env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent%s %s get %%f %%p" % (_shq(self.wal_dir), _shq(home), kf, _shq(self.agent_path))
+        sp = ""
+        if int(os.environ.get("PG_ARCA_PREFETCH", "10") or 0) > 0 and self.scratch_dir:       # read-ahead spool (pg_arca/walprefetch.py); PG_ARCA_PREFETCH=0 turns it off
+            sp = " PG_ARCA_SPOOL=%s" % _shq(self.spool_dir)
+        return "env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent%s%s %s get %%f %%p" % (_shq(self.wal_dir), _shq(home), kf, sp, _shq(self.agent_path))
+
+    @property
+    def spool_dir(self):
+        """Where the read-ahead of this operation's recoveries keeps the next WAL segments: unique per Ctx, under the scratch directory."""
+        if not getattr(self, "_spool_id", None):
+            import uuid
+            self._spool_id = uuid.uuid4().hex[:10]
+        return os.path.join(self.scratch_dir, "walspool-" + self._spool_id)
+
+    def cleanup_spool(self):
+        """The recovery is over: the prefetcher notices the missing directory and leaves."""
+        import shutil
+        if getattr(self, "_spool_id", None):
+            shutil.rmtree(self.spool_dir, ignore_errors=True)
 
     @classmethod
     def from_config(cls, config, runtime=None, log=None):

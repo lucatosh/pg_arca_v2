@@ -306,6 +306,10 @@ class Ephemeral(object):
     def cleanup(self, keep=False):
         self.stop()
         try:
+            self.ctx.cleanup_spool()
+        except Exception:
+            pass
+        try:
             if self.logf:
                 self.logf.close()
         except Exception:

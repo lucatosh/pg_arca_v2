@@ -14,7 +14,7 @@ from pg_arca.engine.backup import build_chain
 from pg_arca.engine import objects as objmod
 from pg_arca.engine.catalog import find_object
 from pg_arca.engine.ephemeral import Ephemeral, TargetNotReached
-from pg_arca.engine.pgsession import PgConn, PgSession, run_tool
+from pg_arca.engine.pgsession import PgConn, PgSession, run_dump, run_tool
 from pg_arca.engine.restore import check_wal_for_chain, choose_set, count_targets, estimate, merge_chain, sparse_filter
 from pg_arca.engine.util import EngineError, human, lsn_to_int, now_utc, parse_target_time, quote_ident, sql_lit, target_time_to_dt, wal_name, wal_segno
 
@@ -321,7 +321,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         if progress:
             progress({"phase": "transfer"})
         dumpfile = os.path.join(tmp, "db.dump")
-        rc, out, err = run_tool(eph.conn(db), "pg_dump", eph.conn(db).args() + ["-Fc", "-Z", "3", "-f", dumpfile, "-d", db], timeout=None)
+        rc, out, err = run_dump(eph.conn(db), eph.conn(db).args() + ["-f", dumpfile, "-d", db])
         if rc != 0:
             raise EngineError("PGA-GEN-070", "pg_dump from the recovered instance failed: %s" % err.strip()[:600],
                               "the sparse extraction may lack a page needed by this database; retry with a different base set")
@@ -536,7 +536,7 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
             st.close()
         dump = os.path.join(tmp, "p.dump")
         try:
-            rc, out, err = run_tool(admin, "pg_dump", admin.args() + ["-Fc", "-Z", "3", "-t", "%s.%s" % (quote_ident(work), quote_ident(name)), "-f", dump, "-d", stage_db], timeout=None)
+            rc, out, err = run_dump(admin, admin.args() + ["-t", "%s.%s" % (quote_ident(work), quote_ident(name)), "-f", dump, "-d", stage_db])
         finally:
             st = PgSession(admin.with_db(stage_db))             # leave the quarantine database exactly as we found it (it can be promoted again)
             try:

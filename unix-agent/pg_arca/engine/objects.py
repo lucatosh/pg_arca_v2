@@ -17,7 +17,7 @@ import re
 import shutil
 import tempfile
 
-from pg_arca.engine.pgsession import PgSession, run_tool
+from pg_arca.engine.pgsession import PgSession, run_dump, run_tool
 from pg_arca.engine.util import EngineError, now_utc, quote_ident, sql_lit
 
 META = "pgarca_meta"
@@ -418,10 +418,10 @@ def dump_for_stage(eph_conn, dbname, info, tmp, progress=None):
     if not names:
         return None
     dumpfile = os.path.join(tmp, "sel.dump")
-    args = eph_conn.args() + ["-Fc", "-Z", "3", "--strict-names", "-f", dumpfile, "-d", dbname]
+    args = eph_conn.args() + ["--strict-names", "-f", dumpfile, "-d", dbname]
     for n in names:
         args += ["-t", n]
-    rc, out, err = run_tool(eph_conn, "pg_dump", args, timeout=None)
+    rc, out, err = run_dump(eph_conn, args)
     if rc != 0:
         raise EngineError("PGA-GEN-072", "pg_dump of the selection failed: %s" % err.strip()[:600])
     return dumpfile
@@ -759,10 +759,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None):
             for sq in meta.get("sequences") or []:        # sequences selected on their own
                 names.append(qi(sq["schema"], sq["name"]))
             dumpfile = os.path.join(tmp, "p.dump")
-            args = stage_conn.args() + ["-Fc", "-Z", "3", "-f", dumpfile, "-d", stage_db]
+            args = stage_conn.args() + ["-f", dumpfile, "-d", stage_db]
             for n in names:
                 args += ["-t", n]
-            rc, out, err = run_tool(stage_conn, "pg_dump", args, timeout=None)
+            rc, out, err = run_dump(stage_conn, args)
         finally:
             try:
                 for kind, sch, cur, orig in reversed(renamed):                # leave the quarantine database exactly as we found it (it can be promoted again)
