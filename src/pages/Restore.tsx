@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Skeleton, bytes, dt, num, ago } from '../ui';
 import { Op, useOpRunner, useQuery } from '../hooks';
 import { OpPanel, Result } from './shared';
+import { itCheck, itFix } from '../i18n';
 import { RecoveryTimeline, TlEvent } from './Timeline';
 import { SetRow, TYPE_LABEL, chains } from './Backup';
 import { CatDb, DbPicker, DroppedNote, DropInfo, kindOf, parseWalTime, fmtWhen } from './DbPicker';
@@ -190,7 +191,7 @@ function Preflight({ pf }: { pf: { level: string; ok: boolean; checks: { id: str
   const n = (l: string) => pf.checks.filter(c => c.level === l).length;
   return <div className={`preflight ${pf.level}`} role="group" aria-label="Controlli prima di partire">
     <div className="ph"><strong>Controlli prima di partire</strong><span className="small faint">{n('ok')} ok{n('warn') ? ` · ${n('warn')} da vedere` : ''}{n('bad') ? ` · ${n('bad')} bloccanti` : ''}</span></div>
-    <ul>{list.map(c => <li key={c.id} className={c.level}><Icon n={c.level === 'ok' ? 'check' : 'alert'} s={14} /><span><span>{c.text}</span>{c.fix && c.level !== 'ok' ? <span className="fix small">{c.fix}</span> : null}</span></li>)}</ul></div>;
+    <ul>{list.map(c => <li key={c.id} className={c.level}><Icon n={c.level === 'ok' ? 'check' : 'alert'} s={14} /><span><span>{itCheck(c.text)}</span>{c.fix && c.level !== 'ok' ? <span className="fix small">{itFix(c.fix)}</span> : null}</span></li>)}</ul></div>;
 }
 
 function PlanView({ p, scope }: { p: any; scope: Scope }) {

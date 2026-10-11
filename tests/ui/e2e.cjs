@@ -158,7 +158,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   // geo-redundancy: the pair, the DR strip on the standby site, endpoint + planned switchover through both DCS
   await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("geo-dc2")'); await p.waitForSelector('text=Sito di replica (DR)'); await shot('19a-geo');
   await p.click('button:has-text("Switchover pianificato verso geo-dc2")'); await p.fill('.modal input.mono >> nth=0', 'dc2-haproxy'); await p.click('.modal button:has-text("Salva")');
-  await p.click('button:has-text("Switchover pianificato verso geo-dc2")'); await p.fill('.modal input.input', 'SWITCHOVER'); await p.click('.modal button:has-text("Avvia lo switchover")');
+  await p.waitForSelector('.modal button:has-text("Avvia lo switchover")'); await p.fill('.modal input.input', 'SWITCHOVER'); await p.click('.modal button:has-text("Avvia lo switchover")');
   await p.waitForSelector('.geojob:has-text("completato")', { timeout: 30000 }); await p.waitForSelector('.geosite.primary:has-text("geo-dc2")', { timeout: 15000 }); await shot('19b-geo-switched');
   // pg_hba on a Patroni site: DCS only, previous versions kept by the console and restorable
   await p.goto(base + '/#/'); const g1 = await p.locator('.fleettable a:has(strong:text-is("geo-dc1"))').getAttribute('href'); await p.goto(base + '/' + g1 + '/hba');

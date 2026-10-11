@@ -52,7 +52,7 @@ function SiteCard({ s, onOpen }: { s: Site; onOpen: () => void }) {
 function GroupCard({ g, role, running }: { g: Group; role: string; running: boolean }) {
   const prim = g.sites.find(s => s.role === 'primary'); const stand = g.sites.filter(s => s.role === 'standby');
   const extra = g.sites.filter(s => s.role === 'primary' && s !== prim);            // split-brain: more than one writable site
-  const [dlg, setDlg] = useState<{ kind: 'switch' | 'promote' | 'endpoint' | 'demote'; site: Site } | null>(null);
+  const [dlg, setDlg] = useState<{ kind: 'switch' | 'promote' | 'endpoint' | 'demote'; site: Site; next?: 'switch' } | null>(null);
   return <Card title={<span className="row gap-s"><Icon n="swap" s={16} />{prim?.name || '?'}{stand.map(s => <span key={s.clusterId} className="faint"> ⇄ {s.name}</span>)}<span className="small faint mono">· database {g.sysid}</span>{(g as any).stanza ? <span className="small faint" title="I backup di tutti i siti finiscono nello stesso catalogo: un ripristino vede tutta la storia, da qualunque sito sia stato fatto il backup">· catalogo backup comune <span className="mono">{(g as any).stanza}</span></span> : null}</span>}>
     {extra.length && prim ? <Banner kind="bad" title="Due siti accettano scritture (split-brain)">{[prim, ...extra].map(x => x.name).join(' e ')} sono entrambi primari: i dati stanno divergendo. Scegli quale tenere e declassa l’altro a sito di replica: le scritture fatte su quello declassato dopo la separazione vanno perse (Patroni lo riallinea o lo ricostruisce).
       {role === 'admin' ? <div className="row wrap" style={{ marginTop: 8 }}>{[prim, ...extra].map(x => <Button key={x.clusterId} sm kind="danger" onClick={() => setDlg({ kind: 'demote', site: x })}>Declassa {x.name}</Button>)}</div> : null}</Banner> : null}
@@ -66,11 +66,11 @@ function GroupCard({ g, role, running }: { g: Group; role: string; running: bool
       <div className="stack">{[...extra, ...stand].map(s => <SiteCard key={s.clusterId} s={s} onOpen={() => go(`c/${encodeURIComponent(s.clusterId)}`)} />)}</div>
     </div>
     {role === 'admin' ? <div className="row wrap" style={{ marginTop: 14 }}>
-      {prim && stand.map(s => <Button key={'sw' + s.clusterId} icon="swap" disabled={running || s.health === 'bad'} title={s.health === 'bad' ? 'Il sito di replica non è in salute' : undefined} onClick={() => setDlg({ kind: s.endpoint ? 'switch' : 'endpoint', site: s })}>Switchover pianificato verso {s.name}</Button>)}
+      {prim && stand.map(s => <Button key={'sw' + s.clusterId} icon="swap" disabled={running || s.health === 'bad'} title={s.health === 'bad' ? 'Il sito di replica non è in salute' : undefined} onClick={() => setDlg(s.endpoint ? { kind: 'switch', site: s } : { kind: 'endpoint', site: s, next: 'switch' })}>Switchover pianificato verso {s.name}</Button>)}
       {stand.map(s => <Button key={'pr' + s.clusterId} kind="danger" icon="alert" disabled={running} onClick={() => setDlg({ kind: 'promote', site: s })}>Promuovi {s.name} (disaster recovery)…</Button>)}
       {g.sites.map(s => <Button key={'ep' + s.clusterId} sm kind="ghost" onClick={() => setDlg({ kind: 'endpoint', site: s })}>Indirizzo di {s.name}</Button>)}
     </div> : null}
-    {dlg?.kind === 'endpoint' ? <EndpointDialog s={dlg.site} onClose={() => setDlg(null)} /> : null}
+    {dlg?.kind === 'endpoint' ? <EndpointDialog s={dlg.site} onClose={() => setDlg(null)} onSaved={dlg.next === 'switch' ? ep => setDlg({ kind: 'switch', site: { ...dlg.site, endpoint: ep } }) : undefined} /> : null}
     {dlg?.kind === 'demote' ? (() => { const keepSite = [prim, ...extra].find(x => x && x.clusterId !== dlg.site.clusterId)!; return <Confirm title={`Declassare ${dlg.site.name}?`} confirmLabel="Declassa" requireText="DECLASSA" danger onClose={() => setDlg(null)}
       onConfirm={async () => { const s = dlg.site; setDlg(null); try { const r = await api<any>('POST', '/api/geo/demote', { clusterId: s.clusterId, to: keepSite.clusterId, confirm: 'DECLASSA' }, { key: uid('geod') }); toast(r.approval ? 'Richiesta inviata: serve l’approvazione di un altro amministratore' : `${s.name} declassato: segue ${keepSite.name}`, 'ok'); revalidate('/api/geo'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } }}>
       <p><strong>{dlg.site.name}</strong> smette di accettare scritture e diventa sito di replica di <strong>{keepSite.name}</strong> (tramite il suo DCS, come <span className="mono">patronictl edit-config</span>). Le scritture fatte su {dlg.site.name} dopo la separazione non saranno più visibili: se servono, prima fai un backup o un dump di {dlg.site.name}.</p></Confirm>; })() : null}
@@ -86,9 +86,9 @@ function GroupCard({ g, role, running }: { g: Group; role: string; running: bool
   </Card>;
 }
 
-function EndpointDialog({ s, onClose }: { s: Site; onClose: () => void }) {
+function EndpointDialog({ s, onClose, onSaved }: { s: Site; onClose: () => void; onSaved?: (ep: { host: string; port: number }) => void }) {
   const [host, setHost] = useState(s.endpoint?.host || ''); const [port, setPort] = useState(String(s.endpoint?.port || 5000)); const [err, setErr] = useState<string | null>(null);
-  const save = async () => { try { await api('PUT', `/api/clusters/${encodeURIComponent(s.clusterId)}/geo-endpoint`, { host, port: Number(port) }); revalidate('/api/geo'); toast('Indirizzo salvato', 'ok'); onClose(); } catch (e: any) { setErr(e.body?.message || e.message); } };
+  const save = async () => { try { await api('PUT', `/api/clusters/${encodeURIComponent(s.clusterId)}/geo-endpoint`, { host, port: Number(port) }); revalidate('/api/geo'); toast('Indirizzo salvato', 'ok'); if (onSaved) onSaved({ host, port: Number(port) }); else onClose(); } catch (e: any) { setErr(e.body?.message || e.message); } };
   return <Modal title={`Come gli altri siti raggiungono ${s.name}`} onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" onClick={save} disabled={!host}>Salva</Button></>}>
     <div className="stack"><p className="small muted">L’indirizzo che porta sempre al leader di {s.name} (HAProxy, VIP o DNS del sito), visto dai nodi dell’altro sito. Serve per farlo diventare la sorgente della replica dopo uno switchover.</p>
       <div className="grid g2"><Field label="Host"><input className="input mono" value={host} onChange={e => setHost(e.target.value)} placeholder="dc2-haproxy" /></Field><Field label="Porta"><input className="input mono" value={port} onChange={e => setPort(e.target.value)} /></Field></div>

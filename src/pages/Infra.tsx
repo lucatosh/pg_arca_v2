@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { itCheck, itFix } from '../i18n';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Field, Icon, Modal, Skeleton, Tabs, bytes, ago } from '../ui';
 import { Op, isTerminal, revalidate, toast, useOpRunner, useQuery } from '../hooks';
@@ -102,7 +103,7 @@ function ScopeDialog({ kind, scope, k, label, view, onClose }: { kind: 'ephemera
 const LEVEL_KIND: Record<string, 'ok' | 'warn' | 'bad'> = { ok: 'ok', warn: 'warn', bad: 'bad' };
 export function CheckList({ checks }: { checks: any[] }) {
   return <div className="stack">{checks.map((c, i) => <div key={i} className="row gap-s" style={{ alignItems: 'flex-start' }}><Badge kind={LEVEL_KIND[c.level]}>{c.level === 'ok' ? 'ok' : c.level === 'warn' ? 'attenzione' : 'problema'}</Badge>
-    <div className="grow"><div>{c.text}</div>{c.fix ? <div className="small muted">→ {c.fix}</div> : null}</div></div>)}</div>;
+    <div className="grow"><div>{itCheck(c.text)}</div>{c.fix ? <div className="small muted">→ {itFix(c.fix)}</div> : null}</div></div>)}</div>;
 }
 
 function PreflightModal({ cluster, onClose }: { cluster: SCluster; onClose: () => void }) {
