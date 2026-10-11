@@ -674,7 +674,7 @@ class OperationExecutor:
         from pg_arca.engine.restore import restore_instance
         ctx = self._ctx_ro()
         return restore_instance(ctx, p.get("set"), p.get("destination"), action=p.get("action", "promote"), delta=bool(p.get("delta")),
-                                tablespace_remap=p.get("tablespace_remap"), progress=self._progress, cancel=self._cancelled, **self._targets(p))
+                                tablespace_remap=p.get("tablespace_remap"), progress=self._progress, cancel=self._cancelled, resume=bool(p.get("resume")), **self._targets(p))
 
     def h_restore_database(self, p):
         from pg_arca.engine import granular

@@ -141,6 +141,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       <Card title="Piano di ripristino"><div className="stack">
         {plan.op?.status === 'succeeded' ? <PlanView p={plan.op.result} scope={scope} /> : <OpPanel op={plan.op} error={plan.error} label="Verifica del piano" />}
         {scope !== 'instance' && plan.op ? <RecoveryPlacement clusterId={c.id} /> : null}
+        {plan.op?.status === 'failed' && scope === 'instance' && /PGA-RST-040/.test(String(plan.op.error || '')) && !exec.op ? <Banner kind="info" title="In quella cartella c’è un ripristino interrotto" actions={<Button sm icon="restore" onClick={() => exec.run('restore_instance', { ...params().p, resume: true })}>Riprendilo</Button>}>Riprendendo, pg_arca completa la copia scrivendo solo ciò che manca o è diverso. Per ricominciare da zero svuota la cartella o scegline un’altra.</Banner> : null}
         {plan.op?.status === 'failed' ? <div><Button onClick={() => setStep(1)}>Cambia istante</Button></div> : null}</div></Card>
       {plan.op?.status === 'succeeded' && !exec.op ? <div className="row"><Button onClick={() => setStep(2)}>Indietro</Button><div className="grow" />{blocked ? <span className="small" style={{ color: 'var(--bad)' }}>Risolvi i punti in rosso per procedere</span> : null}<Button kind="primary" icon="restore" disabled={blocked} onClick={() => setAsk(true)}>Avvia ripristino</Button></div> : null}
       {(exec.op || exec.error) ? <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
@@ -149,6 +150,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         {doneOk && scope === 'object' && exec.op!.result.result_database ? <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} /> : null}
         {doneOk && scope === 'object' && objs.length === 1 && objs[0].split('.').length === 3 && exec.op!.result.result_database ? <RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /> : null}
         <Result op={exec.op} />
+        {scope === 'instance' && exec.op && ['failed', 'cancelled'].includes(exec.op.status) && /PGA-RST-040|cancel|interrott|No space|ENOSPC|PGA-RST-03/i.test(String(exec.op.error || '')) ? <Banner kind="info" title="Ripristino interrotto" actions={<Button sm icon="restore" onClick={() => exec.run('restore_instance', { ...(exec.op!.params || params().p), resume: true })}>Riprendi da dove si è fermato</Button>}>
+          La copia parziale in <code>{(exec.op.params || {}).destination || dest}</code> è riconosciuta: riprendendo, pg_arca scrive solo ciò che manca o è diverso (utile dopo un annullamento, un disco pieno liberato o un riavvio dell’agent).</Banner> : null}
         {(exec.op && !running) ? <div><Button onClick={() => { exec.reset(); plan.reset(); prom.reset(); prev.reset(); setObjs([]); setStep(0); }}>Nuovo ripristino</Button></div> : null}</div></Card> : null}
     </div>}
 

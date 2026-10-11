@@ -188,6 +188,42 @@ class EngineTests(unittest.TestCase):
         finally:
             sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
 
+    def test_04a_interrupted_restore_is_resumed(self):
+        """A restore stopped half-way (cancel, crash, disk full) leaves a marked partial copy: a plain retry is refused with a clear message, a resume
+        completes it in place (writing only what is missing or different) and the result starts and holds the data."""
+        from pg_arca.engine.util import Cancelled
+        from pg_arca.engine.restore import RESUME_MARK
+        dest = os.path.join(F.base, "resumed_instance")
+        calls = {"n": 0}
+        def cancel_soon():
+            calls["n"] += 1
+            return calls["n"] > 25
+        with self.assertRaises((Cancelled, EngineError)):
+            restore_instance(F.ctx, dest=dest, immediate=True, cancel=cancel_soon)
+        self.assertTrue(os.path.exists(os.path.join(dest, RESUME_MARK)), "partial copy marked")
+        with self.assertRaises(EngineError) as c:
+            restore_instance(F.ctx, dest=dest, immediate=True)
+        self.assertIn("PGA-RST-040", str(c.exception))
+        plan = restore_instance(F.ctx, dest=dest, immediate=True, resume=True)
+        self.assertTrue(plan.get("resumed"))
+        self.assertFalse(os.path.exists(os.path.join(dest, RESUME_MARK)), "complete: marker gone")
+        port2 = F.port + 3
+        with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
+            f.write("\nport=%d\nunix_socket_directories='%s'\nlisten_addresses=''\narchive_mode=off\narchive_command=''\n" % (port2, F.sock))
+        r = sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-l", os.path.join(F.base, "resumed.log"), "-w", "-t", "120", "start")
+        self.assertEqual(r.returncode, 0, r.stderr + open(os.path.join(F.base, "resumed.log")).read()[-2000:])
+        try:
+            s2 = PgSession(PgConn(host=F.sock, port=port2, user="postgres", bindir=BIN, dbname="app"))
+            try:
+                self.assertGreater(int(s2.scalar("SELECT count(*) FROM orders")), 0)
+            finally:
+                s2.close()
+        finally:
+            sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
+        with self.assertRaises(EngineError) as c:
+            restore_instance(F.ctx, dest=os.path.join(F.base, "never_started"), immediate=True, resume=True)
+        self.assertIn("PGA-RST-041", str(c.exception))
+
     def test_04b_immediate_restore_of_an_incremental_chain_is_consistent(self):
         """'Stop when consistent' must mean the end of the LAST set, not of the base full: the files already hold the incremental's newer pages."""
         q("app", "CREATE TABLE incrcheck AS SELECT g AS id, repeat('y', 100) AS pad FROM generate_series(1,30000) g")

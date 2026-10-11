@@ -12,7 +12,7 @@ from pg_arca.pgcompat import Profile, require_supported, set_profile
 from pg_arca.engine.pgdata import list_directories
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
 from pg_arca.engine.util import (parse_wal_name, last_wal_segno, EngineError, chunk_hash, human, iso, lsn_to_int, parse_target_time, safe_relpath, target_time_to_dt, wal_name,
-                                 wal_segno)
+                                 wal_segno, read_json, write_json)
 
 
 # --------------------------------------------------------------------------- planning
@@ -138,7 +138,7 @@ def remove_stale(dest, merged):
             continue
         for f in files:
             rel = (rel_root + "/" + f) if rel_root else f
-            if rel not in keep and f not in ("backup_label", "recovery.signal", "tablespace_map"):
+            if rel not in keep and f not in ("backup_label", "recovery.signal", "tablespace_map", RESUME_MARK):
                 try:
                     os.unlink(os.path.join(cur, f))
                     removed += 1
@@ -434,8 +434,26 @@ def check_wal_for_chain(ctx, chain, target_lsn=None):
     return missing
 
 
-def target_dir_check(ctx, dest, delta, what="restore destination"):
+RESUME_MARK = ".pg_arca_restore.json"      # written into the destination while a restore runs, removed when it is complete: a leftover = interrupted restore
+
+
+def interrupted_restore(dest):
+    try:
+        return read_json(os.path.join(dest, RESUME_MARK))
+    except (IOError, OSError, ValueError):
+        return None
+
+
+def target_dir_check(ctx, dest, delta, what="restore destination", resume=False):
     dest = assert_writable_target(ctx, dest, what)
+    mark = interrupted_restore(dest) if os.path.isdir(dest) else None
+    if mark and not (resume or delta):
+        raise EngineError("PGA-RST-040", "'%s' holds an interrupted restore (set %s, started %s)" % (dest, mark.get("set"), mark.get("started")),
+                          "resume it (only what is missing or different is written again), or empty the directory to start over")
+    if resume and not mark:
+        raise EngineError("PGA-RST-041", "nothing to resume in '%s' (no interrupted pg_arca restore there)" % dest, "start a normal restore")
+    if mark and resume:
+        return dest                                                     # our own partial copy: safe to complete in place, even before PG_VERSION was written
     if delta and os.path.exists(dest) and os.listdir(dest) and not os.path.exists(os.path.join(dest, "PG_VERSION")):
         raise EngineError("PGA-SEC-006", "delta restore: '%s' does not look like a PostgreSQL data directory (no PG_VERSION)" % dest,
                           "delta deletes every file that is not in the backup; point it at the old copy of the data directory, or use an empty directory")
@@ -447,7 +465,7 @@ def target_dir_check(ctx, dest, delta, what="restore destination"):
 # --------------------------------------------------------------------------- full-instance restore
 def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,
                      action="promote", timeline="latest", delta=False, tablespace_remap=None, dry_run=False, immediate=False,
-                     progress=None, cancel=None):
+                     progress=None, cancel=None, resume=False):
     repo = ctx.repo
     count_targets(target_time, target_lsn, target_xid, target_name, immediate)
     target_time = parse_target_time(target_time)
@@ -468,7 +486,9 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     if missing:
         raise EngineError("PGA-WAL-022", "WAL archive is missing %d segment(s) required by this restore (first: %s)" % (len(missing), missing[0]),
                           "restore is impossible past the gap; pick another set or fix the archive")
-    dest = target_dir_check(ctx, dest, delta)
+    dest = target_dir_check(ctx, dest, delta, resume=resume)
+    if resume:
+        delta = True                                                    # resume = delta over our own partial copy
     remap = {str(k): v for k, v in (tablespace_remap or {}).items()}
     auto = []
     for oid, loc in list(tbs.items()):
@@ -538,6 +558,7 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
         return plan
     os.makedirs(dest, mode=0o700, exist_ok=True)
     os.chmod(dest, 0o700)
+    write_json(os.path.join(dest, RESUME_MARK), {"set": target["id"] if isinstance(target, dict) else target, "started": iso(), "resumed": bool(resume)})
     if delta:
         remove_stale(dest, merged)
     link_tablespaces(dest, tbs, remap)
@@ -557,6 +578,12 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     if bad:
         raise EngineError("PGA-SEC-011", "symlinks escape the destination: %s" % bad[:3])
     os.chmod(dest, 0o700)
+    try:
+        os.unlink(os.path.join(dest, RESUME_MARK))                     # complete: no longer an interrupted restore
+    except OSError:
+        pass
     plan.update(stats)
+    if resume:
+        plan["resumed"] = True
     plan["start_hint"] = "pg_ctl -D %s start   (recovery runs until %s)" % (dest, plan["target"])
     return plan
