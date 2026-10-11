@@ -8,7 +8,7 @@ import { go } from '../router';
  * Geo-redundancy: the same database on several sites (Patroni clusters with the same system identifier): one primary site, standby sites replicating
  * over the WAN. Shows the replication between sites and runs the two site-level actions: planned switchover and DR promotion — both through each site's DCS.
  * ==================================================================================================================================================== */
-interface Site { clusterId: string; name: string; environment: string; role: 'primary' | 'standby' | 'unknown'; leader: string | null; online: boolean; lsn: string | null; timeline: number | null;
+interface Site { clusterId: string; name: string; environment: string; role: 'primary' | 'standby' | 'unknown'; leader: string | null; online: boolean; lsn: string | null; timeline: number | null; endpointSource?: string | null;
   endpoint: { host: string; port: number } | null; upstream?: { host: string; port: number; slot?: string } | null; receiver?: { status: string; sender: string; silentSec: number | null } | null;
   lagBytes?: number | null; replayDelaySec?: number | null; slot?: { name: string; active: boolean; retainedBytes: number | null } | null; health: 'ok' | 'warn' | 'bad'; problems: string[] }
 interface Group { sysid: string; sites: Site[]; primary: string | null }
