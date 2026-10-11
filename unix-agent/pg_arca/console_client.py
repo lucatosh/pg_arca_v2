@@ -25,6 +25,8 @@ from pg_arca.runtime import AGENT_VERSION
 logger = logging.getLogger("pg_arca.console")
 
 
+_STARTED = int(time.time())      # identifies this agent process: the console hands back what a previous process had taken and never finished
+
 class ConsoleError(Exception):
     def __init__(self, status, body):
         super(ConsoleError, self).__init__("console returned %s: %s" % (status, body))
@@ -223,7 +225,7 @@ class ConsoleClient(threading.Thread):
 
         free_slots = max(0, WORKERS - len(self.inflight))
         wait = 0 if self.inflight or not free_slots else min(8, int(self.config.get("heartbeat_interval_seconds", 10)))
-        resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "max_ops": free_slots,
+        resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "max_ops": free_slots, "agent_started": _STARTED,
                                                    "discovery": full_discovery, "wait_seconds": wait}, timeout=wait + 15)
         if self.logs:
             self.logs.set_mode(resp.get("log_mode"))

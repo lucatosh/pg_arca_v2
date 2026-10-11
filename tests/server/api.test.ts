@@ -66,6 +66,12 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   const hb2 = await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 1 }, A());
   assert.strictEqual(hb2.body.ops.length, 1); assert.strictEqual(hb2.body.ops[0].type, 'wal_switch');
   assert.strictEqual((await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 1 }, A())).body.ops.length, 0);
+  { // the agent process restarts while holding it: the new process gets it back at once (no 2-minute lease wait); same process: not redelivered
+    assert.strictEqual((await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 1, agent_started: 1000 }, A())).body.ops.length, 0, 'first start time seen: nothing to hand back');
+    assert.strictEqual((await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 1, agent_started: 1000 }, A())).body.ops.length, 0);
+    const again = await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 1, agent_started: 2000 }, A());
+    assert.strictEqual(again.body.ops.length, 1, 'restarted agent: leased op handed back'); assert.strictEqual(again.body.ops[0].id, hb2.body.ops[0].id);
+  }
   const rid = hb2.body.ops[0].id;
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'succeeded', result: { segment: 'x' } }, A())).status, 200);
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'succeeded', result: { segment: 'x' } }, A())).status, 200);  // duplicate report ok

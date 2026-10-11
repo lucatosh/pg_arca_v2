@@ -181,6 +181,8 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       n.lastSeen = new Date(nowMs).toISOString();
       n.remoteIp = req.socket.remoteAddress || n.remoteIp;
       if (b.agent_version) n.agentVersion = String(b.agent_version);
+      const started = Number(b.agent_started);
+      if (Number.isFinite(started) && started > 0 && n.agentStarted !== started) { if (n.agentStarted) ops.requeueOnRestart(d, n.id); n.agentStarted = started; }
       if (snap) {
         n.snapshot = snap;
         const total = Number(snap.postgres?.xact_total);

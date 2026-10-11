@@ -162,6 +162,18 @@ export function submit(store: Store, input: SubmitInput): Promise<{ op: Operatio
   });
 }
 
+/** The agent process on a node restarted (new start time in its heartbeat): what it had leased or was running died with the old process.
+ *  Hand it back at once instead of waiting for the lease to expire (2 minutes, with nobody executing). The agent's own journal decides on redelivery:
+ *  retry-safe operations run again, the others are reported as 'interrupted, not repeated'. Returns how many were requeued. */
+export function requeueOnRestart(draft: any, nodeId: string): number {
+  let n = 0;
+  for (const op of draft.operations) {
+    if (op.nodeId !== nodeId || (op.status !== 'leased' && op.status !== 'running')) continue;
+    push(op, 'queued', 'agent restarted: redelivered'); op.leaseUntil = undefined; op.progress = undefined; n++;
+  }
+  return n;
+}
+
 /** Agent poll: hand out runnable operations for a node. */
 export function lease(store: Store, nodeId: string, max = 1, leaseSeconds = 120, now = Date.now()): Promise<Operation[]> {
   return store.mutate(draft => {

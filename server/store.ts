@@ -46,6 +46,7 @@ export interface NodeRecord {
   clusterId?: string;
   clusterKey?: string;        // "patroni:<scope>" | "sysid:<id>" computed by agent discovery
   agentVersion?: string;
+  agentStarted?: number;     // start time of the agent process (a change = restart: what the old process had leased is handed back)
   remoteIp?: string;
   /** inbound URL, only if the operator chose inbound mode */
   inboundUrl?: string;
