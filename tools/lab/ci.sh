@@ -1,7 +1,7 @@
 #!/bin/bash
 # Lab helper: check origin/main in a throw-away copy (does NOT touch /opt/pg_arca_v2 nor running scenarios):
 # typecheck, UI build, server test suite. Usage: tools/lab/ci.sh [ref]   (log in /tmp/arca-ci.log)
-set -o pipefail; SRC="$(cd "$(dirname "$0")/../.." && pwd)"; W=/tmp/arca-ci; REF=${1:-origin/main}
+set -o pipefail; SRC="${ARCA_SRC:-$(cd "$(dirname "$0")/../.." && pwd)}"; W=/tmp/arca-ci; REF=${1:-origin/main}
 {
   git -C "$SRC" fetch -q origin
   rm -rf "$W"; git clone -q "$SRC" "$W" && git -C "$W" checkout -q "$(git -C "$SRC" rev-parse "$REF")" || exit 1
