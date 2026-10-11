@@ -54,6 +54,11 @@ import { deriveCluster } from '../../server/view';
   s2 = geoGroups(store.peek())[0].sites.find(s => s.clusterId === 'c2')!;
   assert.strictEqual(s2.health, 'bad'); assert(/timeline 2/.test(s2.problems[0]) && /pg_rewind/.test(s2.problems[0]), s2.problems[0]);
   await store.mutate(d => { d.nodes.a.snapshot = snapP('0/9000000'); d.nodes.b.snapshot = snapS('0/5000000', 'stopping', 300); });
+  // 2c. WAN down but archive fallback configured and the site keeps close: degraded (warn), not lost
+  await store.mutate(d => { d.nodes.b.snapshot = snapS('0/8F00000', 'waiting', 400); d.nodes.b.snapshot.patroni.standby_cluster.restore_command = 'pg-arca-wal get %f %p'; });
+  s2 = geoGroups(store.peek())[0].sites.find(s => s.clusterId === 'c2')!;
+  assert.strictEqual(s2.health, 'warn', JSON.stringify(s2.problems)); assert(/archivio WAL/.test(s2.problems[0]));
+  await store.mutate(d => { d.nodes.b.snapshot = snapS('0/5000000', 'stopping', 300); });
   // 3. DR promotion refused while the primary site is alive (split-brain), accepted when the operator states it is lost
   const k = (x: string) => ({ 'idempotency-key': x });
   const r1 = await app.call('POST', '/api/geo/promote', { body: { clusterId: 'c2', confirm: 'PROMUOVI' }, headers: k('p1') });

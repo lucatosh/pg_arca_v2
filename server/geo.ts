@@ -27,7 +27,7 @@ export interface Site {
   leader: string | null; leaderNodeId: string | null; online: boolean; lsn: string | null; timeline: number | null;
   endpoint: { host: string; port: number } | null;                 // how the OTHER sites reach this one (configured, or what a standby site points at)
   endpointSource?: 'configured' | 'detected' | null;
-  upstream?: { host: string; port: number; slot?: string } | null; // standby site: where it replicates from
+  upstream?: { host: string; port: number; slot?: string; archive?: boolean } | null; // standby site: where it replicates from (+ archive fallback)
   receiver?: { status: string; sender: string; silentSec: number | null } | null;
   lagBytes?: number | null; replayDelaySec?: number | null; slot?: { name: string; active: boolean; retainedBytes: number | null } | null;
   health: 'ok' | 'warn' | 'bad'; problems: string[];
@@ -55,7 +55,7 @@ function siteOf(st: any, c: any, now: number): Site & { _sysid: string | null; _
     clusterId: c.id, name: c.name, environment: c.environment, folder: c.folder || '', role, leader: lead?.name || null, leaderNodeId: lead?.id || null,
     online: !!lead, lsn: pg.current_lsn || null, timeline: pg.timeline ?? null,
     endpoint: c.geoEndpoint || null, endpointSource: c.geoEndpoint ? (c.geoEndpoint.detected ? 'detected' : 'configured') : null,
-    upstream: sc ? { host: String(sc.host), port: Number(sc.port || 5432), slot: sc.primary_slot_name || undefined } : null,
+    upstream: sc ? { host: String(sc.host), port: Number(sc.port || 5432), slot: sc.primary_slot_name || undefined, archive: !!sc.restore_command } : null,
     receiver: wr ? { status: String(wr.status || ''), sender: wr.sender_host ? `${wr.sender_host}:${wr.sender_port}` : '', silentSec: wr.silent_sec != null ? Number(wr.silent_sec) : null } : (role === 'standby' ? { status: 'none', sender: '', silentSec: null } : null),
     replayDelaySec: sl?.snapshot?.postgres?.replay_ts ? Math.max(0, Math.round((now - Date.parse(sl.snapshot.postgres.replay_ts)) / 1000)) : null,
     health: 'ok', problems: [], link: 'auto', declaredPrimary: c.geoLink?.primary || null, _sysid: sysid, _lsn: lsnToBig(pg.current_lsn),
@@ -125,8 +125,12 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
       else if (prim && prim.timeline != null && s.timeline != null && s.timeline < prim.timeline && s.receiver?.status !== 'streaming')
         // the primary site failed over (new timeline) from a point this site had already passed: it cannot follow until Patroni rewinds it
         bad(`il sito primario è passato alla timeline ${prim.timeline} (failover) e questo sito, fermo alla timeline ${s.timeline}, non riesce a seguirlo: Patroni deve riallinearlo con pg_rewind (serve la regola pg_hba di replica locale e use_pg_rewind), altrimenti i membri vanno ricostruiti`);
+      else if ((!s.receiver || s.receiver.status !== 'streaming') && s.upstream?.archive && ((s.replayDelaySec != null && s.replayDelaySec < 600) || (s.lagBytes != null && s.lagBytes < 64 * MB)))
+        // the WAN is down but the archive fallback keeps it close: degraded, not lost
+        warn(`streaming dal sito primario interrotto (ricevitore: ${s.receiver?.status || 'assente'}): si aggiorna dall’archivio WAL${s.lagBytes != null ? `, indietro di ${Math.round(s.lagBytes / MB)} MB` : ''}`);
       else if (!s.receiver || s.receiver.status !== 'streaming') bad(`non riceve WAL dal sito primario (ricevitore: ${s.receiver?.status || 'assente'})`);
-      if (s.receiver?.silentSec != null && s.receiver.silentSec > 120) bad(`nessun messaggio dal sito primario da ${Math.round(s.receiver.silentSec)} s`);
+      if (s.upstream?.archive && s.receiver?.status !== 'streaming') { /* silence measured on the receiver is meaningless while it catches up from the archive */ }
+      else if (s.receiver?.silentSec != null && s.receiver.silentSec > 120) bad(`nessun messaggio dal sito primario da ${Math.round(s.receiver.silentSec)} s`);
       else if (s.receiver?.silentSec != null && s.receiver.silentSec > 30) warn(`ultimo messaggio dal sito primario ${Math.round(s.receiver.silentSec)} s fa`);
       if (invalid.has(s.clusterId)) s.lagBytes = null;
       if (s.lagBytes != null && s.lagBytes > 1024 * MB) bad(`indietro di ${Math.round(s.lagBytes / MB)} MB`);
