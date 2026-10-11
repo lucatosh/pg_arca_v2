@@ -64,7 +64,10 @@ case "${1:-help}" in
     seen=""; for _ in $(seq 30); do for n in dc2-pg1 dc2-pg2; do [[ $(docker exec "$n" gosu postgres psql -XAtc "select count(*) from geo_probe where t='$tok'" 2>/dev/null) == 1 ]] && seen="$seen $n"; done; [[ $seen == *dc2-pg1* && $seen == *dc2-pg2* ]] && break; seen=""; sleep 1; done
     chk "a row written on DC1 is readable on both DC2 nodes" '[[ $seen == *dc2-pg1* && $seen == *dc2-pg2* ]]'
     echo "$ok passed, $bad failed"; [[ $bad == 0 ]] ;;
+  bk-pgpass) # the backup server delivers recovered data to the sites' leaders (HAProxy :5000): libpq password file for the agent's user (never PGPASSWORD)
+    pw=$(grep '^PG_SUPER_PASSWORD=' geo/.env | cut -d= -f2-)
+    docker exec -u postgres -e PW="$pw" bk1 bash -c 'umask 077; h=$(getent passwd postgres | cut -d: -f6); printf "dc1-haproxy:5000:*:postgres:%s\ndc2-haproxy:5000:*:postgres:%s\n" "$PW" "$PW" > "$h/.pgpass"; ls -l "$h/.pgpass"' ;;
   organise)  # put both sites in the console folder 'geo' and name them
     for c in $($API GET /api/clusters | jq -r '.clusters[] | select(.name|test("^geo-dc")) | .id'); do $API PATCH /api/clusters/$c '{"folder":"geo"}' >/dev/null; done; echo done ;;
-  *) sed -n 2,3p "$0"; echo "commands: up down reset status verify fix-dcs agent-update latency <ms> wan-cut wan-restore promote-dc2 organise" ;;
+  *) sed -n 2,3p "$0"; echo "commands: up down reset status verify fix-dcs agent-update bk-pgpass latency <ms> wan-cut wan-restore promote-dc2 organise" ;;
 esac

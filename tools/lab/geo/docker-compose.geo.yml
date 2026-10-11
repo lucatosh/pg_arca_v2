@@ -78,7 +78,7 @@ services:
     container_name: bk1
     init: true
     entrypoint: ["/bin/bash", "/geo/entrypoint-bk.sh"]
-    environment: { NODE: bk1, ARCA_URL: "${ARCA_URL:-}", ARCA_ENROLL_TOKEN: "${TOKEN_BK1:-}" }
+    environment: { NODE: bk1, ARCA_URL: "${ARCA_URL:-}", ARCA_ENROLL_TOKEN: "${TOKEN_BK1:-}", PG_SUPER_PASSWORD: "${PG_SUPER_PASSWORD}" }
     volumes: ["geo-backup:/backup", "geo-agent-bk1:/etc/pg-arca", "./:/geo:ro,z", "../../..:/work:ro,z"]
     extra_hosts: ["host.docker.internal:host-gateway"]
     networks: [wan]
