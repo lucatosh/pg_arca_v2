@@ -37,3 +37,25 @@ Un solo modulo conosce le differenze tra versioni: `unix-agent/pg_arca/pgcompat.
 - Precedenza: default < agent.conf < agent.local.json < variabili d'ambiente del servizio.
 - Provato: validazione, salvataggio, precedenza, handler dell'agent (unit test), operazioni lato console. **Non provato nel browser** con un agent reale.
 - Restore oggetti v2, istanza di recupero configurabile e destinazione backup: provati solo su PostgreSQL 16 reale; l'installazione dei binari di altre major (`ephemeral_install`) usa apt/dnf e non è mai stata eseguita su un sistema reale.
+
+## Indipendenza dal layout (audit 11/10) — niente percorsi, ruoli o PATH presupposti
+Ogni punto qui sotto era un'assunzione trovata nel codice; ora è rilevato o configurabile. Test: `unix-agent/tests/test_universal.py` (21, senza PostgreSQL), `test_params_pg.py` (5, PostgreSQL 16 reale con superuser `dba_root`), scenari lab `scenario-solo.py` (PG15 con PGDATA/conf/socket/tablespace insoliti), `scenario-params.py`, `scenario-hba-dcs.py`.
+
+| Punto | Prima | Ora |
+|---|---|---|
+| `psql` e strumenti client | sempre `psql` dal PATH (su RHEL `/usr/pgsql-N/bin` non è nel PATH del servizio: telemetria muta) | `pgaccess.find_tool`: `pg_bin_dir` configurato → cartella del postmaster IN ESECUZIONE (`/proc/<pid>/exe`) → PATH → cartelle dei vendor (Debian, PGDG, `/opt/...`, EDB), versione più alta per prima. `pg_amcheck` cerca accanto a quello `psql` |
+| Ruolo di connessione | `postgres` fisso | `pg_user` vuoto = automatico: proprietario di PGDATA → utente OS dell'agent → `postgres`, il primo che si connette davvero. Superuser con nome scollegato dall'utente OS (`initdb -U dba`): impostare `pg_user` |
+| Cartella dei binari dell'istanza | mai rilevata (campo `bin_dir` letto ma mai scritto) | scritta dalla discovery (eseguibile del postmaster, riga di comando, o cartella vendor della stessa major) |
+| `archive_command` | `/usr/local/bin/pg-arca-wal` anche se inesistente | percorso VERIFICATO (wal_bin, `PG_ARCA_WAL_BIN`, PATH, accanto al pacchetto, `/usr/local/bin`); rifiuta se non esiste; con config/home non standard antepone `env PG_ARCA_CONF=… PG_ARCA_HOME=…` |
+| **Archiviatore e `agent.local.json`** | `pg-arca-wal` leggeva solo `agent.conf`: una cartella WAL cambiata dalla console (o dall'applicazione della destinazione) NON arrivava ad `archive_command` | legge `agent.conf` → `agent.local.json` → ambiente, come l'agent |
+| `pg-arca-wal` e dove sta il pacchetto | `/opt/pg-arca` fisso | `PG_ARCA_HOME`, o la cartella dello script (anche via symlink), o `/opt/pg-arca` |
+| REST API di Patroni | sempre `http://127.0.0.1:porta` | indirizzo di `restapi.listen` (jolly → loopback; IP specifico → quello), `https` se c'è il certificato, configurazione solo da variabili d'ambiente (`PATRONI_RESTAPI_LISTEN`) o `patroni.yml` illeggibile → porta su cui ascolta il processo |
+| CPU e RAM per i consigli di tuning e il preflight | `os.cpu_count()` e `/proc/meminfo` (in un container: quelli dell'host) | `sysres`: affinità CPU + quota cgroup (v1/v2), RAM limitata dal cgroup |
+| Parametri sotto Patroni | scritti nel DCS senza controllo: un nome sbagliato o un valore fuori range raggiunge TUTTI i membri | validati su `pg_settings` del nodo (esistenza nella versione, tipo, enum, unità, minimo/massimo) PRIMA di toccare il DCS; `listen_addresses`/`port` rifiutati (vengono dalla configurazione locale di Patroni) |
+| pg_hba su file in cartella non scrivibile | `OSError` grezzo | messaggio con il rimedio (permessi, `ReadWritePaths`); utente della sonda anti lock-out = ruolo reale |
+| Socket Unix dell'istanza effimera | `<scratch>/<nome>/.s` (oltre ~107 byte PostgreSQL non parte) | cartella corta in `/run/user`, `/tmp` o `/var/tmp` se il percorso non ci sta |
+| Link simbolici in PGDATA | ignorati in silenzio (come `pg_basebackup`) | ignorati come `pg_basebackup` ma elencati nell'avviso del backup e in `meta.skipped_links` |
+| Installer | utente OS `postgres` fisso, `pg_user` scritto in `agent.conf` | utente OS rilevato dal postmaster in esecuzione (`PG_ARCA_USER` lo forza), nessun `pg_user` fisso; `PG_ARCA_WAL`, `PG_ARCA_SCRATCH` |
+
+Limiti noti (non risolti): `unix_socket_directories` con più voci usa la prima esistente; blocchi da 16/32 kB nel tuning UI (le unità sono assunte da 8 kB); i servizi systemd con `ProtectSystem=full` non possono scrivere un `pg_hba.conf` sotto `/etc` fuori dalle cartelle riaperte dall'installer; l'installazione automatica dei binari non copre SUSE.
+
