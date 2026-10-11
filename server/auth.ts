@@ -54,7 +54,7 @@ const RULES: { m: RegExp; p: RegExp; min: Role }[] = [
   { m: /^(GET|HEAD)$/, p: /./, min: 'viewer' },
   { m: /^POST$/, p: /^\/api\/operations\/[^/]+\/cancel$/, min: 'operator' },
   { m: /^POST$/, p: /^\/api\/clusters\/[^/]+\/operations$/, min: 'operator' },
-  { m: /^POST$/, p: /^\/api\/clusters\/[^/]+\/hba\/apply$/, min: 'operator' },
+  { m: /^POST$/, p: /^\/api\/clusters\/[^/]+\/hba\/(apply|restore)$/, min: 'operator' },
   { m: /^PUT$/, p: /^\/api\/clusters\/[^/]+\/backup-policy$/, min: 'operator' },
   { m: /^POST$/, p: /^\/api\/clusters\/[^/]+\/destination\/check$/, min: 'operator' },
   { m: /^POST$/, p: /^\/api\/discovery\/scan$/, min: 'operator' },

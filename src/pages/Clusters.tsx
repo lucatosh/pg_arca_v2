@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, CopyBlock, Dot, Empty, Field, Icon, Modal, Skeleton, bytes, num } from '../ui';
-import { revalidate, toast, useQuery } from '../hooks';
+import { revalidate, toast, useQuery, useRole } from '../hooks';
 import { summarize } from './Strategy';
 import { go } from '../router';
 import { statusKind } from '../App';
@@ -45,6 +45,7 @@ export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]
 
 /** Cluster list grouped like the sidebar: environment (state, counts, size) > folders > clusters. */
 function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; onOrganize: (c: any) => void }) {
+  const isAdmin = useRole() === 'admin';
   const h = useHealth(30000).data; const health = Object.fromEntries(((h?.clusters || []) as any[]).map((c: any) => [c.id, c.worst]));
   const groups = buildFleet(clusters, health); const fold = useFold('arca.fleet.table');
   // a standby site holds a copy of its primary: it counts for nodes, not again for data size
@@ -59,7 +60,7 @@ function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; 
     <td className={replica ? 'stcell' : undefined} title={replica ? `Replica di ${c.geo.peers?.find((p: any) => p.role === 'primary')?.name}: ${replicaText(c)}` : undefined}><span className="small">{replica ? <>Replica{c.geo.link === 'manual' ? ' (indicata a mano)' : ''} · <span style={{ color: c.geo.health === 'ok' ? undefined : `var(--${c.geo.health})` }}>{replicaText(c)}</span></> : c.status === 'healthy' ? 'In salute' : c.status === 'degraded' ? 'Degradato' : c.status}{health[c.id] === 'critical' || health[c.id] === 'warning' ? <span className="faint"> · {health[c.id] === 'critical' ? 'problemi critici' : 'da controllare'}</span> : null}</span></td>
     <td>{modeOf(c)}</td><td>{stratOf(c, pol)}</td><td>{c.pgVersion || '—'}</td>
     <td className="num">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num">{bytes(c.totalSizeBytes)}</td><td className="num">{num(c.tps)}</td>
-    <td className="num">{c.isSandbox ? null : <button className="btn ghost sm" onClick={e => { e.stopPropagation(); onOrganize(c); }} title="Ambiente, cartella e relazione di replica">Organizza…</button>}</td></tr>;
+    <td className="num">{c.isSandbox || !isAdmin ? null : <button className="btn ghost sm" onClick={e => { e.stopPropagation(); onOrganize(c); }} title="Ambiente, cartella e relazione di replica">Organizza…</button>}</td></tr>;
   const row = (c: any, depth: number) => [one(c, depth), ...(c.replicas || []).map((r: any) => one(r, depth + 1, true, c.environment))];
   const folder = (n: FolderNode, env: string, depth: number): React.ReactNode[] => {
     const k = `${env}:${n.path}`; const open = fold.isOpen(k, true);

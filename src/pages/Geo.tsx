@@ -23,7 +23,7 @@ export function GeoPage({ role }: { role: string }) {
   return <>
     <div className="pagehead"><div className="grow"><h1>Georidondanza</h1>
       <p className="sub">Lo stesso database su più siti: un sito primario e siti di replica (cluster Patroni in modalità standby, o standby fisici) che ricevono i WAL attraverso la rete geografica. Le coppie sono riconosciute da sole; puoi anche indicarle tu.</p></div>
-      {role !== 'viewer' ? <Button icon="plus" onClick={() => setPick(true)}>Indica un sito di replica</Button> : null}</div>
+      {role === 'admin' ? <Button icon="plus" onClick={() => setPick(true)}>Indica un sito di replica</Button> : null}</div>
     {pick ? <LinkPicker all={all} onClose={() => setPick(false)} /> : null}
     {!d ? <Skeleton h={220} /> : !d.groups.length ? <Empty icon="swap" title="Nessuna coppia di siti">Quando un cluster in modalità <code>standby_cluster</code> (o uno standby fisico registrato come cluster) replica da un altro cluster collegato, la coppia compare qui da sola. Per un cluster senza agent, o per dichiarare la relazione prima di attivare la replica, usa «Indica un sito di replica».</Empty> :
       d.groups.map(g => <GroupCard key={g.sysid} g={g} role={role} running={d.jobs.some(j => j.status === 'running')} />)}
