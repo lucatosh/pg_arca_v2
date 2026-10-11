@@ -1,11 +1,11 @@
 #!/bin/bash
 # Compatibility matrix: run the agent's REAL-PostgreSQL test suites against several PostgreSQL major versions (official docker images).
-#   usage: sg docker -c "tools/lab/matrix.sh 12 13 14 15 16 17 18"   (default: 12..18; 10 and 11 are accepted and use bullseye images)
+#   usage: sg docker -c "tools/lab/matrix.sh 14 15 16 17 18"   (default: the supported 14..18; older majors are accepted, 10/11 use bullseye images)
 #   results: FULL log in /tmp/matrix-<v>.log, one line per version on stdout and in /tmp/matrix-summary.txt
 # A major version may be added to VERIFIED in unix-agent/pg_arca/pgcompat.py ONLY when its line here says PASS (that is what "verified" means in the product).
 cd "$(dirname "$0")/../.."; ROOT=$(pwd)
-VERS=${*:-12 13 14 15 16 17 18}
-SUITES="tests.test_pgcompat tests.test_engine_pg tests.test_objects_v2 tests.test_restorecheck tests.test_walscan tests.test_walprefetch tests.test_worker tests.test_engine_standby_pg tests.test_engine_failover_pg tests.test_engine_targets_pg tests.test_wal_rescue_pg tests.test_engine_layout_pg tests.test_discovery_layouts_pg tests.test_archive_enable_pg tests.test_hba_pg tests.test_wal tests.test_restore_safety tests.test_crypto"
+VERS=${*:-14 15 16 17 18}
+SUITES="tests.test_pgcompat tests.test_engine_pg tests.test_objects_v2 tests.test_restorecheck tests.test_walscan tests.test_walprefetch tests.test_worker tests.test_engine_standby_pg tests.test_engine_failover_pg tests.test_engine_targets_pg tests.test_wal_rescue_pg tests.test_engine_layout_pg tests.test_discovery_layouts_pg tests.test_archive_enable_pg tests.test_hba_pg tests.test_wal tests.test_restore_safety tests.test_crypto tests.test_live_pg tests.test_params_pg tests.test_engine_enospc_pg tests.test_patroni_dcs_only tests.test_snapshot_busy tests.test_hba"
 : > /tmp/matrix-summary.txt
 for v in $VERS; do
   case $v in 10|11) tag="$v-bullseye";; *) tag="$v-bookworm";; esac
