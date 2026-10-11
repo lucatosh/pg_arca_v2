@@ -104,7 +104,7 @@ if "full" in STEPS:
     o = timed("full backup", "backup_run", {"type": "full"}); check("full backup", o["status"] == "succeeded")
     print("   result:", json.dumps({k: v for k, v in (o.get("result") or {}).items() if k in ("set_id", "stats", "bytes", "elapsed_sec", "duration_sec")})[:600])
 if "expire0" in STEPS:                                           # the WAL of the initial load predates the first full backup: retention frees it (and that is a test too)
-    o = timed("expire after the first full (WAL of the load)", "backup_expire", {}); check("expire", o["status"] == "succeeded")
+    o = timed("expire after the first full (WAL of the load)", "backup_expire", {"retention_full": 1}); check("expire", o["status"] == "succeeded")
     print("   ", json.dumps({k: v for k, v in (o.get("result") or {}).items() if k in ("wal_removed", "bytes_freed", "delete_sets", "keep_sets")})[:300], "VM free %.1f GB" % free_gb())
 if "verify" in STEPS:
     o = timed("verify", "backup_verify", {}); check("verify", o["status"] == "succeeded" and (o.get("result") or {}).get("ok") is not False)
