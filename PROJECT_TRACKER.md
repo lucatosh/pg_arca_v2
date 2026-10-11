@@ -14,6 +14,9 @@ Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguit
 | Inventario cluster, demo unico eliminabile | `server/clusters.ts`, `server/demo.ts` | Reale | `api.test.ts` |
 | Collegamento senza agent | `server/direct.ts` | **Mai eseguito contro PostgreSQL reale** | solo stub |
 | Scheduler backup | `server/scheduler.ts` | Reale | `scheduler.test.ts` |
+| Store della console scalabile (undo journal, group commit, telemetria lazy, risultati grandi in file) | `server/store.ts`, `server/ops.ts` | Reale: 165 ms → 0,01 ms per mutazione (misurato); lab: regressione 56/56 | `tests/server/store.test.ts`, `ops.test.ts` |
+| Macchine operative | `server/workers.ts`, `pg_arca/worker.py`, `src/pages/Workers.tsx` | Server/agent con test, UI e2e; lab no | `workers.test.ts`, `test_worker.py` |
+| Conflitti tra DBA | `server/conflicts.ts` | Server con test | `conflicts.test.ts` |
 | Forense WAL veloce (DROP/TRUNCATE, cache per segmento, corsia `analysis`) | `unix-agent/pg_arca/engine/walscan.py` | Reale su PG16 locale: 18 s → 2,1 s → 0,02 s (cache); lab 97 s → 8 s (misurati) | `test_walscan.py`, `bench_forensics.py` |
 | Restore: read-ahead WAL, dump zstd:1, pre-flight (chunk, spazio, nome) | `walprefetch.py`, `engine/restorecheck.py`, `pgsession.run_dump` | Reale su PG16 locale: recovery −38 %, dump 3,5 → 1,1 s (misurati); **lab non ancora** | `test_walprefetch.py`, `test_restorecheck.py`, `bench_restore.py` |
 | Restore oggetti v2 (dipendenze, schemi, replace/missing_only/as_new, dry-run) | `unix-agent/pg_arca/engine/objects.py`, `src/pages/Restore.tsx` | Reale su PG16 locale; **lab Patroni non ancora** | `test_objects_v2.py` (10) |

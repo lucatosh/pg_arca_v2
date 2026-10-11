@@ -59,3 +59,11 @@ Ogni punto qui sotto era un'assunzione trovata nel codice; ora è rilevato o con
 
 Limiti noti (non risolti): `unix_socket_directories` con più voci usa la prima esistente; blocchi da 16/32 kB nel tuning UI (le unità sono assunte da 8 kB); i servizi systemd con `ProtectSystem=full` non possono scrivere un `pg_hba.conf` sotto `/etc` fuori dalle cartelle riaperte dall'installer; l'installazione automatica dei binari non copre SUSE.
 
+
+## Macchine operative (backup server, host di recupero) — 11/10
+- Ruolo dell'agent `node_role`: `auto` (predefinito: decide la console), `database`, `worker`. All'installazione `PG_ARCA_ROLE=worker`; senza utente `postgres` l'installer crea l'utente di sistema `pgarca`.
+- In modalità `worker` l'agent **non cerca PostgreSQL** (nessuna discovery di istanze, nessun cluster creato) e riporta: installazioni PostgreSQL per versione (sistema, private di pg_arca, configurate), filesystem reali con tipo (locale, NFS, SMB, Ceph, …) e spazio, cartelle pg_arca (scratch, repository, archivio WAL), CPU/RAM e permessi (root / sudo senza password).
+- Un ruolo impostato localmente vince sempre su quello della console. Test: `unix-agent/tests/test_worker.py`, `tests/server/workers.test.ts`.
+
+## Autenticazione verso PostgreSQL senza peer
+L'agent eredita l'ambiente: con `pg_hba` che vieta `peer` sul socket, un `~/.pgpass` (o `PGPASSFILE`) dell'utente dell'agent e, se serve, `PGSSLMODE` vengono usati da psql/pg_dump/pg_restore. Lo stesso vale per la consegna al primario dal nodo centrale (`centralInto`): la password va nel `.pgpass` del nodo centrale. Non verificato sul lab.
