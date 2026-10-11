@@ -1,0 +1,44 @@
+# Third lab target ("versions"): real-looking Debian servers with systemd, PostgreSQL from the PGDG apt repo.
+#   s14        : ONE standalone PostgreSQL 14 (Debian packaging: /etc/postgresql/14/main + /var/lib/postgresql/14/main, systemd unit)
+#   p18a, p18b : a 2-node Patroni cluster on PostgreSQL 18 (Patroni from apt, systemd unit), DCS = its own etcd (etcdv)
+# Nothing of pg_arca is installed: the agent is attached from the console exactly as a user would (Collega cluster -> comando).
+# Driven by `vers.sh` (up / prep / status / down / reset).
+name: arca-vers
+x-srv: &srv
+  build: ./vers
+  image: pg-arca-lab-srv:bookworm
+  privileged: true
+  tmpfs: ["/run", "/run/lock", "/tmp"]
+  extra_hosts: ["host.docker.internal:host-gateway"]
+  networks: [vers]
+  restart: unless-stopped
+services:
+  etcdv:
+    image: quay.io/coreos/etcd:v3.5.17
+    hostname: etcdv
+    container_name: etcdv
+    command: >
+      etcd --name etcdv --data-dir /data --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://etcdv:2379
+      --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://etcdv:2380 --initial-cluster etcdv=http://etcdv:2380
+    volumes: ["etcdv:/data"]
+    networks: [vers]
+    restart: unless-stopped
+  s14:
+    <<: *srv
+    hostname: s14
+    container_name: s14
+    volumes: ["s14var:/var/lib/postgresql", "s14etc:/etc/postgresql"]
+    ports: ["5414:5432"]
+  p18a:
+    <<: *srv
+    hostname: p18a
+    container_name: p18a
+    volumes: ["p18avar:/var/lib/postgresql"]
+  p18b:
+    <<: *srv
+    hostname: p18b
+    container_name: p18b
+    volumes: ["p18bvar:/var/lib/postgresql"]
+networks:
+  vers: { ipam: { config: [{ subnet: 172.30.18.0/24 }] } }
+volumes: { etcdv: {}, s14var: {}, s14etc: {}, p18avar: {}, p18bvar: {} }
