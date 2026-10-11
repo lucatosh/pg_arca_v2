@@ -14,6 +14,21 @@ export const STATUS_LABEL: Record<string, string> = { queued: 'In coda', leased:
 export const statusBadge = (s: string) => <Badge kind={s === 'succeeded' ? 'ok' : s === 'failed' ? 'bad' : s === 'running' || s === 'leased' ? 'info' : undefined}>{STATUS_LABEL[s] || s}</Badge>;
 export const PHASE: Record<string, string> = { catalog: 'Lettura del catalogo', checkpoint: 'Checkpoint di PostgreSQL', copy: 'Copia dei dati', finalize: 'Chiusura del backup', wal: 'Attesa archiviazione WAL', extract: 'Estrazione dei file', starting: 'Avvio istanza temporanea', recovery: 'Recovery dei WAL', transfer: 'Trasferimento dati', verify: 'Verifica dei chunk', 'restore-test': 'Prova di ripristino', scan: 'Analisi dei WAL' };
 
+/** Throughput and time left of the current phase, measured in the browser between progress samples (same operation, same phase). */
+const samples = new Map<string, { t: number; v: number; phase: string }>();
+function rateOf(op: Op): string | null {
+  const p = op.progress; if (!p || isTerminal(op.status)) return null;
+  const [v, total, unit] = p.bytes_total ? [p.bytes || 0, p.bytes_total, 'B'] : p.segments_total ? [p.segments || 0, p.segments_total, 'seg'] : p.files_total ? [p.files || 0, p.files_total, 'f'] : [null, null, ''];
+  if (v == null || !total) return null;
+  const now = Date.now(); const k = op.id; const s0 = samples.get(k);
+  if (!s0 || s0.phase !== p.phase || v < s0.v) { samples.set(k, { t: now, v, phase: p.phase }); return null; }
+  const dt = (now - s0.t) / 1000; if (dt < 4 || v === s0.v) return null;
+  const r = (v - s0.v) / dt; const left = (total - v) / r;
+  const eta = left < 90 ? `${Math.max(1, Math.round(left))} s` : left < 5400 ? `${Math.round(left / 60)} min` : `${(left / 3600).toFixed(1)} h`;
+  const rate = unit === 'B' ? `${bytes(r)}/s` : unit === 'seg' ? `${r.toFixed(1)} segmenti/s` : `${r.toFixed(0)} file/s`;
+  return `${rate} · fine fase stimata tra ${eta}`;
+}
+
 export function pctOf(p: any): number | null {
   if (!p) return null;
   if (p.bytes_total) return Math.round((p.bytes / p.bytes_total) * 100);
@@ -27,12 +42,13 @@ export function OpPanel({ op, error, cancel, label }: { op: Op | null; error?: s
   if (!op && !error) return null;
   if (!op) return <Banner kind="bad" title="Operazione non avviata">{error}</Banner>;
   const done = isTerminal(op.status); const p = op.progress; const pct = pctOf(p);
+  const speed = rateOf(op);
   return <div className="stack">
     <div className="row wrap"><strong>{label || OP_LABEL[op.type] || op.type}</strong>{statusBadge(op.status)}
       {op.cancelRequested && !done ? <Badge kind="warn">Annullamento richiesto…</Badge> : null}
       <div className="grow" />{!done && cancel && !op.cancelRequested ? <Button sm kind="danger" icon="stop" onClick={cancel}>Annulla</Button> : null}</div>
     {!done ? <>
-      <Progress pct={pct} />
+      <Progress pct={pct} />{speed ? <div className="small faint">{speed}</div> : null}
       <div className="small muted">{p?.phase ? PHASE[p.phase] || p.phase : op.status === 'queued' ? 'In coda: l’agent esegue le operazioni sui dati una alla volta, parte appena finisce quella in corso.' : 'In corso…'}
         {p?.phase === 'checkpoint' ? ` — da ${p.elapsed_sec ?? 0} s${p.fast ? '' : ' (checkpoint distribuito: su un server carico può durare alcuni minuti; l’annullamento lo interrompe)'}` : ''}{p?.files_total ? ` — ${num(p.files)} / ${num(p.files_total)} file` : ''}{p?.bytes_total ? `, ${bytes(p.bytes)} / ${bytes(p.bytes_total)}` : ''}{p?.chunks ? ` — ${num(p.chunks)} chunk verificati` : ''}{p?.segments_total ? ` — ${num(p.segments)} / ${num(p.segments_total)} segmenti` : ''}{p?.msg ? ` — ${p.msg}` : ''}</div></> : null}
     {op.status === 'failed' ? <Banner kind="bad" title="Operazione fallita"><span style={{ whiteSpace: 'pre-wrap' }}>{op.error || error}</span>{hintFor(op.error || error) ? <p className="small" style={{ marginTop: 8 }}>{hintFor(op.error || error)}</p> : null}</Banner> : null}
