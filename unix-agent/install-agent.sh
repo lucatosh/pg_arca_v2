@@ -10,6 +10,8 @@
 #       PG_ARCA_NODE_NAME   PG_ARCA_TLS_CA=/path/ca.pem   PG_ARCA_BUNDLE_SHA256=<hex>
 #       PG_ARCA_REPO=/var/lib/pgarca/repo   PG_ARCA_WAL=/var/lib/pgarca/wal   PG_ARCA_SCRATCH=/var/tmp/pg_arca_scratch
 #       PG_ARCA_USER=<OS user that owns PostgreSQL; default: detected from the running server, else postgres>   PG_ARCA_PG_ROLE=<superuser role, only if unrelated to the OS user>
+#       PG_ARCA_ROLE=worker   operational machine (backup server, host for the recovery instances): no database is searched; runs as postgres if present, else as a
+#                             dedicated system user "pgarca" created here
 # ==============================================================================
 set -euo pipefail
 
@@ -24,8 +26,15 @@ detect_pg_user() {
   [[ -n "$u" && "$u" != "root" ]] && id "$u" &>/dev/null && { echo "$u"; return; }
   echo postgres
 }
+ROLE="${PG_ARCA_ROLE:-auto}"
+[[ "$ROLE" =~ ^(auto|database|worker)$ ]] || die "PG_ARCA_ROLE must be auto, database or worker"
 PGUSER_OS="${PG_ARCA_USER:-$(detect_pg_user)}"
-[[ -n "${PG_ARCA_USER:-}" ]] || echo "agent OS user: $PGUSER_OS (detected from the running PostgreSQL; override with PG_ARCA_USER=...)"
+if [[ "$ROLE" == worker && -z "${PG_ARCA_USER:-}" ]] && ! id "$PGUSER_OS" &>/dev/null; then
+  # a backup server / recovery host usually has no postgres account: a dedicated unprivileged system user
+  PGUSER_OS=pgarca
+  id pgarca &>/dev/null || useradd --system --create-home --home-dir /var/lib/pgarca --shell /bin/bash pgarca || die "cannot create the system user pgarca (set PG_ARCA_USER=...)"
+fi
+[[ -n "${PG_ARCA_USER:-}" ]] || echo "agent OS user: $PGUSER_OS (override with PG_ARCA_USER=...)"
 id "$PGUSER_OS" &>/dev/null || die "OS user '$PGUSER_OS' not found. The agent must run as the PostgreSQL OS user (set PG_ARCA_USER=...)."
 INSTALL_DIR=/opt/pg-arca; CONF_DIR=/etc/pg-arca; STATE_ROOT=/var/lib/pgarca
 REPO_DIR="${PG_ARCA_REPO:-$STATE_ROOT/repo}"; WAL_DIR="${PG_ARCA_WAL:-$STATE_ROOT/wal}"; LOG_DIR=/var/log/pgarca; SCRATCH="${PG_ARCA_SCRATCH:-/var/tmp/pg_arca_scratch}"
@@ -74,6 +83,7 @@ c = {"connection_mode": "push", "web_server_url": os.environ["PG_ARCA_URL"].rstr
 # no "pg_user": the agent finds the role that connects (owner of PGDATA, its own OS user, postgres). Set PG_ARCA_PG_ROLE only for a superuser with an unrelated name.
 if os.environ.get("PG_ARCA_PG_ROLE"): c["pg_user"] = os.environ["PG_ARCA_PG_ROLE"]
 if os.environ.get("PG_ARCA_NODE_NAME"): c["node_name"] = os.environ["PG_ARCA_NODE_NAME"]
+if "$ROLE" != "auto": c["node_role"] = "$ROLE"
 if os.environ.get("PG_ARCA_TLS_CA"): c["tls_ca_file"] = os.environ["PG_ARCA_TLS_CA"]
 json.dump(c, open(sys.argv[1], "w"), indent=2)
 PY

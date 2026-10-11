@@ -23,6 +23,7 @@ import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv } from './server/a
 import { runSelfTest } from './server/selftest';
 import { attachLogSocket, broadcastLiveLog, mountLogRoutes } from './server/logs';
 import { mountNetscanRoutes } from './server/netscan';
+import { mountWorkerRoutes } from './server/workers';
 import { buildDemoCluster } from './server/demo';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -80,6 +81,7 @@ mountHbaRoutes(app, store);
 mountNotifyRoutes(app, store);
 mountAdvancedRoutes(app, store, auditLog);
 mountJoinRoutes(app, store);
+mountWorkerRoutes(app, store);
 app.get('/api/briefing', (_req: any, res: any) => res.json(briefing(store.peek())));
 mountLogRoutes(app);
 mountNetscanRoutes(app);

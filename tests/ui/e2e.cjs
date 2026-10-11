@@ -145,6 +145,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   // attach wizard
   await p.click('button:has-text("Cluster") >> nth=0'); await p.click('button:has-text("Collega cluster") >> nth=0'); await p.waitForSelector('text=Con agent (consigliato)'); await p.click('text=Con agent (consigliato)');
   await p.click('button:has-text("Genera comando")'); await p.waitForSelector('text=PG_ARCA_ENROLL_TOKEN'); await shot('16-attach');
+  // operational machines: sidebar entry, list, detail, check as recovery host, use for recoveries
+  await p.keyboard.press('Escape').catch(() => {});
+  await p.goto(base + '/#/workers'); await p.waitForSelector('td:has-text("bk01")'); await shot('18a-workers');
+  await p.click('.side .citem:has-text("bk01")'); await p.waitForSelector('text=Dischi e condivisioni'); await p.waitForSelector('text=/backup');
+  await p.click('button:has-text("Verifica come host di recupero")'); await p.waitForSelector('text=Può eseguire i ripristini', { timeout: 15000 }); await shot('18b-worker');
+  await p.click('button:has-text("Usala per i ripristini")'); await p.click('.modal button:has-text("Usa questa macchina")'); await p.waitForSelector('text=nodo di recupero per tutti i cluster', { timeout: 10000 });
   // mobile
   await p.setViewportSize({ width: 390, height: 800 }); await shot('17-mobile');
   console.log(errs.length ? 'ERRORS:\n' + errs.join('\n') : 'no page errors'); assert.strictEqual(errs.length, 0);

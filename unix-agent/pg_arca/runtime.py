@@ -27,11 +27,28 @@ class Runtime(object):
         self.patroni_info = None
         self.db = PostgresClient(user=config.get("pg_user") or "postgres", port=config.get("pg_port") or 5432, host=config.get("pg_host", ""), psql_path=pgaccess.find_tool("psql", config))
         self.patroni = PatroniBridge("")
+        from pg_arca import worker as _w
+        self.worker = _w.is_worker(config)                   # an operational machine: no database of its own (see worker.py); the console may also say so later
+        self.inventory = _w.Inventory(config)
         self.refresh()
+
+    def set_worker(self, on):
+        """The console decided this node's role (heartbeat answer). Switching re-runs discovery with the new behaviour."""
+        role = str(self.config.get("node_role") or "auto").lower()
+        on = role == "worker" or (bool(on) and role != "database")          # an explicit local role always wins
+        if on != self.worker:
+            logger.info("node role is now %s", "operational machine (no database)" if on else "database server")
+            self.worker = on
+            self.refresh()
 
     def refresh(self):
         """Re-run discovery and re-bind clients. Cheap enough to run every few minutes."""
         c = self.config
+        if self.worker:                                          # no database to look for: what the machine can do instead
+            self.instance, self.patroni_info, self.patroni = None, None, PatroniBridge("")
+            self.inventory.refresh()
+            self.report = {"node_kind": "worker", "postgres_instances": [], "patroni_clusters": [], "worker": self.inventory.get()}
+            return self.report
         rep = self.engine.scan_all()
         self.report = rep
         insts = rep.get("postgres_instances", [])
@@ -122,6 +139,11 @@ class Runtime(object):
         return d
 
     def build_snapshot(self, wal, cas):
+        if self.worker:
+            return {"node_name": self.config["node_name"], "agent_version": AGENT_VERSION, "node_kind": "worker", "worker": self.inventory.get(),
+                    "backup": cas.get_stats() if cas else None,
+                    "system": self.system_metrics({"repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir"), "scratch": self.config.get("scratch_dir")}),
+                    "storage": {"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))}}
         inst = self.instance or {}
         pg = self.db.get_snapshot() if inst else {"alive": False, "error": "no PostgreSQL instance found on this host"}
         pg["data_directory"] = inst.get("data_directory")

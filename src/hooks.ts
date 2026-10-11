@@ -82,7 +82,8 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void) {
     if (!keyRef.current || keyRef.current.sig !== sig) keyRef.current = { sig, key: uid('op') };
     setBusy(true); setError(null); setOp(null);
     try {
-      const r = await api<{ operation: Op; approval?: any }>('POST', `/api/clusters/${clusterId}/operations`, { type, params, nodeId: extra.nodeId }, { key: keyRef.current.key });
+      const url = clusterId.startsWith('worker:') ? `/api/workers/${encodeURIComponent(clusterId.slice(7))}/operations` : `/api/clusters/${clusterId}/operations`;   // operational machines have their own endpoint
+      const r = await api<{ operation: Op; approval?: any }>('POST', url, { type, params, nodeId: extra.nodeId }, { key: keyRef.current.key });
       if (r.approval) { setBusy(false); keyRef.current = null; revalidate('/api/approvals'); toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); return null; }
       setOp(r.operation); revalidateOps();
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); } else poll(r.operation.id);

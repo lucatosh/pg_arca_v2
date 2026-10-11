@@ -361,3 +361,6 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .diskline { display: inline-flex; align-items: center; gap: 8px; } .diskline .db { display: inline-block; width: 90px; height: 6px; border-radius: 4px; overflow: hidden; background: color-mix(in srgb, var(--ok) 18%, var(--surface-3)); }
 .diskline .db i { display: block; height: 100%; background: var(--ink-3); }
 .diskline.warn i { background: var(--warn); } .diskline.bad i { background: var(--bad); }
+.side .wlist { padding: 0 10px 6px; max-height: 30vh; overflow: auto; flex: none; }
+.side .sgadd { background: none; border: 0; color: var(--side-ink-2); cursor: pointer; padding: 2px; border-radius: 5px; display: grid; place-items: center; } .side .sgadd:hover { color: #fff; background: var(--side-hover); }
+.shell[data-rail="1"] .sgadd { display: none; }

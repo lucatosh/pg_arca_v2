@@ -19,6 +19,7 @@ import { mountNotifyRoutes } from '../../server/notify';
 import { mountAdvancedRoutes } from '../../server/approvals';
 import { briefing } from '../../server/health';
 import { mountJoinRoutes } from '../../server/join';
+import { mountWorkerRoutes } from '../../server/workers';
 import { audit } from '../../server/ops';
 
 const port = Number(process.argv[2] || 5188); const staticDir = process.argv[3] || '/tmp/claude-0/ui';
@@ -30,7 +31,7 @@ const withAgent = process.env.NO_AGENT !== '1';
   const demo = () => ({ id: 'cluster-demo', name: 'Cluster demo', environment: 'dev', isSandbox: true, status: 'healthy', pgVersion: '16', databases: [{ name: 'demo', size: 1e9 }], totalSizeBytes: 1e9, tps: 0, haState: { nodes: [{ name: 'demo-1', role: 'primary', online: true, state: 'running', host: 'demo', port: 5432, replicationLagBytes: 0, cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 100, source: 'agent' }] } });
   app.use(requireAdmin(store));
   mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec });
-  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountScopedRoutes(app, store); mountDestinationRoutes(app, store); mountNotifyRoutes(app, store, async () => ({ ok: true })); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store);
+  mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountScopedRoutes(app, store); mountDestinationRoutes(app, store); mountNotifyRoutes(app, store, async () => ({ ok: true })); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store); mountWorkerRoutes(app, store);
   app.get('/api/briefing', (_q: any, r: any) => r.json(briefing(store.peek())));
   await seedDemoOnFirstRun(store, demo);
 
@@ -124,6 +125,17 @@ const withAgent = process.env.NO_AGENT !== '1';
     };
     const beat = async () => { try { const hb = await app.call('POST', '/api/agent/heartbeat', { body: { snapshot: snap(), max_ops: 3, agent_version: '2.0' }, headers: agent.h }); for (const op of hb.body.ops || []) handle(op).catch(e => console.error(e)); } catch (e) { console.error(e); } };
     await beat(); setInterval(beat, 1000);
+    // an operational machine (backup server): no database, inventory only; answers its own operations
+    const wt = await app.call('POST', '/api/enrollment-tokens', { body: { label: 'Backup server DC1', kind: 'worker' }, headers: { cookie } });
+    const wen = await app.call('POST', '/api/agent/enroll', { body: { enrollment_token: wt.body.token, node_name: 'bk01', agent_version: '2.0', node_role: 'worker', discovery: { node_kind: 'worker', postgres_instances: [] } } });
+    const wh = { authorization: 'Bearer ' + wen.body.agent_token, 'x-arca-node': wen.body.node_id };
+    const winv = { node_kind: 'worker', worker: { role: 'worker', pg_installations: [{ major: 16, version: '16.4', bindir: '/usr/lib/postgresql/16/bin', source: 'system' }],
+      host: { os: 'Debian GNU/Linux 12', cpus: 16, mem_total: 64e9, mem_available: 51e9, root: false, sudo_nopasswd: true },
+      mounts: [{ mount: '/', fstype: 'ext4', remote: false, total_bytes: 2e11, free_bytes: 1.2e11 }, { mount: '/backup', fstype: 'nfs4', remote: true, total_bytes: 2e13, free_bytes: 1.4e13 }],
+      dirs: { scratch: { path: '/var/tmp/pg_arca_scratch', exists: true, writable: true, free_bytes: 1.2e11 }, repo: { path: '/backup/pgarca/repo', exists: true, writable: true, free_bytes: 1.4e13 } } } };
+    const wbeat = async () => { try { const hb = await app.call('POST', '/api/agent/heartbeat', { body: { snapshot: winv, max_ops: 2 }, headers: wh });
+      for (const op of hb.body.ops || []) { await sleep(400); await app.call('POST', `/api/agent/ops/${op.id}/report`, { body: { status: 'succeeded', result: op.type === 'ephemeral_preflight' ? { ok: true, level: 'ok', major: op.params.major, checks: [{ id: 'binaries', level: 'ok', text: `PostgreSQL ${op.params.major} in /usr/lib/postgresql/${op.params.major}/bin` }, { id: 'scratch', level: 'ok', text: 'scratch /var/tmp/pg_arca_scratch: 111.8 GiB free' }] } : { ok: true } }, headers: wh }); } } catch (e) { console.error(e); } };
+    await wbeat(); setInterval(wbeat, 1000);
   }
 
   const mime: Record<string, string> = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html' };

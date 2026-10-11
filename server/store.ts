@@ -34,6 +34,7 @@ export interface EnrollmentToken {
   usedByNode?: string;
   clusterId?: string;      // optional: bind the node to an existing cluster
   environment?: string;    // environment given to a cluster auto-created at enrollment
+  kind?: 'worker';         // the token enrolls an operational machine (no cluster)
 }
 
 export interface NodeRecord {
@@ -52,6 +53,10 @@ export interface NodeRecord {
   discovery?: any;            // last discovery report
   prevXact?: { total: number; at: number };   // for TPS derivation
   tps?: number;
+  /** 'worker' = operational machine (backup server, recovery host): no database, no cluster (see server/workers.ts). Absent = database server. */
+  kind?: 'worker';
+  label?: string;             // operational machines: what it is for, in the operator's words
+  roles?: string[];           // operational machines: 'recovery' | 'repository' | 'drill'
 }
 
 export type OpStatus = 'queued' | 'leased' | 'running' | 'succeeded' | 'failed' | 'expired' | 'cancelled';

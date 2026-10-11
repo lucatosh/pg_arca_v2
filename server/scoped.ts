@@ -107,7 +107,7 @@ export function mountScopedRoutes(app: any, store: Store) {
       kind, defaults: SPECS[kind].defaults, assignments: (st.settings.scoped || {})[kind] || {},
       folders: [...new Set(st.clusters.map((c: any) => normFolder(c.folder)).filter(Boolean))].sort(),
       clusters: st.clusters.filter((c: any) => !c.isSandbox).map((c: any) => ({ id: c.id, name: c.name, environment: c.environment, folder: normFolder(c.folder), source: c.source, effective: resolveScoped(st, kind, c) })),
-      nodes: Object.values(st.nodes).map((n: any) => ({ id: n.id, name: n.name, clusterId: n.clusterId || null, online: online(n), pg: !!n.snapshot?.postgres?.alive })),
+      nodes: Object.values(st.nodes).map((n: any) => ({ id: n.id, name: n.name, clusterId: n.clusterId || null, online: online(n), pg: !!n.snapshot?.postgres?.alive, worker: n.kind === 'worker', label: n.label || '', pgMajors: [...new Set(((n.snapshot?.worker?.pg_installations || []) as any[]).map((i: any) => i.major).filter(Boolean))] })),
     };
   };
   const kindOf = (req: Request): Kind | null => (Object.prototype.hasOwnProperty.call(SPECS, req.params.kind) ? (req.params.kind as Kind) : null);

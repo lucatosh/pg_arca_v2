@@ -125,6 +125,16 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       const reuse = t.usedAt && t.usedByNode === nodeName && Date.now() - Date.parse(t.usedAt) < REENROLL_WINDOW_MS;
       if (t.usedAt && !reuse) return { err: 'token_already_used' as const };
 
+      if (t.kind === 'worker' || b.node_role === 'worker') {                    // operational machine: no database, no cluster
+        if (t.clusterId) return { err: 'token_for_cluster' as const };
+        const existing = Object.values(d.nodes).find(n => n.name === nodeName && n.kind === 'worker');
+        const id = existing?.id || newId('node');
+        d.nodes[id] = { ...(existing || {}), id, name: nodeName, kind: 'worker', tokenHash: sha256(secret), enrolledAt: existing?.enrolledAt || nowIso(), clusterId: undefined,
+          agentVersion: String(b.agent_version || ''), remoteIp: req.socket.remoteAddress || '', discovery: b.discovery || {}, lastSeen: nowIso(), label: t.label || existing?.label } as NodeRecord;
+        t.usedAt = t.usedAt || nowIso(); t.usedByNode = nodeName;
+        ops.audit(d, { actor: `agent:${nodeName}`, action: 'agent.enroll', status: 'OK', details: { nodeId: id, kind: 'worker' } });
+        return { ok: true as const, nodeId: id, clusterId: null, kind: 'worker' };
+      }
       const disc = b.discovery || {};
       const inst = (disc.postgres_instances || [])[0] || {};
       const clusterKey: string | undefined = inst.cluster_key;
@@ -149,10 +159,10 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       t.usedAt = t.usedAt || nowIso(); t.usedByNode = nodeName;
       ops.audit(d, { clusterId: cluster.id, actor: `agent:${nodeName}`, action: 'agent.enroll', status: 'OK', details: { nodeId: id } });
       refreshCluster(d, cluster.id);
-      return { ok: true as const, nodeId: id, clusterId: cluster.id };
+      return { ok: true as const, nodeId: id, clusterId: cluster.id, kind: 'db' };
     });
     if ('err' in result) return res.status(result.err === 'invalid_token' ? 401 : 403).json({ error: result.err });
-    res.status(201).json({ node_id: result.nodeId, cluster_id: result.clusterId, agent_token: secret, heartbeat_interval: 10 });
+    res.status(201).json({ node_id: result.nodeId, cluster_id: result.clusterId, node_kind: result.kind, agent_token: secret, heartbeat_interval: 10 });
   });
 
   // ---- heartbeat: telemetry up, operations down -----------------------------
@@ -179,6 +189,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
         }
       }
       if (b.discovery) n.discovery = b.discovery;
+      if (n.kind === 'worker') return;                     // operational machine: no cluster to derive
       reconcileCluster(d, node.id);
       if (n.clusterId) refreshCluster(d, n.clusterId);
     }, { lazy: true });                                    // telemetry: recomputed at every heartbeat, written within seconds (store.ts LAZY_MS)
@@ -192,7 +203,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       await new Promise(r => setTimeout(r, 250));
       if (store.peek().operations.some(o => o.nodeId === node.id && o.status === 'queued')) todo = await ops.lease(store, node.id, max);
     }
-    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, log_mode: logModeFor(node.clusterId), ops: todo.map(o => ({ id: o.id, type: o.type, params: withEphemeral(store, o), attempt: o.attempts, cluster_id: o.clusterId })) });
+    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, node_kind: store.peek().nodes[node.id]?.kind === 'worker' ? 'worker' : 'db', log_mode: logModeFor(node.clusterId), ops: todo.map(o => ({ id: o.id, type: o.type, params: withEphemeral(store, o), attempt: o.attempts, cluster_id: o.clusterId })) });
   });
 
   // ---- log ingest (authenticated, size-bounded) -----------------------------
@@ -227,18 +238,20 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
   const actorOf = (req: Request) => (req as any).actor || 'admin';
 
   app.post('/api/enrollment-tokens', async (req: Request, res: Response) => {
-    const { label = '', ttlMinutes = 60, clusterId, environment } = req.body || {};
+    const { label = '', ttlMinutes = 60, clusterId, environment, kind } = req.body || {};
+    if (kind !== undefined && kind !== 'worker' && kind !== 'db') return res.status(400).json({ error: 'invalid_kind' });
+    if (kind === 'worker' && clusterId) return res.status(400).json({ error: 'worker_without_cluster', message: 'Una macchina operativa non appartiene a un cluster.' });
     const ttl = Math.min(Math.max(Number(ttlMinutes) || 60, 1), 7 * 24 * 60);
     if (environment && !['prod', 'prep', 'int', 'dev', 'test'].includes(environment)) return res.status(400).json({ error: 'invalid_environment' });
     if (clusterId && !store.peek().clusters.some((c: any) => c.id === clusterId)) return res.status(404).json({ error: 'cluster_not_found' });
     const token = 'arca_enr_' + newSecret(24);
     const rec = { id: newId('tok'), hash: sha256(token), label: String(label).slice(0, 80), createdAt: nowIso(),
-                  expiresAt: new Date(Date.now() + ttl * 60000).toISOString(), clusterId, environment };
+                  expiresAt: new Date(Date.now() + ttl * 60000).toISOString(), clusterId, environment, ...(kind === 'worker' ? { kind: 'worker' as const } : {}) };
     await store.mutate(d => { d.enrollmentTokens.push(rec); ops.audit(d, { actor: actorOf(req), action: 'token.create', status: 'OK', details: { id: rec.id, label: rec.label } }); });
     const base = `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${req.headers.host}`;
     res.status(201).json({
       id: rec.id, token, expiresAt: rec.expiresAt,
-      installCommand: `curl -fsSL ${base}/agent/install.sh | sudo PG_ARCA_URL=${base} PG_ARCA_ENROLL_TOKEN=${token} bash`,
+      installCommand: `curl -fsSL ${base}/agent/install.sh | sudo PG_ARCA_URL=${base} PG_ARCA_ENROLL_TOKEN=${token}${kind === 'worker' ? ' PG_ARCA_ROLE=worker' : ''} bash`,
       note: 'The token is shown once and can enroll exactly one node.',
     });
   });

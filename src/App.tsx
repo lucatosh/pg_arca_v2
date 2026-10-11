@@ -18,6 +18,8 @@ const Discovery = lazy(() => import('./pages/Global').then(m => ({ default: m.Di
 const StrategyPage = lazy(() => import('./pages/Strategy').then(m => ({ default: m.StrategyPage })));
 const InfraPage = lazy(() => import('./pages/Infra').then(m => ({ default: m.InfraPage })));
 const UsersPage = lazy(() => import('./pages/Users').then(m => ({ default: m.UsersPage })));
+const WorkersPage = lazy(() => import('./pages/Workers').then(m => ({ default: m.WorkersPage })));
+const WorkerView = lazy(() => import('./pages/Workers').then(m => ({ default: m.WorkerView })));
 const SettingsPage = lazy(() => import('./pages/Settings').then(m => ({ default: m.SettingsPage })));
 
 export const statusKind = (s?: string): 'ok' | 'warn' | 'bad' => (s === 'healthy' ? 'ok' : s === 'degraded' ? 'warn' : s === 'critical' || s === 'down' ? 'bad' : 'warn');
@@ -32,11 +34,13 @@ export function App() {
 
 const rd = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
 const wr = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
-const PAGE_TITLE: Record<string, string> = { today: 'Oggi', clusters: 'Cluster', strategy: 'Strategie di backup', infra: 'Ripristino e archivi', discovery: 'Rilevamento', settings: 'Impostazioni', users: 'Utenti', audit: 'Registro attività', history: 'Storico operazioni' };
+const PAGE_TITLE: Record<string, string> = { today: 'Oggi', clusters: 'Cluster', strategy: 'Strategie di backup', infra: 'Ripristino e archivi', discovery: 'Rilevamento', settings: 'Impostazioni', users: 'Utenti', audit: 'Registro attività', history: 'Storico operazioni', workers: 'Macchine operative', worker: 'Macchina operativa' };
 
 function Shell({ user, role, logout }: { user: string; role: string; logout: () => void }) {
   const route = useRoute();
   const { data, loading } = useQuery<{ clusters: any[]; demoAvailable: boolean }>('/api/clusters', { interval: 6000 });
+  const wq = useQuery<{ workers: { id: string; name: string; label: string; online: boolean; roles: string[] }[] }>('/api/workers-summary', { interval: 10000 });
+  const workers = wq.data?.workers || [];
   const health = useHealth(30000); const hc = health.data?.counts; const urgent = (hc?.critical || 0) + (hc?.warning || 0);
   const [pal, setPal] = useState(false);
   const [th, setTh] = useState(theme());
@@ -86,6 +90,13 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         {!loading && !clusters.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>Nessun cluster.</div> : null}
         {!loading && clusters.length && !shown.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>Nessun risultato.</div> : null}
       </div>
+      <div className="sgroup row" style={{ paddingRight: 14 }}><span className="grow">Macchine operative{workers.length ? ` (${workers.length})` : ''}</span>
+        <button className="sgadd" onClick={() => go('workers')} title="Tutte le macchine operative e come aggiungerne una" aria-label="Macchine operative"><Icon n="plus" s={13} /></button></div>
+      <div className="wlist">
+        {workers.map(w => <button key={w.id} className="citem" title={w.label || w.name} aria-current={route.page === 'worker' && route.id === w.id ? 'page' : undefined} onClick={() => go(`w/${encodeURIComponent(w.id)}`)}>
+          <Dot kind={w.online ? 'ok' : 'bad'} /><span className="n lbl">{w.name}</span><span className="faint small lbl">{w.roles.includes('repository') ? 'backup' : w.roles.includes('recovery') ? 'recupero' : ''}</span></button>)}
+        {!workers.length ? <button className="citem" onClick={() => go('workers')}><Icon n="server" s={14} /><span className="n lbl small" style={{ color: 'var(--side-ink-2)' }}>Backup server, host di recupero…</span></button> : null}
+      </div>
       <div className="foot">
         <span className="trunc who" title={user}><Icon n="user" s={14} /> {user}{role !== 'admin' ? <span className="faint"> · {role === 'viewer' ? 'sola lettura' : 'operatore'}</span> : null}</span>
         <span className="row gap-s">
@@ -97,7 +108,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
     <div className="main">
       <div className="topbar">
         <select className="input mobnav" aria-label="Vai a" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
-          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Oggi</option><option value="strategy">Strategie di backup</option><option value="infra">Ripristino e archivi</option><option value="discovery">Rilevamento</option><option value="history">Storico operazioni</option><option value="audit">Registro attività</option></select>
+          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Oggi</option><option value="strategy">Strategie di backup</option><option value="infra">Ripristino e archivi</option><option value="discovery">Rilevamento</option><option value="workers">Macchine operative</option><option value="history">Storico operazioni</option><option value="audit">Registro attività</option></select>
         <div className="crumbs" aria-label="Posizione">
           {route.page === 'cluster' ? <><a href="#/">Cluster</a><Icon n="chev" s={12} /><strong className="trunc">{cur?.name || '…'}</strong></> : <strong>{PAGE_TITLE[route.page] || ''}</strong>}
         </div>
@@ -115,6 +126,8 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
           {route.page === 'strategy' && <StrategyPage />}
           {route.page === 'infra' && <InfraPage tab={route.tab} />}
           {route.page === 'today' && <TodayPage me={user} role={role} />}
+          {route.page === 'workers' && <WorkersPage role={role} />}
+          {route.page === 'worker' && <WorkerView id={route.id!} role={role} />}
           {route.page === 'settings' && (role === 'admin' ? <SettingsPage /> : <Empty icon="lock" title="Solo per gli amministratori" />)}
           {route.page === 'users' && (role === 'admin' ? <UsersPage me={user} /> : <Empty icon="lock" title="Solo per gli amministratori" />)}
         </Suspense>
@@ -133,7 +146,7 @@ function Palette({ onClose, clusters, route, cycle }: { onClose: () => void; clu
     for (const c of clusters) a.push({ label: c.name, hint: c.environment, icon: 'db', run: () => go(`c/${encodeURIComponent(c.id)}`) });
     const cid = route.page === 'cluster' ? route.id : clusters[0]?.id;
     if (cid) for (const t of TAB_ITEMS) if (!t.preview) a.push({ label: `${clusters.find(c => c.id === cid)?.name || ''} › ${t.label}`, icon: t.icon || 'chev', run: () => go(`c/${encodeURIComponent(cid)}/${t.id}`) });
-    a.push({ label: 'Oggi: cosa richiede attenzione', icon: 'alert', run: () => go('today') }, { label: 'Tutti i cluster', icon: 'layers', run: () => go('') }, { label: 'Strategie di backup', icon: 'shield', run: () => go('strategy') }, { label: 'Ripristino e archivi: istanza di recupero e destinazione dei backup', icon: 'restore', run: () => go('infra') }, { label: 'Rilevamento', icon: 'search', run: () => go('discovery') }, { label: 'Storico operazioni', icon: 'activity', run: () => go('history') }, { label: 'Registro attività', icon: 'list', run: () => go('audit') }, { label: 'Mostra le attività in corso', hint: 'Ctrl J', icon: 'activity', run: () => window.dispatchEvent(new Event('arca:dock')) }, { label: 'Cambia tema', icon: 'settings', run: cycle });
+    a.push({ label: 'Oggi: cosa richiede attenzione', icon: 'alert', run: () => go('today') }, { label: 'Tutti i cluster', icon: 'layers', run: () => go('') }, { label: 'Strategie di backup', icon: 'shield', run: () => go('strategy') }, { label: 'Ripristino e archivi: istanza di recupero e destinazione dei backup', icon: 'restore', run: () => go('infra') }, { label: 'Rilevamento', icon: 'search', run: () => go('discovery') }, { label: 'Macchine operative: backup server e host di recupero', icon: 'server', run: () => go('workers') }, { label: 'Storico operazioni', icon: 'activity', run: () => go('history') }, { label: 'Registro attività', icon: 'list', run: () => go('audit') }, { label: 'Mostra le attività in corso', hint: 'Ctrl J', icon: 'activity', run: () => window.dispatchEvent(new Event('arca:dock')) }, { label: 'Cambia tema', icon: 'settings', run: cycle });
     const s = q.trim().toLowerCase();
     return s ? a.filter(x => x.label.toLowerCase().includes(s)) : a;
   }, [q, clusters, route, cycle]);

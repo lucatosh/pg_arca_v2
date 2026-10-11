@@ -51,13 +51,13 @@ export function mountJoinRoutes(app: any, store: Store) {
       if (cur) {
         if (!safeEq(cur.secretHash, b.secret_hash)) return { code: 409, body: { error: 'fingerprint_conflict' } };
         cur.lastSeenAt = nowIso(); cur.ip = ip;
-        if (cur.status === 'pending') { cur.summary = summarize(b.discovery); cur.agentVersion = trunc(b.agent_version, 30); }
+        if (cur.status === 'pending') { cur.summary = { ...summarize(b.discovery), node_role: b.node_role === 'worker' ? 'worker' : undefined }; cur.agentVersion = trunc(b.agent_version, 30); }
         return { code: 200, body: { status: cur.status } };
       }
       const pend = list.filter((r: any) => r.status === 'pending');
       if (pend.length >= MAX_PENDING || pend.filter((r: any) => r.ip === ip).length >= MAX_PER_IP) return { code: 429, body: { error: 'too_many_requests', message: 'Troppe richieste in attesa.' } };
       list.push({ id: newId('join'), fingerprint: b.fingerprint, secretHash: b.secret_hash, nodeName: b.node_name, ip, status: 'pending', createdAt: nowIso(), lastSeenAt: nowIso(),
-        agentVersion: trunc(b.agent_version, 30), summary: summarize(b.discovery) });
+        agentVersion: trunc(b.agent_version, 30), summary: { ...summarize(b.discovery), node_role: b.node_role === 'worker' ? 'worker' : undefined } });
       return { code: 201, body: { status: 'pending' } };
     });
     res.status(out.code).json(out.body);
@@ -67,7 +67,7 @@ export function mountJoinRoutes(app: any, store: Store) {
     const b = req.body || {};
     const r = (store.peek().settings.joinRequests || []).find((x: any) => x.fingerprint === String(b.fingerprint || ''));
     if (!r || !safeEq(r.secretHash, sha256(String(b.secret || '')))) return res.status(404).json({ error: 'unknown_request' });
-    if (r.status === 'approved') return res.json({ status: 'approved', node_id: r.nodeId, cluster_id: r.clusterId, heartbeat_interval: 10 });
+    if (r.status === 'approved') return res.json({ status: 'approved', node_id: r.nodeId, cluster_id: r.clusterId || null, node_kind: r.kind === 'worker' ? 'worker' : 'db', heartbeat_interval: 10 });
     res.json({ status: r.status });
   });
 
@@ -90,6 +90,13 @@ export function mountJoinRoutes(app: any, store: Store) {
       if (!r) return { code: 404, body: { error: 'not_found' } };
       if (r.status !== 'pending') return { code: 409, body: { error: 'not_pending', message: 'Richiesta già gestita.' } };
       if (Object.values(d.nodes).some((n: any) => n.name === r.nodeName)) return { code: 409, body: { error: 'name_in_use', message: `Esiste già un server chiamato ${r.nodeName}.` } };
+      if (b.asWorker || (r.summary?.node_role === 'worker' && !b.clusterId)) {          // operational machine: no cluster
+        const id = newId('node');
+        d.nodes[id] = { id, name: r.nodeName, kind: 'worker', tokenHash: r.secretHash, enrolledAt: nowIso(), agentVersion: r.agentVersion, remoteIp: r.ip, lastSeen: undefined, label: trunc(b.label, 120) || undefined } as NodeRecord;
+        r.status = 'approved'; r.nodeId = id; r.kind = 'worker'; r.decidedAt = nowIso(); r.decidedBy = actor;
+        ops.audit(d, { actor, action: 'agent.join.approve', status: 'OK', details: { node: r.nodeName, ip: r.ip, kind: 'worker' } });
+        return { code: 200, body: { ok: true, nodeId: id, kind: 'worker' } };
+      }
       const key = r.summary?.clusterKey as string | undefined;
       let cluster: any = b.clusterId ? d.clusters.find((c: any) => c.id === b.clusterId && !c.isSandbox) : (key ? d.clusters.find((c: any) => c.clusterKey === key) : undefined);
       if (b.clusterId && !cluster) return { code: 404, body: { error: 'cluster_not_found' } };

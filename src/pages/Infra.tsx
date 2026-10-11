@@ -11,7 +11,7 @@ import { go } from '../router';
  * ==================================================================================================================================================== */
 type Scope = 'global' | 'env' | 'folder' | 'cluster';
 interface SCluster { id: string; name: string; environment: string; folder: string; source: string; effective: { value: Record<string, any>; sources: Record<string, { scope: string; key: string }> } }
-interface SNode { id: string; name: string; clusterId: string | null; online: boolean; pg: boolean }
+interface SNode { id: string; name: string; clusterId: string | null; online: boolean; pg: boolean; worker?: boolean; label?: string; pgMajors?: number[] }
 interface SView { kind: string; defaults: Record<string, any>; assignments: Record<string, Record<string, any>>; folders: string[]; clusters: SCluster[]; nodes: SNode[] }
 const ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 const ENV_LABEL: Record<string, string> = { prod: 'Produzione', prep: 'Pre-produzione', int: 'Integrazione', dev: 'Sviluppo', test: 'Test' };
@@ -37,7 +37,9 @@ const EphForm: React.FC<FormProps> = ({ value: v, set, view }) => {
     {v.placement === 'node' ? <p className="small muted">Stessa macchina del database: usa i suoi dischi e la sua CPU durante il ripristino. Nessuna rete di mezzo.</p> : null}
     {central ? <div className="opt-body stack">
       <Field label="Nodo centrale" hint="Un nodo con agent, dedicato ai ripristini. Deve leggere il repository e l’archivio WAL del cluster (condivisione di rete montata agli stessi percorsi) e raggiungere il primario del cluster.">
-        <select className="input" value={v.centralNode ?? ''} onChange={e => set('centralNode', e.target.value)}><option value="">Scegli…</option>{view.nodes.map(n => <option key={n.id} value={n.id}>{n.name}{n.online ? '' : ' (offline)'}</option>)}</select></Field>
+        <select className="input" value={v.centralNode ?? ''} onChange={e => set('centralNode', e.target.value)}><option value="">Scegli…</option>
+          {view.nodes.some(n => n.worker) ? <optgroup label="Macchine operative (consigliate: non pesano sulla produzione)">{view.nodes.filter(n => n.worker).map(n => <option key={n.id} value={n.id}>{n.name}{n.label ? ` — ${n.label}` : ''}{n.pgMajors?.length ? ` · PG ${n.pgMajors.join('/')}` : ' · senza PostgreSQL'}{n.online ? '' : ' (offline)'}</option>)}</optgroup> : null}
+          <optgroup label="Nodi dei cluster">{view.nodes.filter(n => !n.worker).map(n => <option key={n.id} value={n.id}>{n.name}{n.online ? '' : ' (offline)'}</option>)}</optgroup></select></Field>
       <div className="grid g3"><Field label="Consegna: host del primario" hint="Vuoto = quello rilevato"><input className="input" value={v.centralInto?.host ?? ''} onChange={e => set('centralInto', { ...(v.centralInto || {}), host: e.target.value })} /></Field>
         <Field label="Porta"><input className="input" type="number" value={v.centralInto?.port ?? ''} onChange={e => set('centralInto', { ...(v.centralInto || {}), port: e.target.value ? Number(e.target.value) : '' })} /></Field>
         <Field label="Utente"><input className="input" value={v.centralInto?.user ?? ''} onChange={e => set('centralInto', { ...(v.centralInto || {}), user: e.target.value })} /></Field></div>
@@ -98,7 +100,7 @@ function ScopeDialog({ kind, scope, k, label, view, onClose }: { kind: 'ephemera
 
 /* ---------------------------------------------------------------------------------------------------------------------- ephemeral: preflight + install */
 const LEVEL_KIND: Record<string, 'ok' | 'warn' | 'bad'> = { ok: 'ok', warn: 'warn', bad: 'bad' };
-function CheckList({ checks }: { checks: any[] }) {
+export function CheckList({ checks }: { checks: any[] }) {
   return <div className="stack">{checks.map((c, i) => <div key={i} className="row gap-s" style={{ alignItems: 'flex-start' }}><Badge kind={LEVEL_KIND[c.level]}>{c.level === 'ok' ? 'ok' : c.level === 'warn' ? 'attenzione' : 'problema'}</Badge>
     <div className="grow"><div>{c.text}</div>{c.fix ? <div className="small muted">→ {c.fix}</div> : null}</div></div>)}</div>;
 }

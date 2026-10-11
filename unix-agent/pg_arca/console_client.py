@@ -41,6 +41,8 @@ class ConsoleClient(threading.Thread):
         self.base = config["web_server_url"].rstrip("/")
         self.stop_ev = threading.Event()
         self.creds = load_credentials(config)
+        if self.creds and self.creds.get("node_kind") == "worker":
+            runtime.set_worker(True)                                 # remembered from the console: an operational machine
         self.pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="op")   # control lane + data lane + analysis lane
         self.inflight = {}           # op_id -> future
         self.unreported = {}         # op_id -> (status, result, error)
@@ -77,8 +79,9 @@ class ConsoleClient(threading.Thread):
         if not token:
             raise RuntimeError("not enrolled and no enrollment_token configured (set PG_ARCA_ENROLL_TOKEN)")
         r = self._post("/api/agent/enroll", {"enrollment_token": token, "node_name": self.config["node_name"], "agent_version": AGENT_VERSION,
-                                             "discovery": self.rt.report}, auth=False)
-        save_credentials(self.config, r["node_id"], r["agent_token"], r.get("cluster_id"))
+                                             "discovery": self.rt.report, "node_role": self.config.get("node_role") or "auto"}, auth=False)
+        save_credentials(self.config, r["node_id"], r["agent_token"], r.get("cluster_id"), r.get("node_kind"))
+        self.rt.set_worker(r.get("node_kind") == "worker")
         self.creds = load_credentials(self.config)
         logger.info("enrolled as node %s in cluster %s", r["node_id"], r.get("cluster_id"))
         env_file = os.path.join(os.path.dirname(self.config["credentials_file"]), "enroll.env")
@@ -113,12 +116,13 @@ class ConsoleClient(threading.Thread):
             except Exception as e:
                 logger.warning("discovery refresh failed: %s", e)
         body = {"fingerprint": j["fingerprint"], "secret_hash": hashlib.sha256(j["secret"].encode("utf-8")).hexdigest(), "node_name": self.config["node_name"],
-                "agent_version": AGENT_VERSION, "discovery": self.rt.report}
+                "agent_version": AGENT_VERSION, "discovery": self.rt.report, "node_role": self.config.get("node_role") or "auto"}
         self._post("/api/agent/request-join", body, auth=False)
         st = self._post("/api/agent/join-status", {"fingerprint": j["fingerprint"], "secret": j["secret"]}, auth=False)
         if st.get("status") == "approved":
-            save_credentials(self.config, st["node_id"], j["secret"], st.get("cluster_id"))
+            save_credentials(self.config, st["node_id"], j["secret"], st.get("cluster_id"), st.get("node_kind"))
             self.creds = load_credentials(self.config)
+            self.rt.set_worker(st.get("node_kind") == "worker")
             logger.info("approved by the console: node %s, cluster %s", st["node_id"], st.get("cluster_id"))
             try:
                 os.unlink(path)
@@ -194,7 +198,7 @@ class ConsoleClient(threading.Thread):
         now = time.time()
         full_discovery = None
         # PostgreSQL not visible yet (replica still being cloned, Patroni bootstrapping, instance stopped): look again soon, not after 10 minutes
-        blind = not self.rt.instance or not self.rt.instance.get("running")
+        blind = not self.rt.worker and (not self.rt.instance or not self.rt.instance.get("running"))
         wait_s = min(self.config.get("discovery_interval_seconds", 600), 15 if not self.rt.instance else 30) if blind else self.config.get("discovery_interval_seconds", 600)
         if now - self.last_discovery > wait_s:
             full_discovery = self.rt.refresh()
@@ -223,6 +227,12 @@ class ConsoleClient(threading.Thread):
                                                    "discovery": full_discovery, "wait_seconds": wait}, timeout=wait + 15)
         if self.logs:
             self.logs.set_mode(resp.get("log_mode"))
+        kind = resp.get("node_kind")
+        if kind in ("worker", "db") and (kind == "worker") != bool(self.rt.worker):
+            self.rt.set_worker(kind == "worker")                   # decided in the console (enrolled / converted as an operational machine)
+            if self.creds and self.creds.get("node_kind") != kind:
+                save_credentials(self.config, self.creds["node_id"], self.creds["agent_token"], self.creds.get("cluster_id"), kind)
+                self.creds = load_credentials(self.config)
         for op in resp.get("ops", []):
             if op["id"] in self.inflight:
                 continue

@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     # identity (empty = derived from host / discovery)
     "node_name": "",
     "environment": "prod",
+    "node_role": "auto",       # auto | database | worker ("macchina operativa": backup server / recovery host, no database of its own; see worker.py)
 
     # console link. connection_mode: "push" (outbound only, recommended), "daemon" (inbound API only), "hybrid"
     "connection_mode": "push",
@@ -87,7 +88,7 @@ def load_config(conf_path=None):
         "PG_ARCA_WEB_URL": "web_server_url", "PG_ARCA_ENROLL_TOKEN": "enrollment_token", "PG_ARCA_NODE_NAME": "node_name",
         "PG_ARCA_ENVIRONMENT": "environment", "PG_ARCA_CONNECTION_MODE": "connection_mode", "PG_ARCA_AUTH_TOKEN": "auth_token",
         "PG_ARCA_REPO": "repo_path", "WAL_ARCHIVE_DIR": "wal_archive_dir", "PATRONI_URL": "patroni_url", "PG_ARCA_PGDATA": "pg_data", "PGDATA": "pg_data_hint",
-        "PG_ARCA_TLS_CA": "tls_ca_file",
+        "PG_ARCA_TLS_CA": "tls_ca_file", "PG_ARCA_ROLE": "node_role",
     }
     try:                                                   # console-managed, validated overrides (see overrides.py); environment still wins
         from pg_arca import overrides as _ov
@@ -161,5 +162,5 @@ def atomic_write_json(path, data, mode=0o600):
         raise
 
 
-def save_credentials(config, node_id, agent_token, cluster_id=None):
-    atomic_write_json(config["credentials_file"], {"node_id": node_id, "agent_token": agent_token, "cluster_id": cluster_id})
+def save_credentials(config, node_id, agent_token, cluster_id=None, node_kind=None):
+    atomic_write_json(config["credentials_file"], {"node_id": node_id, "agent_token": agent_token, "cluster_id": cluster_id, "node_kind": node_kind})
