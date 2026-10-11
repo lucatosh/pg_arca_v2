@@ -52,6 +52,9 @@ o = d["operation"]; t0 = time.time()
 while o["status"] not in ("succeeded", "failed", "cancelled", "canceled", "expired", "rejected") and time.time() - t0 < wait:
     time.sleep(2); s, d = call("GET", "/api/operations/" + o["id"]); o = d.get("operation", d)
 print("STATUS", o["status"], "(%ds)" % (time.time() - t0))
+if "--log" in a:        # the operation's own log (phases with timestamps): where the time went
+    s, lg = call("GET", "/api/operations/%s/log" % o["id"])
+    for l in lg.get("lines", []): print("LOG", l["at"][11:23], l["kind"][:3], l["text"][:160])
 if o.get("error"): print("ERROR", json.dumps(o["error"])[:1500])
-if o.get("result") is not None: print("RESULT", json.dumps(o["result"], indent=1)[:int(os.environ.get("MAXC", "3000"))])
+if o.get("result") is not None: print("RESULT", json.dumps(o["result"], indent=None if os.environ.get("COMPACT") else 1)[:int(os.environ.get("MAXC", "3000"))])
 sys.exit(0 if o["status"] == "succeeded" else 1)
