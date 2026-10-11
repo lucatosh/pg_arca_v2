@@ -36,6 +36,14 @@ import { validateOp } from '../../server/optypes';
   assert.match(destinationFor(store.peek(), store.peek().clusters[0]).dest!.wal_shared_warning || '', /sovrascrivono/);
   await call('PUT', '/api/scoped/destination/assignments', { scope: 'global', value: { type: 'nfs', repoPath: '/mnt/backup/pgarca', walPath: '/mnt/backup/wal/{cluster}', requireMount: true } });
 
+  // two clusters that resolve to the same archive directory even WITH placeholders are caught, and apply refuses
+  await store.mutate(d => { d.clusters.push({ id: 'c3', name: 'Prod DB 1', environment: 'prod', folder: '', source: 'agent' } as any); });
+  const col = destinationFor(store.peek(), store.peek().clusters[0]).dest!;
+  assert.match(col.wal_collision || '', /coincide/);
+  assert.equal((await call('POST', '/api/clusters/c1/destination/apply', {}, 'kc')).status, 409);
+  await store.mutate(d => { d.clusters = d.clusters.filter((x: any) => x.id !== 'c3'); });
+  assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.wal_collision, undefined);
+
   // check: one operation per online node
   let r = await call('POST', '/api/clusters/c1/destination/check', {}, 'k1'); assert.equal(r.status, 202, JSON.stringify(r.body));
   assert.equal(r.body.operations.length, 2);

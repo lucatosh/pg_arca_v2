@@ -57,7 +57,7 @@ const destination: KindSpec = {
 };
 registerKind('destination', destination);
 
-export interface ResolvedDestination { type: string; repo_path?: string; wal_path?: string; require_mount: boolean; min_free_gb?: number; wal_shared_warning?: string }
+export interface ResolvedDestination { type: string; repo_path?: string; wal_path?: string; require_mount: boolean; min_free_gb?: number; wal_shared_warning?: string; wal_collision?: string }
 const expand = (p: string, c: any) => p.replace(/\{cluster\}/g, slug(c.name)).replace(/\{env\}/g, slug(c.environment)).replace(/\{id\}/g, slug(c.id));
 
 /** The concrete destination of one cluster (placeholders expanded). `null` when nothing is configured for it. */
@@ -71,6 +71,16 @@ export function destinationFor(st: any, c: any): { dest: ResolvedDestination | n
   if (v.minFreeGb) d.min_free_gb = Number(v.minFreeGb);
   if (v.walPath && !/\{(cluster|id)\}/.test(v.walPath) && st.clusters.filter((x: any) => !x.isSandbox).length > 1) {
     d.wal_shared_warning = 'Il percorso WAL non contiene {cluster}: se lo stesso valore vale per più cluster, i loro segmenti WAL finiscono nella stessa cartella e si sovrascrivono.';
+  }
+  if (d.wal_path) {                                         // two clusters that RESOLVE to the same (or a nested) archive directory, even with placeholders (same name and environment, two clusters assigned the same path by hand)
+    const mine = d.wal_path.replace(/\/+$/, '') + '/';
+    for (const o of st.clusters) {
+      if (o.id === c.id || o.isSandbox) continue;
+      const ow = (resolveScoped(st, 'destination', o).value.walPath as string | undefined);
+      if (!ow) continue;
+      const theirs = expand(ow, o).replace(/\/+$/, '') + '/';
+      if (mine === theirs || mine.startsWith(theirs) || theirs.startsWith(mine)) { d.wal_collision = `L’archivio WAL ${d.wal_path} coincide (o contiene / è contenuto) con quello del cluster «${o.name}»: i segmenti con lo stesso nome si sovrascriverebbero. Cambia il percorso (per esempio aggiungendo {id}).`; break; }
+    }
   }
   return { dest: d, resolved: r };
 }
@@ -129,6 +139,7 @@ export function mountDestinationRoutes(app: any, store: Store) {
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
     const { dest } = destinationFor(st, c);
     if (!dest) return res.status(409).json({ error: 'no_destination' });
+    if (dest.wal_collision) return res.status(409).json({ error: 'wal_collision', message: dest.wal_collision });
     const key = String(req.headers['idempotency-key'] || '');
     if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
     const nodes = nodesOf(st, c.id).filter(online);
