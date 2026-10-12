@@ -687,6 +687,12 @@ def _slim(plan):
     out["inbound_fks"] = [{k: f.get(k) for k in ("name", "schema", "table", "ref_schema", "ref_table", "source")} for f in plan.get("inbound_fks") or []]
     out["outbound_fks"] = [{k: f.get(k) for k in ("name", "schema", "table", "ref_schema", "ref_table", "source")} for f in plan.get("outbound_fks") or []]
     out["statistics"] = [{k: x.get(k) for k in ("schema", "name", "table_schema", "table")} for x in plan.get("statistics") or []]
+    out["rebind"] = (["pubblicazione %s" % x["pub"] for x in plan.get("publications") or []] + ["regola %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_rules") or []]
+                     + ["policy %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_policies") or []]
+                     + ["default di %s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []]
+                     + ["partizione %s.%s → %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan.get("attach") or []])
+    for k in ("publications", "foreign_rules", "foreign_policies", "foreign_defaults"):
+        out.pop(k, None)
     out.pop("old_outbound_fks", None)
     return out
 
@@ -742,6 +748,15 @@ SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('schema', n.nspname, 'tabl
        'qual', pg_get_expr(p.polqual, p.polrelid), 'check', pg_get_expr(p.polwithcheck, p.polrelid))), '[]'::jsonb)::text
 FROM pg_depend d JOIN pg_policy p ON d.classid = 'pg_policy'::regclass AND d.objid = p.oid JOIN pg_class c ON c.oid = p.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE d.refclassid = 'pg_class'::regclass AND d.refobjid = ANY(%s) AND NOT (p.polrelid = ANY(%s))""" % (arr(swap_oids), arr(swap_oids))) or []
+        # column defaults of OTHER tables that draw from a replaced table's own sequence (nextval('customers_id_seq') used elsewhere too): bound by identity
+        # to the sequence that is renamed away with the old table -> re-set from their text after the swap, so both tables keep sharing one sequence
+        plan["foreign_defaults"] = _jq(live, """
+SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('schema', n.nspname, 'table', c.relname, 'column', a.attname, 'expr', pg_get_expr(ad.adbin, ad.adrelid))), '[]'::jsonb)::text
+FROM pg_depend own JOIN pg_depend d ON d.refclassid = 'pg_class'::regclass AND d.refobjid = own.objid AND d.classid = 'pg_attrdef'::regclass
+     JOIN pg_attrdef ad ON ad.oid = d.objid JOIN pg_class c ON c.oid = ad.adrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+     JOIN pg_attribute a ON a.attrelid = ad.adrelid AND a.attnum = ad.adnum
+WHERE own.classid = 'pg_class'::regclass AND own.refclassid = 'pg_class'::regclass AND own.deptype IN ('a', 'i') AND own.refobjid = ANY(%s)
+  AND NOT (ad.adrelid = ANY(%s))""" % (arr(swap_oids), arr(swap_oids))) or []
         # this server SUBSCRIBES to the table (logical replication): the apply worker knows the old table by its identity; after the swap the recovered table
         # receives nothing until the subscription is refreshed (copy_data = false: the rows are the recovered ones)
         try:
@@ -751,7 +766,7 @@ WHERE d.refclassid = 'pg_class'::regclass AND d.refobjid = ANY(%s) AND NOT (p.po
         except EngineError:
             pass
     else:
-        plan["old_outbound_fks"], plan["live_views"], plan["publications"], plan["foreign_rules"], plan["foreign_policies"] = [], [], [], [], []
+        plan["old_outbound_fks"], plan["live_views"], plan["publications"], plan["foreign_rules"], plan["foreign_policies"], plan["foreign_defaults"] = [], [], [], [], [], []
     have = {(f["schema"], f["table"], f["name"]) for f in plan["inbound_fks"]}
     # foreign keys that belonged to the recovered tables / pointed at the recreated ones (only where the other side exists now)
     for f in meta.get("fks") or []:
@@ -1116,6 +1131,8 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     orig = orig_of.get((ssch, sq)) or (sq[:len(sq) - len(sfx_new)] if sq.endswith(sfx_new) else sq)
                     live.query("ALTER SEQUENCE %s RENAME TO %s" % (qi(ssch, sq), quote_ident(orig)))
                 live.query("ALTER TABLE %s RENAME TO %s" % (qi(sch, tmpn), quote_ident(nm)))
+            for x in plan.get("foreign_defaults") or []:    # same text, now resolved against the recovered table's sequence
+                live.query("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s" % (qi(x["schema"], x["table"]), quote_ident(x["column"]), x["expr"]))
             for x in plan.get("foreign_rules") or []:       # same text, now resolved against the recovered table
                 live.query(x["def"].rstrip().rstrip(";"))
             for x in plan.get("foreign_policies") or []:
@@ -1226,6 +1243,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                       attached=["%s.%s -> %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan["attach"]],
                       publications_moved=["%s: %s.%s" % (pb["pub"], pb["schema"], pb["table"]) for pb in plan.get("publications") or []],
                       rules_and_policies_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["name"]) for x in (plan.get("foreign_rules") or []) + (plan.get("foreign_policies") or [])],
+                      defaults_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []],
                       views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]),
                       sequences_created=["%s.%s" % (x["schema"], x["name"]) for x in seq_new], sequences_advanced=moved)
         if any(v.get("kind") == "m" for v in plan["recovered_views"]):

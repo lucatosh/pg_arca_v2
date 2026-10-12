@@ -149,6 +149,17 @@ class Deps(unittest.TestCase):
         q(DB, "INSERT INTO app.audit_log(what) VALUES ('cust:via-rule')")
         self.assertEqual(q(DB, "SELECT count(*) FROM app.customers WHERE name = 'via-rule'")[0][0], "1")
 
+    def test_09_other_table_sharing_the_replaced_tables_sequence(self):
+        # invoices_archive draws its ids from invoices' OWN serial sequence: after replacing invoices both must still share ONE sequence
+        q(DB, "CREATE TABLE app.invoices_archive (id int PRIMARY KEY DEFAULT nextval('app.invoices_id_seq'), note text)")
+        q(DB, "DELETE FROM app.invoices WHERE id > 400")
+        self.switch()
+        r = self.go(["%s.app.invoices" % DB])
+        self.assertIn("app.invoices_archive.id", r.get("defaults_rebound") or [], r)
+        a = int(q(DB, "INSERT INTO app.invoices(customer_id, amount) VALUES (1, 10) RETURNING id")[0][0])
+        b = int(q(DB, "INSERT INTO app.invoices_archive(note) VALUES ('x') RETURNING id")[0][0])
+        self.assertEqual(b, a + 1, "one shared sequence, as before the restore")
+
 
 if __name__ == "__main__":
     unittest.main()
