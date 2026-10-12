@@ -583,6 +583,19 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
                 if missing_roles:
                     args += ["--no-owner", "--no-acl"]
                     meta["warnings"].append("roles missing on this server (%s): owners and grants of the recovered tables were NOT applied" % ", ".join(missing_roles[:6]))
+                toids = [t["oid"] for t in info["tables"]]
+                if toids:                                 # a table (or index) in a tablespace this server does not have: created in the default one, said
+                    src_ts = PgSession(eph.conn(dbname), read_only=True)
+                    try:
+                        used_ts = [r[0] for r in src_ts.query("SELECT DISTINCT t.spcname FROM pg_class c JOIN pg_tablespace t ON t.oid = c.reltablespace WHERE c.reltablespace <> 0 "
+                                                              "AND (c.oid = ANY(ARRAY[%s]::oid[]) OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid = ANY(ARRAY[%s]::oid[])))"
+                                                              % (",".join(map(str, toids)), ",".join(map(str, toids))))]
+                    finally:
+                        src_ts.close()
+                    gone_ts = [t for t in used_ts if sess.scalar("SELECT 1 FROM pg_tablespace WHERE spcname = %s" % sql_lit(t)) != "1"]
+                    if gone_ts:
+                        args.append("--no-tablespaces")
+                        meta["warnings"].append("tablespaces missing on this server (%s): the recovered tables were created in the default tablespace" % ", ".join(gone_ts))
 
                 def load(df, lst, section=None):
                     rc, out, err = run_tool(admin, "pg_restore", args + ["-L", lst] + (["--section", section] if section else []) + [df], timeout=None)
