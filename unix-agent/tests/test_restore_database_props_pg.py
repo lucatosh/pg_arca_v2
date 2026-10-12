@@ -92,6 +92,25 @@ class DbProps(unittest.TestCase):
         self.assertTrue(any("gone_role" in w for w in r.get("warnings") or []), r.get("warnings"))
         self.assertEqual(q("props_back2", "SELECT count(*) FROM app.t")[0][0], "100")
 
+    def test_03_database_living_in_a_tablespace(self):
+        # a database whose DEFAULT tablespace is not pg_default, with one table in a third tablespace: both must stay where they were
+        for n in ("ts_db", "ts_hot"):
+            d = os.path.join(F.base, n)
+            os.makedirs(d, exist_ok=True)
+            q("postgres", "CREATE TABLESPACE %s LOCATION '%s'" % (n, d))
+        q("postgres", "CREATE DATABASE ts_app TABLESPACE ts_db")
+        q("ts_app", "CREATE TABLE cold AS SELECT g AS id FROM generate_series(1, 1000) g; CREATE TABLE hot (id int PRIMARY KEY) TABLESPACE ts_hot; INSERT INTO hot SELECT generate_series(1, 500)")
+        run_backup(F.ctx, "incr")
+        time.sleep(1.2)
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(2)
+        r = restore_database(F.ctx, "ts_app", new_name="ts_app_back")
+        self.assertEqual(q("postgres", "SELECT t.spcname FROM pg_database d JOIN pg_tablespace t ON t.oid = d.dattablespace WHERE d.datname = 'ts_app_back'")[0][0], "ts_db",
+                         "the restored database keeps its default tablespace")
+        self.assertEqual(q("ts_app_back", "SELECT coalesce(t.spcname, 'default') FROM pg_class c LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace WHERE c.relname = 'hot'")[0][0], "ts_hot")
+        self.assertEqual(q("ts_app_back", "SELECT (SELECT count(*) FROM cold) + (SELECT count(*) FROM hot)")[0][0], "1500")
+        self.assertTrue(r)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -114,6 +114,7 @@ def db_props(eph, db):
         elif major >= 15:
             loc = "d.datlocprovider::text, d.daticulocale, NULL::text"
         r = s.scalar("""SELECT json_build_object('owner', pg_get_userbyid(d.datdba), 'connlimit', d.datconnlimit, 'comment', shobj_description(d.oid, 'pg_database'),
+  'tablespace', (SELECT spcname FROM pg_tablespace WHERE oid = d.dattablespace),
   'acl', CASE WHEN d.datacl IS NULL THEN NULL ELSE (SELECT coalesce(json_agg(json_build_object('g', CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END,
          'p', a.privilege_type, 'o', a.is_grantable)), '[]'::json) FROM aclexplode(d.datacl) a) END,
   'provider', x.p, 'locale', x.l, 'rules', x.r,
@@ -183,6 +184,12 @@ def _create_db(admin, name, entry, props=None):
         if entry.get("collate") and entry.get("ctype"):
             extra = " LC_COLLATE %s LC_CTYPE %s" % (sql_lit(entry["collate"]), sql_lit(entry["ctype"]))
         dmajor = int(s.scalar("SHOW server_version_num")) // 10000
+        ts = (props or {}).get("tablespace")
+        if ts and ts != "pg_default":                    # the database lived in its own default tablespace: same here when it exists
+            if s.scalar("SELECT 1 FROM pg_tablespace WHERE spcname = %s" % sql_lit(ts)) == "1":
+                extra += " TABLESPACE %s" % quote_ident(ts)
+            else:
+                props.setdefault("_warnings", []).append("database %s: created in pg_default, the original default tablespace %s does not exist on this server" % (name, ts))
         prov = (props or {}).get("provider")
         if prov == "i" and (props or {}).get("locale") and dmajor >= 15:         # ICU: same provider and locale (sorting / unique indexes on text behave the same)
             extra += " LOCALE_PROVIDER icu ICU_LOCALE %s" % sql_lit(props["locale"])
@@ -573,9 +580,30 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         if missing:
             warns.append("roles missing on this server (%s): object owners and privileges were NOT restored; create the roles and restore again to keep them" % ", ".join(missing[:8]))
         info["owners_and_privileges"] = keep
+        extra = []
+        used_ts = []
+        try:
+            ts_s = PgSession(eph.conn(db), read_only=True)
+            try:
+                used_ts = [r[0] for r in ts_s.query("SELECT DISTINCT t.spcname FROM pg_class c JOIN pg_tablespace t ON t.oid = c.reltablespace "
+                                                    "WHERE c.reltablespace <> 0 AND t.spcname NOT IN ('pg_default', 'pg_global')")]
+            finally:
+                ts_s.close()
+        except EngineError:
+            pass
+        if used_ts:
+            d = PgSession(admin.with_db("postgres"), read_only=True)
+            try:
+                have_ts = {r[0] for r in d.query("SELECT spcname FROM pg_tablespace")}
+            finally:
+                d.close()
+            gone_ts = [t for t in used_ts if t not in have_ts]
+            if gone_ts:
+                extra.append("--no-tablespaces")
+                warns.append("tablespaces missing on this server (%s): every object was created in the database's default tablespace" % ", ".join(gone_ts))
         _create_db(admin, new_name, entry, props)
         created = True
-        _pg_restore(admin, new_name, dumpfile, jobs, keep_owners=keep)
+        _pg_restore(admin, new_name, dumpfile, jobs, extra=extra, keep_owners=keep)
         warns += list((props or {}).pop("_warnings", []) if props else [])
         _apply_db_props(admin, new_name, props, warns)
         if warns:
