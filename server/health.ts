@@ -191,6 +191,13 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
   return out.sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || a.clusterName.localeCompare(b.clusterName));
 }
 
+/** An operation refused by a check BEFORE it changed anything: what the operator asked could not or should not be done (not a product failure). */
+export function isRefusal(err: string, type = ''): boolean {
+  if (/^refused\b|would lock out|refused before touching|lock.?out/i.test(err)) return true;
+  if (/^PGA-(SEC-030|GEN-03[0-4]|GEN-065|GEN-08[0-8]|GEN-09[34]|PITR-00[12]|PITR-016|RST-03[1-3]|RST-04[01]|WAL-022|INS-002)\b/.test(err)) return true;
+  return type === 'restore_plan';                                              // a plan that says "no" is its answer, not a failure
+}
+
 export function briefing(st: any, now = Date.now()) {
   const issues = evaluate(st, now);
   const counts = { critical: 0, warning: 0, info: 0 } as Record<Severity, number>;
@@ -204,7 +211,15 @@ export function briefing(st: any, now = Date.now()) {
   });
   return {
     generatedAt: new Date(now).toISOString(), status: counts.critical ? 'critical' : counts.warning ? 'warning' : 'ok', counts, issues, clusters,
-    last24h: { operations: recentOps.length, failed: recentOps.filter(o => o.status === 'failed').length, backups: recentOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').length,
-      failures: recentOps.filter(o => o.status === 'failed').slice(-5).reverse().map(o => ({ id: o.id, type: o.type, clusterId: o.clusterId, at: o.updatedAt, error: String(o.error?.message || o.error || '').slice(0, 200) })) },
+    // a safety check that said NO before touching anything (lock-out, wrong target, name taken, plan that cannot work) is not a failure of the product:
+    // counted apart, so the number that matters ("something broke") is not drowned
+    last24h: (() => {
+      const failed = recentOps.filter(o => o.status === 'failed');
+      const refusal = (o: any) => isRefusal(String(o.error?.message || o.error || ''), o.type);
+      const real = failed.filter(o => !refusal(o));
+      return { operations: recentOps.length, failed: real.length, refused: failed.length - real.length, backups: recentOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').length,
+        failures: real.slice(-5).reverse().map(o => ({ id: o.id, type: o.type, clusterId: o.clusterId, at: o.updatedAt, error: String(o.error?.message || o.error || '').slice(0, 200) })),
+        refusals: failed.filter(refusal).slice(-5).reverse().map(o => ({ id: o.id, type: o.type, clusterId: o.clusterId, at: o.updatedAt, error: String(o.error?.message || o.error || '').slice(0, 200) })) };
+    })(),
   };
 }
