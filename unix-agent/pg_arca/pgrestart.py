@@ -50,6 +50,19 @@ def postmaster_pid(data_dir):
         return None
 
 
+def systemd_permission(polkit_dir="/etc/polkit-1", rule_file=None, euid=None):
+    """None when the agent may restart a PostgreSQL unit (root, or the polkit rule the installer writes is there); otherwise why not and what to do."""
+    if (os.geteuid() if euid is None else euid) == 0:
+        return None
+    if not os.path.isdir(polkit_dir):
+        return ("polkit is not installed on this server, so the agent's user cannot restart system services: install it (apt-get install polkitd / "
+                "dnf install polkit) and run the pg_arca installer again - or restart PostgreSQL yourself")
+    if not os.path.exists(rule_file or POLKIT_FILE):
+        return ("the polkit rule that lets the agent restart PostgreSQL units is missing (%s): run the pg_arca installer again as root, or restart PostgreSQL yourself"
+                % (rule_file or POLKIT_FILE))
+    return None
+
+
 def plan(data_dir, proc="/proc", self_pid=None):
     """How this instance can be restarted: {'method': 'systemd'|'pg_ctl'|'refuse', 'unit', 'why'}."""
     pid = postmaster_pid(data_dir)
@@ -58,7 +71,14 @@ def plan(data_dir, proc="/proc", self_pid=None):
     unit = unit_of_pid(pid, proc)
     mine = unit_of_pid(self_pid or os.getpid(), proc)
     if unit and PG_UNIT_RE.match(unit):
-        return {"method": "systemd", "unit": unit, "pid": pid}
+        out = {"method": "systemd", "unit": unit, "pid": pid}
+        perm = systemd_permission()
+        if perm:
+            # said in the dry run, not only when the real restart fails: the agent's user may not restart system units
+            out["allowed"] = False
+            out["why"] = perm
+            out["manual"] = "sudo systemctl restart %s" % unit
+        return out
     if unit and unit == mine:
         return {"method": "pg_ctl", "pid": pid, "why": "PostgreSQL runs inside the agent's own service (container / test setup)"}
     if unit:

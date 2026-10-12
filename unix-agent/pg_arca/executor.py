@@ -437,6 +437,8 @@ class OperationExecutor:
             return {"dry_run": True, "plan": plan}
         if plan["method"] == "refuse":
             raise OpError(plan["why"])
+        if plan.get("allowed") is False:
+            raise OpError("%s. Nothing was restarted. Command to run on the server: %s" % (plan["why"], plan.get("manual")))
         before = None
         try:
             before, _ = self.db.query_json("SELECT COALESCE(json_agg(name), '[]'::json) FROM pg_settings WHERE pending_restart;")

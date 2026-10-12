@@ -116,6 +116,8 @@ const RULES: Rule[] = [
   [/^(\d+) function\(s\) of the restored schema exist now and are kept in their CURRENT version \(only missing functions come back\): (.+)$/, m => `${m[1]} funzioni dello schema ripristinato esistono già e restano nella versione ATTUALE (tornano solo quelle mancanti): ${m[2]}`],
   [/^the WAL archive has a hole at (\S+): the copy will end there, everything written after it is not in this archive$/, m => `l’archivio WAL ha un buco in ${m[1]}: la copia finirà lì, tutto ciò che è stato scritto dopo non è in questo archivio`],
   [/^(?:PGA-WAL-022: )?WAL archive is missing (\d+) segment\(s\) required(?: by this restore)? \(first: (\S+)\)$/, m => `nell’archivio WAL mancano ${m[1]} segmenti necessari (il primo: ${m[2]})`],
+  [/^polkit is not installed on this server, so the agent's user cannot restart system services: .*$/, () => 'su questo server polkit non è installato, quindi l’utente dell’agent non può riavviare i servizi di sistema: installalo (apt-get install polkitd / dnf install polkit) e rilancia l’installer di pg_arca, oppure riavvia PostgreSQL a mano'],
+  [/^the polkit rule that lets the agent restart PostgreSQL units is missing \((.+)\): .*$/, m => `manca la regola polkit che permette all’agent di riavviare PostgreSQL (${m[1]}): rilancia come root l’installer di pg_arca, oppure riavvia PostgreSQL a mano`],
 ];
 const FIX: Rule[] = [
   [/^set the delivery address in the recovery instance settings \(e\.g\. the HAProxy \/ VIP of the leader\), or open network and pg_hba from this host$/, () => 'indica l’indirizzo di consegna nelle impostazioni dell’istanza di recupero (es. l’HAProxy o il VIP del leader), oppure apri rete e pg_hba da questo host'],

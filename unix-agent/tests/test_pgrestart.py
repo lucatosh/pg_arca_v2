@@ -98,5 +98,18 @@ class Run(unittest.TestCase):
         self.assertNotIn('"stop"', r)
 
 
+class Permission(unittest.TestCase):
+    def test_dry_run_knows_when_systemd_will_refuse(self):
+        import tempfile
+        from pg_arca import pgrestart
+        d = tempfile.mkdtemp()
+        self.assertIsNone(pgrestart.systemd_permission(euid=0))
+        self.assertIn("polkit is not installed", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "none"), euid=1000))
+        os.makedirs(os.path.join(d, "polkit-1"))
+        self.assertIn("rule", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000))
+        open(os.path.join(d, "r.rules"), "w").write("x")
+        self.assertIsNone(pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000))
+
+
 if __name__ == "__main__":
     unittest.main()

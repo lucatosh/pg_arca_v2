@@ -141,7 +141,7 @@ RULE
   echo "restart from the console: allowed for the PostgreSQL units only (/etc/polkit-1/rules.d/50-pg-arca-restart.rules; PG_ARCA_ALLOW_PG_RESTART=0 to disable)"
 elif [[ "${PG_ARCA_ALLOW_PG_RESTART:-1}" == 0 ]]; then
   rm -f /etc/polkit-1/rules.d/50-pg-arca-restart.rules
-elif [[ "$ROLE" != worker ]]; then
+elif [[ "$ROLE" != worker ]] && ! pgrep -f "bin/patroni" >/dev/null 2>&1 && ! systemctl is-active --quiet patroni 2>/dev/null; then   # Patroni nodes restart through Patroni: no polkit needed
   echo "NOTE: polkit is not installed: restarting PostgreSQL from the console will not be possible (the console shows the command to run by hand)."
   echo "      To allow it: install polkit (apt-get install polkitd / dnf install polkit) and run this installer again."
 fi

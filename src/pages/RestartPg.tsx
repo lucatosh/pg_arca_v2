@@ -13,8 +13,9 @@ export function RestartPg({ c, label = 'Riavvia PostgreSQL', onDone }: { c: any;
   const how = p ? (p.method === 'systemd' ? <>con il servizio del server: <code>systemctl restart {p.unit}</code></> : p.method === 'pg_ctl' ? <>con <code>pg_ctl restart -m fast</code> (nessun servizio systemd lo gestisce)</> : null) : null;
   const res = run.op?.status === 'succeeded' ? run.op.result : null;
   return <div className="stack">
-    <div className="row wrap"><Button icon="refresh" busy={plan.busy || run.busy} onClick={async () => { const o = await plan.run('pg_restart', { dry_run: true }); if (o?.status === 'succeeded' && o.result?.plan?.method !== 'refuse') setAsk(true); }}>{label}</Button></div>
+    <div className="row wrap"><Button icon="refresh" busy={plan.busy || run.busy} onClick={async () => { const o = await plan.run('pg_restart', { dry_run: true }); if (o?.status === 'succeeded' && o.result?.plan?.method !== 'refuse' && o.result?.plan?.allowed !== false) setAsk(true); }}>{label}</Button></div>
     {p?.method === 'refuse' ? <Banner kind="warn" title="Riavvio da qui non possibile">{itCheck(p.why)}</Banner> : null}
+    {p && p.allowed === false ? <Banner kind="warn" title="L’agent non ha il permesso di riavviare il servizio">{itCheck(p.why)}{p.manual ? <div style={{ marginTop: 6 }}>Comando da eseguire sul server: <code>{p.manual}</code></div> : null}</Banner> : null}
     {plan.op?.status === 'failed' ? <OpPanel op={plan.op} error={plan.error} /> : null}
     {(run.op || run.error) && !res ? <OpPanel op={run.op} error={run.error} label="Riavvio di PostgreSQL" /> : null}
     {res ? <Banner kind={(res.pending_restart || []).length ? 'warn' : 'ok'} title="PostgreSQL riavviato">Fatto {res.unit ? <>con <code>{res.unit}</code></> : 'con pg_ctl'}. {(res.pending_restart || []).length ? <>Ancora in attesa di riavvio: {res.pending_restart.join(', ')}.</> : (res.pending_before || []).length ? <>Ora in vigore: {res.pending_before.join(', ')}.</> : null}</Banner> : null}
