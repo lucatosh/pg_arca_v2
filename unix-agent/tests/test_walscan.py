@@ -42,7 +42,8 @@ class T(unittest.TestCase):
     def test_drop_database(self):
         e = walscan.parse_line(b"rmgr: Database len (rec/tot): 42/42, tx: 812, lsn: 0/4000028, prev 0/4000000, desc: DROP dir 1663/16456")
         self.assertEqual((e["kind"], e["xid"], e["rels"]), ("DROP DATABASE", "812", [["16456", ""]]))
-        self.assertIsNone(walscan.parse_line(b"rmgr: Database len (rec/tot): 42/42, tx: 812, lsn: 0/4000028, prev 0/4000000, desc: CREATE copy dir 1663/1 to 1663/16456"))
+        c = walscan.parse_line(b"rmgr: Database len (rec/tot): 42/42, tx: 812, lsn: 0/4000028, prev 0/4000000, desc: CREATE copy dir 1663/1 to 1663/16456")
+        self.assertEqual((c["kind"], c["rels"]), ("CREATE DATABASE", [["1", "16456"]]))     # FILE_COPY: the template (1) a recovery must extract
 
     def test_other_rmgrs(self):
         self.assertIsNone(walscan.parse_line(b"rmgr: Heap len (rec/tot): 59/59, tx: 7, lsn: 0/3000028, prev 0/3000000, desc: INSERT off: 1 rels: base/5/1"))
