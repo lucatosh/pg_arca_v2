@@ -476,7 +476,10 @@ def target_dir_check(ctx, dest, delta, what="restore destination", resume=False)
 # --------------------------------------------------------------------------- full-instance restore
 def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,
                      action="promote", timeline="latest", delta=False, tablespace_remap=None, dry_run=False, immediate=False,
-                     progress=None, cancel=None, resume=False):
+                     progress=None, cancel=None, resume=False, keep_archiving=False):
+    """keep_archiving=False (default): the restored copy is made SAFE to start next to production - archive_mode off (it would otherwise push a new
+    timeline and its history file into production's WAL archive, where the next real failover then collides), no synchronous standby to wait for,
+    no upstream to follow. True only when the copy REPLACES the original server."""
     repo = ctx.repo
     count_targets(target_time, target_lsn, target_xid, target_name, immediate)
     target_time = parse_target_time(target_time)
@@ -589,6 +592,14 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     scrub_recovery_settings(dest)
     t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, ctx)
     prof = set_profile(chain[0]) or Profile(16 * 10000)
+    if not keep_archiving:
+        safe = ["archive_mode = 'off'", "synchronous_standby_names = ''"]
+        if not prof.recovery_conf_file:                     # >= 12: these are server settings (before, they lived in recovery.conf, which we write ourselves)
+            safe += ["primary_conninfo = ''", "primary_slot_name = ''"]
+        with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
+            f.write("\n# ==== pg_arca: restored COPY (%s) - safe to start next to production: it does not archive into production's WAL archive, waits for no\n"
+                    "# synchronous standby and follows no primary. Remove these lines only if this copy REPLACES the original server. ====\n%s\n" % (iso(), "\n".join(safe)))
+        plan["copy_safety"] = safe
     prof.install_recovery(dest, recovery_lines(ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm,
                                                "promote" if action == "promote" else "pause", inclusive, timeline))       # recovery.signal + auto.conf (>=12) or recovery.conf (<12)
     bad = audit_symlinks(dest)
@@ -603,5 +614,5 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     plan.update(stats)
     if resume:
         plan["resumed"] = True
-    plan["start_hint"] = "pg_ctl -D %s start   (recovery runs until %s)" % (dest, plan["target"])
+    plan["start_hint"] = ("pg_ctl -D %s -o \"-p <free port>\" start   (recovery runs until %s; on the production host choose a port that is not in use)" % (dest, plan["target"]))
     return plan

@@ -31,7 +31,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [scope, setScope] = useState<Scope>('database'); const [objMode, setObjMode] = useState<'table' | 'schema'>('table');
   const [db, setDb] = useState(''); const [objs, setObjs] = useState<string[]>([]); const obj = objs[0] || ''; const [search, setSearch] = useState('');
   const [tgt, setTgt] = useState<Target>({ mode: 'latest' });
-  const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false);
+  const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false); const [keepArch, setKeepArch] = useState(false);
   const [ask, setAsk] = useState(false);
   const prom = useOpRunner(c.id); const prev = useOpRunner(c.id); const [pmode, setPmode] = useState<PMode>('as_new'); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false); const [pschema, setPschema] = useState('');
   const dbsR = useOpRunner(c.id); const dropsR = useOpRunner(c.id); const liveR = useOpRunner(c.id); const tdropR = useOpRunner(c.id); const [fxHours, setFxHours] = useState(24); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id); const dml = useOpRunner(c.id); const [dmlMin, setDmlMin] = useState(1000);
@@ -46,7 +46,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   useEffect(() => { if (!newName && db) setNewName(`${db}_restored`.slice(0, 63)); }, [db]);
 
   const tparams = (): Record<string, any> => tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : tgt.mode === 'xid' ? { target_xid: tgt.xid, inclusive: false } : {};
-  const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { destination: dest, action, delta, ...tparams() } }
+  const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { destination: dest, action, delta, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
     : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
 
@@ -150,7 +150,9 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       {scope === 'instance' ? <>
         <Field label="Cartella di destinazione" hint="Percorso assoluto sul server, vuoto o inesistente. La data directory in uso e le cartelle di sistema sono rifiutate." error={dest && !dest.startsWith('/') ? 'Deve iniziare con /' : null}><input className="input mono" value={dest} onChange={e => setDest(e.target.value)} placeholder="/var/lib/postgresql/restore-2026" /></Field>
         <Field label="Al termine del recovery"><div className="seg"><button aria-pressed={action === 'promote'} onClick={() => setAction('promote')}>Diventa un’istanza normale</button><button aria-pressed={action === 'pause'} onClick={() => setAction('pause')}>Resta in pausa per controllare</button></div></Field>
-        <label className="check"><input type="checkbox" checked={delta} onChange={e => setDelta(e.target.checked)} />Ripristino differenziale su una cartella già ripristinata (copia solo ciò che differisce)</label></> :
+        <label className="check"><input type="checkbox" checked={delta} onChange={e => setDelta(e.target.checked)} />Ripristino differenziale su una cartella già ripristinata (copia solo ciò che differisce)</label>
+        <label className="check"><input type="checkbox" checked={keepArch} onChange={e => setKeepArch(e.target.checked)} />Questa copia sostituirà il server originale: lascia attiva l’archiviazione WAL</label>
+        <p className="small muted" style={{ marginTop: -6 }}>{keepArch ? 'Avviata, la copia archivierà nello stesso archivio WAL della produzione: fallo solo se il server originale non tornerà.' : 'Di norma la copia parte con l’archiviazione WAL spenta, senza standby sincroni da attendere e senza seguire un primario: così puoi avviarla accanto alla produzione senza toccarne l’archivio.'}</p></> :
         scope === 'database' ? <Field label="Nome del nuovo database" hint="Non sovrascrive mai un database esistente: se il nome c’è già, il ripristino si ferma prima di iniziare."><input className="input" value={newName} onChange={e => setNewName(e.target.value)} /></Field> :
         <Banner kind="info" title="Quarantena">Quanto scelto viene ricostruito, con tutto ciò da cui dipende, in un database temporaneo separato. Da lì lo controlli e lo riporti dove serve; il tuo database originale non viene toccato.</Banner>}
       <div className="row"><Button onClick={() => setStep(1)}>Indietro</Button><div className="grow" /><Button kind="primary" disabled={!okWhere} onClick={next}>Controlla piano</Button></div></div></Card>}

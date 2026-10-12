@@ -767,7 +767,7 @@ class OperationExecutor:
     def h_restore_instance(self, p):
         from pg_arca.engine.restore import restore_instance
         ctx = self._ctx_ro()
-        return restore_instance(ctx, p.get("set"), p.get("destination"), action=p.get("action", "promote"), delta=bool(p.get("delta")),
+        return restore_instance(ctx, p.get("set"), p.get("destination"), action=p.get("action", "promote"), delta=bool(p.get("delta")), keep_archiving=bool(p.get("keep_archiving")),
                                 tablespace_remap=p.get("tablespace_remap"), progress=self._progress, cancel=self._cancelled, resume=bool(p.get("resume")), **self._targets(p))
 
     def h_restore_database(self, p):

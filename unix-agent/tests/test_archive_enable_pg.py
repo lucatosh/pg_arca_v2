@@ -1,6 +1,7 @@
 """archive_enable on a REAL standalone PostgreSQL that has archiving off: apply, restart, idempotent re-run, then a backup + immediate restore work.
 Run as a non-root user:  su postgres -s /bin/bash -c 'cd unix-agent && python3 -m unittest tests.test_archive_enable_pg'"""
 import os
+import time
 import shutil
 import sys
 import tempfile
@@ -59,6 +60,25 @@ class ArchiveEnable(unittest.TestCase):
             s = PgSession(conn.with_db("postgres")); s.query("create table t as select g from generate_series(1,2000) g"); s.close()
             meta = run_backup(ctx, "full"); self.assertEqual(meta["status"], "COMPLETE")
             plan = restore_instance(ctx, dest=b + "/restored", immediate=True, action="promote"); self.assertTrue(plan["set"])
+            # the copy must not archive into production's archive (a new timeline + history file there collides with the next real failover)
+            auto = open(b + "/restored/postgresql.auto.conf").read()
+            self.assertIn("archive_mode = 'off'", auto); self.assertIn("synchronous_standby_names = ''", auto)
+            before = sorted(os.listdir(wal))
+            port2 = port + 1
+            r = sh(os.path.join(BIN, "pg_ctl"), "-D", b + "/restored", "-o", "-p %d -k %s" % (port2, sock), "-l", b + "/r.log", "-w", "-t", "120", "start", env=env)
+            self.assertEqual(r.returncode, 0, open(b + "/r.log").read()[-800:])
+            try:
+                c2 = PgConn(host=sock, port=port2, user="postgres", bindir=BIN)
+                s2 = PgSession(c2.with_db("postgres")); self.assertEqual(s2.scalar("SELECT current_setting('archive_mode')"), "off")
+                for _ in range(60):                                          # wait for the end of recovery (promotion = new timeline)
+                    if s2.scalar("SELECT pg_is_in_recovery()") == "f":
+                        break
+                    time.sleep(1)
+                s2.query("SELECT pg_switch_wal()"); s2.close()
+                time.sleep(2)
+                self.assertEqual([x for x in sorted(os.listdir(wal)) if x not in before and x.endswith(".history")], [], "the copy pushed a timeline history into the production archive")
+            finally:
+                sh(os.path.join(BIN, "pg_ctl"), "-D", b + "/restored", "-m", "immediate", "stop")
         finally:
             stop(); shutil.rmtree(b, ignore_errors=True)
 

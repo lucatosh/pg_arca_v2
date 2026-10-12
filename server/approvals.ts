@@ -12,6 +12,7 @@ export function isRisky(type: string, params: any = {}): boolean {
   if (type === 'pg_restart' && params.dry_run) return false;                 // only says HOW it would restart
   if (['hba_cluster_apply', 'hba_apply', 'hba_rollback', 'hba_restore', 'pg_set_param', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'pg_restart', 'patroni_reinit', 'archive_enable', 'patroni_config_patch', 'patroni_pause', 'ephemeral_install', 'geo_promote', 'geo_demote', 'geo_switchover'].includes(type)) return true;
   if (type === 'restore_promote') return params.mode === 'replace';
+  if (type === 'restore_instance') return !!params.keep_archiving;               // a copy that will write into production's WAL archive
   if (type === 'restore_apply_rows') return (params.delete_keys || []).length > 0 || (params.restore_keys || []).length > 0;
   return false;
 }
