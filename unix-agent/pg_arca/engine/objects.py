@@ -991,6 +991,11 @@ WHERE a.attnum > 0 AND NOT a.attisdropped AND a.atttypid IN %s AND c.relkind IN 
                "collations": ["%s.%s" % (c["schema"], c["name"]) for c in pq.get("collations") or [] if not prereq_exists(live, "collation", c)],
                "functions": [f["sig"] for f in pq["functions"] if not prereq_exists(live, "function", f)]}
     plan["missing_prereq"] = missing
+    if any(o.get("kind") == "schema" for o in meta.get("selection") or []):
+        kept = [f["sig"] for f in pq["functions"] if prereq_exists(live, "function", f)]
+        if kept:
+            plan["warnings"].append("%d function(s) of the restored schema exist now and are kept in their CURRENT version (only missing functions come back): %s"
+                                    % (len(kept), ", ".join(kept[:5])))
     for t in pq["types"]:
         if t.get("table") and not prereq_exists(live, "type", t):
             plan["blocking"].append("a recovered column has the row type of table %s.%s, which does not exist now: select that table too (it is not created by itself)" % (t["schema"], t["name"]))

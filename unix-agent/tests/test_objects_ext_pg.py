@@ -257,6 +257,14 @@ class Ext(unittest.TestCase):
         self.assertEqual(q(DB, "SELECT count(*) FROM pg_trigger WHERE tgname = 'moves_wh'")[0][0], "1")
         q(DB, "INSERT INTO app.moves (wh, qty) VALUES (5, 1)")
 
+    def test_15_schema_restore_says_which_functions_stay_current(self):
+        q(DB, "CREATE OR REPLACE FUNCTION app.check_wh() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$")      # changed since the backup
+        self.switch()
+        restore_object(F.ctx, DB, objects=["%s.app" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_sch")
+        plan = promote_object(F.ctx, "pgarca_stage_sch", DB, mode="as_new", dry_run=True)
+        self.assertTrue(any("CURRENT version" in w and "app.check_wh()" in w for w in plan["warnings"]), plan["warnings"])
+        q("postgres", "DROP DATABASE pgarca_stage_sch")
+
 
 if __name__ == "__main__":
     unittest.main()
