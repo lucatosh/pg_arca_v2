@@ -70,6 +70,8 @@ class TsLater(unittest.TestCase):
         restore_object(F.ctx, "tsl.public.late_t", stage_db="pgarca_stage_tsl", target_time=q("postgres", "SELECT to_char((now() - interval '3 seconds') at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0])
         promote_object(F.ctx, "pgarca_stage_tsl", "tsl", mode="missing_only", drop_stage=True)
         self.assertEqual(q("tsl", "SELECT count(*) FROM late_t")[0][0], "500")
+        q("postgres", "SELECT pg_switch_wal()")                          # "end of archive" = the last ARCHIVED segment (64 MB segments fill slowly)
+        time.sleep(2)
         dest = os.path.join(F.base, "inst")
         oids = dict(q("postgres", "SELECT spcname, oid FROM pg_tablespace WHERE spcname LIKE 'ts_%'"))
         restore_instance(F.ctx, dest=dest, tablespace_remap={oids[n]: os.path.join(F.base, "reloc_" + n) for n in oids})
@@ -111,7 +113,11 @@ class TsLater(unittest.TestCase):
         r = sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-o", "-p %d -k %s" % (port, F.sock), "-l", dest + ".log", "-w", "-t", "120", "start")
         self.assertEqual(r.returncode, 0, open(dest + ".log").read()[-1500:])
         try:
-            s = PgSession(PgConn(host=F.sock, port=port, user="postgres", bindir=BIN).with_db("in_empty"))
+            try:
+                s = PgSession(PgConn(host=F.sock, port=port, user="postgres", bindir=BIN).with_db("in_empty"))
+            except Exception:
+                print(open(dest + ".log").read()[-3000:])
+                raise
             for _ in range(60):
                 if s.scalar("SELECT pg_is_in_recovery()") == "f":
                     break
