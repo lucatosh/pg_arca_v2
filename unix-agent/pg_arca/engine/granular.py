@@ -23,6 +23,16 @@ import re as _re
 _ID_OK = _re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
 
 
+def default_restore_name(db):
+    """<db>_restored as a plain identifier: a source named 'Vendite Q1-2026' or "l'archivio" gives Vendite_Q1_2026_restored / l_archivio_restored."""
+    import unicodedata
+    base = unicodedata.normalize("NFKD", db).encode("ascii", "ignore").decode("ascii")
+    base = _re.sub(r"[^A-Za-z0-9_]+", "_", base).strip("_") or "db"
+    if base[0].isdigit():
+        base = "db_" + base
+    return base[:63 - len("_restored")] + "_restored"
+
+
 def _check_name(n, what):
     if not _ID_OK.match(n or ""):
         raise EngineError("PGA-GEN-065", "invalid %s %r (letters, digits, _ and $; max 63; must not start with a digit)" % (what, n))
@@ -600,7 +610,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     target, chain, tt, note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
     entry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name)
-    new_name = new_name or (db + "_restored")
+    new_name = new_name or default_restore_name(db)
     _check_name(new_name, "destination database name")
     merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter(({entry["oid"]} if entry["oid"] is not None else set()) | system_db_oids(cat)))
     merged_all, _ = merge_chain(ctx.repo, chain)

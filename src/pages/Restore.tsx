@@ -4,6 +4,13 @@ import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Skeleton, byt
 import { Op, useOpRunner, useQuery } from '../hooks';
 import { OpPanel, Result } from './shared';
 import { itCheck, itFix } from '../i18n';
+
+/** <db>_restored as a plain identifier (the engine's rule): 'Vendite Q1-2026' -> Vendite_Q1_2026_restored. */
+export const restoredName = (db: string) => {
+  let b = db.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'db';
+  if (/^[0-9]/.test(b)) b = 'db_' + b;
+  return b.slice(0, 63 - '_restored'.length) + '_restored';
+};
 import { RecoveryTimeline, TlEvent } from './Timeline';
 import { SetRow, TYPE_LABEL, chains } from './Backup';
 import { CatDb, DbPicker, DroppedNote, DropInfo, kindOf, parseWalTime, fmtWhen, qid, splitId } from './DbPicker';
@@ -43,7 +50,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   // catalogue pickers: run once per scope entry, through the agent (the catalogue lives next to the repository)
   useEffect(() => { if ((scope === 'database' || scope === 'object') && !dbsR.op && !dbsR.busy) dbsR.run('backup_catalog', { set: 'all' }); }, [scope]);
   useEffect(() => { if (scope === 'object' && db && !dbs.find(x => x.name === db)?.late) { const t = setTimeout(() => objR.run('backup_catalog', { set: dbs.find(x => x.name === db)?.last_set || 'latest', database: db, search, limit: 400 }), search ? 350 : 0); return () => clearTimeout(t); } }, [scope, db, search]);
-  useEffect(() => { if (!newName && db) setNewName(`${db}_restored`.slice(0, 63)); }, [db]);
+  useEffect(() => { if (!newName && db) setNewName(restoredName(db)); }, [db]);
 
   const tparams = (): Record<string, any> => tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : tgt.mode === 'xid' ? { target_xid: tgt.xid, inclusive: false } : {};
   const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { destination: dest, action, delta, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
