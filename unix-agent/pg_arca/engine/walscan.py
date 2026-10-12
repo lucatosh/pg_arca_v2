@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from pg_arca.engine.util import EngineError, lsn_to_int, parse_wal_name, spec_path, wal_name
 
-CACHE_VERSION = 4                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
+CACHE_VERSION = 5                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
 LSN_RE = re.compile(rb"lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")
 XID_RE = re.compile(rb"tx:\s*(\d+)")
 TS_RE = re.compile(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)? [A-Za-z0-9+:-]+)")
@@ -32,8 +32,10 @@ TRIPLE_RE = re.compile(r"(\d+)/(\d+)/(\d+)")
 PAIR_RE = re.compile(r"(\d+)/(\d+)")
 FATAL_RE = re.compile(r"(different database system|incorrect|incompatible|not supported|unsupported|could not open|no such file|permission denied|invalid magic)", re.I)
 
-KINDS = {"events": ("Transaction", "Storage", "Database"), "databases": ("Database",)}
-CODE = {"events": "E", "databases": "D"}          # what a cache entry holds; "E" (everything) also answers a "D" question
+KINDS = {"events": ("Transaction", "Storage", "Database"), "databases": ("Database",), "dml": ("Heap",)}
+CODE = {"events": "E", "databases": "D", "dml": "M"}   # what a cache entry holds; "E" (everything) also answers a "D" question; "M" = row changes per transaction
+HEAP_RE = re.compile(rb"desc: (DELETE|UPDATE|HOT_UPDATE)\b.*?rel (\d+)/(\d+)/(\d+)")
+DML_KEEP = 20                                      # per segment and transaction: fewer changed rows than this are never part of a "mass" change worth caching
 
 
 def _major_of(exe):
@@ -141,7 +143,7 @@ class Cache(object):
 
     def get(self, name, sig, code):
         e = self.data["segs"].get(name)
-        if e and e.get("s") == sig and (e.get("k") == code or e.get("k") == "E"):
+        if e and e.get("s") == sig and (e.get("k") == code or (e.get("k") == "E" and code == "D")):
             return e["e"]
         return None
 
@@ -241,9 +243,34 @@ def _scan_window(ctx, exe, multi, tli, names, extra, rmgrs, tmp_root, seg_size, 
             for r in g:
                 args += ["-r", r]
             args += [load[0], load[-1]]
+            dml = tuple(g) == ("Heap",)
+            agg = {}                                    # (segment, xid, db, rel) -> [first lsn, deleted, updated]
             with tempfile.TemporaryFile() as errf:
                 p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=errf, preexec_fn=_nice, env=_ENV)
+                k = 0
                 for line in p.stdout:
+                    if dml:
+                        m = HEAP_RE.search(line)
+                        if not m or not line.startswith(b"rmgr: Heap "):
+                            continue
+                        ml, mx = LSN_RE.search(line), XID_RE.search(line)
+                        if not ml or not mx:
+                            continue
+                        n = own.get(lsn_to_int(ml.group(1).decode()) // seg_size)
+                        if n:
+                            key = (n, mx.group(1).decode(), m.group(3).decode(), m.group(4).decode())
+                            a = agg.get(key)
+                            if a is None:
+                                a = agg[key] = [ml.group(1).decode(), 0, 0]
+                            if m.group(1) == b"DELETE":
+                                a[1] += 1
+                            else:
+                                a[2] += 1
+                        k += 1
+                        if k % 50000 == 0 and cancel and cancel():
+                            p.kill()
+                            break
+                        continue
                     ev = parse_line(line)
                     if not ev:
                         continue
@@ -255,6 +282,9 @@ def _scan_window(ctx, exe, multi, tli, names, extra, rmgrs, tmp_root, seg_size, 
                         break
                 p.stdout.close()
                 p.wait()
+                for (n, xid, db, rel), (lsn, nd, nu) in agg.items():
+                    if nd + nu >= DML_KEEP:
+                        res[n].append({"kind": "DML", "xid": xid, "lsn": lsn, "rels": [[db, rel]], "del": nd, "upd": nu, "time": None})
                 if p.returncode not in (0, None):
                     errf.seek(0)
                     err = errf.read().decode("utf-8", "replace")
@@ -263,6 +293,36 @@ def _scan_window(ctx, exe, multi, tli, names, extra, rmgrs, tmp_root, seg_size, 
                         raise EngineError("PGA-WAL-060", "pg_waldump cannot read these segments: %s" % err.strip().splitlines()[-1][:300],
                                           "use the pg_waldump of the same PostgreSQL major version as the WAL (Nodi → Percorsi e rilevamento)")
         return res
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _xact_end(ctx, exe, tli, start_name, xid, tmp_root, seg_size, ahead=3):
+    """How transaction `xid` ended: ("commit", time) / ("abort", time) / (None, None) when not found within `ahead` segments from start_name."""
+    p0 = parse_wal_name(start_name, seg_size)
+    if not p0:
+        return None, None
+    tmp = tempfile.mkdtemp(prefix="x-", dir=tmp_root)
+    try:
+        got = []
+        for k in range(ahead):
+            n = wal_name(tli, p0[1] + k, seg_size)
+            if ctx.wal.retrieve_segment(n, os.path.join(tmp, n), verify=False)[0] != 0:
+                break
+            got.append(n)
+        if not got:
+            return None, None
+        with tempfile.TemporaryFile() as errf:
+            p = subprocess.Popen([exe, "-p", tmp, "-t", str(tli), "-x", str(xid), "-r", "Transaction", got[0], got[-1]], stdout=subprocess.PIPE, stderr=errf, preexec_fn=_nice, env=_ENV)
+            out = p.stdout.read()
+            p.stdout.close()
+            p.wait()
+        for line in out.splitlines():
+            for word, kind in ((b"COMMIT", "commit"), (b"ABORT", "abort")):
+                if (b"desc: " + word) in line:
+                    m = TS_RE.search(line.split(word, 1)[1])
+                    return kind, (m.group(1).decode() if m else None)
+        return None, None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -403,9 +463,11 @@ def window_start(ctx, hours=None, since_backup=False, since_iso=None):
     return 0
 
 
-def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since=None, until=None, limit=20, cache_dir=None, progress=None, cancel=None, budget_sec=900, workers=None, detail=False):
+def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since=None, until=None, limit=20, cache_dir=None, progress=None, cancel=None, budget_sec=900, workers=None, detail=False,
+         min_rows=1000):
     """Returns {"events": [...ascending...], "segments_scanned", "segments_cached", "segments_total", "complete", "window": {...}, "elapsed_sec", ["suggestion"]}.
-    mode "events": DROP / TRUNCATE / DROP DATABASE; mode "databases": only DROP DATABASE (the cheap one: no Transaction records are printed)."""
+    mode "events": DROP / TRUNCATE / DROP DATABASE; mode "databases": only DROP DATABASE (the cheap one: no Transaction records are printed);
+    mode "dml": transactions that DELETEd / UPDATEd at least `min_rows` rows of one table (a DELETE or UPDATE without WHERE) - reads every row change, slower."""
     if mode not in KINDS:
         raise EngineError("PGA-GEN-010", "unknown analysis mode '%s'" % mode)
     t0 = time.time()
@@ -432,7 +494,7 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
         major = _major_of(exe)
         multi = major >= 16
         rmgrs, code = KINDS[mode], CODE[mode]
-        cache = Cache(os.path.join(cache_dir, "%s.json" % re.sub(r"[^A-Za-z0-9_.-]", "_", ctx.stanza)) if cache_dir else None, seg_size)
+        cache = Cache(os.path.join(cache_dir, "%s%s.json" % (re.sub(r"[^A-Za-z0-9_.-]", "_", ctx.stanza), "-dml" if mode == "dml" else "")) if cache_dir else None, seg_size)
         # per-window size: bounded by the free space of the scratch directory (a segment is seg_size uncompressed)
         try:
             free = shutil.disk_usage(tmp_root).free
@@ -517,6 +579,8 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
                 events.append(e)
         if mode == "databases":
             events = [e for e in events if e["kind"] == "DROP DATABASE"]     # a cache entry from a full scan also holds table events
+        if mode == "dml":
+            return _dml_result(ctx, exe, events, times, segs, allsegs, scanned, cached_n, partial, t0, limit, min_rows, tmp_root, seg_size, nw, per, major, hours, since_backup, cancel, report)
         events = fold_creates(events)
         events.sort(key=lambda e: lsn_to_int(e["lsn"]))
         events = events[-max(1, int(limit or 20)) * (3 if mode == "events" else 5):]      # head-room: names / filters below may drop some
@@ -574,6 +638,56 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
         return res
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def _dml_result(ctx, exe, events, times, segs, allsegs, scanned, cached_n, partial, t0, limit, min_rows, tmp_root, seg_size, nw, per, major, hours, since_backup, cancel, report):
+    """Sum the per-segment row changes per (transaction, table), keep the mass ones, find how each transaction ended (only COMMITTED ones lost data)."""
+    tot = {}
+    for e in events:
+        if e.get("kind") != "DML":
+            continue
+        db, rel = e["rels"][0]
+        k = (e["tli"], e["xid"], db, rel)
+        a = tot.get(k)
+        if a is None:
+            tot[k] = {"tli": e["tli"], "xid": e["xid"], "lsn": e["lsn"], "rels": [[db, rel]], "del": 0, "upd": 0, "first_seg": e["seg"], "last_seg": e["seg"]}
+            a = tot[k]
+        a["del"] += e["del"]
+        a["upd"] += e["upd"]
+        if lsn_to_int(e["lsn"]) < lsn_to_int(a["lsn"]):
+            a["lsn"], a["first_seg"] = e["lsn"], e["seg"]
+        if e["seg"] > a["last_seg"]:
+            a["last_seg"] = e["seg"]
+    big = sorted((a for a in tot.values() if a["del"] + a["upd"] >= max(1, int(min_rows or 1000))), key=lambda a: lsn_to_int(a["lsn"]))
+    big = big[-max(1, int(limit or 20)) * 2:]
+    rel_names, _ = _catalog_names(ctx)
+    report("cerco l’esito delle transazioni trovate")
+    out = []
+    for a in big:
+        if cancel and cancel():
+            raise EngineError("PGA-OP-900", "analysis cancelled")
+        end, ts = _xact_end(ctx, exe, a["tli"], a["last_seg"], a["xid"], tmp_root, seg_size)
+        if end == "abort":
+            continue                                      # rolled back: nothing was lost
+        db, rel = a["rels"][0]
+        nm, kind = rel_names.get((str(db), str(rel)), ("%s/%s" % (db, rel), "?"))
+        ev = {"kind": "DELETE" if a["upd"] == 0 else ("UPDATE" if a["del"] == 0 else "DELETE+UPDATE"), "xid": a["xid"], "lsn": a["lsn"], "tli": a["tli"],
+              "rows": a["del"] + a["upd"], "deleted": a["del"], "updated": a["upd"], "names": [nm], "tables": [nm], "rels": a["rels"], "seg": a["first_seg"],
+              "committed": end == "commit"}
+        if ts:
+            ev["time"], ev["time_exact"] = ts, True
+        else:
+            ev["time"] = datetime.fromtimestamp(times[a["last_seg"]][0], timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if a["last_seg"] in times else None
+            ev["time_exact"] = False
+        out.append(ev)
+    out = out[-max(1, int(limit or 20)):]
+    res = {"mode": "dml", "events": out, "min_rows": int(min_rows or 1000), "segments_scanned": len(scanned), "segments_cached": cached_n, "segments_total": len(allsegs),
+           "complete": not partial, "window": {"from": datetime.fromtimestamp(min(times[n][0] for n in segs), timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                                               "hours": hours or 0, "since_backup": bool(since_backup), "segments": len(segs)},
+           "workers": nw, "per_window": per, "pg_waldump_major": major, "elapsed_sec": round(time.time() - t0, 2)}
+    if out:
+        res["suggestion"] = {"target_xid": out[-1]["xid"], "inclusive": False, "note": "restoring with this xid and inclusive=false stops just BEFORE that transaction commits"}
+    return res
 
 
 def _mk(path):

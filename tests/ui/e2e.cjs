@@ -45,6 +45,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   const tr = await p.locator('.rt .track').boundingBox();
   await p.mouse.click(tr.x + tr.width * 0.55, tr.y + 30); await p.waitForTimeout(200); await shot('09-timeline-picked');
   await p.click('summary:has-text("Hai cancellato")'); await p.click('button:has-text("Avvia analisi")'); await p.waitForSelector('text=appdb.public.orders', { timeout: 10000 }); await shot('10-forensics');
+  await p.click('button:has-text("Cerca modifiche di massa")'); await p.waitForSelector('text=/48.?210 righe eliminate/', { timeout: 10000 });
+  await p.locator('tr:has-text("righe eliminate") button:has-text("Ripristina subito prima")').click(); await p.waitForSelector('text=/Subito prima di 48.?210 righe eliminate/'); await shot('10b-forensics-dml');
   await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=Nome del nuovo database');
   await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 }); await p.waitForSelector('.preflight.warn'); await p.waitForSelector('.spacebars .vol'); await p.waitForSelector('.placement code:has-text("/var/tmp/pg_arca_scratch")'); await shot('11-plan');
   // a taken destination name is a blocker: the start button stays disabled

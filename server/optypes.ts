@@ -179,7 +179,7 @@ Object.assign(OP_SPECS, {
   restore_drill:    { ...dataOp, mutating: false, validate: (p: any) => (p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null) },
   restore_diff:     { ...dataOp, mutating: false, cancellable: false, validate: (p: any) => stageErr(p) || intoErr(p) },
   restore_apply_rows: { ...dataOp, cancellable: false, validate: (p: any) => stageErr(p) || keysErr(p) || intoErr(p) },
-  wal_forensics:    { ...dataOp, mutating: false, laneKey: 'analysis', validate: (p: any) => (p.mode !== undefined && !['events', 'databases'].includes(p.mode) ? 'mode must be events|databases'
+  wal_forensics:    { ...dataOp, mutating: false, laneKey: 'analysis', validate: (p: any) => (p.mode !== undefined && !['events', 'databases', 'dml'].includes(p.mode) ? 'mode must be events|databases|dml' : p.min_rows !== undefined && !(Number.isInteger(Number(p.min_rows)) && Number(p.min_rows) >= 1) ? 'min_rows must be a positive integer'
                       : (p.hours !== undefined && !(Number(p.hours) >= 0 && Number(p.hours) <= 87600) ? 'hours must be 0 (whole archive) to 87600'
                       : (p.limit !== undefined && !(Number.isInteger(Number(p.limit)) && Number(p.limit) >= 1 && Number(p.limit) <= 200) ? 'limit must be 1-200'
                       : (p.budget_sec !== undefined && !(Number(p.budget_sec) >= 30 && Number(p.budget_sec) <= 7200) ? 'budget_sec must be 30-7200'
