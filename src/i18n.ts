@@ -70,6 +70,10 @@ const RULES: Rule[] = [
   [/^(.+?) uses the row type of a replaced table and cannot be recreated automatically \(kind (.+)\): it stays bound to the old copy$/, m => `${m[1]} usa il tipo riga di una tabella sostituita e non si può ricreare automaticamente (tipo ${m[2]}): resta legata alla copia vecchia`],
   [/^(.+?) recreated for the recovered table; the old version \((.+)\) is still used by other objects and was kept$/, m => `${m[1]} ricreata per la tabella ripristinata; la versione vecchia (${m[2]}) è ancora usata da altri oggetti ed è stata tenuta`],
   [/^(.+?) \(SQL-standard body\) could NOT be re-pointed at the recovered table \((.+)\): it still reads\/writes the OLD copy - recreate it by hand$/, m => `${m[1]} (corpo SQL standard) NON è stata ricollegata alla tabella ripristinata (${m[2]}): legge/scrive ancora la copia VECCHIA - ricreala a mano`],
+  [/^roles missing on the destination \((.+)\): owners and privileges of the database's objects will NOT be restored$/, m => `ruoli assenti sulla destinazione (${m[1]}): proprietari e permessi degli oggetti del database NON verranno ripristinati`],
+  [/^roles missing on the destination \((.+)\) will be created as NOLOGIN placeholders without password: owners and privileges are kept$/, m => `i ruoli assenti sulla destinazione (${m[1]}) verranno creati come segnaposto senza accesso né password: proprietari e permessi restano`],
+  [/^roles created as NOLOGIN placeholders \(no password, no login, no memberships\) to keep owners and privileges: (.+)$/, m => `ruoli creati come segnaposto (senza password, accesso né appartenenze) per tenere proprietari e permessi: ${m[1]}`],
+  [/^role (.+?) could not be created as a placeholder: (.+)$/, m => `il ruolo ${m[1]} non è stato creato come segnaposto: ${m[2]}`],
 ];
 const FIX: Rule[] = [
   [/^set the delivery address in the recovery instance settings \(e\.g\. the HAProxy \/ VIP of the leader\), or open network and pg_hba from this host$/, () => 'indica l’indirizzo di consegna nelle impostazioni dell’istanza di recupero (es. l’HAProxy o il VIP del leader), oppure apri rete e pg_hba da questo host'],
@@ -91,6 +95,7 @@ const FIX: Rule[] = [
   [/^make sure it has about (.+) free$/, m => `assicurati che abbia circa ${m[1]} liberi`],
   [/^make sure the original subscriber is stopped for good: two subscribers on one slot lose changes$/, () => 'assicurati che il subscriber originale sia fermo per sempre: due subscriber sullo stesso slot perdono modifiche'],
   [/^in the copy, before anything else: (.+)$/, m => `nella copia, prima di ogni altra cosa: ${m[1]}`],
+  [/^create those roles first, or let the restore create them as NOLOGIN placeholders \(no password, no login\)$/, () => 'crea prima quei ruoli, oppure lascia che il ripristino li crei come segnaposto senza accesso (nessuna password, nessun login)'],
 ];
 const apply = (rules: Rule[], s: string) => { for (const [re, f] of rules) { const m = s.match(re); if (m) return f(m); } return s; };
 /** Italian text of an agent check message (unchanged when unknown). */

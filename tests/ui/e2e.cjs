@@ -54,8 +54,10 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Indietro")'); const keep = await nameIn.inputValue(); await nameIn.fill('taken'); await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('.preflight.bad');
   if (!(await p.locator('button:has-text("Avvia ripristino")').isDisabled())) throw new Error('start must be blocked by a failing pre-flight');
   await shot('11b-plan-blocked'); await p.click('button:has-text("Indietro")'); await nameIn.fill(keep); await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('.preflight.warn');
+  // roles the database uses but the destination lacks: offered as NOLOGIN placeholders, the choice reaches the agent
+  await p.click('label:has-text("Crea i ruoli mancanti (gone_owner)") input'); await p.waitForSelector('text=un account eliminato non torna mai attivo');
   await p.click('button:has-text("Avvia ripristino")'); await p.click('.modal button:has-text("Avvia")');
-  await p.waitForSelector('text=Ripristino completato', { timeout: 15000 }); await shot('12-restore-done');
+  await p.waitForSelector('text=Ripristino completato', { timeout: 15000 }); await p.waitForSelector('text=ruoli creati come segnaposto'); await shot('12-restore-done');
   // restore one table, then promote it back
   await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Una o più tabelle")');
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');

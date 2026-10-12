@@ -166,6 +166,28 @@ class DbProps(unittest.TestCase):
         self.assertTrue(any("ts_owner_tmp" in w and "opc_owner_tmp" in w for w in r.get("warnings") or []), r.get("warnings"))
         self.assertEqual(q("props_back6", "SELECT count(*) FROM pg_ts_config WHERE cfgname = 'cfg'")[0][0], "1")
 
+    def test_06_missing_roles_known_in_the_plan_and_recreated_as_placeholders(self):
+        q("postgres", "CREATE ROLE gone_owner LOGIN PASSWORD 'secret'; CREATE ROLE gone_reader NOLOGIN; CREATE DATABASE roles_db")
+        q("roles_db", "CREATE TABLE t (id int); INSERT INTO t SELECT generate_series(1, 10); ALTER TABLE t OWNER TO gone_owner; GRANT SELECT ON t TO gone_reader")
+        run_backup(F.ctx, "full")                          # the catalog of this backup records the roles each database uses
+        time.sleep(1.2)
+        t = q("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
+        time.sleep(1.2)
+        q("roles_db", "DROP TABLE t")
+        q("postgres", "DROP ROLE gone_owner; DROP ROLE gone_reader; SELECT pg_switch_wal()")
+        time.sleep(2)
+        plan = restore_database(F.ctx, "roles_db", target_time=t, new_name="roles_back", dry_run=True)
+        self.assertEqual(sorted(plan.get("missing_roles") or []), ["gone_owner", "gone_reader"], "known BEFORE the recovery")
+        self.assertIn("roles", [c["id"] for c in plan["preflight"]["checks"] if c["level"] == "warn"])
+        r = restore_database(F.ctx, "roles_db", target_time=t, new_name="roles_back", create_missing_roles=True)
+        self.assertTrue(r.get("owners_and_privileges"), r.get("warnings"))
+        self.assertEqual(sorted(r.get("roles_created") or []), ["gone_owner", "gone_reader"])
+        self.assertEqual(q("roles_back", "SELECT pg_get_userbyid(relowner), relacl::text FROM pg_class WHERE relname = 't'")[0],
+                         ["gone_owner", "{gone_owner=arwdDxt/gone_owner,gone_reader=r/gone_owner}" if int(q("postgres", "SHOW server_version_num")[0][0]) < 170000
+                          else "{gone_owner=arwdDxtm/gone_owner,gone_reader=r/gone_owner}"])
+        row = q("postgres", "SELECT rolcanlogin, rolpassword IS NULL, rolsuper FROM pg_authid WHERE rolname = 'gone_owner'")[0]
+        self.assertEqual(row, ["f", "t", "f"], "a placeholder: never a reactivated account")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,27 @@ WHERE c.relkind IN ('r','i','S','t','m','p','v','f','c') ORDER BY c.oid
 """
 
 
+ROLES_USED_SQL = """
+WITH o(r) AS (
+  SELECT relowner FROM pg_class WHERE oid >= 16384 UNION SELECT nspowner FROM pg_namespace WHERE oid >= 16384 UNION SELECT proowner FROM pg_proc WHERE oid >= 16384
+  UNION SELECT typowner FROM pg_type WHERE oid >= 16384 UNION SELECT oprowner FROM pg_operator WHERE oid >= 16384 UNION SELECT collowner FROM pg_collation WHERE oid >= 16384
+  UNION SELECT conowner FROM pg_conversion WHERE oid >= 16384 UNION SELECT defaclrole FROM pg_default_acl UNION SELECT lomowner FROM pg_largeobject_metadata
+  UNION SELECT evtowner FROM pg_event_trigger UNION SELECT stxowner FROM pg_statistic_ext UNION SELECT pubowner FROM pg_publication
+  UNION SELECT fdwowner FROM pg_foreign_data_wrapper WHERE oid >= 16384 UNION SELECT srvowner FROM pg_foreign_server
+  UNION SELECT umuser FROM pg_user_mapping WHERE umuser <> 0 UNION SELECT unnest(polroles) FROM pg_policy
+  UNION SELECT opcowner FROM pg_opclass WHERE oid >= 16384 UNION SELECT opfowner FROM pg_opfamily WHERE oid >= 16384
+  UNION SELECT dictowner FROM pg_ts_dict WHERE oid >= 16384 UNION SELECT cfgowner FROM pg_ts_config WHERE oid >= 16384
+  UNION SELECT subowner FROM pg_subscription WHERE subdbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+), a(acl) AS (
+  SELECT relacl FROM pg_class WHERE relacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT attacl FROM pg_attribute WHERE attacl IS NOT NULL AND attrelid >= 16384
+  UNION ALL SELECT nspacl FROM pg_namespace WHERE nspacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT proacl FROM pg_proc WHERE proacl IS NOT NULL AND oid >= 16384
+  UNION ALL SELECT typacl FROM pg_type WHERE typacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT defaclacl FROM pg_default_acl
+  UNION ALL SELECT lomacl FROM pg_largeobject_metadata WHERE lomacl IS NOT NULL UNION ALL SELECT srvacl FROM pg_foreign_server WHERE srvacl IS NOT NULL
+  UNION ALL SELECT fdwacl FROM pg_foreign_data_wrapper WHERE fdwacl IS NOT NULL AND oid >= 16384
+), g(r) AS (SELECT (aclexplode(acl)).grantee FROM a UNION SELECT (aclexplode(acl)).grantor FROM a)
+SELECT DISTINCT rolname FROM pg_roles WHERE oid IN (SELECT r FROM o UNION SELECT r FROM g) ORDER BY 1"""
+
+
 def snapshot_catalog(conn, log=None):
     ctl = PgSession(conn, read_only=True)
     try:
@@ -50,6 +71,10 @@ def snapshot_catalog(conn, log=None):
                         entry["relations"].append({"oid": int(r[0]), "schema": r[1], "name": r[2], "kind": r[3], "relfilenode": int(r[4] or 0),
                                                    "tablespace": int(r[5] or 0), "size": int(r[6] or 0), "toast": int(r[7] or 0), "persistence": r[8],
                                                    "index_of": int(r[9] or 0) if len(r) > 9 else 0, "parent": int(r[10] or 0) if len(r) > 10 else 0})
+                    try:                                    # roles the database's objects name (owners, grants, policies): a restore elsewhere needs them
+                        entry["roles"] = [r[0] for r in s.query(ROLES_USED_SQL) if r and r[0]]
+                    except EngineError:
+                        pass
                 finally:
                     s.close()
             except EngineError as e:

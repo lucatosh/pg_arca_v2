@@ -31,7 +31,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [scope, setScope] = useState<Scope>('database'); const [objMode, setObjMode] = useState<'table' | 'schema'>('table');
   const [db, setDb] = useState(''); const [objs, setObjs] = useState<string[]>([]); const obj = objs[0] || ''; const [search, setSearch] = useState('');
   const [tgt, setTgt] = useState<Target>({ mode: 'latest' });
-  const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false); const [keepArch, setKeepArch] = useState(false);
+  const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false); const [keepArch, setKeepArch] = useState(false); const [mkRoles, setMkRoles] = useState(false);
   const [ask, setAsk] = useState(false);
   const prom = useOpRunner(c.id); const prev = useOpRunner(c.id); const [pmode, setPmode] = useState<PMode>('as_new'); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false); const [pschema, setPschema] = useState('');
   const dbsR = useOpRunner(c.id); const dropsR = useOpRunner(c.id); const liveR = useOpRunner(c.id); const tdropR = useOpRunner(c.id); const [fxHours, setFxHours] = useState(24); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id); const dml = useOpRunner(c.id); const [dmlMin, setDmlMin] = useState(1000);
@@ -47,7 +47,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
   const tparams = (): Record<string, any> => tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : tgt.mode === 'xid' ? { target_xid: tgt.xid, inclusive: false } : {};
   const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { destination: dest, action, delta, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
-    : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
+    : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...(mkRoles ? { create_missing_roles: true } : {}), ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
 
   const catDbs: CatDb[] = dbsR.op?.result?.databases || [];
@@ -161,6 +161,9 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     {step === 3 && <div className="stack-l">
       <Card title="Piano di ripristino"><div className="stack">
         {plan.op?.status === 'succeeded' ? <PlanView p={plan.op.result} scope={scope} /> : <OpPanel op={plan.op} error={plan.error} label="Verifica del piano" />}
+        {scope === 'database' && plan.op?.status === 'succeeded' && (plan.op.result?.missing_roles || []).length ? <div>
+          <label className="check"><input type="checkbox" checked={mkRoles} onChange={e => setMkRoles(e.target.checked)} />Crea i ruoli mancanti ({(plan.op.result.missing_roles as string[]).slice(0, 6).join(', ')}{plan.op.result.missing_roles.length > 6 ? '…' : ''}) come segnaposto, per tenere proprietari e permessi</label>
+          <p className="small muted" style={{ marginTop: -6 }}>{mkRoles ? 'I ruoli vengono creati senza accesso (NOLOGIN), senza password e senza appartenenze ad altri ruoli: un account eliminato non torna mai attivo, i suoi oggetti tengono solo proprietario e permessi.' : 'Senza questi ruoli, gli oggetti del database ripristinato apparterranno all’utente dell’agent e perderanno i permessi concessi.'}</p></div> : null}
         {scope !== 'instance' && plan.op ? <RecoveryPlacement clusterId={c.id} /> : null}
         {plan.op?.status === 'failed' && scope === 'instance' && /PGA-RST-040/.test(String(plan.op.error || '')) && !exec.op ? <Banner kind="info" title="In quella cartella c’è un ripristino interrotto" actions={<Button sm icon="restore" onClick={() => exec.run('restore_instance', { ...params().p, resume: true })}>Riprendilo</Button>}>Riprendendo, pg_arca completa la copia scrivendo solo ciò che manca o è diverso. Per ricominciare da zero svuota la cartella o scegline un’altra.</Banner> : null}
         {plan.op?.status === 'failed' ? <div><Button onClick={() => setStep(1)}>Cambia istante</Button></div> : null}</div></Card>

@@ -788,7 +788,8 @@ class OperationExecutor:
         from pg_arca.engine import granular
         into = p.get("into") if isinstance(p.get("into"), dict) else None      # central recovery host: the plan is checked where the instance will really run
         if scope == "database":
-            return granular.restore_database(ctx, str(p.get("database")), p.get("set"), dry_run=True, new_name=p.get("new_name"), into=into, **t)
+            return granular.restore_database(ctx, str(p.get("database")), p.get("set"), dry_run=True, new_name=p.get("new_name"), into=into,
+                                             create_missing_roles=bool(p.get("create_missing_roles")), **t)
         objs = [str(x) for x in p.get("objects")] if isinstance(p.get("objects"), list) and p.get("objects") else None
         return granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), dry_run=True, stage_db=p.get("stage_db"), objects=objs, into=into, **t)
 
@@ -802,7 +803,8 @@ class OperationExecutor:
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
         return granular.restore_database(ctx, str(p.get("database")), p.get("set"), into=p.get("into"), new_name=p.get("new_name"),
-                                         jobs=int(p.get("jobs", 2)), progress=self._progress, cancel=self._cancelled, **self._targets(p))
+                                         jobs=int(p.get("jobs", 2)), progress=self._progress, cancel=self._cancelled,
+                                         create_missing_roles=bool(p.get("create_missing_roles")), **self._targets(p))
 
     def h_restore_object(self, p):
         from pg_arca.engine import granular

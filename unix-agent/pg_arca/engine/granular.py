@@ -31,6 +31,38 @@ def _check_name(n, what):
 RESTORING_MARK = "pg_arca: restore IN PROGRESS"
 
 
+def _create_placeholder_roles(admin, eph, names, db, warnings):
+    """Roles the restored objects need, created as NOLOGIN placeholders: no password, no login, no superuser/createdb/createrole/replication/bypassrls,
+    no memberships - an account deleted on purpose is never brought back to life; its objects simply keep their owner and grants. Returns the created names."""
+    attrs = {}
+    try:
+        s = PgSession(eph.conn("postgres"), read_only=True)
+        try:
+            for r in s.query("SELECT rolname, rolcanlogin, rolsuper FROM pg_roles WHERE rolname = ANY(ARRAY[%s])" % ",".join(sql_lit(n) for n in names)):
+                attrs[r[0]] = "login" if r[1] == "t" else "nologin"
+        finally:
+            s.close()
+    except EngineError:
+        pass
+    made = []
+    d = PgSession(admin.with_db("postgres"))
+    try:
+        for n in names:
+            try:
+                d.query("CREATE ROLE %s NOLOGIN" % quote_ident(n))
+                d.query("COMMENT ON ROLE %s IS %s" % (quote_ident(n), sql_lit("pg_arca: placeholder created %s by the restore of database %s (in the backup it was a %s role): "
+                                                                           "it owns/holds grants of restored objects; no login, no password, no memberships"
+                                                                           % (now_utc().strftime("%Y-%m-%d %H:%M UTC"), db, attrs.get(n, "?")))))
+                made.append(n)
+            except EngineError as e:
+                warnings.append("role %s could not be created as a placeholder: %s" % (n, e.message[:160]))
+    finally:
+        d.close()
+    if made:
+        warnings.append("roles created as NOLOGIN placeholders (no password, no login, no memberships) to keep owners and privileges: %s" % ", ".join(made[:8]))
+    return made
+
+
 def _detach_subscriptions(admin, name, warnings):
     """Logical replication subscriptions come back DISABLED (pg_dump writes connect = false) but still carry the publisher's slot name: enabling
     one would take the real subscriber's slot, and a DROP SUBSCRIPTION to clean the copy up would connect to the publisher and DROP that slot,
@@ -278,25 +310,7 @@ def _drop_db(admin, name):
         pass
 
 
-ROLES_USED_SQL = """
-WITH o(r) AS (
-  SELECT relowner FROM pg_class WHERE oid >= 16384 UNION SELECT nspowner FROM pg_namespace WHERE oid >= 16384 UNION SELECT proowner FROM pg_proc WHERE oid >= 16384
-  UNION SELECT typowner FROM pg_type WHERE oid >= 16384 UNION SELECT oprowner FROM pg_operator WHERE oid >= 16384 UNION SELECT collowner FROM pg_collation WHERE oid >= 16384
-  UNION SELECT conowner FROM pg_conversion WHERE oid >= 16384 UNION SELECT defaclrole FROM pg_default_acl UNION SELECT lomowner FROM pg_largeobject_metadata
-  UNION SELECT evtowner FROM pg_event_trigger UNION SELECT stxowner FROM pg_statistic_ext UNION SELECT pubowner FROM pg_publication
-  UNION SELECT fdwowner FROM pg_foreign_data_wrapper WHERE oid >= 16384 UNION SELECT srvowner FROM pg_foreign_server
-  UNION SELECT umuser FROM pg_user_mapping WHERE umuser <> 0 UNION SELECT unnest(polroles) FROM pg_policy
-  UNION SELECT opcowner FROM pg_opclass WHERE oid >= 16384 UNION SELECT opfowner FROM pg_opfamily WHERE oid >= 16384
-  UNION SELECT dictowner FROM pg_ts_dict WHERE oid >= 16384 UNION SELECT cfgowner FROM pg_ts_config WHERE oid >= 16384
-  UNION SELECT subowner FROM pg_subscription WHERE subdbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-), a(acl) AS (
-  SELECT relacl FROM pg_class WHERE relacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT attacl FROM pg_attribute WHERE attacl IS NOT NULL AND attrelid >= 16384
-  UNION ALL SELECT nspacl FROM pg_namespace WHERE nspacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT proacl FROM pg_proc WHERE proacl IS NOT NULL AND oid >= 16384
-  UNION ALL SELECT typacl FROM pg_type WHERE typacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT defaclacl FROM pg_default_acl
-  UNION ALL SELECT lomacl FROM pg_largeobject_metadata WHERE lomacl IS NOT NULL UNION ALL SELECT srvacl FROM pg_foreign_server WHERE srvacl IS NOT NULL
-  UNION ALL SELECT fdwacl FROM pg_foreign_data_wrapper WHERE fdwacl IS NOT NULL AND oid >= 16384
-), g(r) AS (SELECT (aclexplode(acl)).grantee FROM a UNION SELECT (aclexplode(acl)).grantor FROM a)
-SELECT DISTINCT rolname FROM pg_roles WHERE oid IN (SELECT r FROM o UNION SELECT r FROM g) ORDER BY 1"""
+from pg_arca.engine.catalog import ROLES_USED_SQL  # noqa: E402  (one definition: the backup catalog records it per database too)
 
 
 def roles_used(conn):
@@ -580,7 +594,9 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
 
 
 def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,
-                     into=None, new_name=None, jobs=2, dry_run=False, progress=None, cancel=None):
+                     into=None, new_name=None, jobs=2, dry_run=False, progress=None, cancel=None, create_missing_roles=False):
+    """create_missing_roles: roles the database's objects name that the destination does not have are created as NOLOGIN placeholders without password
+    (never a reactivated account), so owners and privileges are kept exactly; otherwise owners/privileges are skipped and the roles listed."""
     target, chain, tt, note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
     entry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name)
@@ -605,6 +621,9 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
             if s.scalar("SELECT 1 FROM pg_database WHERE datname=%s" % sql_lit(new_name)) == "1":
                 taken = new_name
             dest_standby = s.scalar("SELECT pg_is_in_recovery()") == "t"
+            if entry.get("roles"):                          # recorded by the backup's catalog: known before the recovery
+                have = {r[0] for r in s.query("SELECT rolname FROM pg_roles")}
+                plan["missing_roles"] = [r for r in entry["roles"] if r not in have]
         finally:
             s.close()
     except Exception as e:
@@ -626,6 +645,13 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     if entry.get("late"):
         checks.append(_late_check(entry, "database '%s'" % db))
         plan["created_after_backup"] = True
+    if plan.get("missing_roles"):
+        mr = ", ".join(plan["missing_roles"][:8])
+        if create_missing_roles:
+            checks.append({"id": "roles", "level": "ok", "text": "roles missing on the destination (%s) will be created as NOLOGIN placeholders without password: owners and privileges are kept" % mr})
+        else:
+            checks.append({"id": "roles", "level": "warn", "text": "roles missing on the destination (%s): owners and privileges of the database's objects will NOT be restored" % mr,
+                           "fix": "create those roles first, or let the restore create them as NOLOGIN placeholders (no password, no login)"})
     if dest_standby:
         checks.append({"id": "dest_standby", "level": "bad", "text": "the server that would receive the result is a standby (read-only): nothing can be created there",
                        "fix": "run the restore from the primary's node, or set the delivery address in the recovery instance settings to the primary (HAProxy / VIP of the leader)"})
@@ -673,6 +699,10 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
             finally:
                 d.close()
             missing = [r for r in used if r not in have]
+        if missing and create_missing_roles:
+            made = _create_placeholder_roles(admin, eph, missing, db, warns)
+            info["roles_created"] = made
+            missing = [r for r in missing if r not in made]
         keep = used is not None and not missing
         if missing:
             warns.append("roles missing on this server (%s): object owners and privileges were NOT restored; create the roles and restore again to keep them" % ", ".join(missing[:8]))
