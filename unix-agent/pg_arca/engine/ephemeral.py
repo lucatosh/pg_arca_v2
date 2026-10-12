@@ -71,7 +71,7 @@ def read_pg_control(conn, datadir):
     mapping = {"max_connections setting": "max_connections", "max_worker_processes setting": "max_worker_processes",
                "max_wal_senders setting": "max_wal_senders", "max_prepared_xacts setting": "max_prepared_xacts",
                "max_locks_per_xact setting": "max_locks_per_xact", "wal_level setting": "wal_level", "Database block size": "block_size",
-               "Latest checkpoint's TimeLineID": "timeline", "Database cluster state": "state"}
+               "Latest checkpoint's TimeLineID": "timeline", "Database cluster state": "state", "Catalog version number": "catversion"}
     res = {}
     for line in out.splitlines():
         if ":" in line:
@@ -197,7 +197,8 @@ class Ephemeral(object):
             keep = set(keep_oids) | system_db_oids(cat)        # template1 + the 'postgres' database (OID 5 only since PostgreSQL 15)
             include = sparse_filter(keep)
         merged, tbs = merge_chain(repo, chain, include)
-        full_size = estimate(merge_chain(repo, chain)[0]) if sparse else estimate(merged)
+        everything = merge_chain(repo, chain)[0] if sparse else merged
+        full_size = estimate(everything)
         # tablespaces always re-rooted inside the scratch directory
         remap = {str(oid): os.path.join(self.dir, "tblspc", str(oid)) for oid in tbs}
         os.makedirs(os.path.join(self.dir, "pg_tblspc"), mode=0o700, exist_ok=True)
@@ -229,6 +230,8 @@ class Ephemeral(object):
             if os.path.exists(p):
                 os.remove(p)
         ctl = read_pg_control(self.conn(), self.dir)
+        from pg_arca.engine.restore import ensure_tablespace_version_dirs
+        ensure_tablespace_version_dirs(self.dir, tbs, everything, prof.label, ctl.get("catversion"))
         # pg_dump of a big schema takes one lock per table/sequence in ONE transaction: size the lock table for the relations we will read (catalog of the backup)
         nrel = 0
         for d in (cat.get("databases") or {}).values():

@@ -238,6 +238,26 @@ def prepare_skeleton(dest, catalog, keep_oids=()):
     return made
 
 
+def ensure_tablespace_version_dirs(datadir, tablespaces, files, major, catversion=None):
+    """Create pg_tblspc/<oid>/PG_<major>_<catversion> for every tablespace. The manifest lists files, not directories: a tablespace that was empty at
+    backup time (or whose files all belong to databases a sparse recovery leaves out) would otherwise have no version directory, and a CREATE DATABASE
+    replayed into it after the consistency point makes PostgreSQL 15+ PANIC ('missing directory'); before 15 the copy fails the same way."""
+    names = {}
+    for rel in files:
+        m = re.match(r"^pg_tblspc/(\d+)/([^/]+)/", rel)
+        if m:
+            names.setdefault(m.group(1), set()).add(m.group(2))
+    made = []
+    for oid in (tablespaces or {}):
+        want = names.get(str(oid)) or ({"PG_%s_%s" % (major, catversion)} if catversion and major else set())
+        for n in want:
+            p = os.path.join(datadir, "pg_tblspc", str(oid), n)
+            if not os.path.isdir(p):
+                os.makedirs(p, mode=0o700, exist_ok=True)
+                made.append(p)
+    return made
+
+
 def link_tablespaces(dest, tablespaces, remap=None):
     """pg_tblspc/<oid> -> location. `remap` {oid: newdir}; locations must not collide with protected paths (checked by caller)."""
     remap = remap or {}
@@ -656,6 +676,12 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
         remove_stale(dest, merged)
     link_tablespaces(dest, tbs, remap)
     stats = materialize(ctx, merged, dest, delta, progress, cancel)
+    try:
+        from pg_arca.engine.ephemeral import read_pg_control
+        prof0 = set_profile(chain[0]) or Profile(16 * 10000)
+        ensure_tablespace_version_dirs(dest, tbs, merged, prof0.label, read_pg_control(ctx.conn, dest).get("catversion") if tbs else None)
+    except EngineError as e:
+        ctx.log("warning", "tablespace version directories not checked: %s" % e.message)
     cat = repo.load_catalog(target)
     prepare_skeleton(dest, cat)
     install_external_conf(dest, merged)

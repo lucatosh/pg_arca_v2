@@ -259,6 +259,9 @@ WITH o(r) AS (
   UNION SELECT evtowner FROM pg_event_trigger UNION SELECT stxowner FROM pg_statistic_ext UNION SELECT pubowner FROM pg_publication
   UNION SELECT fdwowner FROM pg_foreign_data_wrapper WHERE oid >= 16384 UNION SELECT srvowner FROM pg_foreign_server
   UNION SELECT umuser FROM pg_user_mapping WHERE umuser <> 0 UNION SELECT unnest(polroles) FROM pg_policy
+  UNION SELECT opcowner FROM pg_opclass WHERE oid >= 16384 UNION SELECT opfowner FROM pg_opfamily WHERE oid >= 16384
+  UNION SELECT dictowner FROM pg_ts_dict WHERE oid >= 16384 UNION SELECT cfgowner FROM pg_ts_config WHERE oid >= 16384
+  UNION SELECT subowner FROM pg_subscription WHERE subdbid = (SELECT oid FROM pg_database WHERE datname = current_database())
 ), a(acl) AS (
   SELECT relacl FROM pg_class WHERE relacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT attacl FROM pg_attribute WHERE attacl IS NOT NULL AND attrelid >= 16384
   UNION ALL SELECT nspacl FROM pg_namespace WHERE nspacl IS NOT NULL AND oid >= 16384 UNION ALL SELECT proacl FROM pg_proc WHERE proacl IS NOT NULL AND oid >= 16384
@@ -427,16 +430,25 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
 
 def _db_usable(eph, entry):
     """True when the recovered instance really holds a connectable database `entry` (not removed, not marked invalid by a DROP DATABASE that was partly replayed)."""
-    if not os.path.isdir(os.path.join(eph.dir, "base", str(entry["oid"]))):
-        eph.unusable = "directory base/%s missing" % entry["oid"]
-        return False
     s = PgSession(eph.conn("postgres"), read_only=True)
     try:
-        row = s.query("SELECT datconnlimit, pg_is_in_recovery(), (SELECT count(*) FROM pg_database) FROM pg_database WHERE oid = %s" % int(entry["oid"]))
-        eph.unusable = "pg_database row: %r" % (row,)
-        return bool(row) and row[0][0] != "-2"
+        row = s.query("SELECT datconnlimit, dattablespace::int, (SELECT spcname FROM pg_tablespace WHERE oid = dattablespace) FROM pg_database WHERE oid = %s" % int(entry["oid"]))
     finally:
         s.close()
+    if not row or not row[0]:
+        eph.unusable = "no pg_database row for oid %s" % entry["oid"]
+        return False
+    # the database's directory lives in its DEFAULT tablespace: base/<oid> for pg_default, pg_tblspc/<spc>/PG_<ver>_<cat>/<oid> otherwise
+    if row[0][2] == "pg_default":
+        found = os.path.isdir(os.path.join(eph.dir, "base", str(entry["oid"])))
+    else:
+        import glob as _glob
+        found = bool(_glob.glob(os.path.join(eph.dir, "pg_tblspc", str(row[0][1]), "*", str(entry["oid"]))))
+    if not found:
+        eph.unusable = "directory of database oid %s missing (tablespace %s)" % (entry["oid"], row[0][2])
+        return False
+    eph.unusable = "pg_database row: %r" % (row,)
+    return row[0][0] != "-2"
 
 
 def _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name):

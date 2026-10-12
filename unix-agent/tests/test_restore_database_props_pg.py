@@ -132,6 +132,40 @@ class DbProps(unittest.TestCase):
         self.assertTrue([d for d in snap["databases"] if d["name"] == "props_half"][0].get("restoring"), "telemetry flags it")
         self.assertFalse([d for d in snap["databases"] if d["name"] == "props_back"][0].get("restoring"), "a completed restore carries no marker")
 
+    def test_05_less_common_objects_and_their_owners(self):
+        # large objects (owner + grant), event trigger, text search configuration/dictionary, operator class/family, publication:
+        # owned by roles that must be known BEFORE pg_restore runs with owners kept (an unknown owner = ALTER ... OWNER TO fails = whole restore fails)
+        q("postgres", "CREATE ROLE ts_owner_tmp NOLOGIN; CREATE ROLE opc_owner_tmp NOLOGIN")
+        q("props_db", "SELECT lo_from_bytea(424242, 'hello large object'::bytea); ALTER LARGE OBJECT 424242 OWNER TO app_owner; GRANT SELECT ON LARGE OBJECT 424242 TO app_reader;"
+                      "CREATE FUNCTION app.no_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN RAISE NOTICE 'ddl'; END $$;"
+                      "CREATE EVENT TRIGGER arca_evt ON ddl_command_end EXECUTE FUNCTION app.no_ddl();"
+                      "CREATE TEXT SEARCH DICTIONARY app.simple_it (TEMPLATE = pg_catalog.simple); ALTER TEXT SEARCH DICTIONARY app.simple_it OWNER TO ts_owner_tmp;"
+                      "CREATE TEXT SEARCH CONFIGURATION app.cfg (COPY = pg_catalog.simple); ALTER TEXT SEARCH CONFIGURATION app.cfg OWNER TO ts_owner_tmp;"
+                      "CREATE OPERATOR FAMILY app.fam USING btree; ALTER OPERATOR FAMILY app.fam USING btree OWNER TO opc_owner_tmp;"
+                      "CREATE PUBLICATION arca_pub FOR TABLE app.t")
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(2)
+        t = q("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
+        time.sleep(1.2)
+        r = restore_database(F.ctx, "props_db", target_time=t, new_name="props_back5")
+        self.assertTrue(r.get("owners_and_privileges"), r.get("warnings"))
+        lo = "SELECT pg_get_userbyid(lomowner), lomacl::text FROM pg_largeobject_metadata WHERE oid = 424242"
+        self.assertEqual(q("props_back5", lo), q("props_db", lo))
+        self.assertEqual(q("props_back5", "SELECT convert_from(lo_get(424242), 'UTF8')")[0][0], "hello large object")
+        self.assertEqual(q("props_back5", "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'arca_evt'")[0][0], "1")
+        self.assertEqual(q("props_back5", "SELECT pg_get_userbyid(cfgowner) FROM pg_ts_config WHERE cfgname = 'cfg'")[0][0], "ts_owner_tmp")
+        self.assertEqual(q("props_back5", "SELECT pg_get_userbyid(opfowner) FROM pg_opfamily WHERE opfname = 'fam'")[0][0], "opc_owner_tmp")
+        # now those owners disappear from the server: the same restore must still succeed (owners skipped, roles listed)
+        q("props_db", "ALTER TEXT SEARCH DICTIONARY app.simple_it OWNER TO postgres; ALTER TEXT SEARCH CONFIGURATION app.cfg OWNER TO postgres;"
+                      "ALTER OPERATOR FAMILY app.fam USING btree OWNER TO postgres")
+        q("props_back5", "ALTER TEXT SEARCH DICTIONARY app.simple_it OWNER TO postgres; ALTER TEXT SEARCH CONFIGURATION app.cfg OWNER TO postgres;"
+                         "ALTER OPERATOR FAMILY app.fam USING btree OWNER TO postgres")
+        q("postgres", "DROP ROLE ts_owner_tmp; DROP ROLE opc_owner_tmp")
+        r = restore_database(F.ctx, "props_db", target_time=t, new_name="props_back6")
+        self.assertFalse(r.get("owners_and_privileges"))
+        self.assertTrue(any("ts_owner_tmp" in w and "opc_owner_tmp" in w for w in r.get("warnings") or []), r.get("warnings"))
+        self.assertEqual(q("props_back6", "SELECT count(*) FROM pg_ts_config WHERE cfgname = 'cfg'")[0][0], "1")
+
 
 if __name__ == "__main__":
     unittest.main()

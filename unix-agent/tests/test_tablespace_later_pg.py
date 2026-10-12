@@ -89,6 +89,38 @@ class TsLater(unittest.TestCase):
         q("tsl", "CHECKPOINT")
         self.assertEqual(q("tsl", "SELECT (SELECT count(*) FROM mid_t) + (SELECT count(*) FROM late_t)")[0][0], "800", "production still reads its tablespaces")
 
+    def test_z_database_created_later_in_a_tablespace_empty_at_full_time(self):
+        # the manifest lists files, not directories: a tablespace with no files at backup time had no version directory (PG_16_...) in the copy,
+        # and replaying CREATE DATABASE into it after the consistency point made PostgreSQL PANIC ('missing directory'). Found by a database restore.
+        d = os.path.join(F.base, "ts_empty")
+        os.makedirs(d)
+        q("postgres", "CREATE TABLESPACE ts_empty LOCATION '%s'" % d)
+        run_backup(F.ctx, "full")
+        q("postgres", "CREATE DATABASE in_empty TABLESPACE ts_empty")
+        q("in_empty", "CREATE TABLE t AS SELECT generate_series(1, 250) AS id")
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(2)
+        restore_database(F.ctx, "in_empty", new_name="in_empty_back")
+        self.assertEqual(q("in_empty_back", "SELECT count(*) FROM t")[0][0], "250")
+        restore_database(F.ctx, "tsl", new_name="tsl_back_z")              # another database: in_empty is left out of the sparse recovery
+        self.assertEqual(q("tsl_back_z", "SELECT count(*) FROM base_t")[0][0], "100")
+        dest = os.path.join(F.base, "inst_z")
+        oids = dict(q("postgres", "SELECT spcname, oid FROM pg_tablespace WHERE spcname LIKE 'ts_%'"))
+        restore_instance(F.ctx, dest=dest, tablespace_remap={oids[n]: os.path.join(F.base, "relocz_" + n) for n in oids})
+        port = F.port + 8
+        r = sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-o", "-p %d -k %s" % (port, F.sock), "-l", dest + ".log", "-w", "-t", "120", "start")
+        self.assertEqual(r.returncode, 0, open(dest + ".log").read()[-1500:])
+        try:
+            s = PgSession(PgConn(host=F.sock, port=port, user="postgres", bindir=BIN).with_db("in_empty"))
+            for _ in range(60):
+                if s.scalar("SELECT pg_is_in_recovery()") == "f":
+                    break
+                time.sleep(1)
+            self.assertEqual(s.scalar("SELECT count(*) FROM t"), "250")
+            s.close()
+        finally:
+            sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
+
 
 if __name__ == "__main__":
     unittest.main()
