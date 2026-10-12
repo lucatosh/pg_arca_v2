@@ -32,6 +32,9 @@ export interface EnrollmentToken {
   expiresAt: string;
   usedAt?: string;
   usedByNode?: string;
+  /** how many servers may enroll with it (a Patroni cluster: one command for all its nodes). Default 1. */
+  maxUses?: number;
+  usedBy?: { node: string; at: string }[];
   clusterId?: string;      // optional: bind the node to an existing cluster
   environment?: string;    // environment given to a cluster auto-created at enrollment
   kind?: 'worker';         // the token enrolls an operational machine (no cluster)

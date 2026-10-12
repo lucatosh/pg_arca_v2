@@ -42,6 +42,18 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   assert.strictEqual(en.status, 201);
   assert.strictEqual((await call('POST', '/api/agent/enroll', { enrollment_token: token, node_name: 'other', discovery: disc })).status, 403);  // single use
   assert.strictEqual((await call('POST', '/api/agent/enroll', { enrollment_token: 'bogus', node_name: 'db1' })).status, 401);
+  // one command for the nodes of a Patroni cluster: a token for up to 2 servers, both join the SAME cluster (same system identifier), the third is refused
+  assert.strictEqual((await call('POST', '/api/enrollment-tokens', { label: 'x', maxUses: 21 }, H())).status, 400);
+  const tok2 = await call('POST', '/api/enrollment-tokens', { label: 'pat', environment: 'prod', maxUses: 2 }, H()); assert.strictEqual(tok2.body.maxUses, 2);
+  const disc2 = { postgres_instances: [{ cluster_key: 'sysid:222', patroni: { scope: 'pat' } }], patroni_clusters: [{ scope: 'pat' }] };
+  const e1 = await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat1', discovery: disc2 }); assert.strictEqual(e1.status, 201);
+  const e1b = await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat1', discovery: disc2 }); assert.strictEqual(e1b.status, 201, 'installer re-run on the same server is not a new use');
+  const e2 = await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat2', discovery: disc2 }); assert.strictEqual(e2.status, 201);
+  assert.strictEqual(e1.body.cluster_id, e2.body.cluster_id);
+  assert.strictEqual((await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat3', discovery: disc2 })).status, 403);
+  const tl = (await call('GET', '/api/enrollment-tokens', undefined, H())).body.tokens.find((t: any) => t.id === tok2.body.id);
+  assert.strictEqual(tl.uses, 2); assert.strictEqual(tl.active, false);
+  await call('DELETE', `/api/clusters/${e1.body.cluster_id}`, undefined, H());
   const A = (x: any = {}) => ({ authorization: 'Bearer ' + en.body.agent_token, 'x-arca-node': en.body.node_id, ...x });
   assert.strictEqual((await call('POST', '/api/agent/heartbeat', {}, { authorization: 'Bearer nope', 'x-arca-node': en.body.node_id })).status, 401);
   const snap = { postgres: { alive: true, is_in_recovery: false, role: 'primary', version: '16.4', current_lsn: '0/3000000', timeline: 2, xact_total: 1000, connections: { used: 2, max: 100 }, databases: [{ oid: 5, name: 'app', size: 1234 }] }, patroni: { accessible: true, role: 'leader', scope: 'prodpg' }, system: { load_avg_1m: 0.5, cpu_count: 2, memory_used_percent: 30 } };

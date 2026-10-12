@@ -56,11 +56,11 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,6) else 1)' || die 
 # python zstandard: the chunk compressor of the backups. Without it the agent falls back to zlib, measured 5-10x slower per core on database pages
 # (the lab: zlib ~16-80 MB/s per core). Debian/Ubuntu: python3-zstandard; RHEL/Rocky/Alma: python3-zstandard from EPEL (or AppStream on newer releases).
 if ! python3 -c 'import zstandard' 2>/dev/null && ! python3 -c 'from compression import zstd' 2>/dev/null; then
-  { command -v apt-get >/dev/null && apt-get install -y -qq python3-zstandard >/dev/null 2>&1; } || { command -v dnf >/dev/null && dnf install -y -q python3-zstandard >/dev/null 2>&1; } \
+  { command -v apt-get >/dev/null && { apt-get install -y -qq python3-zstandard >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq python3-zstandard >/dev/null 2>&1; }; }; } || { command -v dnf >/dev/null && dnf install -y -q python3-zstandard >/dev/null 2>&1; } \
     || echo "WARN: python3-zstandard not available: backups will use zlib (much slower). Install python3-zstandard (EPEL on RHEL) or 'pip3 install zstandard' for the agent's python."
 fi
 if ! command -v zstd >/dev/null; then
-  { command -v dnf >/dev/null && dnf install -y -q zstd; } || { command -v apt-get >/dev/null && apt-get install -y -qq zstd; } || echo "WARN: zstd not installed; WAL/chunks will be stored uncompressed"
+  { command -v dnf >/dev/null && dnf install -y -q zstd; } || { command -v apt-get >/dev/null && { apt-get install -y -qq zstd >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq zstd >/dev/null 2>&1; }; }; } || echo "WARN: zstd not installed; WAL/chunks will be stored uncompressed"
 fi
 
 # --- obtain the bundle ------------------------------------------------------------
@@ -160,7 +160,22 @@ systemctl enable $UNIT.service >/dev/null
 systemctl restart $UNIT.service      # restart (not just start): re-running the installer is the upgrade path, the old code must not keep running
 sleep 2
 systemctl is-active --quiet $UNIT.service && echo "pg_arca agent is running ($UNIT)." || { echo "agent failed to start:"; journalctl -u $UNIT -n 20 --no-pager; exit 1; }
-echo "Check the console: this node appears under Clusters within seconds. Logs: journalctl -u $UNIT -f"
-echo "WAL archiving (PITR) - set on the primary (or in Patroni postgresql.parameters):"
-echo "   archive_mode = on"
-echo "   archive_command = '/usr/local/bin/pg-arca-wal archive %p %f'   # see: pg-arca-cli archive-setup"
+# wait (max ~40 s) for the agent to tell how its registration went, so the person at the terminal knows right away whether to look at the console or fix something here
+ST="$STATE_ROOT/state/console_status.json"; state=""
+for _ in $(seq 1 40); do
+  [[ -f "$ST" ]] && state="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("state","")+"|"+str(d.get("detail") or "")+"|"+str(d.get("node_id") or ""))' "$ST" 2>/dev/null || true)"
+  case "${state%%|*}" in enrolled|connected|waiting_approval) break ;; esac
+  systemctl is-active --quiet $UNIT.service || break
+  sleep 1
+done
+IFS='|' read -r st detail nid <<<"$state"
+case "$st" in
+  enrolled|connected) echo "OK: registered in the console as node $nid. Open ${PG_ARCA_URL:-the console}: the server is listed under Clusters." ;;
+  waiting_approval)   [[ -n "$detail" ]] && echo "NOTE: the enrollment token was refused ($detail: expired, already used or unknown)."
+                      echo "WAITING: this server announced itself; an administrator approves it in the console (Oggi / Cluster: 'Nuovo server rilevato')." ;;
+  token_refused)      echo "NOTE: the enrollment token was refused ($detail); the agent is announcing the server for approval instead." ;;
+  unreachable)        echo "PROBLEM: the agent cannot reach the console: $detail"; echo "  check the address (${PG_ARCA_URL:-?}), DNS, firewall/proxy from this server; the agent keeps retrying." ;;
+  *)                  echo "The agent is starting; registration not confirmed yet. Follow it with: journalctl -u $UNIT -f" ;;
+esac
+echo "Logs: journalctl -u $UNIT -f"
+echo "Next: WAL archiving (needed for point-in-time restore) is switched on from the console, Backup tab -> 'Attiva archiviazione' (on Patroni through the DCS)."

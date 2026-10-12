@@ -76,6 +76,19 @@ class ConsoleClient(threading.Thread):
                 body = raw[:300]
             raise ConsoleError(e.code, body)
 
+    # ------------------------------------------------------------------ status for the installer / the administrator on the server
+    def _status(self, state, **kw):
+        """state_dir/console_status.json: what the agent knows about its registration (the installer waits on it and tells the user)."""
+        if getattr(self, "_last_status", None) == (state, kw.get("detail")):
+            return
+        self._last_status = (state, kw.get("detail"))
+        try:
+            d = self.config.get("state_dir") or os.path.dirname(self.config["credentials_file"])
+            atomic_write_json(os.path.join(d, "console_status.json"), dict(kw, state=state, at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                                                             console=self.config.get("web_server_url")))
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ enrollment
     def enroll(self):
         token = self.config.get("enrollment_token")
@@ -87,6 +100,7 @@ class ConsoleClient(threading.Thread):
         self.rt.set_worker(r.get("node_kind") == "worker")
         self.creds = load_credentials(self.config)
         logger.info("enrolled as node %s in cluster %s", r["node_id"], r.get("cluster_id"))
+        self._status("enrolled", node_id=r["node_id"], cluster_id=r.get("cluster_id"), via="token")
         env_file = os.path.join(os.path.dirname(self.config["credentials_file"]), "enroll.env")
         try:                                        # the one-time token is spent; do not leave it on disk
             os.unlink(env_file)
@@ -127,6 +141,7 @@ class ConsoleClient(threading.Thread):
             self.creds = load_credentials(self.config)
             self.rt.set_worker(st.get("node_kind") == "worker")
             logger.info("approved by the console: node %s, cluster %s", st["node_id"], st.get("cluster_id"))
+            self._status("enrolled", node_id=st["node_id"], cluster_id=st.get("cluster_id"), via="approval")
             try:
                 os.unlink(path)
             except OSError:
@@ -141,6 +156,7 @@ class ConsoleClient(threading.Thread):
                 pass
         else:
             logger.info("waiting for approval in the console (Cluster page) ...")
+            self._status("waiting_approval", detail=getattr(self, "_token_refused", None))
         return False
 
     # ------------------------------------------------------------------ main loop
@@ -155,6 +171,7 @@ class ConsoleClient(threading.Thread):
                         self.stop_ev.wait(10)
                         continue
                 interval = self.beat()
+                self._status("connected", node_id=(self.creds or {}).get("node_id"), cluster_id=(self.creds or {}).get("cluster_id"))
                 backoff = 1.0
                 self._rejected = 0
                 self.stop_ev.wait(interval)
@@ -170,6 +187,17 @@ class ConsoleClient(threading.Thread):
                     else:
                         logger.error("console rejected our credentials (node revoked?). Retrying in 20s.")
                         self.stop_ev.wait(float(self.config.get("rejected_retry_seconds", 20)))
+                elif e.status in (401, 403) and not self.creds and self.config.get("enrollment_token"):
+                    # expired / already used / unknown token: do not loop on it forever - announce this server instead, an administrator approves it
+                    why = (e.body or {}).get("error") if isinstance(e.body, dict) else str(e.body)[:80]
+                    logger.error("enrollment token refused by the console (%s): announcing this server for approval instead", why)
+                    self._token_refused = why
+                    self._status("token_refused", detail=why)
+                    self.config["enrollment_token"] = None
+                    try:
+                        os.unlink(os.path.join(os.path.dirname(self.config["credentials_file"]), "enroll.env"))
+                    except OSError:
+                        pass
                 elif e.status in (401, 403) and not self.creds:
                     logger.error("enrollment refused: %s. Waiting 60s.", e.body)
                     self.stop_ev.wait(60)
@@ -179,6 +207,8 @@ class ConsoleClient(threading.Thread):
                     backoff *= 2
             except Exception as e:
                 logger.warning("console unreachable: %s", e)
+                if not self.creds:
+                    self._status("unreachable", detail=str(e)[:200])
                 self.stop_ev.wait(min(60, backoff) * (0.5 + random.random()))
                 backoff = min(backoff * 2, 60)
 

@@ -122,5 +122,38 @@ class E2E(unittest.TestCase):
             else: self.fail("agent did not re-announce after its node was deleted")
         finally:
             client.stop()
+    def test_used_token_falls_back_to_announcement(self):
+        """A token already used / expired (the command copied twice, or an hour later): the agent must not loop on it forever - it announces the server
+        for approval, and console_status.json tells the installer (and the person at the terminal) what happened."""
+        adm = Admin(self.base)
+        st, _ = adm.call("POST", "/api/auth/login", {"username": "admin", "password": "correct-horse-battery"}); self.assertEqual(st, 200)
+        st, tok = adm.call("POST", "/api/enrollment-tokens", {"label": "once", "environment": "prod"}); self.assertEqual(st, 201)
+        st, _ = adm.call("POST", "/api/agent/enroll", {"enrollment_token": tok["token"], "node_name": "somebody-else", "discovery": {}}); self.assertEqual(st, 201)
+        t = tempfile.mkdtemp()
+        os.environ["PATH"] = FAKES + os.pathsep + os.environ["PATH"]
+        cfg = load_config(); cfg.update({"web_server_url": self.base, "enrollment_token": tok["token"], "node_name": "late-comer",
+            "credentials_file": os.path.join(t, "cred.json"), "state_dir": os.path.join(t, "state"), "wal_archive_dir": os.path.join(t, "wal"),
+            "repo_path": os.path.join(t, "repo"), "heartbeat_interval_seconds": 1, "pg_host": "127.0.0.1"})
+        open(os.path.join(t, "enroll.env"), "w").write("PG_ARCA_ENROLL_TOKEN=%s\n" % tok["token"])
+        rt = Runtime(cfg)
+        rt.instance = {"data_directory": "/fake/pgdata", "cluster_key": "sysid:777", "port": 5432}
+        ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: {"summary": {}})
+        client = ConsoleClient(cfg, rt, ex, WalManager(cfg["wal_archive_dir"], "none"), None)
+        client.start()
+        stf = os.path.join(t, "state", "console_status.json")
+        try:
+            for _ in range(80):
+                st, d = adm.call("GET", "/api/join-requests")
+                if [r for r in d.get("requests", []) if r["nodeName"] == "late-comer"]: break
+                time.sleep(0.25)
+            else: self.fail("the agent kept retrying the used token instead of announcing itself")
+            for _ in range(40):
+                if os.path.exists(stf) and json.load(open(stf)).get("state") == "waiting_approval": break
+                time.sleep(0.25)
+            j = json.load(open(stf))
+            self.assertEqual(j["state"], "waiting_approval", j); self.assertEqual(j.get("detail"), "token_already_used", j)
+            self.assertFalse(os.path.exists(os.path.join(t, "enroll.env")), "the refused token is removed from disk")
+        finally:
+            client.stop()
 
 if __name__ == "__main__": unittest.main()

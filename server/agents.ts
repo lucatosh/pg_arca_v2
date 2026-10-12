@@ -131,8 +131,12 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       const t = d.enrollmentTokens.find(x => safeEq(x.hash, sha256(tokenRaw)));
       if (!t) return { err: 'invalid_token' as const };
       if (Date.parse(t.expiresAt) < Date.now()) return { err: 'token_expired' as const };
-      const reuse = t.usedAt && t.usedByNode === nodeName && Date.now() - Date.parse(t.usedAt) < REENROLL_WINDOW_MS;
-      if (t.usedAt && !reuse) return { err: 'token_already_used' as const };
+      // a token may serve several servers (maxUses: the nodes of one Patroni cluster); the same server re-enrolling shortly after (installer re-run) is not a new use
+      const used = t.usedBy || (t.usedAt && t.usedByNode ? [{ node: t.usedByNode, at: t.usedAt }] : []);
+      const mine = used.find(u => u.node === nodeName);
+      const reuse = !!mine && Date.now() - Date.parse(mine.at) < REENROLL_WINDOW_MS;
+      if (!reuse && (mine || used.length >= Math.max(1, t.maxUses || 1))) return { err: 'token_already_used' as const };
+      const spend = () => { if (!mine) { t.usedBy = [...used, { node: nodeName, at: nowIso() }]; } t.usedAt = t.usedAt || nowIso(); t.usedByNode = nodeName; };
 
       if (t.kind === 'worker' || b.node_role === 'worker') {                    // operational machine: no database, no cluster
         if (t.clusterId) return { err: 'token_for_cluster' as const };
@@ -140,7 +144,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
         const id = existing?.id || newId('node');
         d.nodes[id] = { ...(existing || {}), id, name: nodeName, kind: 'worker', tokenHash: sha256(secret), enrolledAt: existing?.enrolledAt || nowIso(), clusterId: undefined,
           agentVersion: String(b.agent_version || ''), remoteIp: req.socket.remoteAddress || '', discovery: b.discovery || {}, lastSeen: nowIso(), label: t.label || existing?.label } as NodeRecord;
-        t.usedAt = t.usedAt || nowIso(); t.usedByNode = nodeName;
+        spend();
         ops.audit(d, { actor: `agent:${nodeName}`, action: 'agent.enroll', status: 'OK', details: { nodeId: id, kind: 'worker' } });
         return { ok: true as const, nodeId: id, clusterId: null, kind: 'worker' };
       }
@@ -165,7 +169,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
         clusterId: cluster.id, clusterKey, agentVersion: String(b.agent_version || ''), remoteIp: req.socket.remoteAddress || '',
         discovery: disc, lastSeen: nowIso(),
       };
-      t.usedAt = t.usedAt || nowIso(); t.usedByNode = nodeName;
+      spend();
       ops.audit(d, { clusterId: cluster.id, actor: `agent:${nodeName}`, action: 'agent.enroll', status: 'OK', details: { nodeId: id } });
       refreshCluster(d, cluster.id);
       return { ok: true as const, nodeId: id, clusterId: cluster.id, kind: 'db' };
@@ -258,7 +262,9 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
   const actorOf = (req: Request) => (req as any).actor || 'admin';
 
   app.post('/api/enrollment-tokens', async (req: Request, res: Response) => {
-    const { label = '', ttlMinutes = 60, clusterId, environment, kind } = req.body || {};
+    const { label = '', ttlMinutes = 60, clusterId, environment, kind, maxUses } = req.body || {};
+    const uses = maxUses === undefined ? 1 : Number(maxUses);
+    if (!Number.isInteger(uses) || uses < 1 || uses > 20) return res.status(400).json({ error: 'invalid_max_uses', message: 'Da 1 a 20 server per token.' });
     if (kind !== undefined && kind !== 'worker' && kind !== 'db') return res.status(400).json({ error: 'invalid_kind' });
     if (kind === 'worker' && clusterId) return res.status(400).json({ error: 'worker_without_cluster', message: 'Una macchina operativa non appartiene a un cluster.' });
     const ttl = Math.min(Math.max(Number(ttlMinutes) || 60, 1), 7 * 24 * 60);
@@ -266,18 +272,22 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (clusterId && !store.peek().clusters.some((c: any) => c.id === clusterId)) return res.status(404).json({ error: 'cluster_not_found' });
     const token = 'arca_enr_' + newSecret(24);
     const rec = { id: newId('tok'), hash: sha256(token), label: String(label).slice(0, 80), createdAt: nowIso(),
-                  expiresAt: new Date(Date.now() + ttl * 60000).toISOString(), clusterId, environment, ...(kind === 'worker' ? { kind: 'worker' as const } : {}) };
+                  expiresAt: new Date(Date.now() + ttl * 60000).toISOString(), clusterId, environment, ...(kind === 'worker' ? { kind: 'worker' as const } : {}), ...(uses > 1 ? { maxUses: uses } : {}) };
     await store.mutate(d => { d.enrollmentTokens.push(rec); ops.audit(d, { actor: actorOf(req), action: 'token.create', status: 'OK', details: { id: rec.id, label: rec.label } }); });
     const base = `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${req.headers.host}`;
     res.status(201).json({
       id: rec.id, token, expiresAt: rec.expiresAt,
       installCommand: `curl -fsSL ${base}/agent/install.sh | sudo PG_ARCA_URL=${base} PG_ARCA_ENROLL_TOKEN=${token}${kind === 'worker' ? ' PG_ARCA_ROLE=worker' : ''} bash`,
-      note: 'The token is shown once and can enroll exactly one node.',
+      maxUses: uses,
+      note: uses > 1 ? `The token is shown once and can enroll up to ${uses} servers.` : 'The token is shown once and can enroll exactly one node.',
     });
   });
 
   app.get('/api/enrollment-tokens', (_req: Request, res: Response) => {
-    res.json({ tokens: store.peek().enrollmentTokens.map(({ hash, ...t }) => ({ ...t, active: !t.usedAt && Date.parse(t.expiresAt) > Date.now() })) });
+    res.json({ tokens: store.peek().enrollmentTokens.map(({ hash, ...t }) => {
+      const n = (t.usedBy || (t.usedAt ? [1] : [])).length;
+      return { ...t, uses: n, active: n < Math.max(1, t.maxUses || 1) && Date.parse(t.expiresAt) > Date.now() };
+    }) });
   });
 
   app.delete('/api/enrollment-tokens/:id', async (req: Request, res: Response) => {
