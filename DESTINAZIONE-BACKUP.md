@@ -1,6 +1,12 @@
-# Destinazione dei backup: progetto (12/10, da implementare)
+# Destinazione dei backup: progetto e stato (12/10)
 
 Richiesta dell'utente: dal webtool scegliere **dove** vanno repository e archivio WAL **per ambiente e per cluster**, in locale o verso una macchina/servizio; capire **chi scrive** (utente di sistema o servizio); **provare la scrittura** e i permessi; se la cartella cambia, **migrare in background** il contenuto vecchio mostrando occupazione attuale e spazio sulla nuova. Organizzazione enterprise e sicura.
+
+## Stato (12/10 sera)
+
+Fatto e provato su PostgreSQL 16 reale (§1-4): due identità provate (agent + server via `pg-arca-wal probe` in `COPY … TO PROGRAM`), prove estese e comandi di correzione (`engine/destcheck.py`); cambio senza perdere la storia PITR (`repo_previous` / `wal_previous` tenute dall'agent da solo, lette da ripristini, piani e `restore_command`, mai da backup/deduplica/scadenza); verifica del primo segmento con ritorno automatico; approvazione a quattro occhi (`destination_apply`); migrazione `destination_migrate` (piano + copia verificata e riprendibile, `engine/migrate.py`); eliminazione `destination_drop_old` (conferma ELIMINA, rifiuto se qualcosa esiste solo lì o se la nuova non ha un backup completo); interfaccia (pagina Backup → «Controlla», «Migra o elimina»; Ripristino e archivi → Destinazione dei backup). Il marcatore di proprietà dell'archivio WAL esisteva già (`ARCHIVE_OWNER.json`): il controllo lo legge.
+
+Da fare: prove sul lab con NFS (root_squash, uid diversi) e SMB veri, Patroni con più nodi (il cambio va su ogni nodo; la verifica del WAL solo sul primario), utenze diverse reali (agent ≠ postgres); un backup completo avviato subito dopo l'applicazione (oggi lo fa il prossimo backup pianificato, che nella nuova posizione diventa completo da sé: la continuità PITR è garantita dalla posizione precedente leggibile); fase 2 (§6). Un fallimento isolato di `test_destination_migrate_pg.test_03` (1 su 7 esecuzioni, non riprodotto: errore nel recupero `_recover_once`) va osservato nella matrice.
 
 Base esistente: `server/destinations.ts` (ambiti globale > ambiente > cartella > cluster, segnaposto `{env}` `{cluster}` `{id}`, applicazione solo dopo `destination_check` riuscito su ogni nodo), `unix-agent/pg_arca/engine/destcheck.py` (tipo di filesystem, scrittura O_EXCL + fsync + rename, spazio), pagina Ripristino e archivi → Destinazione dei backup. Solo locale e NFS/SMB già montati; i backup esistenti non vengono spostati.
 
