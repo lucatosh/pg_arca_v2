@@ -1,5 +1,5 @@
 import { RecoveryPlacement } from './Placement';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Skeleton, bytes, dt, num, ago } from '../ui';
 import { Op, useOpRunner, useQuery } from '../hooks';
 import { OpPanel, Result } from './shared';
@@ -40,7 +40,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [tgt, setTgt] = useState<Target>({ mode: 'latest' });
   const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false); const [keepArch, setKeepArch] = useState(false); const [mkRoles, setMkRoles] = useState(false);
   const [ask, setAsk] = useState(false);
-  const prom = useOpRunner(c.id); const prev = useOpRunner(c.id); const [pmode, setPmode] = useState<PMode>('as_new'); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false); const [pschema, setPschema] = useState('');
+  const prom = useOpRunner(c.id); const prev = useOpRunner(c.id); const [pmode, setPmode] = useState<PMode>('as_new'); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false); const [askOrphans, setAskOrphans] = useState(false); const lastPromote = useRef<any>(null); const [pschema, setPschema] = useState('');
   const dbsR = useOpRunner(c.id); const dropsR = useOpRunner(c.id); const liveR = useOpRunner(c.id); const tdropR = useOpRunner(c.id); const [fxHours, setFxHours] = useState(24); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id); const dml = useOpRunner(c.id); const [dmlMin, setDmlMin] = useState(1000);
 
   const from = useMemo(() => Math.min(...sets.map(s => Date.parse(s.stop_time!))), [sets]);
@@ -178,7 +178,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       {(exec.op || exec.error) ? <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
         {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' ? <>Cartella pronta in <code>{exec.op!.result.destination}</code>. {exec.op!.result.start_hint}</> : <>Dati disponibili nel database <code>{exec.op!.result.result_database}</code>.{exec.op!.result.inspect ? <> Per controllare: <code>{exec.op!.result.inspect}</code></> : null}</>}</Banner> : null}
         {doneOk ? <Notices r={exec.op!.result} /> : null}
-        {doneOk && scope === 'object' && exec.op!.result.result_database ? <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} schema={pschema} setSchema={v => { setPschema(v); prev.reset(); }} /> : null}
+        {doneOk && scope === 'object' && exec.op!.result.result_database ? <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} allowOrphans={lastPromote.current ? () => setAskOrphans(true) : undefined} schema={pschema} setSchema={v => { setPschema(v); prev.reset(); }} /> : null}
         {doneOk && scope === 'object' && objs.length === 1 && splitId(objs[0]).length === 3 && exec.op!.result.result_database ? <RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /> : null}
         <Result op={exec.op} />
         {scope === 'instance' && exec.op && ['failed', 'cancelled'].includes(exec.op.status) && /PGA-RST-040|cancel|interrott|No space|ENOSPC|PGA-RST-03/i.test(String(exec.op.error || '')) ? <Banner kind="info" title="Ripristino interrotto" actions={<Button sm icon="restore" onClick={() => exec.run('restore_instance', { ...(exec.op!.params || params().p), resume: true })}>Riprendi da dove si è fermato</Button>}>
@@ -186,7 +186,9 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         {(exec.op && !running) ? <div><Button onClick={() => { exec.reset(); plan.reset(); prom.reset(); prev.reset(); setObjs([]); setStep(0); }}>Nuovo ripristino</Button></div> : null}</div></Card> : null}
     </div>}
 
-    {askPromote ? <Confirm title="Riportare nel database?" danger={pmode === 'replace'} requireText={pmode === 'replace' ? 'SOSTITUISCI' : undefined} confirmLabel="Riporta" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); prom.run('restore_promote', { stage_db: exec.op!.result.result_database, object: obj, mode: pmode, drop_stage: pdrop, ...(pmode === 'replace' ? { confirm: 'SOSTITUISCI' } : {}), ...(pmode === 'as_new' && pschema ? { target_schema: pschema } : {}) }); }}>
+    {askOrphans ? <Confirm title="Procedere lasciando righe orfane?" danger requireText="ORFANE" confirmLabel="Procedi" onClose={() => setAskOrphans(false)} onConfirm={() => { setAskOrphans(false); prom.run('restore_promote', { ...lastPromote.current, allow_orphans: true }); }}>
+      <p>Le tabelle vengono sostituite comunque. Le chiavi esterne coinvolte restano <strong>non valide</strong>: le righe orfane rimangono finché non le sistemi a mano, e l’applicazione potrebbe trovarle.</p></Confirm> : null}
+    {askPromote ? <Confirm title="Riportare nel database?" danger={pmode === 'replace'} requireText={pmode === 'replace' ? 'SOSTITUISCI' : undefined} confirmLabel="Riporta" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); lastPromote.current = { stage_db: exec.op!.result.result_database, object: obj, mode: pmode, drop_stage: pdrop, ...(pmode === 'replace' ? { confirm: 'SOSTITUISCI' } : {}), ...(pmode === 'as_new' && pschema ? { target_schema: pschema } : {}) }; prom.run('restore_promote', lastPromote.current); }}>
       <p>{pmode === 'as_new' ? <>Le tabelle ripristinate compaiono accanto alle originali con un nome che termina in <code>_pitr_&lt;data&gt;</code>. Nulla di esistente viene toccato.</> : pmode === 'missing_only' ? <>Tornano solo le tabelle che oggi non esistono; quelle presenti restano com’è con i dati di adesso.</> : <>Le originali vengono rinominate <code>_old_&lt;data&gt;</code> (i dati restano) e le ripristinate prendono il loro nome in un’unica transazione: chiavi esterne e viste che dipendevano dalle vecchie vengono ricollegate alle nuove.</>}</p>
       <p className="small muted">{pdrop ? 'Il database di quarantena viene eliminato a operazione riuscita.' : 'Il database di quarantena resta disponibile.'}</p></Confirm> : null}
     {ask ? <Confirm title="Avviare il ripristino?" confirmLabel="Avvia" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); exec.run(x.type, x.p); }}>
@@ -310,7 +312,7 @@ function PromotePlan({ p }: { p: any }) {
     {(p.warnings || []).map((w: string, i: number) => <div key={i} className="small" style={{ color: 'var(--warn, #d9a441)' }}>{itCheck(w)}</div>)}</div>;
 }
 
-function Promote({ stage, what, deps, warnings, mode, setMode, drop, setDrop, runner, preview, ask, schema, setSchema }: { stage: string; what: string[]; deps?: any; warnings?: string[]; mode: PMode; setMode: (m: PMode) => void; drop: boolean; setDrop: (b: boolean) => void; runner: ReturnType<typeof useOpRunner>; preview: ReturnType<typeof useOpRunner>; ask: () => void; schema: string; setSchema: (s: string) => void }) {
+function Promote({ stage, what, deps, warnings, mode, setMode, drop, setDrop, runner, preview, ask, allowOrphans, schema, setSchema }: { allowOrphans?: () => void; stage: string; what: string[]; deps?: any; warnings?: string[]; mode: PMode; setMode: (m: PMode) => void; drop: boolean; setDrop: (b: boolean) => void; runner: ReturnType<typeof useOpRunner>; preview: ReturnType<typeof useOpRunner>; ask: () => void; schema: string; setSchema: (s: string) => void }) {
   const r = runner.op?.result; const done = runner.op?.status === 'succeeded';
   const p = preview.op?.status === 'succeeded' ? preview.op.result : null;
   return <div className="stack"><div className="hr" /><strong>Riporta nel database</strong>
@@ -326,10 +328,12 @@ function Promote({ stage, what, deps, warnings, mode, setMode, drop, setDrop, ru
       {preview.op && !p ? <OpPanel op={preview.op} error={preview.error} label="Calcolo dell’anteprima" /> : null}
       {p ? <PromotePlan p={p} /> : null}</> : null}
     {(runner.op || runner.error) && !done ? <OpPanel op={runner.op} error={runner.error} label="Promozione" /> : null}
+    {runner.op?.status === 'failed' && /PGA-GEN-096/.test(String(runner.op.error || '')) && allowOrphans ? <Banner kind="warn" title="Righe che resterebbero orfane" actions={<Button sm kind="danger" onClick={allowOrphans}>Procedi comunque</Button>}>
+      Puoi sostituire comunque le tabelle sapendo che quelle righe resteranno orfane: le chiavi esterne coinvolte verranno lasciate non valide.</Banner> : null}
     {done ? <Banner kind="ok" title="Riportato nel database">{(r?.promoted || []).length ? <>Ripristinate: {(r.promoted as string[]).map(x => <code key={x} style={{ marginRight: 6 }}>{x}</code>)}.</> : <>{r?.note || 'Niente da fare.'}</>}
       {(r?.old_kept || []).length ? <> Le precedenti sono conservate come {(r.old_kept as string[]).map(x => <code key={x} style={{ marginRight: 6 }}>{x}</code>)}.</> : null}
       {r?.foreign_keys_reattached ? <> {r.foreign_keys_reattached} chiavi esterne ricollegate.</> : null}{r?.views_recreated ? <> {r.views_recreated} viste ricreate.</> : null}
-      {(r?.plan?.warnings || warnings || []).length ? <span className="hba-warn"> {(r.plan?.warnings || warnings).join(' · ')}</span> : null}</Banner> : null}
+      {(r?.plan?.warnings || warnings || []).length ? <span className="hba-warn"> {(r.plan?.warnings || warnings).map((w: string) => itCheck(w)).join(' · ')}</span> : null}</Banner> : null}
     {done ? <Result op={runner.op} /> : null}</div>;
 }
 

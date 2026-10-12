@@ -1,6 +1,7 @@
 import React from 'react';
 import { Op, isTerminal } from '../hooks';
 import { Badge, Banner, Button, Progress, bytes, dur, num } from '../ui';
+import { itCheck } from '../i18n';
 
 export const OP_LABEL: Record<string, string> = {
   pg_reload: 'Ricarica configurazione', wal_switch: 'Cambio segmento WAL', checkpoint: 'Checkpoint', discovery_scan: 'Rilevamento', compat_check: 'Verifica compatibilità PostgreSQL', agent_config_get: 'Lettura impostazioni agent', agent_config_set: 'Impostazioni agent', list_objects: 'Elenco oggetti',
@@ -51,7 +52,7 @@ export function OpPanel({ op, error, cancel, label }: { op: Op | null; error?: s
       <Progress pct={pct} />{speed ? <div className="small faint">{speed}</div> : null}
       <div className="small muted">{p?.phase ? PHASE[p.phase] || p.phase : op.status === 'queued' ? 'In coda: l’agent esegue le operazioni sui dati una alla volta, parte appena finisce quella in corso.' : 'In corso…'}
         {p?.phase === 'checkpoint' ? ` — da ${p.elapsed_sec ?? 0} s${p.fast ? '' : ' (checkpoint distribuito: su un server carico può durare alcuni minuti; l’annullamento lo interrompe)'}` : ''}{p?.files_total ? ` — ${num(p.files)} / ${num(p.files_total)} file` : ''}{p?.bytes_total ? `, ${bytes(p.bytes)} / ${bytes(p.bytes_total)}` : ''}{p?.chunks ? ` — ${num(p.chunks)} chunk verificati` : ''}{p?.segments_total ? ` — ${num(p.segments)} / ${num(p.segments_total)} segmenti` : ''}{p?.msg ? ` — ${p.msg}` : ''}</div></> : null}
-    {op.status === 'failed' ? <Banner kind="bad" title="Operazione fallita"><span style={{ whiteSpace: 'pre-wrap' }}>{op.error || error}</span>{hintFor(op.error || error) ? <p className="small" style={{ marginTop: 8 }}>{hintFor(op.error || error)}</p> : null}</Banner> : null}
+    {op.status === 'failed' ? <Banner kind="bad" title="Operazione fallita"><span style={{ whiteSpace: 'pre-wrap' }}>{itCheck(op.error || error)}</span>{hintFor(op.error || error) ? <p className="small" style={{ marginTop: 8 }}>{hintFor(op.error || error)}</p> : null}</Banner> : null}
     {op.status === 'expired' ? <Banner kind="warn" title="Nessun agent ha preso in carico l’operazione">Il nodo è offline o occupato. Nulla è stato eseguito.</Banner> : null}
     {op.status === 'cancelled' ? <Banner kind="warn" title="Operazione annullata">Eventuali dati parziali sono stati rimossi.</Banner> : null}
     {error && op.status !== 'failed' ? <Banner kind="bad">{error}</Banner> : null}
@@ -69,6 +70,7 @@ export function hintFor(msg?: string | null): string {
   if (/no healthy replica/.test(m)) return 'Nessuna replica è in salute: finché una replica non torna “running” non c’è un nodo su cui spostare il primario. Controlla i log di Patroni dei nodi in errore.';
   if (/stale request/.test(m)) return 'Nel frattempo il primario è cambiato. Aggiorna la pagina e riprova.';
   if (/Patroni is not configured|not reachable|unreachable/.test(m)) return 'L’agent di questo nodo non riesce a parlare con l’API REST di Patroni. Controlla l’URL in Nodi → Percorsi e rilevamento (di solito http://127.0.0.1:8008) e che Patroni sia in esecuzione.';
+  if (/PGA-GEN-096/.test(m)) return 'Dopo lo scambio alcune righe punterebbero a righe che non esistono (chiave esterna): non è stato cambiato nulla. Ripristina anche le tabelle collegate allo stesso istante, oppure riportale «accanto agli originali» e recupera le righe che servono. Se sai che va bene così puoi procedere: quelle chiavi esterne resteranno NON VALIDE.';
   if (/NOT confirmed/.test(m)) return 'Patroni ha accettato la richiesta ma il cambio non è stato confermato in tempo: controlla lo stato dei membri e i log di Patroni.';
   return '';
 }

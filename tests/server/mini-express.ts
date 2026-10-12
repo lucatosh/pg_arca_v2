@@ -31,7 +31,11 @@ export class MiniApp {
     else chain.push((_q, s) => s.status(404).json({ error: 'no_route' }));
     let i = 0;
     const next = async (): Promise<void> => { const h = chain[i++]; if (h) await h(req, res, next); };
-    await next(); await Promise.race([finished, new Promise(r => setTimeout(r, 50))]);
+    // a handler that throws is a 500 (not a silent 200 with no body); a slow one (busy machine, store write) is waited for, not cut at a few ms
+    try { await next(); } catch (e: any) { if (payload === undefined) { status = 500; payload = { error: 'handler_threw', message: String(e?.message || e) }; done!(); } }
+    let timedOut = false;
+    await Promise.race([finished, new Promise(r => setTimeout(() => { timedOut = true; r(null); }, Number(process.env.MINI_EXPRESS_WAIT_MS || 20000)))]);
+    if (timedOut && payload === undefined) { if (process.env.MINI_TRACE) console.warn('MINI-TIMEOUT', method, pathname); status = 504; payload = { error: 'no_response', message: `${method} ${pathname}: the handler never answered` }; }
     return { status, body: payload, headers: outHeaders };
   }
 }

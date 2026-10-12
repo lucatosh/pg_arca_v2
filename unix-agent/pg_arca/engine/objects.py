@@ -1207,7 +1207,38 @@ def _promote_lobs(admin, stage_db, live, meta, todo, plan):
     return n
 
 
-def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, target_schema=None, journal=None, journal_info=None):
+FK_COLS = re.compile(r"FOREIGN KEY \((.+?)\) REFERENCES (?:[^(]+?)\((.+?)\)")
+
+
+def _orphan_checks(live, plan, todo, sfx_new):
+    """Rows that would point at nothing once the swap is done, counted while the recovered tables are still under their temporary names (nothing live has
+    changed yet): live tables outside the selection referencing a restored table (inbound), and restored rows referencing a live table outside it (outbound)."""
+    acting = {(r["schema"], r["name"]) for r in todo}
+    out = []
+    pairs = [("in", f, qi(f["schema"], f["table"]), qi(f["ref_schema"], _short(f["ref_table"], sfx_new))) for f in plan.get("inbound_fks") or []
+             if (f["ref_schema"], f["ref_table"]) in acting]
+    pairs += [("out", f, qi(f["schema"], _short(f["table"], sfx_new)), qi(f["ref_schema"], f["ref_table"])) for f in plan.get("outbound_fks") or []
+              if (f["schema"], f["table"]) in acting]
+    for direction, f, child, parent in pairs:
+        m = FK_COLS.search(f.get("def") or "")
+        if not m:
+            continue
+        kc = [x.strip() for x in m.group(1).split(",")]
+        pc = [x.strip() for x in m.group(2).split(",")]
+        if len(kc) != len(pc):
+            continue
+        try:
+            n = int(live.scalar("SELECT count(*) FROM %s c WHERE %s AND NOT EXISTS (SELECT 1 FROM %s p WHERE %s)" % (
+                child, " AND ".join("c.%s IS NOT NULL" % k for k in kc), parent, " AND ".join("p.%s = c.%s" % (a, b) for a, b in zip(pc, kc)))) or 0)
+        except EngineError:
+            continue
+        if n:
+            out.append({"direction": direction, "constraint": f["name"], "child": "%s.%s" % (f["schema"], f["table"]), "parent": "%s.%s" % (f["ref_schema"], f["ref_table"]),
+                        "columns": m.group(1), "rows": n})
+    return out
+
+
+def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, target_schema=None, journal=None, journal_info=None, allow_orphans=False):
     """Put the objects of a v2 quarantine database back into the live database it came from (same name, on `admin`'s server).
 
       replace      every recovered table takes the place of the live one, which is kept as <name>_old_<ts> (never dropped); foreign keys that pointed at the old table are
@@ -1400,6 +1431,18 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
             _journal_done(journal)
             result["large_objects_restored"] = _promote_lobs(admin, stage_db, live, meta, todo, plan)
             return _compat(result)
+        # ---- before the swap: rows that would be left pointing at nothing (the database would keep a foreign key it no longer honours). Nothing live has
+        # changed yet, so refusing here costs nothing; the way out is said
+        orph = _orphan_checks(live, plan, todo, sfx_new)
+        if orph:
+            result["orphans"] = orph
+            if not allow_orphans:
+                desc = "; ".join("%d row(s) of %s (%s) would reference %s rows that %s" % (o["rows"], o["child"], o["columns"], o["parent"],
+                                 "are not in the restored copy" if o["direction"] == "in" else "no longer exist") for o in orph[:6])
+                raise EngineError("PGA-GEN-096", "promotion not done, nothing was changed: %s" % desc,
+                                  "restore the related tables too (same instant), or put the recovered tables next to the originals (as new) and recover rows; "
+                                  "allow_orphans=true goes ahead and leaves those foreign keys NOT VALID")
+            plan["warnings"].append("foreign keys left NOT VALID on purpose (allow_orphans): " + "; ".join("%s -> %s: %d row(s)" % (o["child"], o["parent"], o["rows"]) for o in orph))
         # ---- phase 2: the swap, atomically
         if progress:
             progress({"phase": "swap"})

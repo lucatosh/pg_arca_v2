@@ -26,6 +26,7 @@ import { mountNetscanRoutes } from './server/netscan';
 import { mountWorkerRoutes } from './server/workers';
 import { mountGeoRoutes } from './server/geo';
 import { buildDemoCluster } from './server/demo';
+import { makeAsyncSafe, asyncErrorHandler } from './server/asyncsafe';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -67,6 +68,7 @@ app.use((req, res, next) => {
 { let last = Date.now(); setInterval(() => { const now = Date.now(); const lag = now - last - 500; last = now;
   if (lag > 2000) console.warn(`[stall] event loop blocked ~${lag} ms; in flight: ${[...inflight.values()].slice(0, 8).map(r => `${r.m} ${r.u} (${now - r.t} ms)`).join(', ') || 'none'}`); }, 500).unref(); }
 app.use(express.json({ limit: '4mb' }));
+makeAsyncSafe(app);          // an async route that throws answers 500 instead of hanging the request
 app.use(requireAdmin(store));
 attachLogSocket(server);
 
@@ -113,6 +115,7 @@ app.get('/agent/pg-arca-agent.tar.gz', (_req: Request, res: Response) => {
   tar.stdout.pipe(res); tar.on('error', () => res.destroy());
 });
 app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true, time: new Date().toISOString() }));
+app.use('/api', asyncErrorHandler);
 
 bootstrapAdminFromEnv(store);
 initSetupCode(store);

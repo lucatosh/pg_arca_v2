@@ -6,6 +6,7 @@ import { go } from './router';
 import { openOpLog } from './OpLog';
 import { OP_LABEL, PHASE, STATUS_LABEL, pctOf } from './pages/shared';
 import { WINDOWS } from './pages/History';
+import { itCheck } from './i18n';
 
 /** Operations that only read (catalogue, plans, scans) are noise for the dock: they finish in a blink and nobody waits for them. */
 const QUIET = ['backup_catalog', 'restore_plan', 'backup_info', 'discovery_scan', 'list_objects', 'hba_read', 'hba_plan', 'agent_config_get', 'compat_check'];
@@ -61,7 +62,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
       const was = prev.current[o.id];
       if (!was || isTerminal(was) || !isTerminal(o.status) || o.createdBy !== me || QUIET.includes(o.type) || o.background) continue;
       if (o.status === 'succeeded') toast(`${label(o)}: operazione completata`, 'ok');
-      else if (o.status === 'failed') toast(`${label(o)}: operazione non riuscita — ${(o.error || '').split('\n')[0].slice(0, 140)}`, 'bad', 9000);
+      else if (o.status === 'failed') toast(`${label(o)}: operazione non riuscita — ${itCheck((o.error || '').split('\n')[0]).slice(0, 160)}`, 'bad', 9000);
       else if (o.status === 'cancelled') toast(`${label(o)}: operazione annullata`, 'info');
     }
     prev.current = cur;

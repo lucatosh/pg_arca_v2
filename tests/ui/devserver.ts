@@ -92,6 +92,9 @@ const withAgent = process.env.NO_AGENT !== '1';
         const plan = { mode: p.mode, tables: [{ schema: 'public', name: 'orders', kind: 'r', action: p.mode === 'as_new' ? 'copy' : 'swap', exists_now: true, rows_at_target: 1234, old_kept_as: 'orders_old_20260101000000', new_name: 'orders_pitr_20260101000000' }],
           inbound_fks: [{ name: 'items_order_fk', schema: 'public', table: 'items', ref_schema: 'public', ref_table: 'orders' }], outbound_fks: [], views: [{ schema: 'public', name: 'v_totals', kind: 'v' }], warnings: [], missing_prereq: { extensions: [], schemas: [], types: [], functions: [] } };
         if (p.dry_run) return report(op.id, { status: 'succeeded', result: { ...plan, dry_run: true } });
+        // replace: the check before the swap finds rows that would be orphaned (refused, nothing changed) until the operator accepts them
+        if (p.mode === 'replace' && !p.allow_orphans) return report(op.id, { status: 'failed', error: 'PGA-GEN-096: promotion not done, nothing was changed: 3 row(s) of public.items (order_id) would reference public.orders rows that are not in the restored copy' });
+        if (p.allow_orphans) plan.warnings = ['foreign keys left NOT VALID on purpose (allow_orphans): public.items -> public.orders: 3 row(s)'] as any;
         return report(op.id, { status: 'succeeded', result: { mode: p.mode, promoted: ['public.orders'], promoted_as: 'public.orders', old_kept: ['public.orders_old_20260101000000'], old_kept_as: 'public.orders_old_20260101000000', foreign_keys_reattached: 1, views_recreated: 1, plan, stage_dropped: !!p.drop_stage } });
       }
       if (op.type === 'hba_read') {

@@ -1,4 +1,4 @@
-import React, { Fragment, useEffect, useMemo, useState } from 'react';
+import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { itCheck, itFix } from '../i18n';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Field, Icon, Modal, Skeleton, Tabs, bytes, ago, num } from '../ui';
@@ -215,7 +215,9 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
   const url = `/api/clusters/${encodeURIComponent(cluster.id)}/destination`;
   const q = useQuery<any>(url, { interval: 3000 });
   const [busy, setBusy] = useState(''); const [err, setErr] = useState<string | null>(null); const [bench, setBench] = useState(false); const [ops, setOps] = useState<any[]>([]); const [done, setDone] = useState<any>(null);
-  const d = q.data;
+  const lastD = useRef<any>(null);
+  if (q.data) lastD.current = q.data;
+  const d = q.data || lastD.current;            // a reload must not unmount the panels below (a running migration and its outcome live in them)
   const act = async (what: 'check' | 'apply') => {
     setBusy(what); setErr(null);
     try { const r = await api<any>('POST', `${url}/${what}`, what === 'check' ? { bench } : {}, { key: `dst-${what}-${cluster.id}-${Date.now()}` }); if (what === 'check') { setOps(r.operations); setDone(null); } else setDone(r); revalidate(url); }

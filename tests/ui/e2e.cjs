@@ -80,7 +80,13 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.getByRole('button', { name: 'Riporta', exact: true }).click();
   if (!(await p.locator('.modal button:has-text("Riporta")').isDisabled())) throw new Error('replace needs the typed confirmation');
   await p.fill('.modal input.input', 'SOSTITUISCI'); await shot('12d-replace-confirm');
-  await p.click('.modal button:has-text("Riporta")'); await p.waitForSelector('text=Riportato nel database', { timeout: 10000 }); await shot('12c-promoted');
+  await p.click('.modal button:has-text("Riporta")');
+  // the check before the swap: rows of a table not restored would point at nothing -> refused, nothing changed; the operator may accept it knowingly
+  await p.waitForSelector('text=Righe che resterebbero orfane', { timeout: 10000 }); await p.waitForSelector('text=public.items (order_id)'); await shot('12e-orphans-refused');
+  await p.click('button:has-text("Procedi comunque")'); if (!(await p.locator('.modal button:has-text("Procedi")').isDisabled())) throw new Error('allow orphans needs the typed confirmation');
+  await p.fill('.modal input.input', 'ORFANE'); await p.click('.modal button:has-text("Procedi")');
+  await p.waitForSelector('text=Riportato nel database', { timeout: 10000 }); await p.waitForSelector('text=lasciate non valide'); await shot('12c-promoted');
+  assert(await p.locator('text=Righe che resterebbero orfane').count() === 0, 'the orphan banner goes once the promotion succeeded');
   // ripristino e archivi: istanza di recupero (globale -> cluster, verifica, installazione) e destinazione dei backup (controllo, applicazione)
   await p.goto(base + '/#/infra'); await p.waitForSelector('text=Ripristino e archivi'); await p.waitForSelector('text=Tutti i cluster');
   await p.locator('tr:has-text("Tutti i cluster") button:has-text("Modifica")').click(); await p.waitForSelector('text=Dove gira l’istanza di recupero');

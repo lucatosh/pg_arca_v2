@@ -1060,7 +1060,7 @@ def cleanup_interrupted_promotions(ctx):
     return out
 
 
-def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None, dry_run=False, progress=None, target_schema=None):
+def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None, dry_run=False, progress=None, target_schema=None, allow_orphans=False):
     """
     Move a table recovered into a quarantine database back into the real database. Never destructive:
       as_new  : the recovered table appears next to the original as <name>_pitr_<ts>
@@ -1080,7 +1080,7 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
     cleanup_interrupted_promotions(ctx)
     jdir = getattr(ctx, "promote_journal_dir", None)
     journal = os.path.join(jdir, "promote-%s-%d.json" % (stage_db, int(time.time() * 1000))) if jdir and not dry_run else None
-    v2 = objmod.promote(_dest_conn(ctx, into), stage_db, mode=mode, dry_run=dry_run, progress=progress, target_schema=target_schema or None,
+    v2 = objmod.promote(_dest_conn(ctx, into), stage_db, mode=mode, dry_run=dry_run, progress=progress, target_schema=target_schema or None, allow_orphans=bool(allow_orphans),
                         journal=journal, journal_info={"into": into} if into else None)          # a stage built by restore_object v2 knows everything around its tables
     if v2 is not None and space:
         v2["preflight"] = space; v2["space"] = space.get("space")

@@ -36,3 +36,8 @@ assert.match(itCheck('the current location /old holds 3 backup set(s): after the
 assert.match(itFix('chmod o-rwx /srv/b (or enable repository encryption)'), /^chmod o-rwx \/srv\/b \(oppure attiva/);
 assert.match(itCheck('app.sessions is UNLOGGED: its rows are in no backup (PostgreSQL does not log them), so the recovered copy is empty - the live table is kept as it is'), /^app\.sessions è UNLOGGED/);
 console.log('i18n OK');
+// orphan refusal before the swap (engine/objects.py PGA-GEN-096) and the warning when the operator accepted it
+assert.strictEqual(itCheck('PGA-GEN-096: promotion not done, nothing was changed: 1 row(s) of public.orders (customer_id) would reference public.customers rows that are not in the restored copy; 2 row(s) of public.lines (order_id) would reference public.orders rows that no longer exist'),
+  'promozione non eseguita, nulla è stato cambiato: 1 righe di public.orders (customer_id) punterebbero a righe di public.customers che non sono nella copia ripristinata; 2 righe di public.lines (order_id) punterebbero a righe di public.orders che non esistono più');
+assert.strictEqual(itCheck('foreign keys left NOT VALID on purpose (allow_orphans): public.items -> public.orders: 3 row(s)'), 'chiavi esterne lasciate non valide di proposito (righe orfane accettate): public.items -> public.orders: 3 righe');
+console.log('i18n orphans OK');
