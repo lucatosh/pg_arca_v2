@@ -227,6 +227,10 @@ def run_tool(conn, prog, args, timeout=None, input_text=None, extra_env=None, ca
     env = conn.env() if conn else dict(os.environ)
     if extra_env:
         env.update(extra_env)
+    if prog in ("pg_dump", "pg_restore", "pg_dumpall"):
+        # money is written and read with lc_monetary: a database that sets its own (ALTER DATABASE ... SET lc_monetary = 'it_IT') dumps '1.234,56 €',
+        # which a session with another lc_monetary refuses (or reads differently). Every dump and every load of the engine uses the same neutral one.
+        env["PGOPTIONS"] = (env.get("PGOPTIONS", "") + " -c lc_monetary=C").strip()
     if cancel is not None:
         from pg_arca.engine.util import Cancelled
         try:

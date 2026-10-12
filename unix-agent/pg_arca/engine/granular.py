@@ -1216,6 +1216,18 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
 ROW_DIFF_MAX = 2000000
 
 
+CANON_SQL = ("SET TimeZone = 'UTC'; SET DateStyle = 'ISO, YMD'; SET IntervalStyle = 'postgres'; SET extra_float_digits = 3; "
+             "SET bytea_output = 'hex'; SET lc_monetary = 'C'")
+
+
+def _canon(*sessions):
+    """Rows are compared and copied as text between two sessions (the quarantine copy and the live table). A database's own settings (ALTER DATABASE ...
+    SET timezone / DateStyle / lc_monetary) would make the same value print differently on each side: every row 'changed', keys not matching, money
+    refused. Both sessions use the same canonical output."""
+    for s in sessions:
+        s.query(CANON_SQL)
+
+
 def _table_info(sess, fq):
     """Primary key columns, the columns we may write (not generated) and whether an identity ALWAYS column needs OVERRIDING."""
     reg = sess.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit(fq))
@@ -1281,6 +1293,7 @@ def diff_object(ctx, stage_db, spec, into=None, limit=200):
     st = PgSession(admin.with_db(stage_db), read_only=True)
     lv = PgSession(admin.with_db(dbname), read_only=True)
     try:
+        _canon(st, lv)
         si, li = _table_info(st, fq), _table_info(lv, fq)
         if si is None:
             raise EngineError("PGA-GEN-083", "table %s not found in %s" % (fq, stage_db))
@@ -1344,6 +1357,7 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
     st = PgSession(admin.with_db(stage_db), read_only=True)
     tg = PgSession(admin.with_db(dbname))
     try:
+        _canon(st, tg)
         si, li = _table_info(st, fq), _table_info(tg, fq)
         if si is None or li is None:
             raise EngineError("PGA-GEN-083", "table %s must exist both in the quarantine database and in %s" % (fq, dbname))
