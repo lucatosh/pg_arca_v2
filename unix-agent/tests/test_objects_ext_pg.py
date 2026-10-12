@@ -40,6 +40,25 @@ CREATE TABLE app.shipments (id int PRIMARY KEY, dest app.addr);
 INSERT INTO app.shipments SELECT g, ROW('via ' || g, lpad(g::text, 5, '0'))::app.addr FROM generate_series(1, 25) g;
 CREATE TABLE app.lines (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, qty int, price numeric, total numeric GENERATED ALWAYS AS (qty * price) STORED);
 INSERT INTO app.lines(qty, price) SELECT g, g * 0.5 FROM generate_series(1, 60) g;
+CREATE TABLE app.a_owner (id serial PRIMARY KEY, v text);
+CREATE TABLE app.b_borrower (id int PRIMARY KEY DEFAULT nextval('app.a_owner_id_seq'), v text);
+INSERT INTO app.a_owner(v) SELECT 'a' || g FROM generate_series(1, 20) g; INSERT INTO app.b_borrower(v) SELECT 'b' || g FROM generate_series(1, 20) g;
+CREATE TABLE app.cust (id int PRIMARY KEY, name text);
+INSERT INTO app.cust SELECT g, 'c' || g FROM generate_series(1, 30) g;
+CREATE TABLE app.orders_p (id int, cust_id int REFERENCES app.cust(id), at date NOT NULL, PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE app.orders_p2025 PARTITION OF app.orders_p FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+CREATE TABLE app.orders_p2026 PARTITION OF app.orders_p FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+INSERT INTO app.orders_p SELECT g, 1 + g % 30, date '2025-06-01' + g * 3 FROM generate_series(1, 120) g;
+CREATE ROLE arca_view_owner NOLOGIN; CREATE ROLE arca_view_reader NOLOGIN;
+GRANT USAGE ON SCHEMA app TO arca_view_owner; GRANT SELECT, UPDATE ON app.cust TO arca_view_owner;
+CREATE VIEW app.cust_v WITH (security_barrier = true) AS SELECT id, name FROM app.cust WHERE id > 5 WITH LOCAL CHECK OPTION;
+ALTER VIEW app.cust_v OWNER TO arca_view_owner; GRANT SELECT ON app.cust_v TO arca_view_reader;
+COMMENT ON VIEW app.cust_v IS 'customers for reporting';
+CREATE TABLE app.prod (id int PRIMARY KEY, name text, price numeric);
+INSERT INTO app.prod SELECT g, 'p' || g, g FROM generate_series(1, 40) g;
+CREATE FUNCTION app.cheap_prods(maxp numeric) RETURNS SETOF app.prod LANGUAGE sql STABLE AS $$ SELECT * FROM app.prod WHERE price <= maxp $$;
+CREATE FUNCTION app.prod_label(p app.prod) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT p.name || ' @ ' || p.price $$;
+CREATE TABLE app.prod_snap (at timestamptz DEFAULT now(), item app.prod);
 """
 S = {}
 
@@ -133,6 +152,54 @@ class Ext(unittest.TestCase):
         self.assertEqual(q(DB, "SELECT string_agg(e.extname || '@' || n.nspname, ',' ORDER BY 1) FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE extname IN ('citext','hstore')")[0][0],
                          "citext@ext,hstore@ext")
         self.assertEqual(q(DB, "SELECT count(*) FROM app.users WHERE nick = 'NICK7'")[0][0], "1")
+
+    VIEWQ = ("SELECT pg_get_viewdef('app.cust_v'::regclass, true), pg_get_userbyid(c.relowner), c.relacl::text, array_to_string(c.reloptions, ','), "
+             "obj_description(c.oid, 'pg_class') FROM pg_class c WHERE c.oid = 'app.cust_v'::regclass")
+
+    def test_08_default_borrowing_another_tables_owned_sequence(self):
+        q(DB, "DELETE FROM app.b_borrower WHERE id > 30")
+        self.switch()
+        before = int(q(DB, "SELECT last_value FROM app.a_owner_id_seq")[0][0])
+        self.go(["%s.app.b_borrower" % DB])
+        self.assertEqual(q(DB, "SELECT count(*) FROM app.b_borrower")[0][0], "20")
+        self.assertEqual(q(DB, "SELECT count(*) FROM pg_class WHERE relname LIKE 'a_owner_id_seq%' AND relkind = 'S'")[0][0], "1", "no second copy of A's sequence")
+        self.assertGreaterEqual(int(q(DB, "SELECT last_value FROM app.a_owner_id_seq")[0][0]), before, "the shared sequence never goes back")
+        self.assertEqual(q(DB, "SELECT d.refobjid::regclass::text FROM pg_depend d WHERE d.objid = 'app.a_owner_id_seq'::regclass AND d.deptype = 'a'")[0][0], "app.a_owner",
+                         "A still owns its sequence")
+        q(DB, "INSERT INTO app.b_borrower(v) VALUES ('new'); INSERT INTO app.a_owner(v) VALUES ('new')")
+
+    def test_09_inbound_fk_from_a_partitioned_table(self):
+        S["view"] = q(DB, self.VIEWQ)
+        q(DB, "UPDATE app.cust SET name = 'x'")
+        self.switch()
+        self.go(["%s.app.cust" % DB])
+        self.assertEqual(q(DB, "SELECT count(*) FROM app.cust WHERE name = 'x'")[0][0], "0")
+        fk = q(DB, "SELECT conrelid::regclass::text, confrelid::regclass::text, convalidated FROM pg_constraint WHERE contype = 'f' AND conrelid = 'app.orders_p'::regclass")
+        self.assertEqual(fk, [["app.orders_p", "app.cust", "t"]], "the FK of the partitioned table points at the restored table")
+        n = q(DB, "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND confrelid = 'app.cust'::regclass AND conrelid IN ('app.orders_p2025'::regclass, 'app.orders_p2026'::regclass)")[0][0]
+        self.assertEqual(n, "2", "and so do its partitions")
+        from pg_arca.engine.util import EngineError
+        with self.assertRaises(EngineError):
+            q(DB, "INSERT INTO app.orders_p VALUES (999, 9999, '2025-07-01')")
+
+    def test_10_dependent_view_keeps_owner_grants_options_comment(self):
+        self.assertEqual(q(DB, self.VIEWQ), S["view"])
+
+    def test_11_functions_and_columns_using_the_restored_tables_row_type(self):
+        q(DB, "DELETE FROM app.prod WHERE id > 10")
+        self.switch()
+        r = self.go(["%s.app.prod" % DB])
+        self.assertEqual(q(DB, "SELECT count(*) FROM app.cheap_prods(100)")[0][0], "40")
+        self.assertEqual(q(DB, "SELECT app.prod_label(p) FROM app.prod p WHERE id = 33")[0][0], "p33 @ 33")
+        self.assertEqual(sorted(r.get("functions_rebound") or []), ["app.cheap_prods(numeric)", "app.prod_label(app.prod)"], r)
+        self.assertTrue(any("app.prod_snap.item" in w and "::text::app.prod" in w for w in r["plan"]["warnings"]), r["plan"]["warnings"])
+        self.assertFalse([w for w in r["plan"]["warnings"] if "prerequisite not recreated" in w], "no noise from the quarantine's first pass")
+        old = q(DB, "SELECT relname FROM pg_class WHERE relname LIKE 'prod_old_%' AND relkind = 'r'")[0][0]
+        typ = q(DB, "SELECT prorettype::regtype::text FROM pg_proc WHERE proname = 'cheap_prods'")[0][0]
+        self.assertEqual(typ, "app.prod", "the function returns the RESTORED table's type, not the old copy's")
+        q(DB, "ALTER TABLE app.prod_snap ALTER COLUMN item TYPE app.prod USING item::text::app.prod")      # the command the warning gives
+        q(DB, "DROP TABLE app.%s" % old)                                                # cleaning the old copy up must not need CASCADE
+        self.assertEqual(q(DB, "SELECT count(*) FROM pg_proc WHERE proname IN ('cheap_prods', 'prod_label')")[0][0], "2")
 
 
 if __name__ == "__main__":

@@ -671,8 +671,6 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
             meta["missing_roles_at_stage"] = missing_roles
             created, problems = ensure_prereqs(sess, meta, only_missing=False, roles_ok=roles_ok)
             meta["prereq_created"] = len(created)
-            if problems:
-                meta["warnings"] += ["prerequisite not recreated - %s" % p for p in problems]
             if dumpfile:
                 toc, dropped = filtered_toc(admin, dumpfile, tmp, drop_fks)
                 args = admin.args() + ["-d", stage, "--exit-on-error"]
@@ -717,6 +715,13 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
                 else:
                     load(dumpfile, toc)
                 meta["fks_deferred"] = dropped
+            if problems:
+                # functions using a recovered table's row type (RETURNS SETOF app.t, f(r app.t)) cannot exist before that table: a second pass after the load,
+                # and only what is still missing is reported
+                created2, problems = ensure_prereqs(sess, meta, only_missing=True, roles_ok=roles_ok)
+                meta["prereq_created"] += len(created2)
+            if problems:
+                meta["warnings"] += ["prerequisite not recreated - %s" % p for p in problems]
             for p in info["sequence_positions"]:
                 if sess.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit(qi(p["schema"], p["name"]))) == "t":
                     sess.query("SELECT setval(%s, %d, %s)" % (sql_lit(qi(p["schema"], p["name"])), p["last"], "true" if p["called"] else "false"))
@@ -786,8 +791,9 @@ def _slim(plan):
     out["rebind"] = (["pubblicazione %s" % x["pub"] for x in plan.get("publications") or []] + ["regola %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_rules") or []]
                      + ["policy %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_policies") or []]
                      + ["default di %s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []]
-                     + ["partizione %s.%s → %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan.get("attach") or []])
-    for k in ("publications", "foreign_rules", "foreign_policies", "foreign_defaults"):
+                     + ["partizione %s.%s → %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan.get("attach") or []]
+                     + ["funzione %s" % f["sig"] for f in plan.get("rowtype_funcs") or [] if f.get("def")])
+    for k in ("publications", "foreign_rules", "foreign_policies", "foreign_defaults", "rowtype_funcs"):
         out.pop(k, None)
     out.pop("old_outbound_fks", None)
     return out
@@ -876,6 +882,26 @@ FROM pg_depend own JOIN pg_depend d ON d.refclassid = 'pg_class'::regclass AND d
      JOIN pg_attribute a ON a.attrelid = ad.adrelid AND a.attnum = ad.adnum
 WHERE own.classid = 'pg_class'::regclass AND own.refclassid = 'pg_class'::regclass AND own.deptype IN ('a', 'i') AND own.refobjid = ANY(%s)
   AND NOT (ad.adrelid = ANY(%s))""" % (arr(swap_oids), arr(swap_oids))) or []
+        # functions whose arguments or result use a replaced table's ROW TYPE (RETURNS SETOF app.prod, f(p app.prod), app.prod[]): the type belongs to the
+        # table and goes with the old copy - left alone, app.prod_label(app.prod) would no longer exist for the application. Taken now (their text names
+        # the type as it is called now) and recreated in the swap against the recovered table's type
+        rt = "(SELECT reltype FROM pg_class WHERE oid = ANY(%s) UNION SELECT t.typarray FROM pg_type t WHERE t.oid IN (SELECT reltype FROM pg_class WHERE oid = ANY(%s)))" % (arr(swap_oids), arr(swap_oids))
+        plan["rowtype_funcs"] = _jq(live, """
+SELECT COALESCE(jsonb_agg(jsonb_build_object('oid', p.oid::int, 'sig', p.oid::regprocedure::text, 'kind', p.prokind, 'def', CASE WHEN p.prokind IN ('f', 'p') THEN pg_get_functiondef(p.oid) END,
+       'owner', pg_get_userbyid(p.proowner), 'acl_null', p.proacl IS NULL, 'acl', %s, 'comment', obj_description(p.oid, 'pg_proc'),
+       'in_args', EXISTS (SELECT 1 FROM unnest(coalesce(p.proallargtypes, p.proargtypes::oid[])) x WHERE x IN %s)) ORDER BY p.oid), '[]'::jsonb)::text
+FROM pg_proc p WHERE p.oid IN (SELECT d.objid FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_type'::regclass AND d.deptype = 'n' AND d.refobjid IN %s)
+  AND NOT EXISTS (SELECT 1 FROM pg_depend e WHERE e.classid = 'pg_proc'::regclass AND e.objid = p.oid AND e.deptype = 'e')""" % (ACL_SQL % "p.proacl", rt, rt)) or []
+        for f in plan["rowtype_funcs"]:
+            if not f.get("def"):
+                plan["warnings"].append("%s uses the row type of a replaced table and cannot be recreated automatically (kind %s): it stays bound to the old copy" % (f["sig"], f["kind"]))
+        # columns of OTHER tables typed by a replaced table's row type keep the old copy's type (changing it rewrites their table): said, with the command
+        for (cs, ct, ca, ty) in live.query("""
+SELECT n.nspname, c.relname, a.attname, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE a.attnum > 0 AND NOT a.attisdropped AND a.atttypid IN %s AND c.relkind IN ('r', 'p') AND NOT (c.oid = ANY(%s))""" % (rt, arr(swap_oids))):
+            plan["warnings"].append("column %s.%s.%s has the row type of a replaced table (%s): it keeps the OLD copy's type, so that copy cannot be dropped without it; "
+                                    "to move it: ALTER TABLE %s ALTER COLUMN %s TYPE %s USING %s::text::%s (rewrites that table)"
+                                    % (cs, ct, ca, ty, qi(cs, ct), quote_ident(ca), ty, quote_ident(ca), ty))
         # this server SUBSCRIBES to the table (logical replication): the apply worker knows the old table by its identity; after the swap the recovered table
         # receives nothing until the subscription is refreshed (copy_data = false: the rows are the recovered ones)
         try:
@@ -886,6 +912,7 @@ WHERE own.classid = 'pg_class'::regclass AND own.refclassid = 'pg_class'::regcla
             pass
     else:
         plan["old_outbound_fks"], plan["live_views"], plan["publications"], plan["foreign_rules"], plan["foreign_policies"], plan["foreign_defaults"] = [], [], [], [], [], []
+        plan["rowtype_funcs"] = []
     have = {(f["schema"], f["table"], f["name"]) for f in plan["inbound_fks"]}
     # foreign keys that belonged to the recovered tables / pointed at the recreated ones (only where the other side exists now)
     for f in meta.get("fks") or []:
@@ -1261,6 +1288,38 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     orig = orig_of.get((ssch, sq)) or (sq[:len(sq) - len(sfx_new)] if sq.endswith(sfx_new) else sq)
                     live.query("ALTER SEQUENCE %s RENAME TO %s" % (qi(ssch, sq), quote_ident(orig)))
                 live.query("ALTER TABLE %s RENAME TO %s" % (qi(sch, tmpn), quote_ident(nm)))
+            for f in [x for x in plan.get("rowtype_funcs") or [] if x.get("def")]:
+                # the old function now takes/returns the OLD copy's type. Its text (taken before the swap) names the type by name, which is now the recovered
+                # table's. Same signature (only the result uses the type): drop then create. Other signature: create, then drop the old one if nothing uses it
+                live.query("SAVEPOINT pgarca_rf")
+                try:
+                    old_sig = live.scalar("SELECT %d::regprocedure::text" % f["oid"])
+                    kw = "PROCEDURE" if f["kind"] == "p" else "FUNCTION"
+                    if not f["in_args"]:
+                        live.query("DROP %s %s" % (kw, old_sig))
+                    live.query(f["def"])
+                    new_sig = f["sig"]                       # taken before the swap: the type name in it is now the recovered table's
+                    if f.get("owner") and f["owner"] in _roles_present(live, [f["owner"]]):
+                        live.query("ALTER %s %s OWNER TO %s" % (kw, new_sig, quote_ident(f["owner"])))
+                    if not f.get("acl_null"):
+                        live.query("REVOKE ALL ON %s %s FROM PUBLIC" % (kw, new_sig))
+                        for g in _acl_stmts(kw, new_sig, [a for a in (f.get("acl") or []) if a["g"] == "PUBLIC" or a["g"] in _roles_present(live, [a["g"]])]):
+                            live.query(g)
+                    if f.get("comment"):
+                        live.query("COMMENT ON %s %s IS %s" % (kw, new_sig, sql_lit(f["comment"])))
+                    if f["in_args"]:
+                        live.query("SAVEPOINT pgarca_rf_old")
+                        try:
+                            live.query("DROP %s %s" % (kw, old_sig))
+                            live.query("RELEASE SAVEPOINT pgarca_rf_old")
+                        except EngineError:
+                            live.query("ROLLBACK TO SAVEPOINT pgarca_rf_old")
+                            plan["warnings"].append("%s recreated for the recovered table; the old version (%s) is still used by other objects and was kept" % (f["sig"], old_sig))
+                    live.query("RELEASE SAVEPOINT pgarca_rf")
+                    plan.setdefault("rowtype_funcs_rebound", []).append(f["sig"])
+                except EngineError as e:
+                    live.query("ROLLBACK TO SAVEPOINT pgarca_rf")
+                    plan["warnings"].append("%s uses the row type of a replaced table and was NOT recreated (%s): it stays bound to the old copy" % (f["sig"], e.message[:200]))
             for x in plan.get("foreign_defaults") or []:    # same text, now resolved against the recovered table's sequence
                 live.query("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s" % (qi(x["schema"], x["table"]), quote_ident(x["column"]), x["expr"]))
             for x in plan.get("foreign_rules") or []:       # same text, now resolved against the recovered table
@@ -1374,6 +1433,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                       publications_moved=["%s: %s.%s" % (pb["pub"], pb["schema"], pb["table"]) for pb in plan.get("publications") or []],
                       rules_and_policies_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["name"]) for x in (plan.get("foreign_rules") or []) + (plan.get("foreign_policies") or [])],
                       defaults_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []],
+                      functions_rebound=plan.get("rowtype_funcs_rebound") or [],
                       views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]),
                       sequences_created=["%s.%s" % (x["schema"], x["name"]) for x in seq_new], sequences_advanced=moved)
         if any(v.get("kind") == "m" for v in plan["recovered_views"]):
