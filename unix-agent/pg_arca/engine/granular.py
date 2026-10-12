@@ -31,6 +31,33 @@ def _check_name(n, what):
 RESTORING_MARK = "pg_arca: restore IN PROGRESS"
 
 
+def _detach_subscriptions(admin, name, warnings):
+    """Logical replication subscriptions come back DISABLED (pg_dump writes connect = false) but still carry the publisher's slot name: enabling
+    one would take the real subscriber's slot, and a DROP SUBSCRIPTION to clean the copy up would connect to the publisher and DROP that slot,
+    breaking production's replication. The copy's subscriptions are detached from the slot (slot_name = NONE): DROP is then local only."""
+    s = PgSession(admin.with_db(name))
+    try:
+        subs = [r[0] for r in s.query("SELECT subname FROM pg_subscription WHERE subdbid = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+                                      "AND subslotname IS NOT NULL") if r and r[0]]
+        done = []
+        for sub in subs:
+            try:
+                s.query("ALTER SUBSCRIPTION %s DISABLE" % quote_ident(sub))
+                s.query("ALTER SUBSCRIPTION %s SET (slot_name = NONE)" % quote_ident(sub))
+                done.append(sub)
+            except EngineError as e:
+                warnings.append("subscription %s: could not be detached from the publisher's slot (%s) - do NOT enable or drop it before "
+                                "ALTER SUBSCRIPTION %s SET (slot_name = NONE)" % (sub, e.message[:160], sub))
+        if done:
+            warnings.append("logical replication subscriptions restored DISABLED and detached from the publisher's slot (%s): dropping them is safe; to make "
+                            "this copy a subscriber create a NEW slot on the publisher and ALTER SUBSCRIPTION ... SET (slot_name = '<new>') ... ENABLE"
+                            % ", ".join(done[:6]))
+    except EngineError as e:
+        warnings.append("logical replication subscriptions not checked: %s" % e.message[:160])
+    finally:
+        s.close()
+
+
 def _mark_db(admin, name, text):
     """A database being filled by a restore carries a comment saying so: if the agent dies half-way, the telemetry shows it as incomplete
     (never mistaken for a good copy). None removes it."""
@@ -676,6 +703,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         _mark_db(admin, new_name, "%s since %s (from %s at %s): incomplete until this comment is gone - do not use" % (RESTORING_MARK, now_utc().isoformat(timespec="seconds"), db, plan.get("target")))
         _pg_restore(admin, new_name, dumpfile, jobs, extra=extra, keep_owners=keep, cancel=cancel)
         _check_cancel(cancel)                              # cancelled while the last step finished: the new database is removed, as promised
+        _detach_subscriptions(admin, new_name, warns)
         warns += list((props or {}).pop("_warnings", []) if props else [])
         _mark_db(admin, new_name, None)                    # complete: the marker goes (the original comment, if any, is set right after)
         _apply_db_props(admin, new_name, props, warns)

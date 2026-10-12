@@ -659,6 +659,19 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
                 chk.append({"id": "ts_created", "level": "warn",
                             "text": "the recovery will create tablespace directories at their original paths (%s): start this copy only where those paths are free" % ", ".join(t["path"] for t in created[:3]),
                             "fix": "a new FULL backup includes the tablespaces and lets them be relocated"})
+        subs = [x for x in (repo.load_catalog(chain[-1]).get("subscriptions") or []) if x.get("slot")]
+        if subs:
+            names = ", ".join("%s.%s (slot %s)" % (x["db"], x["name"], x["slot"]) for x in subs[:4])
+            plan["subscriptions"] = subs
+            if keep_archiving:
+                chk.append({"id": "subscriptions", "level": "warn",
+                            "text": "this server replaces the original: its logical replication subscriptions %s resume from the publisher's slots" % names,
+                            "fix": "make sure the original subscriber is stopped for good: two subscribers on one slot lose changes"})
+            else:
+                chk.append({"id": "subscriptions", "level": "warn",
+                            "text": "the copy keeps the logical replication subscriptions %s: they do not run in the copy, but DROP SUBSCRIPTION there connects to the "
+                                    "publisher and DROPS production's slot" % names,
+                            "fix": "in the copy, before anything else: ALTER SUBSCRIPTION <name> DISABLE; ALTER SUBSCRIPTION <name> SET (slot_name = NONE)"})
         plan["preflight"] = restorecheck.summarize(chk)
         if not dry_run:
             restorecheck.enforce(chk)

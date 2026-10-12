@@ -59,6 +59,12 @@ const RULES: Rule[] = [
   [/^a free port is available \((.+)\)$/, m => `c’è una porta libera (${m[1] === 'any, listening on 127.0.0.1 only' ? 'qualsiasi, solo su 127.0.0.1' : m[1]})`],
   [/^(.+) readable: (.+)$/, m => `${m[1] === 'repository' ? 'repository' : m[1] === 'WAL archive' ? 'archivio WAL' : m[1]} leggibile: ${m[2]}`],
   [/^(.+) (\S+) is not readable from this host$/, m => `${m[1] === 'WAL archive' ? 'archivio WAL' : m[1]} ${m[2]} non è leggibile da questo host`],
+  [/^the copy keeps the logical replication subscriptions (.+): they do not run in the copy, but DROP SUBSCRIPTION there connects to the publisher and DROPS production's slot$/, m => `la copia conserva le sottoscrizioni di replica logica ${m[1]}: nella copia non girano, ma un DROP SUBSCRIPTION lì si collega al publisher e CANCELLA lo slot di produzione`],
+  [/^this server replaces the original: its logical replication subscriptions (.+) resume from the publisher's slots$/, m => `questo server sostituisce l’originale: le sue sottoscrizioni di replica logica ${m[1]} riprendono dagli slot del publisher`],
+  [/^logical replication subscriptions restored DISABLED and detached from the publisher's slot \((.+)\): dropping them is safe; .*$/, m => `sottoscrizioni di replica logica ripristinate DISATTIVATE e staccate dallo slot del publisher (${m[1]}): eliminarle è sicuro; per rendere questa copia un subscriber crea un NUOVO slot sul publisher e poi ALTER SUBSCRIPTION ... SET (slot_name = '<nuovo>') ... ENABLE`],
+  [/^a recovered column has the row type of table (.+), which does not exist now: select that table too \(it is not created by itself\)$/, m => `una colonna recuperata ha come tipo la riga della tabella ${m[1]}, che ora non esiste: seleziona anche quella tabella (non viene creata da sola)`],
+  [/^(?:prerequisite not recreated - )?extension (.+) is installed in schema (.+) here, the recovered objects use it from schema (.+)$/, m => `l’estensione ${m[1]} qui è installata nello schema ${m[2]}, gli oggetti recuperati la usano dallo schema ${m[3]}`],
+  [/^collation (.+) cannot be recreated automatically$/, m => `la collation ${m[1]} non può essere ricreata automaticamente`],
 ];
 const FIX: Rule[] = [
   [/^set the delivery address in the recovery instance settings \(e\.g\. the HAProxy \/ VIP of the leader\), or open network and pg_hba from this host$/, () => 'indica l’indirizzo di consegna nelle impostazioni dell’istanza di recupero (es. l’HAProxy o il VIP del leader), oppure apri rete e pg_hba da questo host'],
@@ -78,6 +84,8 @@ const FIX: Rule[] = [
   [/^free space, or point the scratch directory to a bigger volume$/, () => 'libera spazio, o punta la cartella temporanea a un volume più grande'],
   [/^lower shared_buffers_mb or free memory$/, () => 'abbassa shared_buffers_mb o libera memoria'],
   [/^make sure it has about (.+) free$/, m => `assicurati che abbia circa ${m[1]} liberi`],
+  [/^make sure the original subscriber is stopped for good: two subscribers on one slot lose changes$/, () => 'assicurati che il subscriber originale sia fermo per sempre: due subscriber sullo stesso slot perdono modifiche'],
+  [/^in the copy, before anything else: (.+)$/, m => `nella copia, prima di ogni altra cosa: ${m[1]}`],
 ];
 const apply = (rules: Rule[], s: string) => { for (const [re, f] of rules) { const m = s.match(re); if (m) return f(m); } return s; };
 /** Italian text of an agent check message (unchanged when unknown). */

@@ -72,6 +72,8 @@ class LogicalCopy(unittest.TestCase):
         # the backup's point (subscription still ENABLED there): the copy promotes with an enabled subscription in its catalog
         plan = restore_instance(F.ctx, dest=dest, immediate=True, action="promote")
         self.assertIn("max_logical_replication_workers = 0", plan.get("copy_safety") or [])
+        sub = [c for c in plan["preflight"]["checks"] if c["id"] == "subscriptions"]
+        self.assertTrue(sub and "replica_db.sub_orders" in sub[0]["text"] and "SET (slot_name = NONE)" in sub[0]["fix"], plan["preflight"])
         port = F.port + 12
         r = sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-o", "-p %d -k %s" % (port, F.sock), "-l", dest + ".log", "-w", "-t", "120", "start")
         self.assertEqual(r.returncode, 0, open(dest + ".log").read()[-1500:])
@@ -105,6 +107,22 @@ class LogicalCopy(unittest.TestCase):
         _, forced = quarantine_config(d, {}, 5999, d, "true")
         self.assertEqual(forced.get("max_logical_replication_workers"), "0")
 
+    def test_03_restore_database_of_a_subscriber(self):
+        # the copy's subscription keeps the publisher's slot NAME: enabling it would steal the slot, and DROP SUBSCRIPTION (the obvious clean-up of a
+        # copy) connects to the publisher and DROPS production's slot. Restored subscriptions are disabled AND detached (slot_name = NONE)
+        from pg_arca.engine.granular import restore_database
+        r = restore_database(F.ctx, "replica_db", new_name="replica_back")
+        rows = q("replica_back", "SELECT subname, subenabled, coalesce(subslotname, '-') FROM pg_subscription s JOIN pg_database d ON d.oid = s.subdbid WHERE d.datname = 'replica_back'")
+        self.assertEqual(rows, [["sub_orders", "f", "-"]])
+        self.assertTrue(any("detached from the publisher" in w for w in r.get("warnings") or []), r.get("warnings"))
+        q("replica_back", "DROP SUBSCRIPTION sub_orders")
+        self.assertEqual(pub("SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'sub_orders'", "shop")[0][0], "1", "production's slot survives the copy's clean-up")
+        pub("INSERT INTO orders VALUES (61, 'after')", "shop")
+        for _ in range(60):
+            if q("replica_db", "SELECT count(*) FROM orders")[0][0] == "61":
+                break
+            time.sleep(0.5)
+        self.assertEqual(q("replica_db", "SELECT count(*) FROM orders")[0][0], "61", "the real subscriber still replicates")
 
 if __name__ == "__main__":
     unittest.main()
