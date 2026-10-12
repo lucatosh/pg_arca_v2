@@ -101,6 +101,8 @@ class Fuzz(unittest.TestCase):
                  "part": [("id", "%d + g" % base_id), ("k", "(g * 7) % 100"), ("v", "md5(g::text)")],
                  "serial": [("v", "md5(g::text)")]}[kind]
         cols = [(c, e) for c, e in exprs if c in have]
+        if not cols:                                      # only the serial key is left: rows made of defaults
+            cols = [("id", "nextval(pg_get_serial_sequence('%s', 'id'))" % t)]
         q(DB, "INSERT INTO %s (%s) SELECT %s FROM generate_series(1, %d) g" % (t, ", ".join(c for c, _ in cols), ", ".join(e for _, e in cols), n))
 
     def _step(self, step):
