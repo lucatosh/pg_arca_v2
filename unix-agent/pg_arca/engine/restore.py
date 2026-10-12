@@ -554,8 +554,10 @@ def _check_target_after_set(s, target_time, target_lsn):
         raise EngineError("PGA-PITR-003", "target LSN %s is before the end of backup %s (%s)" % (target_lsn, s["id"], s["stop_lsn"]))
 
 
-def check_wal_for_chain(ctx, chain, target_lsn=None):
-    """Every WAL segment between the BASE backup's start and the LAST set's stop (and the target LSN) must be archived."""
+def check_wal_for_chain(ctx, chain, target_lsn=None, target_time=None, to_end=False):
+    """Every WAL segment between the BASE backup's start and the LAST set's stop (and the target LSN) must be archived.
+    Beyond the last set: a HOLE in the archive before the requested point (a time, an LSN, or the end of the archive when `to_end`) makes the recovery stop
+    at the hole, earlier than asked - reported here, before anything starts. A time is placed by when the segment before the hole was archived."""
     first, last = chain[0], chain[-1]
     seg = last.get("wal_segment_size") or ctx.seg_size
     tli = last["timeline"]
@@ -588,6 +590,36 @@ def check_wal_for_chain(ctx, chain, target_lsn=None):
             nm = wal_name(tli, n, seg)
             if nm not in missing:
                 missing.append(nm)
+    if missing or not (target_time or to_end):
+        return missing
+    try:
+        present = set()
+        for nm in ctx.wal.list_segments(anywhere=True):
+            p = parse_wal_name(nm, seg)
+            if p and p[0] in tls:
+                present.add(p[1])
+        beyond = sorted(n for n in present if n > hi)
+        if not beyond:
+            return missing
+        want_dt = target_time_to_dt(target_time) if target_time else None
+        prev = hi
+        for n in range(hi + 1, beyond[-1] + 1):
+            if n in present:
+                prev = n
+                continue
+            if want_dt is not None:
+                # the segment before the hole was archived at `t`: a target later than that needs what comes after it
+                pn = next((wal_name(t, prev, seg) for t in tls if ctx.wal.has_segment(wal_name(t, prev, seg))), None)
+                path = ctx.wal._find(pn, anywhere=True)[0] if pn else None
+                if path:
+                    import datetime as _dt
+                    t_arch = _dt.datetime.fromtimestamp(os.stat(path).st_mtime, _dt.timezone.utc)
+                    if want_dt <= t_arch:
+                        break                                  # the target lies before the hole: not needed
+            missing.append(wal_name(tli, n, seg))
+            break
+    except Exception as e:                                  # the precise check must never be what breaks a restore: the recovery still stops at a hole and says so
+        ctx.log("warning", "WAL hole check beyond the backup skipped: %s" % e)
     return missing
 
 
@@ -636,7 +668,12 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     sp = set_profile(chain[0])
     if sp is not None:
         require_supported(sp, "restoring this backup")
-    missing = check_wal_for_chain(ctx, chain, target_lsn)
+    missing = check_wal_for_chain(ctx, chain, target_lsn, target_time=target_time)
+    hole = None
+    if not missing and not (target_time or target_lsn or target_xid or target_name or immediate):
+        # 'end of archive' (disaster recovery): a hole after the backup is not a refusal - the copy simply ends there - but it must be said BEFORE
+        h = check_wal_for_chain(ctx, chain, to_end=True)
+        hole = h[0] if h else None
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "destination": os.path.realpath(dest), "missing_wal": missing[:20],
             "pg_version": sp.label if sp else None,
             "target": target_time or target_lsn or target_xid or target_name or ("immediate" if immediate else "end of archive")}
@@ -740,6 +777,10 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
                             "text": "the copy keeps the logical replication subscriptions %s: they do not run in the copy, but DROP SUBSCRIPTION there connects to the "
                                     "publisher and DROPS production's slot" % names,
                             "fix": "in the copy, before anything else: ALTER SUBSCRIPTION <name> DISABLE; ALTER SUBSCRIPTION <name> SET (slot_name = NONE)"})
+        if hole:
+            plan["wal_hole"] = hole
+            chk.append({"id": "wal_hole", "level": "warn", "text": "the WAL archive has a hole at %s: the copy will end there, everything written after it is not in this archive" % hole,
+                        "fix": "repair the archive first (WAL rescue, or the segments still in the primary's pg_wal), or accept the earlier end"})
         plan["preflight"] = restorecheck.summarize(chk)
         if not dry_run:
             restorecheck.enforce(chk)

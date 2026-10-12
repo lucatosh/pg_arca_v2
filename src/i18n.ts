@@ -114,6 +114,8 @@ const RULES: Rule[] = [
   [/^(\d+) UNLOGGED table\(s\) restored EMPTY: their rows are in no backup \((.+)\)$/, m => `${m[1]} tabelle UNLOGGED ripristinate VUOTE: le loro righe non sono in nessun backup (${m[2]})`],
   [/^(?:PGA-GEN-095: )?(.+?) is UNLOGGED: PostgreSQL does not write its rows to the WAL, so no backup contains them - there is nothing to compare or recover$/, m => `${m[1]} è UNLOGGED: PostgreSQL non scrive le sue righe nel WAL, nessun backup le contiene - non c’è nulla da confrontare o recuperare`],
   [/^(\d+) function\(s\) of the restored schema exist now and are kept in their CURRENT version \(only missing functions come back\): (.+)$/, m => `${m[1]} funzioni dello schema ripristinato esistono già e restano nella versione ATTUALE (tornano solo quelle mancanti): ${m[2]}`],
+  [/^the WAL archive has a hole at (\S+): the copy will end there, everything written after it is not in this archive$/, m => `l’archivio WAL ha un buco in ${m[1]}: la copia finirà lì, tutto ciò che è stato scritto dopo non è in questo archivio`],
+  [/^(?:PGA-WAL-022: )?WAL archive is missing (\d+) segment\(s\) required(?: by this restore)? \(first: (\S+)\)$/, m => `nell’archivio WAL mancano ${m[1]} segmenti necessari (il primo: ${m[2]})`],
 ];
 const FIX: Rule[] = [
   [/^set the delivery address in the recovery instance settings \(e\.g\. the HAProxy \/ VIP of the leader\), or open network and pg_hba from this host$/, () => 'indica l’indirizzo di consegna nelle impostazioni dell’istanza di recupero (es. l’HAProxy o il VIP del leader), oppure apri rete e pg_hba da questo host'],
@@ -154,6 +156,8 @@ const FIX: Rule[] = [
   [/^the directory must be writable by both \(group-writable, no sticky bit\)$/, () => 'la cartella deve essere scrivibile da entrambi (scrivibile dal gruppo, senza sticky bit)'],
   [/^free space or enlarge the new destination; nothing has been copied$/, () => 'libera spazio o ingrandisci la nuova destinazione; non è stato copiato nulla'],
   [/^new backups need room too: consider a bigger volume$/, () => 'anche i nuovi backup hanno bisogno di spazio: valuta un volume più grande'],
+  [/^repair the archive first \(WAL rescue, or the segments still in the primary's pg_wal\), or accept the earlier end$/, () => 'ripara prima l’archivio (salvataggio WAL, o i segmenti ancora nel pg_wal del primario), oppure accetta la fine anticipata'],
+  [/^recovery past the gap is impossible; choose an earlier point in time, another set, or repair the archive \(WAL rescue \/ the primary's pg_wal\)$/, () => 'oltre il buco il recupero è impossibile: scegli un istante precedente, un altro backup, o ripara l’archivio (salvataggio WAL / pg_wal del primario)'],
 ];
 const apply = (rules: Rule[], s: string) => { for (const [re, f] of rules) { const m = s.match(re); if (m) return f(m); } return s; };
 /** Italian text of an agent check message (unchanged when unknown). */

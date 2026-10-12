@@ -141,10 +141,10 @@ def _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name, immed
     tt = parse_target_time(target_time)
     target = choose_set(ctx.repo, set_spec, tt, target_lsn, target_xid, target_name)
     chain = build_chain(ctx.repo, target)
-    missing = check_wal_for_chain(ctx, chain, target_lsn)
+    missing = check_wal_for_chain(ctx, chain, target_lsn, target_time=tt, to_end=not (tt or target_lsn or target_xid or target_name or immediate))
     if missing:
         raise EngineError("PGA-WAL-022", "WAL archive is missing %d segment(s) required (first: %s)" % (len(missing), missing[0]),
-                          "recovery past the gap is impossible; choose another set or repair the archive")
+                          "recovery past the gap is impossible; choose an earlier point in time, another set, or repair the archive (WAL rescue / the primary's pg_wal)")
     return target, chain, tt
 
 

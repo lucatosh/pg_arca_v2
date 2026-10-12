@@ -330,13 +330,16 @@ class WalManager:
     def has_segment(self, name, anywhere=True):
         return self._find(name, anywhere)[0] is not None
 
-    def list_segments(self):
-        """Sorted list of archived WAL segment base names (no .history/.backup/.partial/.meta)."""
+    def list_segments(self, anywhere=False):
+        """Sorted list of archived WAL segment base names (no .history/.backup/.partial/.meta). anywhere=True: also the previous locations (read paths)."""
         out = set()
-        try:
-            names = os.listdir(self.wal_dir)
-        except OSError:
-            return []
+        names = []
+        for i, d in enumerate([self.wal_dir] + (self.previous if anywhere else [])):
+            try:
+                names += os.listdir(d)
+            except OSError:
+                if i == 0:
+                    return []
         for n in names:
             if n.startswith("."):
                 continue
