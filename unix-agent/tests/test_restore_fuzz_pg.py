@@ -254,6 +254,26 @@ class Fuzz(unittest.TestCase):
             sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
             shutil.rmtree(dest, ignore_errors=True)
 
+    def test_zz_replace_promotions(self):
+        """Put a table back from a recorded instant with mode replace: that table equals the instant, every other table is unchanged, the old one is kept."""
+        from pg_arca.engine.granular import promote_object
+        now = fingerprint()
+        cands = [(p, t) for p in self._restorable() for t in p[1] if t in now]
+        for i, (p, t) in enumerate(self.rng.sample(cands, min(3, len(cands)))):
+            before = fingerprint()
+            stage = "pgarca_stage_fzp%d" % i
+            restore_object(F.ctx, DB, objects=["%s.public.%s" % (DB, t)], target_time=p[0], stage_db=stage)
+            r = promote_object(F.ctx, stage, DB, mode="replace", drop_stage=True)
+            after = fingerprint()
+            olds = [k for k in after if k.startswith(t[:40]) and "_old_" in k]
+            self.assertEqual(after.get(t), p[1][t], self._explain("replace of %s" % t, p[1][t], after.get(t), p))
+            self.assertTrue(olds, "the replaced table is kept as _old_: %s" % sorted(after))
+            self.assertEqual(after[olds[-1]], before[t], "the kept copy holds the rows it had")
+            for k, v in before.items():
+                if k != t:
+                    self.assertEqual(after.get(k), v, "replacing %s changed %s (seed %d)" % (t, k, SEED))
+            self.assertTrue(r)
+
 
 if __name__ == "__main__":
     unittest.main()
