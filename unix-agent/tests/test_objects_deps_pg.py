@@ -134,6 +134,21 @@ class Deps(unittest.TestCase):
         if major >= 15:
             self.assertIn("id > 10", q(DB, "SELECT rowfilter FROM pg_publication_tables WHERE pubname = 'pub_sup'")[0][0])
 
+    def test_08_rules_and_policies_of_other_tables_follow(self):
+        # a rule on audit_log writes into customers; a policy on invoices reads customers. Both are bound to the table by identity: after replacing
+        # customers they must point at the RECOVERED table, not at the kept old copy
+        q(DB, "CREATE RULE log_to_cust AS ON INSERT TO app.audit_log WHERE NEW.what LIKE 'cust:%' DO ALSO INSERT INTO app.customers(name) VALUES (substr(NEW.what, 6))")
+        q(DB, "ALTER TABLE app.invoices ENABLE ROW LEVEL SECURITY; CREATE POLICY only_known ON app.invoices FOR SELECT TO PUBLIC USING (customer_id IN (SELECT id FROM app.customers))")
+        q(DB, "UPDATE app.customers SET name = 'broken' WHERE id < 5")
+        self.switch()
+        r = self.go(["%s.app.customers" % DB])
+        self.assertEqual(sorted(r.get("rules_and_policies_rebound") or []), ["app.audit_log.log_to_cust", "app.invoices.only_known"], r)
+        dep = ("SELECT count(*) FROM pg_depend d JOIN %s x ON x.oid = d.objid WHERE d.refobjid = 'app.customers'::regclass AND %s")
+        self.assertEqual(q(DB, dep % ("pg_rewrite", "x.rulename = 'log_to_cust'"))[0][0], "1", "the rule now depends on the recovered table")
+        self.assertEqual(q(DB, dep % ("pg_policy", "x.polname = 'only_known'"))[0][0], "1", "the policy now depends on the recovered table")
+        q(DB, "INSERT INTO app.audit_log(what) VALUES ('cust:via-rule')")
+        self.assertEqual(q(DB, "SELECT count(*) FROM app.customers WHERE name = 'via-rule'")[0][0], "1")
+
 
 if __name__ == "__main__":
     unittest.main()

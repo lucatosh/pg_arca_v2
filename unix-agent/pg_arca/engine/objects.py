@@ -730,6 +730,18 @@ FROM pg_publication_rel pr JOIN pg_publication p ON p.oid = pr.prpubid JOIN pg_c
 WHERE pr.prrelid = ANY(%s)""" % ("pg_get_expr(pr.prqual, pr.prrelid)" if has15 else "NULL::text",
                                  "(SELECT jsonb_agg(a.attname ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = pr.prrelid AND a.attnum = ANY(pr.prattrs))" if has15 else "NULL::jsonb",
                                  arr(swap_oids))) or []
+        # rules and row-level-security policies of OTHER tables that mention a replaced table are bound to it by identity (like views): left alone they would go
+        # on reading/writing the kept old copy. Their definitions are taken now and they are recreated in the swap, against the recovered table.
+        plan["foreign_rules"] = _jq(live, """
+SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('schema', n.nspname, 'table', c.relname, 'name', r.rulename, 'def', pg_get_ruledef(r.oid))), '[]'::jsonb)::text
+FROM pg_depend d JOIN pg_rewrite r ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid JOIN pg_class c ON c.oid = r.ev_class JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE d.refclassid = 'pg_class'::regclass AND d.refobjid = ANY(%s) AND NOT (r.ev_class = ANY(%s)) AND c.relkind IN ('r', 'p') AND r.rulename <> '_RETURN'""" % (arr(swap_oids), arr(swap_oids))) or []
+        plan["foreign_policies"] = _jq(live, """
+SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('schema', n.nspname, 'table', c.relname, 'name', p.polname, 'cmd', p.polcmd::text, 'permissive', p.polpermissive,
+       'roles', (SELECT jsonb_agg(CASE WHEN x = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x) END) FROM unnest(p.polroles) x),
+       'qual', pg_get_expr(p.polqual, p.polrelid), 'check', pg_get_expr(p.polwithcheck, p.polrelid))), '[]'::jsonb)::text
+FROM pg_depend d JOIN pg_policy p ON d.classid = 'pg_policy'::regclass AND d.objid = p.oid JOIN pg_class c ON c.oid = p.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE d.refclassid = 'pg_class'::regclass AND d.refobjid = ANY(%s) AND NOT (p.polrelid = ANY(%s))""" % (arr(swap_oids), arr(swap_oids))) or []
         # this server SUBSCRIBES to the table (logical replication): the apply worker knows the old table by its identity; after the swap the recovered table
         # receives nothing until the subscription is refreshed (copy_data = false: the rows are the recovered ones)
         try:
@@ -739,7 +751,7 @@ WHERE pr.prrelid = ANY(%s)""" % ("pg_get_expr(pr.prqual, pr.prrelid)" if has15 e
         except EngineError:
             pass
     else:
-        plan["old_outbound_fks"], plan["live_views"], plan["publications"] = [], [], []
+        plan["old_outbound_fks"], plan["live_views"], plan["publications"], plan["foreign_rules"], plan["foreign_policies"] = [], [], [], [], []
     have = {(f["schema"], f["table"], f["name"]) for f in plan["inbound_fks"]}
     # foreign keys that belonged to the recovered tables / pointed at the recreated ones (only where the other side exists now)
     for f in meta.get("fks") or []:
@@ -1067,6 +1079,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     live.query("ALTER TABLE %s DROP CONSTRAINT %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"])))
             for f in plan.get("old_outbound_fks") or []:
                 live.query("ALTER TABLE %s DROP CONSTRAINT %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"])))     # the kept copy must not pin rows of other tables
+            for x in plan.get("foreign_rules") or []:
+                live.query("DROP RULE %s ON %s" % (quote_ident(x["name"]), qi(x["schema"], x["table"])))
+            for x in plan.get("foreign_policies") or []:
+                live.query("DROP POLICY %s ON %s" % (quote_ident(x["name"]), qi(x["schema"], x["table"])))
             for a in plan["attach"]:                          # the live table leaves its parent first (it is kept, standalone, as <name>_old_<ts>)
                 if a.get("detach_old"):
                     if a["part"]:
@@ -1100,6 +1116,14 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     orig = orig_of.get((ssch, sq)) or (sq[:len(sq) - len(sfx_new)] if sq.endswith(sfx_new) else sq)
                     live.query("ALTER SEQUENCE %s RENAME TO %s" % (qi(ssch, sq), quote_ident(orig)))
                 live.query("ALTER TABLE %s RENAME TO %s" % (qi(sch, tmpn), quote_ident(nm)))
+            for x in plan.get("foreign_rules") or []:       # same text, now resolved against the recovered table
+                live.query(x["def"].rstrip().rstrip(";"))
+            for x in plan.get("foreign_policies") or []:
+                cmd = {"r": "SELECT", "a": "INSERT", "w": "UPDATE", "d": "DELETE"}.get(x["cmd"], "ALL")
+                roles = ", ".join("PUBLIC" if r == "PUBLIC" else quote_ident(r) for r in (x.get("roles") or ["PUBLIC"]))
+                live.query("CREATE POLICY %s ON %s AS %s FOR %s TO %s%s%s" % (quote_ident(x["name"]), qi(x["schema"], x["table"]), "PERMISSIVE" if x.get("permissive", True) else "RESTRICTIVE",
+                                                                            cmd, roles, (" USING (%s)" % x["qual"]) if x.get("qual") else "",
+                                                                            (" WITH CHECK (%s)" % x["check"]) if x.get("check") else ""))
             for pb in plan.get("publications") or []:       # the recovered table takes the old one's place in the publication (same filter / columns)
                 r_old = next((r for r in swapped if r["schema"] == pb["schema"] and r["name"] == pb["table"]), None)
                 if not r_old:
@@ -1201,6 +1225,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                       foreign_keys_reattached=len(validate_later) - len(invalid), foreign_keys_unvalidated=len(invalid),
                       attached=["%s.%s -> %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan["attach"]],
                       publications_moved=["%s: %s.%s" % (pb["pub"], pb["schema"], pb["table"]) for pb in plan.get("publications") or []],
+                      rules_and_policies_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["name"]) for x in (plan.get("foreign_rules") or []) + (plan.get("foreign_policies") or [])],
                       views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]),
                       sequences_created=["%s.%s" % (x["schema"], x["name"]) for x in seq_new], sequences_advanced=moved)
         if any(v.get("kind") == "m" for v in plan["recovered_views"]):
