@@ -10,7 +10,7 @@ from pg_arca.wal_manager import WalManager
 class Ctx(object):
     def __init__(self, conn, pgdata, repo_path, stanza, wal_dir, scratch_dir, process_max=4, compression="zstd", level=3,
                  start_fast=False, retention_full=2, retention_days=0, seg_size=16 * 1024 * 1024, log=None, agent_path=None,
-                 protected_extra=None, key_file=None):
+                 protected_extra=None, key_file=None, repo_previous=None, wal_previous=None):
         self.conn = conn
         self.pgdata = os.path.realpath(pgdata) if pgdata else ""
         self.stanza = stanza
@@ -24,9 +24,9 @@ class Ctx(object):
         from pg_arca.engine.crypt import from_settings
         self.key_file = key_file or ""
         self.crypto = from_settings(key_file)
-        self.wal = WalManager(wal_dir, compression, level, seg_size, crypto=self.crypto)
+        self.wal = WalManager(wal_dir, compression, level, seg_size, crypto=self.crypto, previous=wal_previous)
         algo = "zstd" if compression == "zstd" else ("none" if compression == "none" else "zlib")
-        self.repo = Repo(repo_path, stanza, self.wal, algo=algo, level=level, crypto=self.crypto)
+        self.repo = Repo(repo_path, stanza, self.wal, algo=algo, level=level, crypto=self.crypto, previous=repo_previous)
         self._log = log
         self.agent_path = agent_path or os.environ.get("PG_ARCA_WAL_BIN", "/usr/local/bin/pg-arca-wal")
         self.protected_extra = protected_extra or []
@@ -53,7 +53,10 @@ class Ctx(object):
         sp = ""
         if int(os.environ.get("PG_ARCA_PREFETCH", "10") or 0) > 0 and self.scratch_dir:       # read-ahead spool (pg_arca/walprefetch.py); PG_ARCA_PREFETCH=0 turns it off
             sp = " PG_ARCA_SPOOL=%s" % _shq(self.spool_dir)
-        return "env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent%s%s %s get %%f %%p" % (_shq(self.wal_dir), _shq(home), kf, sp, _shq(self.agent_path))
+        pv = ""
+        if getattr(self.wal, "previous", None):                    # earlier archive locations (destination changed): old segments are found there
+            pv = " PG_ARCA_WAL_PREVIOUS=%s" % _shq(os.pathsep.join(self.wal.previous))
+        return "env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent%s%s%s %s get %%f %%p" % (_shq(self.wal_dir), _shq(home), kf, sp, pv, _shq(self.agent_path))
 
     @property
     def spool_dir(self):
@@ -95,11 +98,13 @@ class Ctx(object):
         here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         wal_bin = config.get("wal_bin") or (os.path.join(here, "pg-arca-wal") if os.path.exists(os.path.join(here, "pg-arca-wal")) else None)
         # never restore into (or above/below) the repository, the WAL archive, the agent state/config or the key file
-        keep = [config.get("repo_path"), config.get("wal_archive_dir"), config.get("state_dir"), os.path.dirname(config.get("credentials_file") or ""), config.get("encryption_key_file")]
+        keep = [config.get("repo_path"), config.get("wal_archive_dir"), config.get("state_dir"), os.path.dirname(config.get("credentials_file") or ""), config.get("encryption_key_file")] \
+            + list(config.get("repo_previous") or []) + list(config.get("wal_previous") or [])
         return cls(conn, _resolve_pgdata(config, inst, log), config["repo_path"], stanza, config["wal_archive_dir"],
                    config.get("scratch_dir", "/var/tmp/pg_arca_scratch"), config.get("process_max", 4), config.get("compression", "zstd"),
                    config.get("compression_level", 3), bool(config.get("start_fast", False)), config.get("retention_full", 2),
-                   config.get("retention_days", 0), seg, log, wal_bin, key_file=config.get("encryption_key_file") or os.environ.get("PG_ARCA_KEY_FILE") or None, protected_extra=[k for k in keep if k])
+                   config.get("retention_days", 0), seg, log, wal_bin, key_file=config.get("encryption_key_file") or os.environ.get("PG_ARCA_KEY_FILE") or None, protected_extra=[k for k in keep if k],
+                   repo_previous=config.get("repo_previous") or None, wal_previous=config.get("wal_previous") or None)
 
 
 def _resolve_pgdata(config, inst, log=None):

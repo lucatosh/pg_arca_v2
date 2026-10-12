@@ -43,8 +43,11 @@ class Lock(object):
 
 
 class Repo(object):
-    def __init__(self, path, stanza, wal=None, algo=None, level=3, crypto=None):
+    def __init__(self, path, stanza, wal=None, algo=None, level=3, crypto=None, previous=None):
         self.path = os.path.realpath(path)
+        # earlier locations of this repository (the destination was changed and the old content is not migrated yet): READ only. Their sets are
+        # listed and restorable; new backups never deduplicate against them, never use them as parent and retention never touches them.
+        self.previous = [os.path.realpath(x) for x in (previous or []) if x and os.path.realpath(x) != self.path]
         self._dirs_ok = set()
         self.stanza = stanza
         self.wal = wal                       # WalManager
@@ -57,7 +60,20 @@ class Repo(object):
         return os.path.join(self.path, *a)
 
     def sp(self, *a):
-        return os.path.join(self.path, "stanza", self.stanza, *a)
+        p = os.path.join(self.path, "stanza", self.stanza, *a)
+        if self.previous and len(a) >= 2 and a[0] == "backup" and not os.path.isdir(os.path.join(self.path, "stanza", self.stanza, "backup", a[1])):
+            for root in self.previous:                          # a set that lives in a previous location only
+                q = os.path.join(root, "stanza", self.stanza, "backup", a[1])
+                if os.path.isdir(q):
+                    return os.path.join(root, "stanza", self.stanza, *a)
+        return p
+
+    def location_of(self, set_id):
+        """The root that holds `set_id` (this repository or a previous location)."""
+        for root in [self.path] + self.previous:
+            if os.path.isdir(os.path.join(root, "stanza", self.stanza, "backup", set_id)):
+                return root
+        return None
 
     def hash(self, data):
         return self.crypto.chunk_id(data) if self.crypto else chunk_hash(data)
@@ -88,6 +104,14 @@ class Repo(object):
 
     def cas_path(self, h):
         return self.p("cas", h[0:2], h[2:4], h)
+
+    def find_chunk(self, h):
+        """Path of chunk `h` here or in a previous location (read paths), else None."""
+        for root in [self.path] + self.previous:
+            q = os.path.join(root, "cas", h[0:2], h[2:4], h)
+            if os.path.exists(q):
+                return q
+        return None
 
     # ------------------------------------------------------------------ lifecycle
     def init(self):
@@ -185,10 +209,15 @@ class Repo(object):
         return h, len(blob), False
 
     def get_chunk(self, h):
-        try:
-            with open(self.cas_path(h), "rb") as f:
-                blob = f.read()
-        except (IOError, OSError):
+        blob = None
+        for root in [self.path] + self.previous:
+            try:
+                with open(os.path.join(root, "cas", h[0:2], h[2:4], h), "rb") as f:
+                    blob = f.read()
+                break
+            except (IOError, OSError):
+                continue
+        if blob is None:
             raise EngineError("PGA-REPO-014", "chunk missing from repository: %s" % h, "run verify --deep; if the chunk is lost the sets referencing it are unrecoverable")
         try:
             data = decompress(self._unpack(blob, h))
@@ -201,8 +230,8 @@ class Repo(object):
         return data
 
     # ------------------------------------------------------------------ sets
-    def sets(self):
-        d = self.sp("backup")
+    def _sets_in(self, root):
+        d = os.path.join(root, "stanza", self.stanza, "backup")
         out = []
         if not os.path.isdir(d):
             return out
@@ -212,11 +241,32 @@ class Repo(object):
                 out.append(read_json(mj))
             except (IOError, OSError, ValueError):
                 continue
+        return out
+
+    def own_sets(self):
+        """Sets of THIS location only: what backups (parent choice, crash cleanup) and retention work on."""
+        out = self._sets_in(self.path)
+        out.sort(key=lambda m: m.get("start_time", ""))
+        return out
+
+    def sets(self):
+        """Every set, including those still in a previous location (marked `location`): what listings and restores see."""
+        out = self._sets_in(self.path)
+        seen = {m.get("id") for m in out}
+        for root in self.previous:
+            for m in self._sets_in(root):
+                if m.get("id") not in seen:                       # migrated already: the copy here wins
+                    m["location"] = root
+                    out.append(m)
+                    seen.add(m.get("id"))
         out.sort(key=lambda m: m.get("start_time", ""))
         return out
 
     def complete_sets(self):
         return [s for s in self.sets() if s.get("status") == "COMPLETE"]
+
+    def own_complete_sets(self):
+        return [s for s in self.own_sets() if s.get("status") == "COMPLETE"]
 
     def set_meta(self, set_id):
         try:

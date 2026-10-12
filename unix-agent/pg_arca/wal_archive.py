@@ -36,6 +36,14 @@ def _settings():
     return d or "/var/lib/pgarca/wal", comp or "zstd", c.get("compression_level", 3), c.get("wal_segment_size", 16 * 1024 * 1024)
 
 
+def _previous():
+    """Earlier WAL archive locations (destination changed, content not migrated yet): restore_command reads there too."""
+    if os.environ.get("PG_ARCA_WAL_PREVIOUS"):
+        return [x for x in os.environ["PG_ARCA_WAL_PREVIOUS"].split(os.pathsep) if x.startswith("/")]
+    v = _conf().get("wal_previous") or []
+    return [x for x in v if isinstance(x, str) and x.startswith("/")] if isinstance(v, list) else []
+
+
 LAST_ERROR = ".last_archive_error.json"
 
 
@@ -130,7 +138,7 @@ def main(argv):
         except Exception as e:
             sys.stderr.write("pg_arca %s FAILED: %s\n" % (argv[1], e))
             return 1 if argv[1] == "archive" else 126        # for restore_command 1 means "end of archive": a key error must ABORT recovery, not end it early
-    wm = WalManager(d, comp, lvl, seg, crypto=crypto)
+    wm = WalManager(d, comp, lvl, seg, crypto=crypto, previous=_previous() if argv[1] in ("get", "prefetch") else None)
     if argv[1] == "prefetch":                                # detached read-ahead worker: pg-arca-wal prefetch <spool> <segments ahead>
         from pg_arca import walprefetch
         walprefetch.run(wm, argv[2], argv[3])

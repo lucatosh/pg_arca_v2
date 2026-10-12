@@ -73,8 +73,8 @@ def verify(ctx, deep=False, progress=None, cancel=None):
         missing = bad = 0
         for rel, e in man["files"].items():
             for off, ln, h in e["chunks"]:
-                p = repo.cas_path(h)
-                if not os.path.exists(p):
+                p = repo.find_chunk(h)
+                if not p:
                     missing += 1
                     continue
                 if deep:
@@ -145,7 +145,7 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
     if keep_full < 1:
         raise EngineError("PGA-GEN-066", "retention_full must be >= 1")
     with repo.lock("stanza", "expire"):
-        sets = repo.sets()
+        sets = repo.own_sets()                                     # retention never touches a previous location (read-only until migrated or removed on purpose)
         done = [s for s in sets if s.get("status") == "COMPLETE"]
         fulls = [s for s in done if s["type"] == "full"]
         doomed_fulls = fulls[:max(0, len(fulls) - keep_full)]

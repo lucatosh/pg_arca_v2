@@ -299,7 +299,7 @@ def flush_current_wal(ctx, chain, target_time=None, target_lsn=None, target_xid=
         s.close()
     t0 = time.time()
     while time.time() - t0 < wait:
-        if name and ctx.wal.has_segment(name):
+        if name and ctx.wal.has_segment(name, anywhere=False):
             return {"segment": name, "archived": True, "seconds": round(time.time() - t0, 1)}
         _check_cancel(cancel)
         time.sleep(0.5)

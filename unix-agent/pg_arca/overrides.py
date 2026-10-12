@@ -23,8 +23,13 @@ SPEC = [
     ("scratch_dir", "wdir", "Cartella temporanea (ripristini di prova)"),
     ("patroni_url", "url", "URL REST di Patroni"),
 ]
-KINDS = {k: kind for k, kind, _ in SPEC}
-LABELS = {k: label for k, _, label in SPEC}
+# set by the console when a destination changes (not edited by hand, not listed in the settings screen): earlier locations, read only
+HIDDEN = [
+    ("repo_previous", "rdirs", "Posizioni precedenti del repository (sola lettura)"),
+    ("wal_previous", "rdirs", "Posizioni precedenti dell’archivio WAL (sola lettura)"),
+]
+KINDS = {k: kind for k, kind, _ in SPEC + HIDDEN}
+LABELS = {k: label for k, _, label in SPEC + HIDDEN}
 # never allowed as a target for anything the agent WRITES (repo / wal / scratch), whatever the console says
 _FORBIDDEN_WRITE = ("/", "/etc", "/proc", "/sys", "/dev", "/boot", "/bin", "/sbin", "/usr", "/lib", "/lib64", "/root", "/run", "/var", "/home", "/srv", "/opt", "/mnt", "/tmp")
 _FORBIDDEN_UNDER = ("/etc", "/proc", "/sys", "/dev", "/boot", "/bin", "/sbin", "/usr", "/lib", "/lib64", "/root")
@@ -83,6 +88,16 @@ def validate(key, value):
         if not _HOST.match(s):
             raise OverrideError("host non valido")
         return s
+    if kind == "rdirs":
+        vals = value if isinstance(value, list) else [x for x in str(value).split(",") if x.strip()]
+        if len(vals) > 8:
+            raise OverrideError("al massimo 8 posizioni precedenti")
+        out = []
+        for v in vals:
+            d = _abs_dir(str(v).strip())
+            if d not in out:
+                out.append(d)
+        return out
     p = _abs_dir(value)
     real = os.path.realpath(p)
     if kind == "pgdata":

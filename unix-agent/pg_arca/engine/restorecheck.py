@@ -31,7 +31,7 @@ def missing_chunks(repo, merged, limit=10):
     miss = []
     n = 0
     for h in hashes:
-        if not os.path.exists(repo.cas_path(h)):
+        if not (repo.find_chunk(h) if hasattr(repo, "find_chunk") else os.path.exists(repo.cas_path(h))):
             n += 1
             if len(miss) < limit:
                 miss.append(h[:16])

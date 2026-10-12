@@ -493,9 +493,11 @@ def preflight(ctx, major=None, eph=None, need_bytes=None, facts=None, with_plan=
     except EngineError as e:
         add("port", "bad", e.message, e.hint if hasattr(e, "hint") else None)
     # ---- repository + WAL archive readable from here (matters when the instance runs on another node than the backups)
-    for cid, label, p in (("repo", "backup repository", ctx.repo.path), ("wal", "WAL archive", ctx.wal_dir)):
+    for cid, label, p, prev in (("repo", "backup repository", ctx.repo.path, getattr(ctx.repo, "previous", [])), ("wal", "WAL archive", ctx.wal_dir, getattr(ctx.wal, "previous", []))):
         if p and os.path.isdir(p) and os.access(p, os.R_OK | os.X_OK):
             add(cid, "ok", "%s readable: %s" % (label, p))
+        elif prev and not os.path.exists(p) and all(os.path.isdir(x) and os.access(x, os.R_OK | os.X_OK) for x in prev):
+            add(cid, "ok", "%s readable: %s (new location %s not created yet)" % (label, ", ".join(prev), p))
         else:
             add(cid, "bad", "%s %s is not readable from this host" % (label, p), "for a central recovery host mount the repository and the archive (NFS/SMB) at the same paths, read access is enough")
     # ---- can it be installed?

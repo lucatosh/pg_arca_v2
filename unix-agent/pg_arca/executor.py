@@ -930,6 +930,19 @@ class OperationExecutor:
         ch = p.get("set")
         if not isinstance(ch, dict) or not ch:
             raise OpError("nothing to change")
+        ch = dict(ch)
+        # a new repository / WAL archive location: the old one stays READABLE (its backups and WAL keep the PITR history restorable) until its
+        # content is migrated (destination_migrate) or it is dropped on purpose. Coming back to an earlier location takes it off the list.
+        for key, prev_key in (("repo_path", "repo_previous"), ("wal_archive_dir", "wal_previous")):
+            if key not in ch or prev_key in ch:
+                continue
+            new, old = ch.get(key), self.config.get(key)
+            prev = [x for x in (self.config.get(prev_key) or []) if x]
+            if old and new and os.path.realpath(str(old)) != os.path.realpath(str(new)) and p.get("keep_previous", True) and os.path.isdir(str(old)):
+                prev.append(str(old))
+            prev = [x for i, x in enumerate(prev) if x not in prev[:i] and (not new or os.path.realpath(x) != os.path.realpath(str(new)))]
+            if prev != list(self.config.get(prev_key) or []):
+                ch[prev_key] = prev or None
         try:
             overrides.save(self.config, ch)
         except overrides.OverrideError as e:
@@ -943,6 +956,8 @@ class OperationExecutor:
         for k in ch:
             if k in fresh:
                 self.config[k] = fresh[k]
+            elif ch[k] is None:
+                self.config.pop(k, None)
         if self.runtime:
             self.runtime.refresh()
         return {"settings": overrides.describe(self.config, self.runtime), "applied": sorted(ch)}

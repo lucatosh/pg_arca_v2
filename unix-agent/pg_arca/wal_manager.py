@@ -90,9 +90,12 @@ def _sha256_file(path, bufsize=1 << 20):
 
 
 class WalManager:
-    def __init__(self, wal_dir="/var/lib/pgarca/wal", compression="zstd", level=3, segment_size=16 * 1024 * 1024, crypto=None):
+    def __init__(self, wal_dir="/var/lib/pgarca/wal", compression="zstd", level=3, segment_size=16 * 1024 * 1024, crypto=None, previous=None):
         self.crypto = crypto
         self.wal_dir = wal_dir
+        # earlier locations of this archive (the destination was changed): READ only - restores and chain checks find old segments there;
+        # archiving, duplicate detection and retention work on wal_dir alone
+        self.previous = [d for d in (previous or []) if d and os.path.realpath(d) != os.path.realpath(wal_dir)]
         self.compression = compression
         self.level = int(level)
         self.segment_size = segment_size
@@ -143,23 +146,26 @@ class WalManager:
             raise WalArchiveError("PGA-WAL-041", "unknown codec %s" % codec)
 
     # ------------------------------------------------------------------ lookup
-    def _find(self, name):
-        """Returns (path, codec) of the stored object for `name` or (None, None)."""
-        for codec in ("", ".zst", ".lz4", ".gz"):
-            p = os.path.join(self.wal_dir, name + codec)
-            try:
-                st = os.stat(p)
-            except OSError as e:
-                if e.errno in (errno.ENOENT, errno.ENOTDIR):
-                    continue
-                raise                                     # EACCES / EIO / ESTALE are errors, not "segment missing"
-            if stat_mod.S_ISREG(st.st_mode):
-                return p, codec.lstrip(".")
+    def _find(self, name, anywhere=False):
+        """Returns (path, codec) of the stored object for `name` or (None, None). anywhere=True also looks in the previous locations (read paths)."""
+        for i, d in enumerate([self.wal_dir] + (self.previous if anywhere else [])):
+            for codec in ("", ".zst", ".lz4", ".gz"):
+                p = os.path.join(d, name + codec)
+                try:
+                    st = os.stat(p)
+                except OSError as e:
+                    if e.errno in (errno.ENOENT, errno.ENOTDIR):
+                        continue
+                    if i > 0:
+                        break                             # an old location that is gone or unreadable: never an error for the current archive
+                    raise                                 # EACCES / EIO / ESTALE are errors, not "segment missing"
+                if stat_mod.S_ISREG(st.st_mode):
+                    return p, codec.lstrip(".")
         return None, None
 
-    def _read_meta(self, name):
+    def _read_meta(self, name, directory=None):
         try:
-            with open(os.path.join(self.wal_dir, name + ".meta"), "r", encoding="utf-8") as f:
+            with open(os.path.join(directory or self.wal_dir, name + ".meta"), "r", encoding="utf-8") as f:
                 return json.load(f)
         except (IOError, OSError, ValueError):
             return None
@@ -275,14 +281,14 @@ class WalManager:
     def retrieve_segment(self, name, dest_path, verify=True):
         """restore_command %f %p. Returns (exit_code, message). 0=ok, 1=not found, 126=corrupt (abort recovery).
         verify=False (read-only analysis such as pg_waldump scans): no sha256 check and no fsync, which are what a recovery needs and an analysis does not."""
-        path, codec = self._find(name)
+        path, codec = self._find(name, anywhere=True)
         if not path:
             return EXIT_NOT_FOUND, "not in archive"
         d = os.path.dirname(os.path.abspath(dest_path)) or "."
         os.makedirs(d, exist_ok=True)
         tmp = "%s.arca.%d" % (dest_path, os.getpid())
         try:
-            meta = self._read_meta(name)
+            meta = self._read_meta(name, os.path.dirname(path))
             src = path
             if meta and meta.get("enc"):
                 if not self.crypto:
@@ -321,8 +327,8 @@ class WalManager:
                     pass
 
     # ------------------------------------------------------------------ inventory (used by the backup engine)
-    def has_segment(self, name):
-        return self._find(name)[0] is not None
+    def has_segment(self, name, anywhere=True):
+        return self._find(name, anywhere)[0] is not None
 
     def list_segments(self):
         """Sorted list of archived WAL segment base names (no .history/.backup/.partial/.meta)."""
@@ -340,10 +346,13 @@ class WalManager:
         return sorted(out)
 
     def list_histories(self):
-        try:
-            return sorted(n for n in os.listdir(self.wal_dir) if n.endswith(".history"))
-        except OSError:
-            return []
+        out = set()
+        for d in [self.wal_dir] + self.previous:
+            try:
+                out |= set(n for n in os.listdir(d) if n.endswith(".history"))
+            except OSError:
+                continue
+        return sorted(out)
 
     def remove_segment(self, name):
         """Expire one segment (retention only). Meta goes LAST so a crash never leaves an untracked-but-valid object."""

@@ -222,7 +222,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
 
         # ---- crashed earlier runs (we hold the lock, so nobody is really running)
         suspect = None
-        for s in repo.sets():
+        for s in repo.own_sets():
             if s.get("status") in ("RUNNING", "PENDING"):
                 s["status"] = "FAILED"
                 s["reason"] = "interrupted (agent or host died before commit)"
@@ -233,7 +233,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         # ---- type & parent
         parent, prev_lsn = None, 0
         if btype in ("incr", "diff"):
-            done = repo.complete_sets()
+            done = repo.own_complete_sets()                 # a new location starts its own chain: never an incremental on top of a set left behind
             cand = None
             if btype == "diff":
                 fulls = [s for s in done if s["type"] == "full"]
@@ -431,7 +431,7 @@ def _wait_for_wal(ctx, sess, tli, start_lsn, stop_lsn, seg_size, in_recovery, ti
     t0 = time.time()
     missing = need
     while True:
-        missing = [n for n in need if not ctx.wal.has_segment(n)]
+        missing = [n for n in need if not ctx.wal.has_segment(n, anywhere=False)]
         if not missing:
             return True, []
         if time.time() - t0 > timeout:

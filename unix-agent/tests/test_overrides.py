@@ -85,6 +85,30 @@ class ExecutorHandlers(unittest.TestCase):
         finally:
             del os.environ["PG_ARCA_CONF_FILE"]
 
+    def test_changing_the_destination_keeps_the_old_location_readable(self):
+        from pg_arca.executor import OperationExecutor as Executor
+        t = tempfile.mkdtemp(); conf = os.path.join(t, "agent.conf")
+        old_r, old_w = os.path.join(t, "repoA"), os.path.join(t, "walA")
+        for d in (old_r, old_w):
+            os.makedirs(d)
+        json.dump({"web_server_url": "http://x", "state_dir": os.path.join(t, "st"), "repo_path": old_r, "wal_archive_dir": old_w}, open(conf, "w"))
+        os.environ["PG_ARCA_CONF_FILE"] = conf
+        try:
+            cfg = load_config(conf); ex = Executor(cfg, None, None)
+            ex.h_cfg_set({"set": {"repo_path": os.path.join(t, "repoB"), "wal_archive_dir": os.path.join(t, "walB")}})
+            self.assertEqual((cfg["repo_previous"], cfg["wal_previous"]), ([old_r], [old_w]))
+            os.makedirs(os.path.join(t, "repoB"))                          # backups were written there
+            ex.h_cfg_set({"set": {"repo_path": os.path.join(t, "repoC")}})
+            os.makedirs(os.path.join(t, "repoC"))
+            self.assertEqual(cfg["repo_previous"], [old_r, os.path.join(t, "repoB")])
+            ex.h_cfg_set({"set": {"repo_path": old_r}})                     # back to the first one: no longer "previous", the others stay readable
+            self.assertEqual(cfg["repo_previous"], [os.path.join(t, "repoB"), os.path.join(t, "repoC")])
+            self.assertNotIn("repo_previous", {s["key"] for s in ex.h_cfg_get({})["settings"]}, "managed by the console, not shown as a hand-editable setting")
+            ex.h_cfg_set({"set": {"repo_previous": None}})
+            self.assertNotIn("repo_previous", cfg)
+        finally:
+            del os.environ["PG_ARCA_CONF_FILE"]
+
 
 class ExecutorFollowsRuntime(unittest.TestCase):
     def test_db_and_patroni_follow_refresh(self):

@@ -155,6 +155,19 @@ class Runtime(object):
         d["tool_problems"] = [{"severity": sv, "code": c, "text": t} for sv, c, t in check_tools(prof, bindir)] if bindir else []
         return d
 
+    def _previous_locations(self):
+        """Earlier repository / WAL archive locations still read by restores (destination changed, not migrated yet), with whether they are reachable."""
+        out = {}
+        for key, name in (("repo_previous", "repo_previous"), ("wal_previous", "wal_previous")):
+            v = [x for x in (self.config.get(key) or []) if x]
+            if v:
+                out[name] = [{"path": x, "readable": os.path.isdir(x) and os.access(x, os.R_OK | os.X_OK)} for x in v]
+        if self.config.get("repo_path"):
+            out["repo_path"] = self.config.get("repo_path")
+        if self.config.get("wal_archive_dir"):
+            out["wal_path"] = self.config.get("wal_archive_dir")
+        return out
+
     def build_snapshot(self, wal, cas):
         if self.worker:
             return {"node_name": self.config["node_name"], "agent_version": AGENT_VERSION, "node_kind": "worker", "worker": self.inventory.get(),
@@ -197,7 +210,7 @@ class Runtime(object):
             "system": self.system_metrics({"pgdata": inst.get("data_directory"), "repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir"),
                                            "scratch": self.config.get("scratch_dir")}),
             "toolchain": self.report.get("toolchain"),
-            "storage": {"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))},
+            "storage": dict({"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))}, **self._previous_locations()),
             "cluster_key": inst.get("cluster_key") or (("patroni:%s" % self.patroni_info["scope"]) if (self.patroni_info or {}).get("scope") else None),
         }
 
