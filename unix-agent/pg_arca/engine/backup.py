@@ -265,7 +265,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         set_id = now_utc().strftime("%Y%m%d-%H%M%S") + TYPE_LETTER[btype]
         if parent:
             set_id = parent["id"].split("_")[0] + "_" + set_id
-        sdir = repo.sp("backup", set_id)
+        sdir = repo.own_path("backup", set_id)
         if os.path.exists(sdir):
             raise EngineError("PGA-REPO-040", "backup set %s already exists" % set_id)
         os.makedirs(sdir, mode=0o750)

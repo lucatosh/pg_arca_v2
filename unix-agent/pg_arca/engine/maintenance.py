@@ -172,7 +172,7 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
                 m["status"] = "EXPIRING"
                 repo.write_meta(m)
         for sid in doomed_ids:
-            shutil.rmtree(repo.sp("backup", sid), ignore_errors=True)
+            shutil.rmtree(repo.own_path("backup", sid), ignore_errors=True)        # only this location: a previous one is never touched by retention
         freed, removed = _gc_cas(repo)
         walrm = 0
         if oldest_lsn is not None:

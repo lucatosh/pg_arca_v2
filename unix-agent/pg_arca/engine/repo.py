@@ -236,6 +236,8 @@ class Repo(object):
         if not os.path.isdir(d):
             return out
         for s in sorted(os.listdir(d)):
+            if s.startswith("."):
+                continue                                        # work directories (an interrupted migration's .mig-<id>) are never sets
             mj = os.path.join(d, s, "meta.json")
             try:
                 out.append(read_json(mj))
@@ -275,7 +277,11 @@ class Repo(object):
             return None
 
     def write_meta(self, meta):
-        write_json(self.sp("backup", meta["id"], "meta.json"), meta)
+        write_json(self.own_path("backup", meta["id"], "meta.json"), meta)      # never into a previous location
+
+    def own_path(self, *a):
+        """A path in THIS location only (writes, deletions): never resolved to a previous location."""
+        return os.path.join(self.path, "stanza", self.stanza, *a)
 
     def load_manifest(self, s):
         return self.read_zjson(self.sp("backup", s["id"], "manifest.json.z"), s["id"] + "/manifest")

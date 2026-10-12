@@ -59,5 +59,32 @@ class CopyPreload(unittest.TestCase):
         self.assertEqual(restore._conf_preload(d), "pg_cron, pg_stat_statements")
 
 
+class PreviousLocations(unittest.TestCase):
+    """A migration interrupted while copying a set leaves .mig-<id> in the new location: it must never look like a set (expire would then delete the
+    REAL set through the path resolved to the previous location)."""
+    def test_work_dirs_are_not_sets_and_retention_stays_home(self):
+        import json, tempfile, os
+        from pg_arca.engine.repo import Repo
+        from pg_arca.engine.ctx import Ctx
+        from pg_arca.engine import maintenance
+        old, new = tempfile.mkdtemp(), tempfile.mkdtemp()
+        meta = {"id": "20261012-100000F", "type": "full", "status": "COMPLETE", "start_time": "2026-10-12T10:00:00Z", "start_lsn": "0/2000028", "timeline": 1}
+        for root, name in ((old, meta["id"]), (new, ".mig-" + meta["id"])):
+            d = os.path.join(root, "stanza", "main", "backup", name)
+            os.makedirs(d)
+            json.dump(meta, open(os.path.join(d, "meta.json"), "w"))
+        os.makedirs(os.path.join(new, "cas")); os.makedirs(os.path.join(new, "stanza", "main", "locks"), exist_ok=True)
+        newer = dict(meta, id="20261012-120000F", start_time="2026-10-12T12:00:00Z", start_lsn="0/5000028")      # a full made in the new location since
+        d = os.path.join(new, "stanza", "main", "backup", newer["id"]); os.makedirs(d); json.dump(newer, open(os.path.join(d, "meta.json"), "w"))
+        r = Repo(new, "main", previous=[old])
+        self.assertEqual([m["id"] for m in r.own_sets()], [newer["id"]])
+        self.assertEqual([(m["id"], m.get("location")) for m in r.sets()], [(meta["id"], os.path.realpath(old)), (newer["id"], None)])
+        self.assertEqual(r.own_path("backup", "x"), os.path.join(os.path.realpath(new), "stanza", "main", "backup", "x"))
+        wal = tempfile.mkdtemp()
+        ctx = Ctx(None, "", new, "main", wal, tempfile.mkdtemp(), retention_full=1, repo_previous=[old])
+        maintenance.expire(ctx, retention_full=1)
+        self.assertTrue(os.path.exists(os.path.join(old, "stanza", "main", "backup", meta["id"], "meta.json")), "the previous location is untouched")
+
+
 if __name__ == "__main__":
     unittest.main()
