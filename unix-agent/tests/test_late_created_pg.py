@@ -35,7 +35,9 @@ def setUpModule():
     time.sleep(1.2)
     S["before_new"] = now_txt()                                      # after the backup, before the new database exists
     time.sleep(1.2)
-    q("postgres", "CREATE DATABASE new_db ENCODING 'UTF8' TEMPLATE template0")
+    major = int(q("postgres", "SHOW server_version_num")[0][0]) // 10000
+    # FILE_COPY: how CREATE DATABASE always worked up to 14 (the replay copies the template's files) - the hard case for a sparse recovery
+    q("postgres", "CREATE DATABASE new_db ENCODING 'UTF8' TEMPLATE template0%s" % (" STRATEGY FILE_COPY" if major >= 15 else ""))
     q("new_db", "CREATE TABLE fresh (id int PRIMARY KEY, note text); INSERT INTO fresh SELECT g, 'n' || g FROM generate_series(1, 3000) g")
     q("old_db", "CREATE TABLE t_new (id int PRIMARY KEY, v text); INSERT INTO t_new SELECT g, 'x' || g FROM generate_series(1, 777) g")
     time.sleep(1.2)

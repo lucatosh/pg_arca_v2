@@ -483,7 +483,16 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
     """_recover() for a recovery whose purpose is to read database `entry`: if that database was dropped right after the target, it is already damaged in the recovered
     instance (see find_drop_database_lsn). We then stop BEFORE the DROP DATABASE transaction (exclusive LSN) and say so (`stopped_before_drop`)."""
     if entry.get("oid") is None:                          # created after the base backup: only the WAL knows it
-        eph, info = _recover(ctx, chain, set(), tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+        # CREATE DATABASE with the FILE_COPY strategy (the only one up to PostgreSQL 14, optional later) is replayed by COPYING the template's files:
+        # template1 is always extracted, template0 must be too (CREATE DATABASE ... TEMPLATE template0 is common for a specific encoding/locale)
+        keep = set()
+        try:
+            t0 = ctx.repo.load_catalog(chain[-1])["databases"].get("template0")
+            if t0 and t0.get("oid"):
+                keep.add(int(t0["oid"]))
+        except EngineError:
+            pass
+        eph, info = _recover(ctx, chain, keep, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
         s = PgSession(eph.conn("postgres"), read_only=True)
         try:
             row = s.query("SELECT oid::int, pg_encoding_to_char(encoding), datcollate, datctype FROM pg_database WHERE datname = %s" % sql_lit(entry["name"]))
