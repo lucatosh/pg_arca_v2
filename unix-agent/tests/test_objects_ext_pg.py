@@ -62,6 +62,11 @@ CREATE TABLE app.prod_snap (at timestamptz DEFAULT now(), item app.prod);
 CREATE TABLE app.stock (sku int PRIMARY KEY, qty int);
 INSERT INTO app.stock SELECT g, g * 2 FROM generate_series(1, 25) g;
 CREATE UNLOGGED TABLE app.sessions (id int PRIMARY KEY, token text);
+CREATE TABLE app.warehouse (id int PRIMARY KEY, name text);
+INSERT INTO app.warehouse SELECT g, 'w' || g FROM generate_series(1, 5) g;
+CREATE TABLE app.moves (id serial PRIMARY KEY, wh int, qty int);
+CREATE FUNCTION app.check_wh() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NOT EXISTS (SELECT 1 FROM app.warehouse WHERE id = NEW.wh) THEN RAISE EXCEPTION 'no warehouse %', NEW.wh; END IF; RETURN NULL; END $$;
+CREATE CONSTRAINT TRIGGER moves_wh AFTER INSERT OR UPDATE ON app.moves FROM app.warehouse DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app.check_wh();
 INSERT INTO app.sessions SELECT g, md5(g::text) FROM generate_series(1, 50) g;
 """
 S = {}
@@ -241,6 +246,16 @@ class Ext(unittest.TestCase):
         r = promote_object(F.ctx, "pgarca_stage_unl2", DB, mode="missing_only", drop_stage=True)
         self.assertEqual(q(DB, "SELECT relpersistence FROM pg_class WHERE oid = 'app.sessions'::regclass")[0][0], "u", "comes back as UNLOGGED (structure), empty")
         self.assertTrue(any("UNLOGGED" in w for w in (r.get("plan") or {}).get("warnings", [])), r)
+
+    def test_14_constraint_trigger_of_another_table_follows_the_restored_table(self):
+        q(DB, "DELETE FROM app.warehouse WHERE id > 3")
+        self.switch()
+        self.go(["%s.app.warehouse" % DB])
+        self.assertEqual(q(DB, "SELECT tgconstrrelid::regclass::text FROM pg_trigger WHERE tgname = 'moves_wh'")[0][0], "app.warehouse", "FROM points at the restored table")
+        old = q(DB, "SELECT relname FROM pg_class WHERE relname LIKE 'warehouse_old_%' AND relkind = 'r'")[0][0]
+        q(DB, "DROP TABLE app.%s" % old)                                           # the old copy can be dropped without CASCADE
+        self.assertEqual(q(DB, "SELECT count(*) FROM pg_trigger WHERE tgname = 'moves_wh'")[0][0], "1")
+        q(DB, "INSERT INTO app.moves (wh, qty) VALUES (5, 1)")
 
 
 if __name__ == "__main__":

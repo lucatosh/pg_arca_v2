@@ -795,10 +795,11 @@ def _slim(plan):
     out["statistics"] = [{k: x.get(k) for k in ("schema", "name", "table_schema", "table")} for x in plan.get("statistics") or []]
     out["rebind"] = (["pubblicazione %s" % x["pub"] for x in plan.get("publications") or []] + ["regola %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_rules") or []]
                      + ["policy %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_policies") or []]
+                     + ["trigger %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_triggers") or []]
                      + ["default di %s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []]
                      + ["partizione %s.%s → %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan.get("attach") or []]
                      + ["funzione %s" % f["sig"] for f in (plan.get("rowtype_funcs") or []) + (plan.get("body_funcs") or []) if f.get("def")])
-    for k in ("publications", "foreign_rules", "foreign_policies", "foreign_defaults", "rowtype_funcs", "body_funcs"):
+    for k in ("publications", "foreign_rules", "foreign_policies", "foreign_defaults", "rowtype_funcs", "body_funcs", "foreign_triggers"):
         out.pop(k, None)
     out.pop("old_outbound_fks", None)
     return out
@@ -883,6 +884,11 @@ WHERE pr.prrelid = ANY(%s)""" % ("pg_get_expr(pr.prqual, pr.prrelid)" if has15 e
 SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('schema', n.nspname, 'table', c.relname, 'name', r.rulename, 'def', pg_get_ruledef(r.oid))), '[]'::jsonb)::text
 FROM pg_depend d JOIN pg_rewrite r ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid JOIN pg_class c ON c.oid = r.ev_class JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE d.refclassid = 'pg_class'::regclass AND d.refobjid = ANY(%s) AND NOT (r.ev_class = ANY(%s)) AND c.relkind IN ('r', 'p') AND r.rulename <> '_RETURN'""" % (arr(swap_oids), arr(swap_oids))) or []
+        # constraint triggers of OTHER tables declared FROM a replaced table (CREATE CONSTRAINT TRIGGER ... FROM t): tgconstrrelid is the table's identity
+        plan["foreign_triggers"] = _jq(live, """
+SELECT COALESCE(jsonb_agg(jsonb_build_object('schema', n.nspname, 'table', c.relname, 'name', t.tgname, 'def', pg_get_triggerdef(t.oid), 'enabled', t.tgenabled::text)), '[]'::jsonb)::text
+FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE NOT t.tgisinternal AND t.tgconstrrelid = ANY(%s) AND NOT (t.tgrelid = ANY(%s))""" % (arr(swap_oids), arr(swap_oids))) or []
         plan["foreign_policies"] = _jq(live, """
 SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('schema', n.nspname, 'table', c.relname, 'name', p.polname, 'cmd', p.polcmd::text, 'permissive', p.polpermissive,
        'roles', (SELECT jsonb_agg(CASE WHEN x = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x) END) FROM unnest(p.polroles) x),
@@ -935,6 +941,7 @@ WHERE a.attnum > 0 AND NOT a.attisdropped AND a.atttypid IN %s AND c.relkind IN 
             pass
     else:
         plan["old_outbound_fks"], plan["live_views"], plan["publications"], plan["foreign_rules"], plan["foreign_policies"], plan["foreign_defaults"] = [], [], [], [], [], []
+        plan["foreign_triggers"] = []
         plan["rowtype_funcs"], plan["body_funcs"] = [], []
     have = {(f["schema"], f["table"], f["name"]) for f in plan["inbound_fks"]}
     # foreign keys that belonged to the recovered tables / pointed at the recreated ones (only where the other side exists now)
@@ -1278,6 +1285,8 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                 live.query("DROP RULE %s ON %s" % (quote_ident(x["name"]), qi(x["schema"], x["table"])))
             for x in plan.get("foreign_policies") or []:
                 live.query("DROP POLICY %s ON %s" % (quote_ident(x["name"]), qi(x["schema"], x["table"])))
+            for x in plan.get("foreign_triggers") or []:
+                live.query("DROP TRIGGER %s ON %s" % (quote_ident(x["name"]), qi(x["schema"], x["table"])))
             for a in plan["attach"]:                          # the live table leaves its parent first (it is kept, standalone, as <name>_old_<ts>)
                 if a.get("detach_old"):
                     if a["part"]:
@@ -1357,6 +1366,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                 live.query("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s" % (qi(x["schema"], x["table"]), quote_ident(x["column"]), x["expr"]))
             for x in plan.get("foreign_rules") or []:       # same text, now resolved against the recovered table
                 live.query(x["def"].rstrip().rstrip(";"))
+            for x in plan.get("foreign_triggers") or []:
+                live.query(x["def"])
+                if x.get("enabled") in ("D", "R", "A"):
+                    live.query("ALTER TABLE %s %s TRIGGER %s" % (qi(x["schema"], x["table"]), {"D": "DISABLE", "R": "ENABLE REPLICA", "A": "ENABLE ALWAYS"}[x["enabled"]], quote_ident(x["name"])))
             for x in plan.get("foreign_policies") or []:
                 cmd = {"r": "SELECT", "a": "INSERT", "w": "UPDATE", "d": "DELETE"}.get(x["cmd"], "ALL")
                 roles = ", ".join("PUBLIC" if r == "PUBLIC" else quote_ident(r) for r in (x.get("roles") or ["PUBLIC"]))
@@ -1464,7 +1477,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                       foreign_keys_reattached=len(validate_later) - len(invalid), foreign_keys_unvalidated=len(invalid),
                       attached=["%s.%s -> %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan["attach"]],
                       publications_moved=["%s: %s.%s" % (pb["pub"], pb["schema"], pb["table"]) for pb in plan.get("publications") or []],
-                      rules_and_policies_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["name"]) for x in (plan.get("foreign_rules") or []) + (plan.get("foreign_policies") or [])],
+                      rules_and_policies_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["name"]) for x in (plan.get("foreign_rules") or []) + (plan.get("foreign_policies") or []) + (plan.get("foreign_triggers") or [])],
                       defaults_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []],
                       functions_rebound=plan.get("rowtype_funcs_rebound") or [],
                       views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]),
