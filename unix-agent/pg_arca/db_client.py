@@ -214,7 +214,7 @@ class PostgresClient:
             "SELECT COALESCE(json_agg(json_build_object('schema', n.nspname, 'table', c.relname, 'kind', c.relkind::text, "
             "'relfilenode', pg_relation_filenode(c.oid)::text, 'size_bytes', pg_total_relation_size(c.oid), "
             "'rows_estimate', c.reltuples::bigint)), '[]'::json) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE c.relkind IN ('r','p','m') AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast');", dbname=dbname)
+            "WHERE c.relkind IN ('r','p','m','v') AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast');", dbname=dbname)
         if s is None:
             raise RuntimeError(err or "query failed")
         return s

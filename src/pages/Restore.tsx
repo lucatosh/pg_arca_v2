@@ -229,7 +229,7 @@ function ObjectPicker({ r, busy, search, setSearch, db, value, onChange, mode, l
     for (const o of live?.objects || []) {
       if (ql && !`${o.schema}.${o.table}`.toLowerCase().includes(ql)) continue;
       let sc = cat.find(x => x.name === o.schema);
-      if (sc?.objects.some((x: any) => x.name === o.table)) continue;
+      if (sc?.objects.some((x: any) => x.name === o.table || (x.parts || []).some((p: any) => p.name === o.table))) continue;   // a partition is listed under its table
       if (!sc) { sc = { name: o.schema, objects: [], late: true }; cat.push(sc); }
       sc.objects.push({ name: o.table, late: true });
     }
@@ -250,7 +250,13 @@ function ObjectPicker({ r, busy, search, setSearch, db, value, onChange, mode, l
         return <div key={s.name}><label className={`sch ${sg ? 'gone' : ''}`}><input type="checkbox" checked={whole} onChange={() => toggleSchema(s.name, ids)} /> <strong>{s.name}</strong>{s.tables != null ? <span className="faint small"> — {s.tables} {s.tables === 1 ? 'tabella' : 'tabelle'}, {bytes(s.bytes)}{whole && mode === 'table' ? ' · schema intero' : ''}</span> : null}
           {sg ? <Gone info={schemaDrop(sid, ids)} busy={dropsBusy} lastLabel="eliminato" /> : live ? <span className="here small">Presente</span> : null}</label>
           {mode === 'table' ? s.objects.map((o: any) => { const id = qid(db, s.name, o.name); const on = whole || has(id); const g = tableGone(id);
-            return <button key={id} aria-pressed={on} disabled={whole} onClick={() => toggleTable(id)} className={g ? 'gone' : ''}><input type="checkbox" readOnly checked={on} tabIndex={-1} /><span className="grow">{o.name}{o.late ? <span className="here small" title="Non è in nessun backup: si ricostruisce dai WAL archiviati" style={{ marginLeft: 8 }}>dopo l’ultimo backup</span> : null}</span>{g && !sg ? <Gone info={drops[id]} busy={dropsBusy} lastLabel="eliminata" /> : null}<span className="faint small">{o.partitions ? `${o.partitions} partizioni · ` : ''}{bytes(o.size)}</span></button>; }) : null}</div>; })}
+            const kindTag = o.kind === 'v' ? 'vista' : o.kind === 'm' ? 'vista materializzata' : null;
+            return <React.Fragment key={id}><button aria-pressed={on} disabled={whole} onClick={() => toggleTable(id)} className={g ? 'gone' : ''}><input type="checkbox" readOnly checked={on} tabIndex={-1} /><span className="grow">{o.name}{kindTag ? <span className="faint small" style={{ marginLeft: 8 }}>{kindTag}</span> : null}{o.late ? <span className="here small" title="Non è in nessun backup: si ricostruisce dai WAL archiviati" style={{ marginLeft: 8 }}>dopo l’ultimo backup</span> : null}</span>{g && !sg ? <Gone info={drops[id]} busy={dropsBusy} lastLabel="eliminata" /> : null}<span className="faint small">{o.partitions ? `${o.partitions} partizioni · ` : ''}{o.kind === 'v' ? '' : bytes(o.size)}</span></button>
+              {o.parts?.length ? <details className="parts" style={{ marginLeft: 28 }}><summary className="small" style={{ cursor: 'pointer' }}>Solo alcune partizioni ({o.parts.length})</summary>
+                <p className="small muted" style={{ margin: '4px 0' }}>Una partizione ripristinata da sola viene riattaccata alla tabella attuale con gli stessi limiti; quella di oggi resta, staccata, con il suffisso _old.</p>
+                {o.parts.map((pt: any) => { const pid = qid(db, s.name, pt.name); const pon = whole || on || has(pid);
+                  return <button key={pid} aria-pressed={pon} disabled={whole || on} onClick={() => toggleTable(pid)} style={{ paddingLeft: 8 + 16 * (pt.depth || 0) }}><input type="checkbox" readOnly checked={pon} tabIndex={-1} /><span className="grow">{pt.name}{pt.kind === 'p' ? <span className="faint small" style={{ marginLeft: 8 }}>con sottopartizioni</span> : null}</span>{tableGone(pid) && !g ? <Gone info={drops[pid]} busy={dropsBusy} lastLabel="eliminata" /> : null}</button>; })}
+              </details> : null}</React.Fragment>; }) : null}</div>; })}
       {r?.status === 'succeeded' && !schemas.length ? <div style={{ padding: 12 }} className="muted">Nessuna corrispondenza.</div> : null}
       {r?.status === 'failed' ? <div style={{ padding: 12 }} className="muted">{r.error}</div> : null}{!r && err ? <div style={{ padding: 12, color: 'var(--bad)' }}>{err}</div> : null}</div>
     {r?.result?.truncated ? <p className="small muted">Elenco troncato: affina la ricerca.</p> : null}

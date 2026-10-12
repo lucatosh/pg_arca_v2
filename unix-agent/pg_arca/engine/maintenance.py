@@ -389,11 +389,35 @@ def catalog_browse(ctx, set_spec=None, database=None, search="", limit=2000):
         raise EngineError("PGA-GEN-031", "database '%s' is not in backup %s" % (database, s["id"]))
     q = (search or "").lower()
     objs, approx = user_objects(d)
-    rels = [o for o in objs if not q or q in o["name"].lower() or q in o["schema"].lower()]
+    allrels = d.get("relations", [])
+    by_oid = dict((r["oid"], r) for r in allrels)
+    kids = {}
+    for r in allrels:
+        if r.get("parent") and r["kind"] in ("r", "p"):
+            kids.setdefault(r["parent"], []).append(r)
+    sizes = {}
+    for o in objs:
+        sizes[o["oid"]] = o["size"]
+
+    def parts_of(oid, depth=0):
+        """Partitions (any depth) of a partitioned table: each can be restored alone (it is attached again to the live parent)."""
+        out = []
+        for k in sorted(kids.get(oid, ()), key=lambda x: x["name"]):
+            out.append({"name": k["name"], "kind": k["kind"], "depth": depth, "parent": by_oid.get(oid, {}).get("name")})
+            if depth < 6:
+                out += parts_of(k["oid"], depth + 1)
+        return out
+    views = [{"schema": r["schema"], "name": r["name"], "kind": "v", "size": 0, "partitions": 0, "oid": r["oid"]}
+             for r in allrels if r["kind"] == "v" and r["schema"] not in SYSTEM_SCHEMAS]
+    rels = [o for o in objs + views if not q or q in o["name"].lower() or q in o["schema"].lower()
+            or (o["partitions"] and any(q in x["name"].lower() for x in parts_of(o["oid"])))]
     rels.sort(key=lambda r: -r["size"])
     schemas = {}
     for r in rels[:limit]:
-        schemas.setdefault(r["schema"], []).append({"name": r["name"], "kind": r["kind"], "size": r["size"], "partitions": r["partitions"]})
+        e = {"name": r["name"], "kind": r["kind"], "size": r["size"], "partitions": r["partitions"]}
+        if r["partitions"]:
+            e["parts"] = parts_of(r["oid"])[:500]
+        schemas.setdefault(r["schema"], []).append(e)
     return {"set": s["id"], "database": database, "oid": d["oid"], "approx": approx,
-            "schemas": [{"name": k, "objects": v, "tables": len(v), "bytes": sum(o["size"] for o in v)} for k, v in sorted(schemas.items())],
+            "schemas": [{"name": k, "objects": v, "tables": len([o for o in v if o["kind"] in ("r", "p")]), "bytes": sum(o["size"] for o in v)} for k, v in sorted(schemas.items())],
             "total_objects": len(rels), "truncated": len(rels) > limit}

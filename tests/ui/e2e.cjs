@@ -57,6 +57,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   // restore one table, then promote it back
   await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Una o più tabelle")');
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
+  await p.click('.tree summary:has-text("Solo alcune partizioni")'); await p.waitForSelector('.tree button:has-text("orders_2026")'); await p.waitForSelector('.tree :text("vista")'); await shot('12e-partitions');
   await p.click('.tree button:has-text("orders")'); await p.click('button:has-text("Avanti")'); await p.waitForSelector('[role=slider]'); await p.click('button:has-text("Avanti")');
   await p.waitForSelector('text=Quarantena'); await p.click('button:has-text("Controlla piano")'); await p.waitForSelector('text=Ripristino possibile', { timeout: 10000 });
   await p.click('button:has-text("Avvia ripristino")'); await p.click('.modal button:has-text("Avvia")');
