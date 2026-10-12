@@ -694,9 +694,14 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
         safe = ["archive_mode = 'off'", "synchronous_standby_names = ''"]
         if not prof.recovery_conf_file:                     # >= 12: these are server settings (before, they lived in recovery.conf, which we write ourselves)
             safe += ["primary_conninfo = ''", "primary_slot_name = ''"]
+        if prof.num >= 100000:
+            # logical replication SUBSCRIPTIONS of the copy would connect to the real publisher and consume the real subscriber's slot: that
+            # subscriber then silently misses those changes. The copy starts with no apply worker (subscriptions stay defined, nothing runs)
+            safe.append("max_logical_replication_workers = 0")
         with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
             f.write("\n# ==== pg_arca: restored COPY (%s) - safe to start next to production: it does not archive into production's WAL archive, waits for no\n"
-                    "# synchronous standby and follows no primary. Remove these lines only if this copy REPLACES the original server. ====\n%s\n" % (iso(), "\n".join(safe)))
+                    "# synchronous standby, follows no primary and runs no logical replication subscription. Remove these lines only if this copy REPLACES\n"
+                    "# the original server. ====\n%s\n" % (iso(), "\n".join(safe)))
         plan["copy_safety"] = safe
     prof.install_recovery(dest, recovery_lines(ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm,
                                                "promote" if action == "promote" else "pause", inclusive, timeline))       # recovery.signal + auto.conf (>=12) or recovery.conf (<12)

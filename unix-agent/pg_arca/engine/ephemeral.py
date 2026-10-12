@@ -117,6 +117,10 @@ def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=Fal
               "restore_command": "'%s'" % restore_cmd.replace("'", "''"), "wal_level": "replica", "shared_buffers": shared_buffers,
               "huge_pages": "off", "log_min_messages": "warning", "hba_file": "'%s'" % os.path.join(scratch, "pg_hba.conf"),
               "ident_file": "'%s'" % os.path.join(scratch, "pg_ident.conf"), "max_wal_senders": "0"}
+    if profile is None or profile.num >= 100000:
+        # a recovery that ends (no target) promotes the instance: subscriptions in its catalog would start applying from the REAL publisher and
+        # advance the real subscriber's slot. No apply worker ever runs in an ephemeral instance
+        forced["max_logical_replication_workers"] = "0"
     if profile is not None and profile.recovery_conf_file:
         forced.pop("restore_command")                  # before 12 restore_command is a recovery.conf setting: as a GUC it would stop the server from starting
     if sparse:
