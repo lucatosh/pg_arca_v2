@@ -42,6 +42,77 @@ def mounts(path="/proc/self/mountinfo"):
     return out
 
 
+def mount_options(mountpoint, path="/proc/self/mountinfo"):
+    """Per-mount + super options of `mountpoint` (e.g. {'ro', 'soft', 'hard', 'vers=4.2'})."""
+    try:
+        with open(path) as f:
+            for line in f:
+                p = line.rstrip("\n").split(" ")
+                if "-" not in p or _unescape(p[4]) != mountpoint:
+                    continue
+                i = p.index("-")
+                return set(p[5].split(",")) | (set(p[i + 3].split(",")) if len(p) > i + 3 else set())
+    except (IOError, OSError):
+        pass
+    return set()
+
+
+def identity():
+    """Who this process is (the agent): user, group, supplementary groups, umask."""
+    import pwd
+    import grp
+    um = os.umask(0)
+    os.umask(um)
+    out = {"uid": os.getuid(), "gid": os.getgid(), "groups": sorted(set(os.getgroups())), "umask": "%04o" % um}
+    try:
+        out["user"] = pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        out["user"] = str(os.getuid())
+    try:
+        out["group"] = grp.getgrgid(os.getgid()).gr_name
+    except KeyError:
+        out["group"] = str(os.getgid())
+    return out
+
+
+def _names(uid, gid):
+    import pwd
+    import grp
+    try:
+        u = pwd.getpwuid(uid).pw_name
+    except KeyError:
+        u = str(uid)
+    try:
+        g = grp.getgrgid(gid).gr_name
+    except KeyError:
+        g = str(gid)
+    return u, g
+
+
+def has_acl(path):
+    try:
+        return bool(os.getxattr(path, "system.posix_acl_access")) or bool(os.getxattr(path, "system.posix_acl_default"))
+    except (OSError, AttributeError):
+        return False
+
+
+def fix_commands(path, agent, server=None, network=None):
+    """Commands an administrator runs (as root) to give the directory to the writers - never executed by pg_arca. Same user: 0700. Different users: a
+    dedicated group, setgid directory (new files inherit the group) and a default ACL where the filesystem supports it."""
+    q = "'%s'" % path.replace("'", "'\\''")
+    if not server or server.get("user") == agent.get("user"):
+        cmds = ["install -d -m 0700 -o %s -g %s %s" % (agent["user"], agent["group"], q)]
+    else:
+        cmds = ["groupadd -f pgarca", "usermod -aG pgarca %s" % agent["user"], "usermod -aG pgarca %s" % server["user"],
+                "install -d -m 2770 -o %s -g pgarca %s" % (agent["user"], q), "setfacl -m g:pgarca:rwx -d -m g:pgarca:rwX %s   # where ACLs are supported" % q,
+                "# then restart pg-arca-agent and PostgreSQL so both processes get the new group"]
+    if network == "nfs":
+        cmds.append("# NFS: the uid/gid above must be the same on every node and on the server (or export with all_squash,anonuid=,anongid=); mount with 'hard'")
+    elif network == "smb":
+        cmds.append("# SMB: owner and modes come from the mount options: uid=%s,gid=%s,file_mode=0660,dir_mode=0770 (credentials= a root-only 0600 file)" % (agent["uid"], agent["gid"]))
+    return cmds
+
+
 def mount_of(path, table=None):
     """The mount that holds `path`: the longest mountpoint that is a prefix of the real path. Returns (mountpoint, fstype, source)."""
     real = os.path.realpath(path)
@@ -87,7 +158,8 @@ def _write_probe(directory):
         with open(fin, "rb") as f:
             if f.read() != b"pg_arca probe\n":
                 return {"ok": False, "error": "read back differs from what was written"}
-        return {"ok": True, "ms": round((time.time() - t0) * 1000, 1)}
+        st = os.stat(fin)
+        return {"ok": True, "ms": round((time.time() - t0) * 1000, 1), "file_uid": st.st_uid, "file_gid": st.st_gid, "file_mode": "%04o" % (st.st_mode & 0o7777)}
     except OSError as e:
         return {"ok": False, "error": "%s" % e}
     finally:
@@ -143,7 +215,7 @@ def _inventory(kind, path, stanza):
     return out
 
 
-def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None, stanza=None, current=None, protected=(), bench=False, table=None):
+def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None, stanza=None, current=None, protected=(), bench=False, table=None, owner=None):
     """One path (kind 'repo' or 'wal'). Returns {path, checks:[{id, level, text, fix}], ok, mount:{...}, free_bytes, inventory}."""
     from pg_arca import overrides
     checks = []
@@ -207,10 +279,32 @@ def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None,
         add("write", "bad", "cannot create %s: %s" % (path, e), "create it with the agent's OS user as owner, or fix the permissions on the parent")
     if creatable:
         probe = _write_probe(real)
+        me = identity()
+        dst = os.stat(real)
+        du, dg = _names(dst.st_uid, dst.st_gid)
+        res["identity"] = {"agent": me, "dir_owner": du, "dir_group": dg, "dir_uid": dst.st_uid, "dir_gid": dst.st_gid, "dir_mode": "%04o" % (dst.st_mode & 0o7777),
+                           "acl": has_acl(real)}
+        res["fix_commands"] = fix_commands(real, me, network=("nfs" if fs in ("nfs", "nfs4") else "smb" if fs in ("cifs", "smb3", "smbfs") else None))
         if probe["ok"]:
-            add("write", "ok", "writable: exclusive create, fsync and atomic rename work (%s ms)" % probe["ms"])
+            add("write", "ok", "writable by the agent (%s): exclusive create, fsync and atomic rename work (%s ms)" % (me["user"], probe["ms"]))
+            if probe.get("file_uid") != me["uid"]:
+                fu, fg = _names(probe["file_uid"], probe["file_gid"])
+                add("owner", "bad", "a file written by %s (uid %d) shows up as owned by %s (uid %d): the share maps users (NFS root/all squash, idmap domain, SMB uid= option); "
+                    "PostgreSQL and the agent would not see each other's files the same way" % (me["user"], me["uid"], fu, probe["file_uid"]),
+                    "make the uids match on every node and on the server (or set the mapping on the export / mount options)")
         else:
-            add("write", "bad", "write test failed: %s" % probe["error"], "check ownership, the mount options (no 'ro', root squash on NFS) and free space")
+            add("write", "bad", "write test failed for the agent's user %s: %s" % (me["user"], probe["error"]),
+                "give the directory to the writers (commands below), check the mount options (no 'ro', root squash on NFS) and free space")
+        if dst.st_mode & 0o007:
+            add("perm", "warn", "%s can be read by every user of this machine (mode %04o): backups contain all the data" % (path, dst.st_mode & 0o7777),
+                "chmod o-rwx %s (or enable repository encryption)" % path)
+        else:
+            add("perm", "ok", "owner %s:%s, mode %04o%s" % (du, dg, dst.st_mode & 0o7777, ", ACL" if res["identity"]["acl"] else ""))
+        opts = mount_options(mp) if network else set()
+        if "ro" in opts:
+            add("mount_opts", "bad", "%s is mounted read-only" % mp)
+        elif "soft" in opts:
+            add("mount_opts", "warn", "%s is an NFS mount with 'soft': a slow server makes writes fail silently - backups and WAL can be lost" % mp, "remount with 'hard'")
         try:
             st = os.statvfs(real)
             free = st.f_bavail * st.f_frsize
@@ -221,11 +315,25 @@ def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None,
                 add("space", "bad", "only %.1f GiB free, the minimum is %s GiB" % (gb, min_free_gb), "free space or choose a bigger volume")
             else:
                 add("space", "ok", "%.1f GiB free of %.1f GiB" % (gb, total / float(1 << 30)))
+            if st.f_files:
+                res["free_inodes"] = st.f_favail
+                if st.f_favail < 100000:
+                    add("inodes", "bad" if st.f_favail < 10000 else "warn", "only %d free inodes on that volume: every backup chunk and WAL segment is a file" % st.f_favail,
+                        "choose a volume with more inodes (or reformat with a smaller bytes-per-inode)")
         except OSError:
             pass
         if bench and probe["ok"]:
             res["bench"] = _bench(real)
     res["inventory"] = _inventory(kind, real, stanza)
+    if kind == "wal" and owner:
+        o = read_wal_owner(real)
+        if o and str(o.get("system_identifier")) != str(owner.get("system_identifier")):
+            add("wal_owner", "bad", "this WAL archive already belongs to another cluster (%s, system identifier %s): two clusters in one archive overwrite each other's segments"
+                % (o.get("cluster") or o.get("stanza") or "?", o.get("system_identifier")), "give every cluster its own WAL directory (for example .../{cluster}/wal)")
+        elif o:
+            add("wal_owner", "ok", "WAL archive of this cluster (system identifier %s)" % o.get("system_identifier"))
+        elif res["inventory"].get("wal_files"):
+            add("wal_owner", "warn", "%d files already there and no owner marker: make sure no other cluster archives into this directory" % res["inventory"]["wal_files"])
     if current and os.path.realpath(current) != real:
         inv = _inventory(kind, os.path.realpath(current), stanza)
         n = inv.get("sets") if kind == "repo" else inv.get("wal_files")
@@ -236,7 +344,7 @@ def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None,
     return res
 
 
-def check_destination(p, protected=(), current_repo=None, current_wal=None, table=None):
+def check_destination(p, protected=(), current_repo=None, current_wal=None, table=None, owner=None):
     """p = {type, repo_path, wal_path, require_mount, min_free_gb, stanza, bench}. Checks both paths and that they are different."""
     dtype = p.get("type") or "local"
     if dtype not in ("local", "nfs", "smb"):
@@ -249,6 +357,103 @@ def check_destination(p, protected=(), current_repo=None, current_wal=None, tabl
         raise EngineError("PGA-DST-003", "the repository and the WAL archive must be different directories")
     for kind, path, cur in (("repo", repo, current_repo), ("wal", wal, current_wal)):
         if path:
-            out["paths"].append(check_path(kind, path, dtype, bool(p.get("require_mount")), p.get("min_free_gb"), p.get("stanza"), cur, protected, bool(p.get("bench")), table))
+            out["paths"].append(check_path(kind, path, dtype, bool(p.get("require_mount")), p.get("min_free_gb"), p.get("stanza"), cur, protected, bool(p.get("bench")), table, owner))
     out["ok"] = all(x["ok"] for x in out["paths"])
     return out
+
+
+WAL_OWNER = ".pgarca-owner.json"
+
+
+def read_wal_owner(directory):
+    try:
+        import json
+        with open(os.path.join(directory, WAL_OWNER)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def claim_wal_dir(directory, system_identifier, stanza=None, cluster=None):
+    """Mark a WAL archive directory as this cluster's (system identifier). Never overwrites another cluster's marker: returns (ok, owner_found)."""
+    import json
+    if not system_identifier or not os.path.isdir(directory):
+        return False, None
+    cur = read_wal_owner(directory)
+    if cur:
+        return str(cur.get("system_identifier")) == str(system_identifier), cur
+    tmp = os.path.join(directory, WAL_OWNER + ".%s.tmp" % uuid.uuid4().hex[:8])
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"system_identifier": str(system_identifier), "stanza": stanza, "cluster": cluster, "claimed": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, os.path.join(directory, WAL_OWNER))          # exclusive: two nodes claiming at once cannot both win
+        except FileExistsError:
+            pass
+        return str((read_wal_owner(directory) or {}).get("system_identifier")) == str(system_identifier), read_wal_owner(directory)
+    except OSError:
+        return False, None
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def server_probe(run_sql, tool, directory, env_prefix=""):
+    """Prove the SERVER's identity (the user archive_command runs as) on `directory`: the agent writes a file, PostgreSQL itself runs
+    `pg-arca-wal probe` through COPY ... TO PROGRAM (superuser), which reads it and writes its own; the agent reads that back and removes both.
+    `run_sql(sql)` -> (ok, out, err). Returns {checks:[...], server:{identity}}."""
+    import json
+    import shlex
+    checks = []
+    token = uuid.uuid4().hex[:16]
+    mine = os.path.join(directory, ".pgarca-agentprobe-" + token)
+    theirs = os.path.join(directory, ".pgarca-srvprobe-" + token)
+    out = {"checks": checks}
+    try:
+        try:
+            fd = os.open(mine, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+            try:
+                os.write(fd, b"pg_arca agent probe\n")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            checks.append({"id": "server_write", "level": "warn", "text": "server-side test not run: the agent cannot write there (%s)" % e})
+            return out
+        cmd = "%s%s probe %s %s" % (env_prefix, shlex.quote(tool), shlex.quote(directory), token)
+        ok, so, se = run_sql("COPY (SELECT 1) TO PROGRAM '%s'" % cmd.replace("'", "''"))
+        if not ok:
+            msg = (se or so or "").strip().splitlines()
+            checks.append({"id": "server_write", "level": "bad", "text": "the PostgreSQL server cannot write there as archive_command would: %s" % (msg[-1][:300] if msg else "?"),
+                           "fix": "give the directory to the PostgreSQL server's OS user too (commands below), then check again"})
+            return out
+        try:
+            with open(theirs) as f:
+                srv = json.load(f)
+        except (OSError, ValueError) as e:
+            checks.append({"id": "server_write", "level": "bad", "text": "the PostgreSQL server wrote its probe but the agent cannot read it back: %s" % e,
+                           "fix": "a common group with read permission (setgid directory, group-readable files) for the agent and the server"})
+            return out
+        out["server"] = srv
+        checks.append({"id": "server_write", "level": "ok", "text": "writable by the PostgreSQL server's user %s (archive_command): exclusive create, fsync, rename" % srv.get("user")})
+        if not srv.get("read_agent_file"):
+            checks.append({"id": "server_read", "level": "bad", "text": "the PostgreSQL server (%s) cannot read files the agent writes there (%s): restores read WAL the agent saved"
+                           % (srv.get("user"), srv.get("read_error") or "permission denied"), "fix": "a common group with read permission for both (commands below)"})
+        else:
+            checks.append({"id": "server_read", "level": "ok", "text": "the server reads what the agent writes and the agent reads what the server writes"})
+        try:
+            os.unlink(theirs)
+        except OSError as e:
+            checks.append({"id": "server_cleanup", "level": "bad", "text": "the agent cannot remove a file the server wrote (%s): expiring old WAL would fail" % e,
+                           "fix": "the directory must be writable by both (group-writable, no sticky bit)"})
+        return out
+    finally:
+        for p in (mine, theirs, theirs + ".tmp"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass

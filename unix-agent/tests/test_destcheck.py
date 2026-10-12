@@ -104,5 +104,80 @@ class Destination(unittest.TestCase):
         self.assertTrue(r["ok"]); self.assertEqual([p["kind"] for p in r["paths"]], ["repo", "wal"])
 
 
+WAL_TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pg-arca-wal")
+
+
+class Identities(unittest.TestCase):
+    """Two writers: the agent and the PostgreSQL server (archive_command). The server side is run here with runuser as another OS user, exactly the
+    command PostgreSQL runs through COPY ... TO PROGRAM."""
+    def setUp(self):
+        self.t = os.path.realpath(tempfile.mkdtemp())
+        os.chmod(self.t, 0o755)
+
+    def _as(self, user):
+        import shlex
+        import subprocess
+
+        def run(sql):
+            cmd = sql.split("TO PROGRAM '", 1)[1].rsplit("'", 1)[0].replace("''", "'")
+            r = subprocess.run(["runuser", "-u", user, "--", "sh", "-c", cmd], input=b"1\n", stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return r.returncode == 0, r.stdout.decode(), r.stderr.decode()
+        return run
+
+    @unittest.skipUnless(os.geteuid() == 0, "needs root to act as two OS users")
+    def test_server_user_that_cannot_write_is_refused_and_a_shared_group_fixes_it(self):
+        import subprocess
+        d = os.path.join(self.t, "wal")
+        os.makedirs(d, mode=0o700)                     # the agent's (root's) private directory: the server user 'nobody' cannot get in
+        r = destcheck.server_probe(self._as("nobody"), WAL_TOOL, d)
+        self.assertEqual([c["level"] for c in r["checks"] if c["id"] == "server_write"], ["bad"], r)
+        self.assertIn("cannot write", r["checks"][0]["text"])
+        subprocess.run(["groupadd", "-f", "pgarcatest"], check=True)
+        subprocess.run(["usermod", "-aG", "pgarcatest", "nobody"], check=True)
+        os.chown(d, 0, int(subprocess.check_output(["getent", "group", "pgarcatest"]).decode().split(":")[2]))
+        os.chmod(d, 0o2770)
+        r = destcheck.server_probe(self._as("nobody"), WAL_TOOL, d)
+        self.assertEqual({c["id"]: c["level"] for c in r["checks"]}, {"server_write": "ok", "server_read": "ok"}, r)
+        self.assertEqual(r["server"]["user"], "nobody")
+        self.assertEqual([n for n in os.listdir(d)], [], "both probe files removed")
+        cmds = destcheck.fix_commands(d, destcheck.identity(), r["server"])
+        self.assertTrue(any("2770" in c and "pgarca" in c for c in cmds), cmds)
+
+    def test_same_user_gets_a_private_directory(self):
+        me = destcheck.identity()
+        self.assertEqual(destcheck.fix_commands("/srv/b", me, dict(me)), ["install -d -m 0700 -o %s -g %s '/srv/b'" % (me["user"], me["group"])])
+        self.assertTrue(any("all_squash" in c for c in destcheck.fix_commands("/srv/b", me, network="nfs")))
+
+    def test_world_readable_backups_are_flagged(self):
+        d = os.path.join(self.t, "repo")
+        os.makedirs(d)
+        os.chmod(d, 0o755)
+        r = destcheck.check_path("repo", d, table=[("/", "ext4", "/dev/vda")])
+        self.assertEqual(lv(r, "perm"), ["warn"])
+        os.chmod(d, 0o700)
+        r = destcheck.check_path("repo", d, table=[("/", "ext4", "/dev/vda")])
+        self.assertEqual(lv(r, "perm"), ["ok"])
+        self.assertEqual(r["identity"]["dir_mode"], "0700")
+
+    def test_wal_archive_of_another_cluster_is_refused(self):
+        d = os.path.join(self.t, "wal")
+        os.makedirs(d, mode=0o700)
+        self.assertEqual(destcheck.claim_wal_dir(d, "111", "main", "erp")[0], True)
+        self.assertEqual(destcheck.claim_wal_dir(d, "111")[0], True, "the same cluster again")
+        ok, owner = destcheck.claim_wal_dir(d, "222", "main", "crm")
+        self.assertFalse(ok); self.assertEqual(owner["cluster"], "erp")
+        r = destcheck.check_path("wal", d, table=[("/", "ext4", "/dev/vda")], owner={"system_identifier": "222"})
+        self.assertEqual(lv(r, "wal_owner"), ["bad"]); self.assertFalse(r["ok"])
+        r = destcheck.check_path("wal", d, table=[("/", "ext4", "/dev/vda")], owner={"system_identifier": "111"})
+        self.assertEqual(lv(r, "wal_owner"), ["ok"])
+
+    def test_soft_nfs_mount_option_is_flagged(self):
+        f = tempfile.NamedTemporaryFile("w", delete=False)
+        f.write("36 35 0:50 / /mnt/b rw,relatime shared:1 - nfs4 srv:/x rw,vers=4.2,soft,proto=tcp\n")
+        f.close()
+        self.assertIn("soft", destcheck.mount_options("/mnt/b", f.name))
+        self.assertEqual(destcheck.mount_options("/mnt/other", f.name), set())
+
+
 if __name__ == "__main__":
     unittest.main()

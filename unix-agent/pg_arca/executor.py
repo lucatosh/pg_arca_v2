@@ -828,7 +828,39 @@ class OperationExecutor:
         prot = [self.config.get("pg_data"), inst.get("data_directory"), self.config.get("state_dir"), os.path.dirname(self.config.get("credentials_file") or "") or None]
         q = dict(p)
         q.setdefault("stanza", self.config.get("stanza") or _stanza_name(inst) or "main")
-        return destcheck.check_destination(q, protected=[x for x in prot if x], current_repo=self.config.get("repo_path"), current_wal=self.config.get("wal_archive_dir"))
+        sysid = None
+        pg_up = False
+        try:
+            pg_up = bool(self.db and self.db.ping())
+            if pg_up:
+                ok, out, _ = self.db.run_psql("SELECT system_identifier FROM pg_control_system()")
+                sysid = out.strip() if ok else None
+        except Exception:
+            pg_up = False
+        owner = {"system_identifier": sysid, "stanza": q["stanza"], "cluster": self.config.get("cluster_name")} if sysid else None
+        res = destcheck.check_destination(q, protected=[x for x in prot if x], current_repo=self.config.get("repo_path"), current_wal=self.config.get("wal_archive_dir"), owner=owner)
+        res["agent"] = destcheck.identity()
+        # the SERVER's identity too: archive_command runs as the PostgreSQL OS user, which is not always the agent's. Proven through PostgreSQL itself.
+        if pg_up and not p.get("skip_server_probe"):
+            try:
+                tool = self._wal_tool()
+            except OpError:
+                tool = None
+            for x in res["paths"]:
+                if not tool or not x.get("ok"):
+                    continue
+                sp = destcheck.server_probe(lambda sql: self.db.run_psql(sql, timeout=60), tool, os.path.realpath(x["path"]), self._archive_env())
+                x["checks"] += sp["checks"]
+                if sp.get("server"):
+                    x.setdefault("identity", {})["server"] = sp["server"]
+                    res["server"] = sp["server"]
+                    x["fix_commands"] = destcheck.fix_commands(os.path.realpath(x["path"]), res["agent"], sp["server"],
+                                                               network=("nfs" if (x.get("mount") or {}).get("fstype") in ("nfs", "nfs4") else "smb" if (x.get("mount") or {}).get("fstype") in ("cifs", "smb3", "smbfs") else None))
+                x["ok"] = not any(c["level"] == "bad" for c in x["checks"])
+            res["ok"] = all(x["ok"] for x in res["paths"])
+        elif not pg_up:
+            res["server_probe"] = "not run: no running PostgreSQL on this node (the agent's own identity was tested)"
+        return res
 
     def h_ephemeral_preflight(self, p):
         """Can this host run the ephemeral recovery instance for the cluster's backups? Read-only: reports binaries, scratch, memory, ports, repository access and, when

@@ -57,7 +57,57 @@ def _last_error(wal_dir, name, message):
         pass
 
 
+def probe(directory, token):
+    """Run BY POSTGRESQL (COPY ... TO PROGRAM, same user and environment as archive_command): can the server's OS user read what the agent wrote in
+    `directory` and write there the way the archive does? Writes .pgarca-srvprobe-<token> (JSON: identity + results) for the agent to read back."""
+    import json
+    import pwd
+    import grp
+    try:
+        sys.stdin.read()                                # COPY writes its rows to our stdin: drain it, or COPY may fail with a broken pipe
+    except Exception:
+        pass
+    if not token.isalnum() or len(token) > 40:
+        sys.stderr.write("probe: bad token\n")
+        return 2
+    res = {"uid": os.getuid(), "gid": os.getgid(), "groups": sorted(set(os.getgroups())), "umask": None}
+    try:
+        res["user"] = pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        res["user"] = str(os.getuid())
+    try:
+        res["group"] = grp.getgrgid(os.getgid()).gr_name
+        res["group_names"] = sorted(set(grp.getgrgid(g).gr_name for g in res["groups"] if g is not None))
+    except KeyError:
+        res["group"] = str(os.getgid())
+    um = os.umask(0)
+    os.umask(um)
+    res["umask"] = "%04o" % um
+    try:
+        with open(os.path.join(directory, ".pgarca-agentprobe-" + token), "rb") as f:
+            res["read_agent_file"] = f.read().startswith(b"pg_arca agent probe")
+    except OSError as e:
+        res["read_agent_file"] = False
+        res["read_error"] = str(e)
+    tmp = os.path.join(directory, ".pgarca-srvprobe-%s.tmp" % token)
+    fin = os.path.join(directory, ".pgarca-srvprobe-%s" % token)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+        try:
+            os.write(fd, json.dumps(res).encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.rename(tmp, fin)
+    except OSError as e:
+        sys.stderr.write("pg_arca probe: the PostgreSQL server user %s cannot write in %s: %s\n" % (res.get("user"), directory, e))
+        return 1
+    return 0
+
+
 def main(argv):
+    if len(argv) == 4 and argv[1] == "probe":
+        return probe(argv[2], argv[3])
     if len(argv) != 4 or argv[1] not in ("archive", "get", "prefetch"):
         sys.stderr.write("usage: wal_archive archive <%p> <%f> | get <%f> <%p>\n")
         return 2

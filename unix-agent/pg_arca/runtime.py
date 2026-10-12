@@ -186,6 +186,18 @@ class Runtime(object):
                 ensure_retention_floor(cas.ctx)
             except Exception:
                 logger.debug("retention floor init failed", exc_info=True)
+        wd = self.config.get("wal_archive_dir")
+        if wd and pg.get("alive") and pg.get("system_identifier") and "pg-arca-wal" in str(pg.get("archive_command") or (pg.get("settings") or {}).get("archive_command") or "") \
+                and not getattr(self, "_wal_claimed", False):
+            self._wal_claimed = True                       # once per agent start: the WAL archive is marked as this cluster's (never another cluster's marker)
+            try:
+                from pg_arca.engine.destcheck import claim_wal_dir
+                ok, owner = claim_wal_dir(wd, pg["system_identifier"], self.config.get("stanza"), self.config.get("cluster_name"))
+                self._wal_conflict = None if ok or not owner else owner
+            except Exception:
+                logger.debug("WAL archive claim failed", exc_info=True)
+        if getattr(self, "_wal_conflict", None):
+            pg["wal_owner_conflict"] = self._wal_conflict
         ae = _archive_error(self.config.get("wal_archive_dir"))
         if ae:
             pg["archive_error"] = ae
