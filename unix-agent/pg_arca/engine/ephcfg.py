@@ -493,7 +493,7 @@ def preflight(ctx, major=None, eph=None, need_bytes=None, facts=None, with_plan=
     except EngineError as e:
         add("port", "bad", e.message, e.hint if hasattr(e, "hint") else None)
     # ---- repository + WAL archive readable from here (matters when the instance runs on another node than the backups)
-    for cid, label, p, prev in (("repo", "backup repository", ctx.repo.path, getattr(ctx.repo, "previous", [])), ("wal", "WAL archive", ctx.wal_dir, getattr(ctx.wal, "previous", []))):
+    for cid, label, p, prev in (("repo", "backup repository", ctx.repo.path, getattr(ctx.repo, "previous", None) or []), ("wal", "WAL archive", ctx.wal_dir, getattr(getattr(ctx, "wal", None), "previous", None) or [])):
         if p and os.path.isdir(p) and os.access(p, os.R_OK | os.X_OK):
             add(cid, "ok", "%s readable: %s" % (label, p))
         elif prev and not os.path.exists(p) and all(os.path.isdir(x) and os.access(x, os.R_OK | os.X_OK) for x in prev):
