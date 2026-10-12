@@ -276,8 +276,12 @@ SELECT jsonb_build_object('oid', t.oid::int, 'kind', t.typtype, 'schema', n.nspn
   'basefmt', CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) END, 'default', t.typdefault, 'notnull', t.typnotnull, 'owner', pg_get_userbyid(t.typowner),
   'ext', (SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid = d.refobjid WHERE d.classid = 'pg_type'::regclass AND d.objid = t.oid AND d.deptype = 'e' LIMIT 1),
   'labels', CASE WHEN t.typtype = 'e' THEN (SELECT jsonb_agg(e.enumlabel ORDER BY e.enumsortorder) FROM pg_enum e WHERE e.enumtypid = t.oid) END,
-  'attrs', CASE WHEN t.typtype = 'c' THEN (SELECT jsonb_agg(jsonb_build_object('n', a.attname, 't', format_type(a.atttypid, a.atttypmod), 'o', a.atttypid::int) ORDER BY a.attnum)
-              FROM pg_attribute a JOIN pg_class rc ON rc.oid = t.typrelid AND rc.relkind = 'c' WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END,
+  'attrs', CASE WHEN t.typtype = 'c' THEN (SELECT jsonb_agg(jsonb_build_object('n', a.attname, 't', format_type(a.atttypid, a.atttypmod), 'o', a.atttypid::int,
+                                                                  'coll', CASE WHEN a.attcollation <> 0 AND a.attcollation <> (SELECT typcollation FROM pg_type WHERE oid = a.atttypid)
+                                                                               THEN (SELECT quote_ident(cn.nspname) || '.' || quote_ident(co.collname) FROM pg_collation co JOIN pg_namespace cn ON cn.oid = co.collnamespace WHERE co.oid = a.attcollation) END)
+                                                ORDER BY a.attnum)
+              FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END,
+  'relkind', CASE WHEN t.typtype = 'c' THEN (SELECT rc.relkind FROM pg_class rc WHERE rc.oid = t.typrelid) END, 'relid', t.typrelid::int,
   'range', CASE WHEN t.typtype = 'r' THEN (SELECT jsonb_build_object('sub', format_type(r.rngsubtype, NULL), 'o', r.rngsubtype::int) FROM pg_range r WHERE r.rngtypid = t.oid) END,
   'checks', CASE WHEN t.typtype = 'd' THEN (SELECT jsonb_agg(jsonb_build_object('n', k.conname, 'd', pg_get_constraintdef(k.oid))) FROM pg_constraint k WHERE k.contypid = t.oid) END,
   'comment', obj_description(t.oid, 'pg_type'))::text
@@ -303,8 +307,14 @@ FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.oid = %d"""
         if row["kind"] == "b":
             info["warnings"].append("type %s.%s is a base type not owned by an extension: it cannot be recreated automatically" % (row["schema"], row["name"]))
             continue
-        if row["kind"] == "c" and not row.get("attrs"):
-            continue                              # the row type of a table
+        if row["kind"] == "c" and row.get("relkind") not in (None, "c"):
+            # the row type of a TABLE used as a column type: the table itself must exist (empty is enough in the quarantine database).
+            # A selected table comes with the dump; any other one is created as an empty shell in the stage and must already exist live.
+            if row["relid"] in toids or not row.get("attrs"):
+                continue
+            row["table"] = True
+        elif row["kind"] == "c" and not row.get("attrs"):
+            continue
         row["ddl"] = _type_ddl(row)
         if row["ddl"]:
             tlist.append(row)
@@ -340,12 +350,62 @@ WHERE n.nspname = ANY(ARRAY[%s]) AND p.prokind IN ('f','p') AND NOT EXISTS (SELE
     if used:
         for x in src.query("SELECT DISTINCT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid = d.refobjid WHERE d.classid = 'pg_proc'::regclass AND d.deptype = 'e' AND d.objid = ANY(%s)" % arr(used)):
             exts.add(x[0])
+    # collations of the columns (and of the composite types' attributes) that are not built in: CREATE COLLATION before the tables
+    colls = set()
+    if toids:
+        colls |= {int(x[0]) for x in src.query("SELECT DISTINCT a.attcollation::int FROM pg_attribute a WHERE a.attrelid = ANY(%s) AND a.attnum > 0 AND NOT a.attisdropped AND a.attcollation <> 0" % arr(toids))}
+    trel = [r["relid"] for r in tlist if r.get("relid")]
+    if trel:
+        colls |= {int(x[0]) for x in src.query("SELECT DISTINCT a.attcollation::int FROM pg_attribute a WHERE a.attrelid = ANY(%s) AND a.attnum > 0 AND NOT a.attisdropped AND a.attcollation <> 0" % arr(trel))}
+    dcoll = [r["oid"] for r in tlist if r["kind"] == "d"]
+    if dcoll:
+        colls |= {int(x[0]) for x in src.query("SELECT DISTINCT typcollation::int FROM pg_type WHERE oid = ANY(%s) AND typcollation <> 0" % arr(dcoll))}
+    out["collations"] = []
+    if colls:
+        for c in _jq(src, """
+SELECT COALESCE(jsonb_agg(to_jsonb(c) || jsonb_build_object('schema', n.nspname, 'owner_name', pg_get_userbyid(c.collowner),
+       'ext', (SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid = d.refobjid WHERE d.classid = 'pg_collation'::regclass AND d.objid = c.oid AND d.deptype = 'e' LIMIT 1))
+       ORDER BY c.oid), '[]'::jsonb)::text
+FROM pg_collation c JOIN pg_namespace n ON n.oid = c.collnamespace WHERE c.oid = ANY(%s) AND n.nspname <> 'pg_catalog'""" % arr(sorted(colls))) or []:
+            if c.get("ext"):
+                exts.add(c["ext"])
+                continue
+            ddl = _collation_ddl(c)
+            if ddl:
+                out["collations"].append({"schema": c["schema"], "name": c["collname"], "owner": c["owner_name"], "ddl": ddl})
+                schemas.add(c["schema"])
+            else:
+                info["warnings"].append("collation %s.%s cannot be recreated automatically" % (c["schema"], c["collname"]))
     out["extensions"] = sorted(e for e in exts if e != "plpgsql")
-    owners = {r["schema"]: None for r in out["types"]}
-    nsrows = _jq(src, "SELECT COALESCE(jsonb_agg(jsonb_build_object('name', nspname, 'owner', pg_get_userbyid(nspowner), 'comment', obj_description(oid, 'pg_namespace'), 'acl', %s)), '[]'::jsonb)::text FROM pg_namespace WHERE nspname = ANY(ARRAY[%s])" % (ACL_SQL % "nspacl", ",".join(sql_lit(s) for s in sorted(schemas)) or "NULL::text")) if schemas else []
+    # the schema each extension lives in: its types are referenced by that schema (ext.citext) - CREATE EXTENSION must put them back there
+    out["ext_schemas"] = {}
+    if out["extensions"]:
+        out["ext_schemas"] = {x[0]: x[1] for x in src.query("SELECT e.extname, n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = ANY(ARRAY[%s])"
+                                                            % ",".join(sql_lit(e) for e in out["extensions"]))}
+    nsall = (schemas | set(out["ext_schemas"].values())) - set(SYS_SCHEMAS)
+    nsrows = _jq(src, "SELECT COALESCE(jsonb_agg(jsonb_build_object('name', nspname, 'owner', pg_get_userbyid(nspowner), 'comment', obj_description(oid, 'pg_namespace'), 'acl', %s)), '[]'::jsonb)::text FROM pg_namespace WHERE nspname = ANY(ARRAY[%s])" % (ACL_SQL % "nspacl", ",".join(sql_lit(s) for s in sorted(nsall)) or "NULL::text")) if nsall else []
     out["schemas"] = nsrows or []
-    del owners
     return out
+
+
+def _collation_ddl(c):
+    """CREATE COLLATION from a pg_collation row (to_jsonb: the columns differ across versions - colliculocale 15-16, colllocale 17+, collicurules 16+, builtin 17+)."""
+    prov = {"i": "icu", "c": "libc", "b": "builtin"}.get(c.get("collprovider"))
+    if not prov:
+        return None
+    opts = ["provider = %s" % prov]
+    if prov == "libc":
+        opts += ["lc_collate = %s" % sql_lit(c.get("collcollate") or "C"), "lc_ctype = %s" % sql_lit(c.get("collctype") or "C")]
+    else:
+        loc = c.get("colllocale") or c.get("colliculocale") or c.get("collcollate")
+        if not loc:
+            return None
+        opts.append("locale = %s" % sql_lit(loc))
+        if c.get("collicurules"):
+            opts.append("rules = %s" % sql_lit(c["collicurules"]))
+    if c.get("collisdeterministic") is False:
+        opts.append("deterministic = false")
+    return "CREATE COLLATION %s (%s)" % (qi(c["schema"], c["collname"]), ", ".join(opts))
 
 
 def _type_ddl(r):
@@ -353,7 +413,10 @@ def _type_ddl(r):
     if r["kind"] == "e":
         return "CREATE TYPE %s AS ENUM (%s)" % (n, ", ".join(sql_lit(x) for x in (r.get("labels") or [])))
     if r["kind"] == "c":
-        return "CREATE TYPE %s AS (%s)" % (n, ", ".join("%s %s" % (quote_ident(a["n"]), a["t"]) for a in r["attrs"]))
+        cols = ", ".join("%s %s%s" % (quote_ident(a["n"]), a["t"], (" COLLATE " + a["coll"]) if a.get("coll") else "") for a in r["attrs"])
+        if r.get("table"):
+            return "CREATE TABLE %s (%s)" % (n, cols)
+        return "CREATE TYPE %s AS (%s)" % (n, cols)
     if r["kind"] == "d":
         d = "CREATE DOMAIN %s AS %s" % (n, r["basefmt"])
         if r.get("default") is not None:
@@ -386,6 +449,9 @@ def prereq_exists(sess, kind, item):
         return sess.scalar("SELECT to_regprocedure(%s) IS NOT NULL" % sql_lit(item["sig"])) == "t"
     if kind == "extension":
         return sess.scalar("SELECT 1 FROM pg_extension WHERE extname = %s" % sql_lit(item)) == "1"
+    if kind == "collation":
+        return sess.scalar("SELECT 1 FROM pg_collation c JOIN pg_namespace n ON n.oid = c.collnamespace WHERE n.nspname = %s AND c.collname = %s "
+                           "AND c.collencoding IN (-1, (SELECT encoding FROM pg_database WHERE datname = current_database()))" % (sql_lit(item["schema"]), sql_lit(item["name"]))) == "1"
     return False
 
 
@@ -409,9 +475,6 @@ def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None):
             except EngineError as e:
                 problems.append("%s (owner/grants): %s" % (label, e.message[:160]))
         return True
-    for e in p["extensions"]:
-        if not prereq_exists(sess, "extension", e):
-            run("extension %s" % e, "CREATE EXTENSION IF NOT EXISTS %s" % quote_ident(e))
     for s in p["schemas"]:
         if only_missing and prereq_exists(sess, "schema", s):
             continue
@@ -420,9 +483,36 @@ def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None):
             extra.append("ALTER SCHEMA %s OWNER TO %s" % (quote_ident(s["name"]), quote_ident(s["owner"])))
         extra += [x for x in _acl_stmts("SCHEMA", quote_ident(s["name"]), [a for a in (s.get("acl") or []) if a["g"] == "PUBLIC" or roles_ok is None or a["g"] in roles_ok])]
         run("schema %s" % s["name"], "CREATE SCHEMA %s" % quote_ident(s["name"]), extra)
+    # extensions after the schemas: an extension installed in its own schema (CREATE EXTENSION citext SCHEMA ext) goes back there,
+    # otherwise its types would land in another schema and every column using ext.citext would fail
+    esch = p.get("ext_schemas") or {}
+    for e in p["extensions"]:
+        if not prereq_exists(sess, "extension", e):
+            sch = esch.get(e)
+            if sch and sess.scalar("SELECT to_regnamespace(%s) IS NOT NULL" % sql_lit(quote_ident(sch))) == "t":
+                if not run("extension %s" % e, "CREATE EXTENSION IF NOT EXISTS %s SCHEMA %s" % (quote_ident(e), quote_ident(sch))):
+                    problems.pop()                       # a non-relocatable extension refuses SCHEMA: plain CREATE EXTENSION puts it where it belongs
+                    run("extension %s" % e, "CREATE EXTENSION IF NOT EXISTS %s" % quote_ident(e))
+            else:
+                run("extension %s" % e, "CREATE EXTENSION IF NOT EXISTS %s" % quote_ident(e))
+        elif esch.get(e):
+            now = sess.scalar("SELECT n.nspname FROM pg_extension x JOIN pg_namespace n ON n.oid = x.extnamespace WHERE x.extname = %s" % sql_lit(e))
+            if now and now != esch[e]:
+                problems.append("extension %s is installed in schema %s here, the recovered objects use it from schema %s" % (e, now, esch[e]))
+    for c in p.get("collations") or []:
+        if only_missing and prereq_exists(sess, "collation", c):
+            continue
+        extra = []
+        if c.get("owner") and (roles_ok is None or c["owner"] in roles_ok):
+            extra.append("ALTER COLLATION %s OWNER TO %s" % (qi(c["schema"], c["name"]), quote_ident(c["owner"])))
+        run("collation %s.%s" % (c["schema"], c["name"]), c["ddl"], extra)
     pending = []
     for t in p["types"]:
         if only_missing and prereq_exists(sess, "type", t):
+            continue
+        if t.get("table") and only_missing:
+            # never create a table in the live database as a side effect: the plan already refused (the user selects that table too)
+            problems.append("table %s.%s (its row type is a column type of the recovered objects) does not exist" % (t["schema"], t["name"]))
             continue
         extra = []
         if t.get("owner") and (roles_ok is None or t["owner"] in roles_ok):
@@ -568,7 +658,8 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
                 "owned_sequences": info.get("owned_sequences") or [],
                 "views": info["views"], "fks": info["fks"], "positions": info["sequence_positions"], "roles": info["roles"],
                 "detached": info.get("detached") or [], "statistics": info.get("statistics") or [],
-                "prereq": {"types": info["types"], "functions": info["functions"], "extensions": info["extensions"], "schemas": info["schemas"]},
+                "prereq": {"types": info["types"], "functions": info["functions"], "extensions": info["extensions"], "schemas": info["schemas"],
+                           "collations": info.get("collations") or [], "ext_schemas": info.get("ext_schemas") or {}},
                 "warnings": list(info["warnings"]), "counts": {}}
         create_db()
         sess = PgSession(admin.with_db(stage))
@@ -839,9 +930,13 @@ WHERE own.classid = 'pg_class'::regclass AND own.refclassid = 'pg_class'::regcla
     pq = meta["prereq"]
     missing = {"extensions": [e for e in pq["extensions"] if not prereq_exists(live, "extension", e)],
                "schemas": [x["name"] for x in pq["schemas"] if not prereq_exists(live, "schema", x)],
-               "types": ["%s.%s" % (t["schema"], t["name"]) for t in pq["types"] if not prereq_exists(live, "type", t)],
+               "types": ["%s.%s" % (t["schema"], t["name"]) for t in pq["types"] if not t.get("table") and not prereq_exists(live, "type", t)],
+               "collations": ["%s.%s" % (c["schema"], c["name"]) for c in pq.get("collations") or [] if not prereq_exists(live, "collation", c)],
                "functions": [f["sig"] for f in pq["functions"] if not prereq_exists(live, "function", f)]}
     plan["missing_prereq"] = missing
+    for t in pq["types"]:
+        if t.get("table") and not prereq_exists(live, "type", t):
+            plan["blocking"].append("a recovered column has the row type of table %s.%s, which does not exist now: select that table too (it is not created by itself)" % (t["schema"], t["name"]))
     present = _roles_present(live, meta.get("roles") or [])
     plan["missing_roles"] = [r for r in (meta.get("roles") or []) if r not in present]
     if plan["missing_roles"]:
