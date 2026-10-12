@@ -481,7 +481,7 @@ def _roles_present(sess, names):
     return {x[0] for x in r}
 
 
-def dump_for_stage(eph_conn, dbname, info, tmp, progress=None):
+def dump_for_stage(eph_conn, dbname, info, tmp, progress=None, cancel=None):
     """pg_dump of the selected tables and sequences (partitions included) from the recovered instance."""
     names = [qi(t["schema"], t["name"]) for t in info["tables"]] + [qi(s["schema"], s["name"]) for s in info["sequences"]] + \
             [qi(s["schema"], s["name"]) for s in (info.get("owned_sequences") or [])]
@@ -492,7 +492,7 @@ def dump_for_stage(eph_conn, dbname, info, tmp, progress=None):
     args = eph_conn.args() + ["--strict-names", "-f", dumpfile, "-d", dbname]
     for n in names:
         args += ["-t", n]
-    rc, out, err = run_dump(eph_conn, args)
+    rc, out, err = run_dump(eph_conn, args, cancel=cancel)
     if rc != 0:
         raise EngineError("PGA-GEN-072", "pg_dump of the selection failed: %s" % err.strip()[:600])
     return dumpfile
@@ -516,14 +516,14 @@ def filtered_toc(admin, dumpfile, tmp, drop_fks):
     return path, dropped
 
 
-def shell_toc(admin, eph_conn, dbname, ancestors, tmp):
+def shell_toc(admin, eph_conn, dbname, ancestors, tmp, cancel=None):
     """Schema-only dump of the ancestors of the selected tables (structure, defaults, keys and indexes: what a child needs to be created and
     attached exactly as it was dumped). Returns (dumpfile, toc path)."""
     dumpfile = os.path.join(tmp, "shell.dump")
     args = eph_conn.args() + ["--schema-only", "--strict-names", "-f", dumpfile, "-d", dbname]
     for a in ancestors:
         args += ["-t", qi(a["schema"], a["name"])]
-    rc, out, err = run_dump(eph_conn, args)
+    rc, out, err = run_dump(eph_conn, args, cancel=cancel)
     if rc != 0:
         raise EngineError("PGA-GEN-072", "pg_dump of the parent tables failed: %s" % err.strip()[:600])
     rc, out, err = run_tool(admin, "pg_restore", ["-l", dumpfile], timeout=120)
@@ -549,14 +549,17 @@ def read_meta(sess):
     return json.loads(r) if r else None
 
 
-def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, progress=None, create_db=None):
+def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, progress=None, create_db=None, cancel=None):
     """Create the quarantine database from the analysed selection. Returns the metadata written into it."""
     dbname = dbentry["name"]
     tmp = tempfile.mkdtemp(prefix="pgarca-stage-")
     try:
         if progress:
             progress({"phase": "transfer"})
-        dumpfile = dump_for_stage(eph.conn(dbname), dbname, info, tmp)
+        dumpfile = dump_for_stage(eph.conn(dbname), dbname, info, tmp, cancel=cancel)
+        if cancel and cancel():
+            from pg_arca.engine.util import Cancelled
+            raise Cancelled()
         tset = {(t["schema"], t["name"]) for t in info["tables"]}
         drop_fks = {(f["schema"], f["table"], f["name"]) for f in info["fks"] if (f["schema"], f["table"]) in tset and (f["ref_schema"], f["ref_table"]) not in tset}
         meta = {"version": 1, "created": now_utc().isoformat(timespec="seconds"), "database": dbname, "selection": sel, "label": spec_label,
@@ -598,14 +601,14 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
                         meta["warnings"].append("tablespaces missing on this server (%s): the recovered tables were created in the default tablespace" % ", ".join(gone_ts))
 
                 def load(df, lst, section=None):
-                    rc, out, err = run_tool(admin, "pg_restore", args + ["-L", lst] + (["--section", section] if section else []) + [df], timeout=None)
+                    rc, out, err = run_tool(admin, "pg_restore", args + ["-L", lst] + (["--section", section] if section else []) + [df], timeout=None, cancel=cancel)
                     if rc != 0:
                         raise EngineError("PGA-GEN-071", "pg_restore into the quarantine database failed: %s" % (err.strip() or out.strip())[:900])
                 shells = info.get("ancestors") or []
                 if shells:
                     # parents first as empty shells, in the order pg_dump itself would use: the selection is created/attached before the parents get their
                     # keys and indexes (otherwise ATTACH would build duplicate indexes), then the selection's own keys attach to the parents' ones
-                    sdump, slst = shell_toc(admin, eph.conn(dbname), dbname, shells, tmp)
+                    sdump, slst = shell_toc(admin, eph.conn(dbname), dbname, shells, tmp, cancel=cancel)
                     load(sdump, slst, "pre-data")
                     load(dumpfile, toc, "pre-data")
                     load(dumpfile, toc, "data")

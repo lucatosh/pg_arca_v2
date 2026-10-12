@@ -200,7 +200,7 @@ class PgSession(object):
 _DUMP_ZSTD = {}
 
 
-def run_dump(conn, args, timeout=None):
+def run_dump(conn, args, timeout=None, cancel=None):
     """pg_dump -Fc of the recovered data, compressed with zstd level 1 when the tool is PostgreSQL 16+ and was built with it (MEASURED on a 300 MB database: 3.5 s with the former
     -Z 3 -> 1.1 s, and a smaller file), plain -Z 1 otherwise. `args` must not carry -Fc / -Z. The dump is a scratch file read once by pg_restore: speed matters, size does not."""
     exe = conn.exe("pg_dump") if conn else "pg_dump"
@@ -214,18 +214,41 @@ def run_dump(conn, args, timeout=None):
             ok = False
         _DUMP_ZSTD[exe] = ok
     if _DUMP_ZSTD[exe]:
-        rc, out, err = run_tool(conn, "pg_dump", ["-Fc", "--compress=zstd:1"] + list(args), timeout=timeout)
+        rc, out, err = run_tool(conn, "pg_dump", ["-Fc", "--compress=zstd:1"] + list(args), timeout=timeout, cancel=cancel)
         if rc == 0 or not re.search(r"zstd|compress", err or "", re.I):
             return rc, out, err
         _DUMP_ZSTD[exe] = False                       # built without zstd: do not try again
-    return run_tool(conn, "pg_dump", ["-Fc", "-Z", "1"] + list(args), timeout=timeout)
+    return run_tool(conn, "pg_dump", ["-Fc", "-Z", "1"] + list(args), timeout=timeout, cancel=cancel)
 
 
-def run_tool(conn, prog, args, timeout=None, input_text=None, extra_env=None):
-    """Run a PostgreSQL client tool. Returns (rc, stdout, stderr)."""
+def run_tool(conn, prog, args, timeout=None, input_text=None, extra_env=None, cancel=None):
+    """Run a PostgreSQL client tool. Returns (rc, stdout, stderr). With `cancel` (a callable) the tool is killed as soon as it returns True and
+    Cancelled is raised: a long pg_dump / pg_restore must stop when the operator presses Annulla, not minutes later."""
     env = conn.env() if conn else dict(os.environ)
     if extra_env:
         env.update(extra_env)
+    if cancel is not None:
+        from pg_arca.engine.util import Cancelled
+        try:
+            p = subprocess.Popen([conn.exe(prog) if conn else prog] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL, universal_newlines=True, env=env)
+        except OSError as e:
+            raise EngineError("PGA-CFG-004", "cannot execute %s: %s" % (prog, e), "install the PostgreSQL server/client packages or set pg_bin_dir")
+        t0, inp = time.time(), input_text
+        while True:
+            try:
+                out, err = p.communicate(input=inp, timeout=1)
+                return p.returncode, out, err
+            except subprocess.TimeoutExpired:
+                inp = None                                     # the input was sent on the first call
+                if cancel():
+                    p.kill()
+                    p.communicate()
+                    raise Cancelled()
+                if timeout and time.time() - t0 > timeout:
+                    p.kill()
+                    p.communicate()
+                    return 124, "", "%s timed out after %ss" % (prog, timeout)
     try:
         p = subprocess.run([conn.exe(prog) if conn else prog] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True, timeout=timeout, env=env, input=input_text)

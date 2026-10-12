@@ -28,6 +28,12 @@ def _check_name(n, what):
         raise EngineError("PGA-GEN-065", "invalid %s %r (letters, digits, _ and $; max 63; must not start with a digit)" % (what, n))
 
 
+def _check_cancel(cancel):
+    if cancel and cancel():
+        from pg_arca.engine.util import Cancelled
+        raise Cancelled()
+
+
 def _spec3(spec):
     """db.schema.name with quoted parts allowed (a name with a dot: db."a.b".t); [] when malformed."""
     from pg_arca.engine.util import split_spec
@@ -246,9 +252,9 @@ def roles_used(conn):
         s.close()
 
 
-def _pg_restore(admin, dbname, dumpfile, jobs, extra=(), keep_owners=False):
+def _pg_restore(admin, dbname, dumpfile, jobs, extra=(), keep_owners=False, cancel=None):
     args = admin.args() + ["-d", dbname] + ([] if keep_owners else ["--no-owner", "--no-acl"]) + ["--exit-on-error", "-j", str(max(1, jobs))] + list(extra) + [dumpfile]
-    rc, out, err = run_tool(admin, "pg_restore", args, timeout=None)
+    rc, out, err = run_tool(admin, "pg_restore", args, timeout=None, cancel=cancel)
     if rc != 0:
         raise EngineError("PGA-GEN-071", "pg_restore failed: %s" % (err.strip() or out.strip())[:800])
 
@@ -556,11 +562,12 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         if progress:
             progress({"phase": "transfer"})
         dumpfile = os.path.join(tmp, "db.dump")
-        rc, out, err = run_dump(eph.conn(db), eph.conn(db).args() + ["-f", dumpfile, "-d", db])
+        rc, out, err = run_dump(eph.conn(db), eph.conn(db).args() + ["-f", dumpfile, "-d", db], cancel=cancel)
         if rc != 0:
             raise EngineError("PGA-GEN-070", "pg_dump from the recovered instance failed: %s" % err.strip()[:600],
                               "the sparse extraction may lack a page needed by this database; retry with a different base set")
         info["dump_bytes"] = os.path.getsize(dumpfile)
+        _check_cancel(cancel)
         props = db_props(eph, db)
         warns = []
         # owners and privileges come back too, unless the destination lacks some of the roles they name (then: none of them, and the list says which roles)
@@ -603,7 +610,8 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
                 warns.append("tablespaces missing on this server (%s): every object was created in the database's default tablespace" % ", ".join(gone_ts))
         _create_db(admin, new_name, entry, props)
         created = True
-        _pg_restore(admin, new_name, dumpfile, jobs, extra=extra, keep_owners=keep)
+        _pg_restore(admin, new_name, dumpfile, jobs, extra=extra, keep_owners=keep, cancel=cancel)
+        _check_cancel(cancel)                              # cancelled while the last step finished: the new database is removed, as promised
         warns += list((props or {}).pop("_warnings", []) if props else [])
         _apply_db_props(admin, new_name, props, warns)
         if warns:
@@ -711,7 +719,8 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
         def make():
             _create_db(admin, stage, dbentry, {k: v for k, v in (sprops or {}).items() if k in ("provider", "locale", "rules")})
         created = True
-        meta = objmod.build_stage(admin, eph, dbentry, sel, label, stage, an, plan, progress, create_db=make)
+        meta = objmod.build_stage(admin, eph, dbentry, sel, label, stage, an, plan, progress, create_db=make, cancel=cancel)
+        _check_cancel(cancel)
         info["rows_restored"] = sum(meta["counts"].values())
         info["rows_at_target"] = info["rows_restored"]
         info["dependencies"] = {"tables": len(meta["tables"]), "foreign_keys": len(meta["fks"]), "views": len(meta["views"]), "types": len(meta["prereq"]["types"]),
