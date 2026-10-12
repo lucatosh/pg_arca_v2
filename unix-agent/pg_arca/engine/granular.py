@@ -995,8 +995,20 @@ def _table_info(sess, fq):
     cols = [r[0] for r in sess.query("SELECT attname FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum" % sql_lit(fq))]
     gen = set(r[0] for r in sess.query("SELECT attname FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND NOT attisdropped AND attgenerated<>''" % sql_lit(fq)))
     pk = [r[0] for r in sess.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=ANY(i.indkey) WHERE i.indrelid=%s::regclass AND i.indisprimary ORDER BY array_position(i.indkey::int2[], a.attnum)" % sql_lit(fq))]
+    key_from = "primary key" if pk else None
+    if not pk:
+        # no primary key: a UNIQUE index on NOT NULL plain columns (not partial, no expressions) identifies a row just as well - the narrowest one
+        r = sess.scalar("""SELECT json_build_object('idx', c.relname, 'cols', (SELECT json_agg(a.attname ORDER BY k.o) FROM unnest(i.indkey::int2[]) WITH ORDINALITY k(n, o)
+                                  JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.n))::text
+FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+WHERE i.indrelid = %s::regclass AND i.indisunique AND i.indisvalid AND i.indpred IS NULL AND i.indexprs IS NULL AND NOT (0 = ANY(i.indkey::int2[]))
+  AND NOT EXISTS (SELECT 1 FROM unnest(i.indkey::int2[]) k(n) JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.n WHERE NOT a.attnotnull)
+ORDER BY array_length(i.indkey::int2[], 1), c.relname LIMIT 1""" % sql_lit(fq))
+        if r:
+            j = json.loads(r)
+            pk, key_from = list(j["cols"]), "unique index %s" % j["idx"]
     always = sess.scalar("SELECT count(*)>0 FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND attidentity='a'" % sql_lit(fq)) == "t"
-    return {"cols": cols, "generated": gen, "pk": pk, "identity_always": always}
+    return {"cols": cols, "generated": gen, "pk": pk, "identity_always": always, "key_from": key_from}
 
 
 def _keyhash(sess, fq, pk, common):
@@ -1042,7 +1054,7 @@ def diff_object(ctx, stage_db, spec, into=None, limit=200):
             raise EngineError("PGA-GEN-085", "table %s does not exist in %s any more: use promote to bring it back as a whole" % (fq, dbname))
         if not si["pk"] or si["pk"] != li["pk"]:
             raise EngineError("PGA-GEN-086", "row-level comparison needs the same primary key on both sides (restored: %s, live: %s)" % (si["pk"] or "none", li["pk"] or "none"),
-                              "tables without a primary key can only be recovered as a whole (promote)")
+                              "tables without a primary key or a unique index on NOT NULL columns can only be recovered as a whole (promote)")
         for s_, label in ((st, "recovered"), (lv, "live")):
             n = int(s_.scalar("SELECT count(*) FROM %s" % fq))
             if n > ROW_DIFF_MAX:
@@ -1055,7 +1067,7 @@ def diff_object(ctx, stage_db, spec, into=None, limit=200):
         only_old = sorted(k for k in a if k not in b)
         only_new = sorted(k for k in b if k not in a)
         changed = sorted(k for k in a if k in b and a[k] != b[k])
-        out = {"object": spec, "primary_key": si["pk"], "restored_rows": len(a), "live_rows": len(b), "columns_only_in_one_side": sorted(set(si["cols"]) ^ set(li["cols"])),
+        out = {"object": spec, "primary_key": si["pk"], "key_from": li.get("key_from"), "restored_rows": len(a), "live_rows": len(b), "columns_only_in_one_side": sorted(set(si["cols"]) ^ set(li["cols"])),
                "counts": {"missing_now": len(only_old), "added_since": len(only_new), "changed": len(changed)}, "limit": limit}
         out["missing_now"] = [{"key": json.loads(k), "restored": json.loads(v)} for k, v in sorted(_sample(st, fq, si["pk"], only_old[:limit]).items())]
         out["added_since"] = [{"key": json.loads(k), "live": json.loads(v)} for k, v in sorted(_sample(lv, fq, li["pk"], only_new[:limit]).items())]

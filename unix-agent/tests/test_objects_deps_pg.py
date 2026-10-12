@@ -6,6 +6,7 @@
 
   as root:   su postgres -s /bin/bash -c 'cd unix-agent && python3 -m unittest tests.test_objects_deps_pg -v'
 """
+import json
 import os
 import sys
 import time
@@ -36,6 +37,8 @@ INSERT INTO app.customers(name) SELECT 'c' || g FROM generate_series(1, 200) g;
 INSERT INTO app.suppliers(name) SELECT 's' || g FROM generate_series(1, 50) g;
 INSERT INTO app.invoices(customer_id, amount) SELECT 1 + g % 200, g * 1.25 FROM generate_series(1, 500) g;
 CREATE VIEW app.big_customers AS SELECT c.id, c.name, sum(i.amount) AS total FROM app.customers c JOIN app.invoices i ON i.customer_id = c.id GROUP BY 1, 2 HAVING sum(i.amount) > 500;
+CREATE TABLE app.no_pk (code text NOT NULL, region text NOT NULL, qty int, note text, UNIQUE (region, code));
+INSERT INTO app.no_pk SELECT 'k' || g, CASE WHEN g % 2 = 0 THEN 'eu' ELSE 'us' END, g, 'n' || g FROM generate_series(1, 100) g;
 CREATE MATERIALIZED VIEW app.mv_totals AS SELECT customer_id, count(*) AS n, sum(amount) AS total FROM app.invoices GROUP BY 1;
 CREATE UNIQUE INDEX ON app.mv_totals(customer_id);
 """
@@ -102,6 +105,20 @@ class Deps(unittest.TestCase):
         self.switch()
         self.go(["%s.app.shared_ids" % DB], mode="missing_only")
         self.assertGreaterEqual(int(q(DB, "SELECT last_value FROM app.shared_ids")[0][0]), int(S["seq"]))
+
+    def test_06_rows_of_a_table_without_primary_key(self):
+        # no primary key, but a UNIQUE (region, code) on NOT NULL columns: rows can be compared and recovered one by one
+        from pg_arca.engine.granular import apply_rows, diff_object
+        q(DB, "DELETE FROM app.no_pk WHERE qty <= 10; UPDATE app.no_pk SET note = 'changed' WHERE qty = 50")
+        self.switch()
+        restore_object(F.ctx, DB, objects=["%s.app.no_pk" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_nopk")
+        d = diff_object(F.ctx, "pgarca_stage_nopk", "%s.app.no_pk" % DB)
+        self.assertEqual(d["primary_key"], ["region", "code"]); self.assertIn("unique index", d["key_from"])
+        self.assertEqual((d["counts"]["missing_now"], d["counts"]["changed"]), (10, 1))
+        keys = [json.dumps(x["key"]) for x in d["missing_now"]] + [json.dumps(x["key"]) for x in d["changed"]]
+        r = apply_rows(F.ctx, "pgarca_stage_nopk", "%s.app.no_pk" % DB, restore_keys=keys)
+        self.assertEqual((r["inserted"], r["updated"]), (10, 1))
+        self.assertEqual(q(DB, "SELECT count(*), count(*) FILTER (WHERE note = 'changed') FROM app.no_pk")[0], ["100", "0"])
 
 
 if __name__ == "__main__":
