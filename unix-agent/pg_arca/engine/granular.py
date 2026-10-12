@@ -666,7 +666,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         return plan
     restorecheck.enforce(checks)
     if progress:
-        progress({"phase": "prepare", "note": "archiving the current WAL segment"})
+        progress({"phase": "wal_flush"})
     flushed = flush_current_wal(ctx, chain, tt, target_lsn, target_xid, target_name, cancel=cancel)
     eph, info = _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     if flushed:
@@ -839,7 +839,7 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
         return plan
     restorecheck.enforce(checks)
     if progress:
-        progress({"phase": "prepare", "note": "archiving the current WAL segment"})
+        progress({"phase": "wal_flush"})
     flushed = flush_current_wal(ctx, chain, tt, target_lsn, target_xid, target_name, cancel=cancel)
     eph, info = _recover_db(ctx, chain, dbentry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     if flushed:

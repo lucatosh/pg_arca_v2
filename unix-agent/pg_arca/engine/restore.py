@@ -755,6 +755,11 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     write_json(os.path.join(dest, RESUME_MARK), {"set": target["id"] if isinstance(target, dict) else target, "started": iso(), "resumed": bool(resume)})
     if delta:
         remove_stale(dest, merged)
+    if progress:
+        progress({"phase": "wal_flush"})
+    fl = flush_current_wal(ctx, chain, target_time, target_lsn, target_xid, target_name, cancel=cancel)     # the copy recovers up to 'now' when the source is alive
+    if fl:
+        plan["wal_flushed"] = fl
     link_tablespaces(dest, tbs, remap)
     stats = materialize(ctx, merged, dest, delta, progress, cancel)
     try:
