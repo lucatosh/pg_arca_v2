@@ -14,11 +14,15 @@ for v in $VERS; do
   for try in 1 2 3; do timeout 900 docker pull -q "postgres:$tag" >/dev/null 2>&1 && break; echo "   pull of postgres:$tag failed/stalled (try $try)"; sleep 10; done
   timeout ${MATRIX_TIMEOUT:-5400} docker run --rm -v "$ROOT":/work:ro,z -e LC_ALL=C.UTF-8 "postgres:$tag" bash -c '
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends python3 python3-cryptography procps >/dev/null 2>&1
+    # a VM whose clock is behind (suspended VirtualBox, no NTP) makes apt refuse the repositories ("Release file ... is not valid yet"): never let
+    # the host clock decide whether the matrix runs; and if python3 is still missing, say so instead of reporting every version as failed tests
+    APTO="-o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false"
+    for t in 1 2 3; do apt-get $APTO update -qq >/dev/null 2>&1 && apt-get $APTO install -y -qq --no-install-recommends python3 python3-cryptography procps >/dev/null 2>&1 && break; sleep 5; done
+    command -v python3 >/dev/null || { echo "MATRIX-ENV: python3 could not be installed in the container (apt failed: network or clock)"; exit 3; }
     mkdir -p /tmp/tools/lab && cp -r /work/unix-agent /tmp/agent && cp /work/tools/lab/*.sql /tmp/tools/lab/ && chown -R postgres:postgres /tmp/agent /tmp/tools
     su postgres -s /bin/bash -c "cd /tmp/agent && python3 -W ignore -m unittest '"$SUITES"' 2>&1"' > /tmp/matrix-$v.log 2>&1
   res=$(grep -E "^(Ran|OK|FAILED)" /tmp/matrix-$v.log | tr '\n' ' ')
-  if grep -q "^OK" /tmp/matrix-$v.log; then st=PASS; else st=FAIL; fi
+  if grep -q "^OK" /tmp/matrix-$v.log; then st=PASS; elif grep -q "^MATRIX-ENV" /tmp/matrix-$v.log || ! grep -q "^Ran" /tmp/matrix-$v.log; then st=NOT-RUN; else st=FAIL; fi
   echo "PG $v $st  $res" | tee -a /tmp/matrix-summary.txt
   [ $st = FAIL ] && grep -E "^(ERROR|FAIL):" /tmp/matrix-$v.log | head -20
 done

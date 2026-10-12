@@ -1413,6 +1413,17 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
                 raise EngineError("PGA-GEN-091", "nothing applied: a column added after the restore point is NOT NULL without a default (%s): re-inserted rows have no value for it"
                                   % ", ".join(missing), "update only rows that still exist, or give the column a default")
             raise
+        # large objects the restored rows reference and the live database no longer has (deleted with the rows): back from the quarantine copy, same oid
+        cols = objmod.lo_columns(tg, schema, name)
+        if cols and restore_keys:
+            union = " UNION ".join("SELECT %s::oid AS o FROM %s t WHERE %s IS NOT NULL AND %s = ANY(ARRAY[%s])"
+                                   % (quote_ident(c), fq, quote_ident(c), keyexpr, ",".join(sql_lit(k) for k in restore_keys)) for c in cols)
+            gone = [int(r[0]) for r in tg.query("SELECT DISTINCT r.o FROM (%s) r WHERE NOT EXISTS (SELECT 1 FROM pg_largeobject_metadata m WHERE m.oid = r.o)" % union) if r and r[0]]
+            if gone:
+                have = {int(r[0]) for r in st.query("SELECT oid FROM pg_largeobject_metadata WHERE oid = ANY(ARRAY[%s]::oid[])" % ",".join(map(str, gone))) if r and r[0]}
+                res["large_objects_restored"] = objmod.copy_large_objects(st, tg, [o for o in gone if o in have])
+                if len(have) < len(gone):
+                    res["note"] = ((res.get("note") or "") + " %d referenced large object(s) are in neither the live database nor the backup copy" % (len(gone) - len(have))).strip()
         return res
     finally:
         st.close()

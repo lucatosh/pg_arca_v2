@@ -557,6 +557,59 @@ def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None, quiet_unused=No
     return created, problems
 
 
+
+# ============================================================================================================== large objects referenced by tables
+LO_CHUNK = 1 << 20
+
+
+def lo_columns(sess, schema, name):
+    """Columns that hold large-object references: type oid, or a domain over oid (the lo extension's `lo`)."""
+    return [r[0] for r in sess.query(
+        "SELECT a.attname FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid WHERE a.attrelid = %s::regclass AND a.attnum > 0 AND NOT a.attisdropped "
+        "AND (a.atttypid = 'oid'::regtype OR t.typbasetype = 'oid'::regtype) ORDER BY a.attnum" % sql_lit(qi(schema, name)))]
+
+
+def lo_referenced(sess, schema, name, cols, only_missing_in=None):
+    """Large objects referenced by the table (that exist in this database). With only_missing_in: those absent from that other session's database."""
+    if not cols:
+        return []
+    union = " UNION ".join("SELECT %s::oid AS o FROM %s WHERE %s IS NOT NULL" % (quote_ident(c), qi(schema, name), quote_ident(c)) for c in cols)
+    oids = [int(r[0]) for r in sess.query("SELECT DISTINCT r.o FROM (%s) r JOIN pg_largeobject_metadata m ON m.oid = r.o ORDER BY 1" % union) if r and r[0]]
+    if only_missing_in is not None and oids:
+        have = set()
+        for i in range(0, len(oids), 5000):
+            part = oids[i:i + 5000]
+            have |= {int(r[0]) for r in only_missing_in.query("SELECT oid FROM pg_largeobject_metadata WHERE oid = ANY(ARRAY[%s]::oid[])" % ",".join(map(str, part))) if r and r[0]}
+        oids = [o for o in oids if o not in have]
+    return oids
+
+
+def copy_large_objects(src, dst, oids, owners_ok=None):
+    """Copy large objects src -> dst keeping their oid (the rows reference them by oid), in 1 MiB pieces (no whole document in memory), with their
+    owner when that role exists. Returns how many were copied."""
+    n = 0
+    for o in oids:
+        owner = src.scalar("SELECT pg_get_userbyid(lomowner) FROM pg_largeobject_metadata WHERE oid = %d" % o)
+        dst.query("SELECT lo_create(%d)" % o)
+        off = 0
+        while True:
+            # base64 lines are wrapped at 76 characters: unwrapped server-side, so the value is ONE line for the session that reads it
+            chunk = src.scalar("SELECT translate(encode(lo_get(%d, %d, %d), 'base64'), E'\\n', '')" % (o, off, LO_CHUNK)) or ""
+            data = chunk.strip()
+            if data:
+                dst.query("SELECT lo_put(%d, %d, decode(%s, 'base64'))" % (o, off, sql_lit(data)))
+            got = len(data) * 3 // 4 - data[-2:].count("=") if data else 0
+            if got < LO_CHUNK:
+                break
+            off += got
+        if owner and (owners_ok is None or owner in owners_ok):
+            try:
+                dst.query("ALTER LARGE OBJECT %d OWNER TO %s" % (o, quote_ident(owner)))
+            except EngineError:
+                pass
+        n += 1
+    return n
+
 # ============================================================================================================== stage
 TOC_DESC = re.compile(r"^\s*\d+; \d+ \d+ (TABLE ATTACH|TABLE DATA|TABLE|INDEX ATTACH|INDEX|FK CONSTRAINT|CHECK CONSTRAINT|CONSTRAINT|DEFAULT ACL|DEFAULT|"
                       r"SEQUENCE OWNED BY|SEQUENCE SET|SEQUENCE|[A-Z][A-Z ]*?) ")
@@ -742,6 +795,24 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
                     meta["counts"]["%s.%s" % (t["schema"], t["name"])] = a
                     if a != b:
                         raise EngineError("PGA-VRF-040", "verification failed for %s: %d rows at target, %d restored" % (fq, a, b))
+            finally:
+                src.close()
+            # large objects the recovered rows reference: pg_dump -t does not carry them. Copied from the recovered instance (same oid) so that promotion
+            # and row recovery can bring back the ones deleted since
+            src = PgSession(eph.conn(dbname), read_only=True)
+            try:
+                los = {}
+                for t in info["tables"]:
+                    if t["kind"] == "p":
+                        continue
+                    cols = lo_columns(sess, t["schema"], t["name"])
+                    if cols:
+                        oids = lo_referenced(src, t["schema"], t["name"], cols, only_missing_in=sess)
+                        if oids:
+                            copy_large_objects(src, sess, oids, roles_ok)
+                        los["%s.%s" % (t["schema"], t["name"])] = cols
+                if los:
+                    meta["lo_columns"] = los
             finally:
                 src.close()
             write_meta(sess, meta)
@@ -1112,6 +1183,30 @@ def _journal_done(journal):
             pass
 
 
+def _promote_lobs(admin, stage_db, live, meta, todo, plan):
+    """After the tables are in place: the large objects their rows reference that the live database no longer has come back from the quarantine copy
+    (same oid). Never replaces an existing one. Returns how many."""
+    los = meta.get("lo_columns") or {}
+    if not los:
+        return 0
+    ss = PgSession(admin.with_db(stage_db), read_only=True)
+    n = 0
+    try:
+        roles = _roles_present(live, meta.get("roles") or [])
+        for r in todo:
+            cols = los.get("%s.%s" % (r["schema"], r["name"]))
+            if not cols:
+                continue
+            try:
+                oids = lo_referenced(ss, r["schema"], r["name"], cols, only_missing_in=live)
+                n += copy_large_objects(ss, live, oids, roles)
+            except EngineError as e:
+                plan["warnings"].append("large objects referenced by %s.%s were not all restored: %s" % (r["schema"], r["name"], e.message[:200]))
+    finally:
+        ss.close()
+    return n
+
+
 def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, target_schema=None, journal=None, journal_info=None):
     """Put the objects of a v2 quarantine database back into the live database it came from (same name, on `admin`'s server).
 
@@ -1297,11 +1392,13 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                           note="the recovered tables are in schema %s with their own names; the originals are untouched and nothing was re-attached" % target_schema)
             created_tmp = []
             _journal_done(journal)
+            result["large_objects_restored"] = _promote_lobs(admin, stage_db, live, meta, todo, plan)
             return _compat(result)
         if mode == "as_new":
             result.update(plan=_slim(plan), promoted=["%s.%s" % (r["schema"], r["new_name"]) for r in todo], old_kept_as=[], note="the recovered tables sit next to the originals; nothing was re-attached")
             created_tmp = []
             _journal_done(journal)
+            result["large_objects_restored"] = _promote_lobs(admin, stage_db, live, meta, todo, plan)
             return _compat(result)
         # ---- phase 2: the swap, atomically
         if progress:
@@ -1485,6 +1582,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
             raise
         created_tmp, created_seq = [], []
         _journal_done(journal)                               # the swap committed: the temporary names are gone
+        lo_n = _promote_lobs(admin, stage_db, live, meta, todo, plan)
         moved = _seq_forward(live, seq_live, pos_of)
         # ---- after the swap: validate the re-attached keys, refresh statistics, verify
         invalid = []
@@ -1518,7 +1616,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                       publications_moved=["%s: %s.%s" % (pb["pub"], pb["schema"], pb["table"]) for pb in plan.get("publications") or []],
                       rules_and_policies_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["name"]) for x in (plan.get("foreign_rules") or []) + (plan.get("foreign_policies") or []) + (plan.get("foreign_triggers") or [])],
                       defaults_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []],
-                      functions_rebound=plan.get("rowtype_funcs_rebound") or [],
+                      functions_rebound=plan.get("rowtype_funcs_rebound") or [], large_objects_restored=lo_n,
                       views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]),
                       sequences_created=["%s.%s" % (x["schema"], x["name"]) for x in seq_new], sequences_advanced=moved)
         if any(v.get("kind") == "m" for v in plan["recovered_views"]):
