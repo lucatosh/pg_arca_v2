@@ -22,6 +22,13 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Protezione dei dati'); await shot('03-overview');
   // backup tab
   await tab('Protezione', 'Backup'); await p.waitForSelector('text=Esegui un backup'); await p.waitForSelector('.placement code:has-text("/mnt/backup/repo/prodpg")'); await shot('04-backup');
+  // previous backup location after a destination change: plan the migration (sizes, free space, time), run it, follow it
+  await p.waitForSelector('text=Posizione precedente ancora usata dai ripristini'); await p.click('.placement button:has-text("Migra o elimina")');
+  await p.click('.modal button:has-text("Calcola cosa spostare")'); await p.waitForSelector('.modal td:has-text("Totale da copiare")', { timeout: 10000 });
+  await p.waitForSelector('.modal >> text=repository e archivio WAL: 4.0 GiB da copiare'); await shot('04c-migration-plan');
+  await p.click('.modal button:has-text("Avvia la migrazione in background")'); await p.click('.modal >> nth=-1 >> button:has-text("Avvia")');
+  await p.waitForSelector('text=Migrazione completata', { timeout: 15000 }); await shot('04d-migration-done');
+  await p.click('.modal >> nth=0 >> button:has-text("Chiudi")'); await p.waitForSelector('text=Posizione precedente ancora usata dai ripristini', { state: 'detached', timeout: 20000 });
   { const b = p.locator('button:has-text("Prova di disaster recovery")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster ripristinato in 13 minuti', { timeout: 10000 }); await shot('04b-drill'); } }
   await p.click('button:has-text("Avvia backup")'); await p.waitForSelector('text=Copia dei dati'); await p.waitForSelector('.activitystrip:has-text("un backup")', { timeout: 8000 }); await shot('05-backup-running');
   // the dock's Log opens a floating window with THIS operation's log (not the database log): movable, minimisable, closable
@@ -89,7 +96,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('.modal button:has-text("Salva")'); await p.waitForSelector('text=Impostazioni salvate'); await shot('17-infra-dest');
   await p.locator('tr:has-text("prodpg") button:has-text("Controlla e applica")').click(); await p.waitForSelector('text=/Destinazione dei backup . prodpg/');
   assert(await p.locator('button:has-text("Applica ai nodi")').isDisabled(), 'apply needs a check first');
-  await p.click('button:has-text("Controlla su tutti i nodi")'); await p.waitForSelector('text=is on nfs4', { timeout: 15000 }); await p.waitForSelector('text=controllo riuscito', { timeout: 15000 });
+  await p.click('button:has-text("Controlla su tutti i nodi")'); await p.waitForSelector('text=è su nfs4', { timeout: 15000 }); await p.waitForSelector('text=controllo riuscito', { timeout: 15000 });
   await p.click('button:has-text("Applica ai nodi")'); await p.waitForSelector('text=Applicazione avviata', { timeout: 10000 }); await shot('18-infra-applied');
   await p.click('.modal button:has-text("Chiudi")');
   await p.click('.side button.navbtn:has-text("Tutti i cluster")'); await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Protezione dei dati');

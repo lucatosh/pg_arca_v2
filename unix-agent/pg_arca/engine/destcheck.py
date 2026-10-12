@@ -338,8 +338,8 @@ def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None,
         inv = _inventory(kind, os.path.realpath(current), stanza)
         n = inv.get("sets") if kind == "repo" else inv.get("wal_files")
         if n:
-            add("existing", "warn", "the current location %s holds %d %s that are NOT moved to the new one" % (current, n, "backup set(s)" if kind == "repo" else "WAL file(s)"),
-                "keep the old location until the new chain has a full backup; restores of old backups still read from the old path")
+            add("existing", "warn", "the current location %s holds %d %s: after the change they stay there, still read by restores, and can be migrated in the background"
+                % (current, n, "backup set(s)" if kind == "repo" else "WAL file(s)"), "keep the old location reachable until its content is migrated")
     res["ok"] = not any(c["level"] == "bad" for c in checks)
     return res
 

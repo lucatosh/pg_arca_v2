@@ -26,4 +26,12 @@ assert.match(itCheck("logical replication subscriptions restored DISABLED and de
 assert.match(itCheck('a recovered column has the row type of table app.addr, which does not exist now: select that table too (it is not created by itself)'), /^una colonna recuperata ha come tipo la riga della tabella app\.addr/);
 assert.match(itCheck('column app.prod_snap.item has the row type of a replaced table (app.prod): it keeps the OLD copy\'s type, so that copy cannot be dropped without it; to move it: ALTER TABLE "app"."prod_snap" ALTER COLUMN "item" TYPE app.prod USING "item"::text::app.prod (rewrites that table)'), /^la colonna app\.prod_snap\.item ha come tipo la riga/);
 assert.match(itCheck('app.prod_label(app.prod) recreated for the recovered table; the old version (app.prod_label(app.prod_old_20261012)) is still used by other objects and was kept'), /^app\.prod_label\(app\.prod\) ricreata/);
+// backup destination and migration checks
+assert.equal(itCheck('writable by the agent (postgres): exclusive create, fsync and atomic rename work (3.1 ms)'), 'scrivibile dall’agent (postgres): creazione esclusiva, fsync e rinomina atomica funzionano (3.1 ms)');
+assert.match(itCheck("the PostgreSQL server cannot write there as archive_command would: ERROR:  program \"x\" failed"), /^il server PostgreSQL non può scrivere lì/);
+assert.match(itCheck('/mnt/b is on nfs4 (srv:/x)'), /^\/mnt\/b è su nfs4 \(srv:\/x\)$/);
+assert.match(itCheck('/srv/b is on ext4'), /^\/srv\/b è su ext4$/);
+assert.match(itCheck('repository + WAL archive: 1.2 GiB to copy, 30.0 GiB free (28.8 GiB after)'), /^repository e archivio WAL: 1\.2 GiB da copiare/);
+assert.match(itCheck('the current location /old holds 3 backup set(s): after the change they stay there, still read by restores, and can be migrated in the background'), /^la posizione attuale \/old contiene 3 backup/);
+assert.match(itFix('chmod o-rwx /srv/b (or enable repository encryption)'), /^chmod o-rwx \/srv\/b \(oppure attiva/);
 console.log('i18n OK');

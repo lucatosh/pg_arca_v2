@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Fragment, useEffect, useMemo, useState } from 'react';
 import { itCheck, itFix } from '../i18n';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Confirm, Field, Icon, Modal, Skeleton, Tabs, bytes, ago } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, Field, Icon, Modal, Skeleton, Tabs, bytes, ago, num } from '../ui';
 import { Op, isTerminal, revalidate, toast, useOpRunner, useQuery } from '../hooks';
 import { OpPanel } from './shared';
 import { go } from '../router';
@@ -150,7 +150,65 @@ function NodeCheck({ opId }: { opId: string }) {
   if (op.status !== 'succeeded') return <Banner kind="bad" title="Il controllo non è riuscito">{op.error || op.status}</Banner>;
   const r = op.result;
   return <div className="stack">{(r.paths || []).map((p: any) => <div key={p.kind} className="stack"><div className="small"><strong>{p.kind === 'repo' ? 'Repository' : 'Archivio WAL'}</strong> <span className="mono">{p.path}</span>{p.mount ? <span className="muted"> · {p.mount.fstype}</span> : null}{p.free_bytes != null ? <span className="muted"> · liberi {bytes(p.free_bytes)}</span> : null}</div>
-    <CheckList checks={p.checks} />{p.bench && !p.bench.error ? <div className="small muted">Misurato: scrittura {p.bench.write_mb_s} MB/s, lettura {p.bench.read_mb_s} MB/s ({p.bench.note})</div> : null}</div>)}</div>;
+    <CheckList checks={p.checks} />{p.bench && !p.bench.error ? <div className="small muted">Misurato: scrittura {p.bench.write_mb_s} MB/s, lettura {p.bench.read_mb_s} MB/s ({p.bench.note})</div> : null}
+    {p.identity ? <Writers id={p.identity} /> : null}
+    {p.fix_commands?.length && p.checks.some((c: any) => c.level !== 'ok') ? <details open={p.checks.some((c: any) => c.level === 'bad')}><summary className="small" style={{ cursor: 'pointer' }}>Comandi per sistemare i permessi (da eseguire come root sul nodo)</summary>
+      <pre className="out">{p.fix_commands.join('\n')}</pre><p className="small muted">pg_arca non li esegue da sé: cambiano utenti, gruppi e permessi del sistema. Dopo, ripeti il controllo.</p></details> : null}</div>)}
+    {r.server_probe ? <div className="small muted">{r.server_probe === 'not run: no running PostgreSQL on this node (the agent\'s own identity was tested)' ? 'Su questo nodo PostgreSQL non è attivo: provata solo l’utenza dell’agent.' : r.server_probe}</div> : null}</div>;
+}
+
+/** Who writes there: the agent and the PostgreSQL server (archive_command), as each check saw them. */
+function Writers({ id }: { id: any }) {
+  const a = id.agent || {}; const s = id.server;
+  return <div className="small muted">Cartella di <span className="mono">{id.dir_owner}:{id.dir_group}</span> ({id.dir_mode}{id.acl ? ', ACL' : ''}) · scrive l’agent come <span className="mono">{a.user}</span> (uid {a.uid}){s ? <> · scrive PostgreSQL (archive_command) come <span className="mono">{s.user}</span> (uid {s.uid}){s.user !== a.user ? ' — utenze diverse: serve un gruppo comune' : ''}</> : null}</div>;
+}
+
+/** The location the backups and WAL were in before the last change: still read by restores until migrated; migrate in the background or delete. */
+function PreviousLocation({ cluster, d }: { cluster: SCluster; d: any }) {
+  const prev = d.previous || {}; const repo: any[] = prev.repo || []; const wal: any[] = prev.wal || [];
+  const plan = useOpRunner(cluster.id); const mig = useOpRunner(cluster.id, () => { revalidate(`/api/clusters/${encodeURIComponent(cluster.id)}/destination`); }); const drop = useOpRunner(cluster.id);
+  const [mb, setMb] = useState(''); const [ask, setAsk] = useState(false); const [askDrop, setAskDrop] = useState(false); const [abandon, setAbandon] = useState(false);
+  const [src0, setSrc0] = useState<any>(null);              // the location being worked on: the agent stops reporting it once migrated or deleted
+  const src = src0 || { ...(repo[0] ? { source_repo: repo[0].path } : {}), ...(wal[0] ? { source_wal: wal[0].path } : {}) };
+  if (!repo.length && !wal.length && !mig.op && !drop.op) return null;
+  const p = plan.op?.status === 'succeeded' ? plan.op.result : null;
+  const gib = (b: number) => bytes(b);
+  return <Card title="Posizione precedente"><div className="stack">
+    <p className="small">Dopo l’ultimo cambio di destinazione i backup e i WAL già fatti sono rimasti qui. I ripristini li leggono ancora (anche un PITR che attraversa il cambio), ma nulla di nuovo viene scritto in questa posizione.</p>
+    {!repo.length && !wal.length ? <p className="small muted">La posizione precedente non è più usata dai ripristini.</p> : null}
+    <dl className="kv">{repo.map(x => <Fragment key={x.path}><dt>Repository</dt><dd className="mono">{x.path} {x.readable ? null : <Badge kind="bad">non raggiungibile</Badge>}</dd></Fragment>)}
+      {wal.map(x => <Fragment key={x.path}><dt>Archivio WAL</dt><dd className="mono">{x.path} {x.readable ? null : <Badge kind="bad">non raggiungibile</Badge>}</dd></Fragment>)}</dl>
+    <div className="row wrap gap-s"><Button icon="search" busy={plan.busy} onClick={() => plan.run('destination_migrate', { ...src, dry_run: true })}>Calcola cosa spostare</Button></div>
+    {plan.op && !p ? <OpPanel op={plan.op} error={plan.error} label="Piano della migrazione" /> : plan.error ? <Banner kind="bad">{plan.error}</Banner> : null}
+    {p ? <div className="stack">
+      {p.nothing_to_do ? <Banner kind="ok" title="Niente da spostare">Tutto ciò che serve è già nella nuova destinazione: la posizione precedente non è più necessaria ai ripristini.</Banner> : <>
+        <table className="t"><tbody>
+          <tr><td>Backup da spostare</td><td className="num">{p.sets.length} ({p.sets.filter((x: any) => x.type === 'full').length} completi)</td></tr>
+          <tr><td>Blocchi dei backup</td><td className="num">{num(p.chunks)} · {gib(p.chunk_bytes + p.set_bytes)}</td></tr>
+          <tr><td>File WAL</td><td className="num">{num(p.wal_files)} · {gib(p.wal_bytes)}</td></tr>
+          <tr><td><strong>Totale da copiare</strong></td><td className="num"><strong>{gib(p.total_bytes)}</strong></td></tr>
+          {p.source_usage_bytes != null ? <tr><td>Occupazione attuale della posizione precedente</td><td className="num">{gib((p.source_usage_bytes || 0) + (p.source_wal_usage_bytes || 0))}</td></tr> : null}
+          {(p.space || []).map((sp: any) => <tr key={sp.path}><td>Spazio libero sulla nuova (<span className="mono">{sp.path}</span>)</td><td className="num">{gib(sp.free_bytes)} di {gib(sp.total_bytes)} · dopo la copia circa {gib(Math.max(0, sp.free_bytes - p.total_bytes))}</td></tr>)}
+          {p.estimated_seconds ? <tr><td>Durata stimata</td><td className="num">circa {p.estimated_seconds >= 120 ? `${Math.round(p.estimated_seconds / 60)} minuti` : `${p.estimated_seconds} secondi`} (scrittura misurata {p.write_mb_s} MB/s)</td></tr> : null}
+        </tbody></table>
+        <CheckList checks={p.checks} />
+        <div className="row wrap gap-s" style={{ alignItems: 'flex-end' }}><Field label="Limite di banda (MB/s, vuoto = nessuno)"><input className="input" style={{ width: 120 }} value={mb} onChange={e => setMb(e.target.value.replace(/[^0-9.]/g, ''))} /></Field>
+          <Button kind="primary" icon="zap" disabled={!p.ok || mig.busy} busy={mig.busy} onClick={() => setAsk(true)}>Avvia la migrazione in background</Button></div>
+        <p className="small muted">Copia verificata (ogni file riletto e confrontato), riprendibile: se si interrompe, rilanciandola continua da dove era. I backup continuano nel frattempo. La posizione precedente non viene cancellata.</p></>}
+    </div> : null}
+    {mig.op || mig.error ? <OpPanel op={mig.op} error={mig.error} cancel={mig.cancel} label="Migrazione dei backup" /> : null}
+    {mig.op?.status === 'succeeded' ? <Banner kind={mig.op.result.complete ? 'ok' : 'warn'} title={mig.op.result.complete ? 'Migrazione completata' : 'Migrazione parziale'}>
+      {num(mig.op.result.copied.sets)} backup, {num(mig.op.result.copied.chunks)} blocchi e {num(mig.op.result.copied.wal)} file WAL copiati e verificati in {Math.round(mig.op.result.seconds)} s. {mig.op.result.complete ? 'I ripristini non usano più la posizione precedente.' : `Restano: ${mig.op.result.left.sets.length} backup, ${mig.op.result.left.wal_files} file WAL.`}</Banner> : null}
+    <div className="hr" />
+    <div className="row wrap gap-s"><Button kind="danger" icon="trash" busy={drop.busy} onClick={() => setAskDrop(true)}>Elimina la posizione precedente…</Button>
+      <span className="small muted">Solo i dati di questo cluster; rifiutata finché qualcosa esiste solo lì e finché la nuova destinazione non ha un backup completo.</span></div>
+    {drop.op || drop.error ? <OpPanel op={drop.op} error={drop.error} label="Eliminazione della posizione precedente" /> : null}
+    {ask ? <Confirm title="Avviare la migrazione?" confirmLabel="Avvia" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); setSrc0(src); mig.run('destination_migrate', { ...src, ...(mb ? { throttle_mb_s: Number(mb) } : {}) }); }}>
+      <p>Copia {p ? gib(p.total_bytes) : ''} nella nuova destinazione, in background{mb ? `, al massimo ${mb} MB/s` : ''}. Puoi annullarla e riprenderla.</p></Confirm> : null}
+    {askDrop ? <Confirm title="Eliminare i backup dalla posizione precedente?" danger requireText="ELIMINA" confirmLabel="Elimina" onClose={() => setAskDrop(false)} onConfirm={() => { setAskDrop(false); setSrc0(src); drop.run('destination_drop_old', { ...src, confirm: 'ELIMINA', ...(abandon ? { abandon: true } : {}) }); }}>
+      <p>Vengono cancellati i backup e i WAL di <strong>{cluster.name}</strong> in {[repo[0]?.path, wal[0]?.path].filter(Boolean).join(' e ')}. Non si torna indietro.</p>
+      <label className="check"><input type="checkbox" checked={abandon} onChange={e => setAbandon(e.target.checked)} />Anche se qualcosa non è stato migrato (la storia di ripristino che contiene va persa)</label></Confirm> : null}
+  </div></Card>;
 }
 
 function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: () => void }) {
@@ -166,7 +224,10 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
   const nodes: any[] = d?.nodes || []; const online = nodes.filter(n => n.online);
   const allOk = !!d?.destination && online.length > 0 && online.every(n => d.checks?.[n.id]?.ok === true && d.checks[n.id].fresh);
   return <Modal wide title={`Destinazione dei backup — ${cluster.name}`} onClose={onClose} footer={<><Button onClick={onClose}>Chiudi</Button></>}>
-    {!d ? <Skeleton h={80} /> : !d.destination ? <Banner kind="warn" title="Nessuna destinazione configurata">Imposta un percorso a livello globale, di ambiente, di cartella o di questo cluster.</Banner> : <div className="stack">
+    {!d ? <Skeleton h={80} /> : !d.destination ? <div className="stack">
+      {d.current?.repo ? <Banner kind="info" title="Destinazione impostata sul nodo">Il cluster scrive in <code>{d.current.repo}</code> (WAL in <code>{d.current.wal || '—'}</code>), dalla configurazione dell’agent. Per sceglierla dalla console imposta un percorso per questo cluster, per l’ambiente, per una cartella o per tutti: poi la controlli e la applichi da qui.</Banner>
+        : <Banner kind="warn" title="Nessuna destinazione configurata">Imposta un percorso a livello globale, di ambiente, di cartella o di questo cluster.</Banner>}
+      <PreviousLocation cluster={cluster} d={d} /></div> : <div className="stack">
       <dl className="kv"><dt>Tipo</dt><dd>{TYPE_LABEL[d.destination.type]}</dd>{d.destination.repo_path ? <><dt>Repository</dt><dd className="mono">{d.destination.repo_path}</dd></> : null}{d.destination.wal_path ? <><dt>Archivio WAL</dt><dd className="mono">{d.destination.wal_path}</dd></> : null}
         <dt>Mount obbligatorio</dt><dd>{d.destination.require_mount ? 'sì' : 'no'}</dd>{d.destination.min_free_gb ? <><dt>Spazio minimo</dt><dd>{d.destination.min_free_gb} GiB</dd></> : null}</dl>
       {d.destination.wal_shared_warning ? <Banner kind="warn" title="Archivio WAL condiviso">{d.destination.wal_shared_warning}</Banner> : null}
@@ -177,10 +238,13 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
       <div className="row wrap gap-s"><Button icon="check" busy={busy === 'check'} disabled={!!busy || !online.length} onClick={() => act('check')}>Controlla su tutti i nodi</Button>
         <label className="check"><input type="checkbox" checked={bench} onChange={e => setBench(e.target.checked)} />Misura anche la velocità di scrittura (scrive 32 MiB)</label></div>
       <div className="hr" />
-      <Banner kind="info" title="Applicare la destinazione">Imposta repository e archivio WAL sull’agent di ogni nodo; l’archiviatore usa il nuovo percorso dal prossimo segmento. I backup già fatti non vengono spostati: dopo l’applicazione esegui un backup completo.</Banner>
+      {d.current ? <dl className="kv"><dt>In uso ora</dt><dd><span className="mono">{d.current.repo || '—'}</span> · WAL <span className="mono">{d.current.wal || '—'}</span></dd></dl> : null}
+      <Banner kind="info" title="Applicare la destinazione">Imposta repository e archivio WAL sull’agent di ogni nodo. Sul primario pg_arca verifica subito che il prossimo segmento WAL arrivi nella nuova cartella; se non arriva, torna da solo alla precedente e lo dice. I backup già fatti restano leggibili nella posizione precedente (anche per un PITR a cavallo del cambio) e puoi migrarli in background. La nuova destinazione parte con un backup completo. Su un ambiente protetto serve l’approvazione di un secondo amministratore.</Banner>
       <div><Button kind="primary" icon="zap" busy={busy === 'apply'} disabled={!allOk || !!busy} onClick={() => act('apply')}>Applica ai nodi</Button>{!allOk ? <span className="small muted"> Serve un controllo riuscito e recente su ogni nodo.</span> : null}</div>
-      {done ? <Banner kind="ok" title="Applicazione avviata">{done.operations.length} operazioni inviate ai nodi (le vedi nel pannello Attività). {done.note}</Banner> : null}
-      {err ? <Banner kind="bad">{err}</Banner> : null}</div>}
+      {done ? (done.approval ? <Banner kind="info" title="In attesa di approvazione">Il cambio di destinazione su questo ambiente richiede l’approvazione di un altro amministratore (pagina Oggi). Viene applicato appena approvato.</Banner>
+        : <Banner kind="ok" title="Applicazione avviata">{done.operations.length} operazioni inviate ai nodi (le vedi nel pannello Attività). {done.note}</Banner>) : null}
+      {err ? <Banner kind="bad">{err}</Banner> : null}
+      <PreviousLocation cluster={cluster} d={d} /></div>}
   </Modal>;
 }
 

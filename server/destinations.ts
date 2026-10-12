@@ -153,8 +153,15 @@ export function mountDestinationRoutes(app: any, store: Store) {
     const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
     const { dest, resolved } = destinationFor(st, c);
-    const nodes = nodesOf(st, c.id).map(n => ({ id: n.id, name: n.name, online: online(n), repo_path: n.snapshot?.config?.repo_path ?? n.snapshot?.backup?.repo_path ?? null }));
-    res.json({ destination: dest, effective: resolved, nodes, checks: dest ? checksFor(st, c, dest) : {}, applied: (st.settings.destinationApplied || {})[c.id] || null, previewTypes: PREVIEW_TYPES });
+    const nodes = nodesOf(st, c.id).map(n => ({ id: n.id, name: n.name, online: online(n), primary: n.snapshot?.postgres?.is_in_recovery === false,
+      repo_path: n.snapshot?.storage?.repo_path ?? n.snapshot?.config?.repo_path ?? n.snapshot?.backup?.repo_path ?? null, wal_path: n.snapshot?.storage?.wal_path ?? null,
+      repo_previous: n.snapshot?.storage?.repo_previous || [], wal_previous: n.snapshot?.storage?.wal_previous || [] }));
+    // the locations still read by restores after a change (as the primary reports them): what can be migrated or, once safe, deleted
+    const prim = nodes.find(n => n.primary && n.online) || nodes.find(n => n.online) || nodes[0];
+    const previous = prim ? { repo: prim.repo_previous, wal: prim.wal_previous, nodeId: prim.id, nodeName: prim.name } : null;
+    const running = st.operations.filter((o: any) => o.clusterId === c.id && ['destination_migrate', 'destination_drop_old'].includes(o.type) && ['queued', 'leased', 'running'].includes(o.status)).map((o: any) => ({ id: o.id, type: o.type, status: o.status }));
+    res.json({ destination: dest, effective: resolved, nodes, checks: dest ? checksFor(st, c, dest) : {}, applied: (st.settings.destinationApplied || {})[c.id] || null, previewTypes: PREVIEW_TYPES,
+      current: prim ? { repo: prim.repo_path, wal: prim.wal_path } : null, previous, running });
   });
 
   /**
@@ -188,6 +195,8 @@ export function mountDestinationRoutes(app: any, store: Store) {
         repoDisk: pd.repo || null, walDisk: pd.wal_archive || null, dataDisk: pd.pgdata || null,
         configured: dest, pending: !!(dest && ((dest.repo_path && dest.repo_path !== pd.repo?.path) || (dest.wal_path && dest.wal_path !== pd.wal_archive?.path))),
         type: dest?.type || applied?.type || 'local', sources: resolved.sources, node: node(prim),
+        previous: { repo: (prim?.snapshot?.storage?.repo_previous || []).map((x: any) => x.path), wal: (prim?.snapshot?.storage?.wal_previous || []).map((x: any) => x.path) },
+        migrating: st.operations.some((o: any) => o.clusterId === c.id && o.type === 'destination_migrate' && !o.params?.dry_run && ['queued', 'leased', 'running'].includes(o.status)),
       },
     });
   });

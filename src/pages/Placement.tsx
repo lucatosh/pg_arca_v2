@@ -10,7 +10,8 @@ type Src = Record<string, { scope: string; key: string }>;
 interface Placement {
   ephemeral: { placement: 'node' | 'central'; node: { id: string; name: string; online: boolean; role: string | null } | null; centralMissing: boolean; scratchDir: string; scratchDisk: Disk;
     scratchSharesData: boolean; binDir: string | null; sharedBuffersMb: number; keepOnFailure: boolean; sources: Src };
-  backup: { repoPath: string | null; walPath: string | null; repoDisk: Disk; walDisk: Disk; dataDisk: Disk; configured: any; pending: boolean; type: string; sources: Src; node: { name: string } | null };
+  backup: { repoPath: string | null; walPath: string | null; repoDisk: Disk; walDisk: Disk; dataDisk: Disk; configured: any; pending: boolean; type: string; sources: Src; node: { name: string } | null;
+    previous?: { repo: string[]; wal: string[] }; migrating?: boolean };
 }
 
 const TYPE_IT: Record<string, string> = { local: 'disco locale', nfs: 'NFS', smb: 'SMB/CIFS' };
@@ -56,7 +57,7 @@ export function BackupPlacement({ clusterId }: { clusterId: string }) {
   const sameDisk = !!(b.repoDisk && b.dataDisk && b.repoDisk.dev !== undefined && b.repoDisk.dev === b.dataDisk.dev);
   return <div className="placement" role="group" aria-label="Dove vanno i backup">
     <div className="ph"><Icon n="server" s={15} /><strong>Dove vanno i backup</strong><Badge>{TYPE_IT[b.type] || b.type}</Badge><div className="grow" />
-      <Button sm onClick={() => setDlg('edit')}>Cambia per questo cluster</Button><Button sm kind="ghost" onClick={() => go('infra/destination')}>Impostazioni generali</Button></div>
+      <Button sm onClick={() => setDlg('edit')}>Cambia per questo cluster</Button><Button sm icon="check" onClick={() => setDlg('apply')}>Controlla</Button><Button sm kind="ghost" onClick={() => go('infra/destination')}>Impostazioni generali</Button></div>
     <dl className="kv">
       <dt>Repository</dt><dd><code>{b.repoPath || '—'}</code>{from(b.sources, 'repoPath')}<div><DiskLine d={b.repoDisk} /></div></dd>
       <dt>Archivio WAL</dt><dd><code>{b.walPath || '—'}</code>{from(b.sources, 'walPath')}<div><DiskLine d={b.walDisk} /></div></dd>
@@ -64,6 +65,8 @@ export function BackupPlacement({ clusterId }: { clusterId: string }) {
     {sameDisk ? <div className="small" style={{ color: 'var(--warn)' }}>Il repository è sullo stesso disco dei dati: un guasto del disco perde dati e backup insieme, e i backup consumano lo spazio della produzione. Meglio un volume separato (NFS, SMB o un disco dedicato).</div> : null}
     {b.walDisk && pctFree(b.walDisk)! < 10 ? <div className="small" style={{ color: 'var(--bad)' }}>L’archivio WAL ha meno del 10% libero: se si riempie l’archiviazione fallisce e i WAL si accumulano nel disco di PostgreSQL.</div> : null}
     {b.pending ? <div className="row small" style={{ color: 'var(--warn)' }}><span className="grow">C’è una destinazione configurata ({b.configured?.repo_path || b.configured?.wal_path}) non ancora applicata ai nodi.</span><Button sm onClick={() => setDlg('apply')}>Controlla e applica</Button></div> : null}
+    {(b.previous?.repo?.length || b.previous?.wal?.length) ? <div className="row small" style={{ color: 'var(--warn)' }}><span className="grow">Posizione precedente ancora usata dai ripristini: <code>{[...(b.previous.repo || []), ...(b.previous.wal || [])].join(', ')}</code>{b.migrating ? ' — migrazione in corso' : ''}.</span>
+      <Button sm onClick={() => setDlg('apply')}>{b.migrating ? 'Segui la migrazione' : 'Migra o elimina'}</Button></div> : null}
     {dlg === 'edit' ? <ClusterScopeEditor kind="destination" clusterId={clusterId} onClose={() => setDlg('')} /> : null}
     {dlg === 'apply' ? <ClusterDestinationCheck clusterId={clusterId} onClose={() => setDlg('')} /> : null}
   </div>;
