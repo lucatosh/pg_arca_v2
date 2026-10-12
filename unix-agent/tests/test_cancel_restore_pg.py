@@ -68,6 +68,34 @@ class Cancel(unittest.TestCase):
         for at in ("extract", "recovery", "transfer"):
             self.run_cancel(lambda progress, cancel: restore_database(F.ctx, DB, new_name="cancel_copy", progress=progress, cancel=cancel), at)
 
+    def test_interrupted_quarantine_is_never_promoted(self):
+        # the agent dies while the quarantine database is being filled (simulated: build fails, the cleanup does not run)
+        from pg_arca.engine import granular, objects
+        from pg_arca.engine.granular import diff_object, promote_object
+        orig_drop, orig_counts = granular._drop_db, objects.PgSession
+        granular._drop_db = lambda *a, **k: None
+        real_write = objects.write_meta
+        calls = {"n": 0}
+
+        def write_once(sess, meta):                            # the first (building) marker is written, the final one never
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise EngineError("PGA-TEST-001", "agent killed")
+            return real_write(sess, meta)
+        objects.write_meta = write_once
+        try:
+            with self.assertRaises(EngineError):
+                restore_object(F.ctx, "%s.public.big" % DB, stage_db="pgarca_stage_half")
+        finally:
+            granular._drop_db, objects.write_meta = orig_drop, real_write
+        for fn in (lambda: promote_object(F.ctx, "pgarca_stage_half", "%s.public.big" % DB, mode="replace"),
+                   lambda: promote_object(F.ctx, "pgarca_stage_half", "%s.public.big" % DB, mode="as_new"),
+                   lambda: diff_object(F.ctx, "pgarca_stage_half", "%s.public.big" % DB)):
+            with self.assertRaises(EngineError) as e:
+                fn()
+            self.assertEqual(e.exception.code, "PGA-GEN-094", e.exception)
+        q("postgres", "DROP DATABASE pgarca_stage_half")
+
 
 if __name__ == "__main__":
     unittest.main()

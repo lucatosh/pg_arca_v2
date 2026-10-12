@@ -573,6 +573,8 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
         create_db()
         sess = PgSession(admin.with_db(stage))
         try:
+            # marked INCOMPLETE until the very end: a quarantine left by an interrupted restore must never be promoted or used for row recovery
+            write_meta(sess, {"version": 1, "building": True, "created": meta["created"], "database": dbname, "label": spec_label})
             roles_ok = _roles_present(sess, info["roles"])
             missing_roles = [r for r in info["roles"] if r not in roles_ok]
             meta["missing_roles_at_stage"] = missing_roles
@@ -928,6 +930,9 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
         stg.close()
     if not meta:
         return None
+    if meta.get("building"):
+        raise EngineError("PGA-GEN-094", "the quarantine database %s is incomplete: the restore that was building it did not finish" % stage_db,
+                          "drop it and restore the objects again")
     dbname = meta["database"]
     adm = PgSession(admin.with_db("postgres"), read_only=True)
     try:

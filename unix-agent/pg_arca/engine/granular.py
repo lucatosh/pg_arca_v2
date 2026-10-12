@@ -44,6 +44,17 @@ def _mark_db(admin, name, text):
         pass
 
 
+def _stage_complete(admin, stage_db):
+    s = PgSession(admin.with_db(stage_db), read_only=True)
+    try:
+        m = objmod.read_meta(s)
+    finally:
+        s.close()
+    if m and m.get("building"):
+        raise EngineError("PGA-GEN-094", "the quarantine database %s is incomplete: the restore that was building it did not finish" % stage_db,
+                          "drop it and restore the objects again")
+
+
 def _check_cancel(cancel):
     if cancel and cancel():
         from pg_arca.engine.util import Cancelled
@@ -1071,6 +1082,7 @@ def diff_object(ctx, stage_db, spec, into=None, limit=200):
     _check_name(stage_db, "quarantine database")
     admin = _dest_conn(ctx, into)
     fq = "%s.%s" % (quote_ident(schema), quote_ident(name))
+    _stage_complete(admin, stage_db)
     st = PgSession(admin.with_db(stage_db), read_only=True)
     lv = PgSession(admin.with_db(dbname), read_only=True)
     try:
@@ -1133,6 +1145,7 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
             raise EngineError("PGA-GEN-090", "invalid key %r (expected a JSON array of the primary key values)" % (k,))
     admin = _dest_conn(ctx, into)
     fq = "%s.%s" % (quote_ident(schema), quote_ident(name))
+    _stage_complete(admin, stage_db)
     st = PgSession(admin.with_db(stage_db), read_only=True)
     tg = PgSession(admin.with_db(dbname))
     try:
