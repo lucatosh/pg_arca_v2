@@ -993,6 +993,63 @@ def _promote_space(ctx, stage_db, into):
     return out
 
 
+def _process_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def cleanup_interrupted_promotions(ctx):
+    """Promotions whose agent died between loading the recovered tables under temporary names and the swap (journal left on disk): drop exactly the
+    temporary tables / sequences they had created (names with the promotion's own timestamp suffix) and forget the journal. Returns what was removed."""
+    import json
+    jdir = getattr(ctx, "promote_journal_dir", None)
+    out = []
+    if not jdir or not os.path.isdir(jdir):
+        return out
+    for f in sorted(os.listdir(jdir)):
+        if not f.startswith("promote-") or not f.endswith(".json"):
+            continue
+        p = os.path.join(jdir, f)
+        try:
+            with open(p) as fh:
+                j = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if p in objmod.ACTIVE_JOURNALS:
+            continue                                      # a promotion running right now in this agent (another cluster's lane)
+        pid = int(j.get("pid") or 0)
+        if pid and pid != os.getpid() and _process_alive(pid):
+            continue                                      # another live process owns it (a second agent / a CLI run): not interrupted
+        sfx = j.get("suffix") or ""
+        try:
+            admin = _dest_conn(ctx, j.get("into"))
+            s = PgSession(admin.with_db(j["database"]))
+            try:
+                for sch, nm in j.get("tables") or []:
+                    if sfx and sfx in nm:                                                       # only the temporary names of that promotion
+                        if s.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit("%s.%s" % (quote_ident(sch), quote_ident(nm)))) == "t":
+                            s.query("DROP TABLE %s.%s CASCADE" % (quote_ident(sch), quote_ident(nm)))
+                            out.append("%s.%s" % (sch, nm))
+                for sch, nm in j.get("sequences") or []:
+                    # a sequence created ONLY for that promotion (it did not exist live): dropped only when nothing uses it now
+                    if s.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit("%s.%s" % (quote_ident(sch), quote_ident(nm)))) == "t" and \
+                            s.scalar("SELECT count(*) FROM pg_depend WHERE refobjid = %s::regclass AND deptype = 'n'" % sql_lit("%s.%s" % (quote_ident(sch), quote_ident(nm)))) == "0":
+                        s.query("DROP SEQUENCE %s.%s" % (quote_ident(sch), quote_ident(nm)))
+                        out.append("%s.%s" % (sch, nm))
+            finally:
+                s.close()
+            os.unlink(p)
+            ctx.log("warning", "interrupted promotion into %s cleaned up: %s" % (j.get("database"), ", ".join(out) or "nothing left"))
+        except EngineError as e:
+            ctx.log("warning", "interrupted promotion journal %s not cleaned yet: %s" % (f, e.message[:200]))
+    return out
+
+
 def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=None, dry_run=False, progress=None, target_schema=None):
     """
     Move a table recovered into a quarantine database back into the real database. Never destructive:
@@ -1010,7 +1067,11 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
     if not dry_run and space and not space["ok"]:
         bad = [c for c in space["checks"] if c["level"] == "bad"]
         raise EngineError("PGA-RST-032", "promotion not started: %s" % bad[0]["text"], bad[0].get("fix"))
-    v2 = objmod.promote(_dest_conn(ctx, into), stage_db, mode=mode, dry_run=dry_run, progress=progress, target_schema=target_schema or None)          # a stage built by restore_object v2 knows everything around its tables
+    cleanup_interrupted_promotions(ctx)
+    jdir = getattr(ctx, "promote_journal_dir", None)
+    journal = os.path.join(jdir, "promote-%s-%d.json" % (stage_db, int(time.time() * 1000))) if jdir and not dry_run else None
+    v2 = objmod.promote(_dest_conn(ctx, into), stage_db, mode=mode, dry_run=dry_run, progress=progress, target_schema=target_schema or None,
+                        journal=journal, journal_info={"into": into} if into else None)          # a stage built by restore_object v2 knows everything around its tables
     if v2 is not None and space:
         v2["preflight"] = space; v2["space"] = space.get("space")
     if v2 is not None:

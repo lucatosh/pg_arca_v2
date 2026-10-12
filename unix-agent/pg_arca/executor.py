@@ -714,6 +714,7 @@ class OperationExecutor:
         merged = dict(self.config.get("ephemeral") or {})
         merged.update(getattr(self._tl, "eph", None) or {})
         ctx.forensics_cache = os.path.join(self.config.get("state_dir", "/var/lib/pgarca/state"), "forensics")     # WAL scans of a restore reuse the per-segment cache
+        ctx.promote_journal_dir = os.path.join(self.config.get("state_dir", "/var/lib/pgarca/state"), "promotions")   # interrupted promotions are cleaned from here
         return ctx.set_ephemeral(merged) if merged else ctx
 
     def _engine_refresh_summary(self, ctx):

@@ -1085,7 +1085,34 @@ def _compat(res):
     return res
 
 
-def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, target_schema=None):
+ACTIVE_JOURNALS = set()                    # promotions running in THIS process: never treated as interrupted
+
+
+def _journal_write(journal, data):
+    if not journal:
+        return
+    ACTIVE_JOURNALS.add(journal)
+    import json
+    os.makedirs(os.path.dirname(journal), mode=0o700, exist_ok=True)
+    tmp = journal + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, 0o600)
+    os.rename(tmp, journal)
+
+
+def _journal_done(journal):
+    if journal:
+        ACTIVE_JOURNALS.discard(journal)
+        try:
+            os.unlink(journal)
+        except OSError:
+            pass
+
+
+def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, target_schema=None, journal=None, journal_info=None):
     """Put the objects of a v2 quarantine database back into the live database it came from (same name, on `admin`'s server).
 
       replace      every recovered table takes the place of the live one, which is kept as <name>_old_<ts> (never dropped); foreign keys that pointed at the old table are
@@ -1219,6 +1246,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
         for r in todo:
             created_tmp.append((r["schema"], _short(r["name"], sfx_new)))
         created_seq = [(x["schema"], x["name"]) for x in seq_new]
+        # on disk BEFORE anything is created live: if the agent dies from here on (restart, OOM, host reboot), the next operation finds exactly
+        # these temporary tables and removes them - they would otherwise stay forever, looking like an 'as new' result
+        _journal_write(journal, dict(journal_info or {}, database=dbname, stage=stage_db, mode=mode, suffix=sfx_new, tables=created_tmp, sequences=created_seq,
+                                     started=now_utc().isoformat(timespec="seconds"), pid=os.getpid()))
         rc, out, err = run_tool(admin, "pg_restore", args + [dumpfile], timeout=None) if names else (0, "", "")
         if rc != 0:
             created_seq = []                                   # -1: the single transaction rolled back, nothing was created
@@ -1265,10 +1296,12 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
             result.update(plan=_slim(plan), promoted=["%s.%s" % (target_schema, r["name"]) for r in todo], old_kept_as=[], target_schema=target_schema,
                           note="the recovered tables are in schema %s with their own names; the originals are untouched and nothing was re-attached" % target_schema)
             created_tmp = []
+            _journal_done(journal)
             return _compat(result)
         if mode == "as_new":
             result.update(plan=_slim(plan), promoted=["%s.%s" % (r["schema"], r["new_name"]) for r in todo], old_kept_as=[], note="the recovered tables sit next to the originals; nothing was re-attached")
             created_tmp = []
+            _journal_done(journal)
             return _compat(result)
         # ---- phase 2: the swap, atomically
         if progress:
@@ -1451,6 +1484,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                                   "the recovered tables stay in %s; fix the cause and promote again" % stage_db)
             raise
         created_tmp, created_seq = [], []
+        _journal_done(journal)                               # the swap committed: the temporary names are gone
         moved = _seq_forward(live, seq_live, pos_of)
         # ---- after the swap: validate the re-attached keys, refresh statistics, verify
         invalid = []
@@ -1495,6 +1529,8 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
             try:
                 for sch, nm in created_tmp:
                     live.query("DROP TABLE IF EXISTS %s CASCADE" % qi(sch, nm))
+                if not created_seq:
+                    _journal_done(journal)
             except Exception:
                 pass
         if created_seq:                                      # sequences created in phase 1 for a swap that did not happen
@@ -1503,4 +1539,5 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     live.query("DROP SEQUENCE IF EXISTS %s" % qi(sch, nm))
                 except Exception:
                     pass
+            _journal_done(journal)
         live.close()

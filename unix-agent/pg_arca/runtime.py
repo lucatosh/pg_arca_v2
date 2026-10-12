@@ -192,6 +192,18 @@ class Runtime(object):
                     self._hba_check = None
             if getattr(self, "_hba_check", None) is not None:
                 pg["hba_patroni_local"] = self._hba_check
+        if pg.get("alive") and not getattr(self, "_promotions_checked", False):
+            self._promotions_checked = True              # once per agent start: promotions interrupted by the previous agent process leave temporary tables
+            try:
+                from pg_arca.engine.ctx import Ctx
+                from pg_arca.engine.granular import cleanup_interrupted_promotions
+                jdir = os.path.join(self.config.get("state_dir", "/var/lib/pgarca/state"), "promotions")
+                if os.path.isdir(jdir) and os.listdir(jdir):
+                    c = Ctx.from_config(self.config, self)
+                    c.promote_journal_dir = jdir
+                    cleanup_interrupted_promotions(c)
+            except Exception:
+                logger.debug("interrupted promotions cleanup failed", exc_info=True)
         if wal and cas is not None and not getattr(self, "_floor_checked", False):
             self._floor_checked = True                    # once per agent start: archives expired by an older agent get their floor marker
             try:

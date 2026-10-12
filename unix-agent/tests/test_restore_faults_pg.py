@@ -174,6 +174,43 @@ class Faults(unittest.TestCase):
             for v in victims:
                 os.rename(os.path.join(hidden, os.path.basename(v)), v)
 
+    def test_05_agent_killed_in_the_middle_of_a_promotion(self):
+        # the agent process dies (restart, OOM, reboot) after loading the recovered table under its temporary name and before the swap
+        restore_object(F.ctx, DB, objects=["%s.public.acc" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_kill")
+        jdir = os.path.join(F.base, "journal")
+        script = os.path.join(F.base, "killme.py")
+        open(script, "w").write("""
+import os, sys
+sys.path.insert(0, %r)
+from tests import test_engine_pg as base
+from tests.test_engine_pg import F
+from pg_arca.engine.ctx import Ctx
+from pg_arca.engine.pgsession import PgConn
+from pg_arca.engine.granular import promote_object
+ctx = Ctx(PgConn(host=%r, port=%d, user="postgres", bindir=%r), %r, %r, "main", %r, %r, key_file=%r)
+ctx.promote_journal_dir = %r
+def die(p):
+    if p.get("phase") == "swap":
+        os._exit(9)
+promote_object(ctx, "pgarca_stage_kill", "", mode="replace", drop_stage=False, progress=die)
+""" % (os.path.dirname(os.path.dirname(os.path.abspath(__file__))), F.sock, F.port, BIN, F.src, F.repo, F.wal, F.scratch, F.key or None, jdir))
+        r = subprocess.run([sys.executable, script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(r.returncode, 9, r.stderr[-800:])
+        left = q(DB, "SELECT relname FROM pg_class WHERE relname ~ '^acc_pitr_' AND relkind = 'r'")
+        self.assertTrue(left, "the temporary table is left behind by the dead agent")
+        self.assertEqual(len(os.listdir(jdir)), 1, "and the journal says so")
+        F.ctx.promote_journal_dir = jdir
+        try:
+            from pg_arca.engine.granular import cleanup_interrupted_promotions
+            gone = cleanup_interrupted_promotions(F.ctx)
+        finally:
+            F.ctx.promote_journal_dir = None
+        self.assertEqual(gone, ["public.%s" % left[0][0]])
+        self.assertEqual(q(DB, "SELECT count(*) FROM pg_class WHERE relname ~ '^acc_pitr_'")[0][0], "0")
+        self.assertEqual(os.listdir(jdir), [])
+        self.assertEqual(q(DB, "SELECT count(*) FROM acc")[0][0], "1000", "the live table was never touched")
+        q("postgres", "DROP DATABASE pgarca_stage_kill")
+
 
 if __name__ == "__main__":
     unittest.main()
