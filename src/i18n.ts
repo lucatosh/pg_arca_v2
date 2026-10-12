@@ -69,6 +69,7 @@ const RULES: Rule[] = [
   [/^(.+?) uses the row type of a replaced table and was NOT recreated \((.+)\): it stays bound to the old copy$/, m => `${m[1]} usa il tipo riga di una tabella sostituita e NON è stata ricreata (${m[2]}): resta legata alla copia vecchia`],
   [/^(.+?) uses the row type of a replaced table and cannot be recreated automatically \(kind (.+)\): it stays bound to the old copy$/, m => `${m[1]} usa il tipo riga di una tabella sostituita e non si può ricreare automaticamente (tipo ${m[2]}): resta legata alla copia vecchia`],
   [/^(.+?) recreated for the recovered table; the old version \((.+)\) is still used by other objects and was kept$/, m => `${m[1]} ricreata per la tabella ripristinata; la versione vecchia (${m[2]}) è ancora usata da altri oggetti ed è stata tenuta`],
+  [/^(.+?) \(SQL-standard body\) could NOT be re-pointed at the recovered table \((.+)\): it still reads\/writes the OLD copy - recreate it by hand$/, m => `${m[1]} (corpo SQL standard) NON è stata ricollegata alla tabella ripristinata (${m[2]}): legge/scrive ancora la copia VECCHIA - ricreala a mano`],
 ];
 const FIX: Rule[] = [
   [/^set the delivery address in the recovery instance settings \(e\.g\. the HAProxy \/ VIP of the leader\), or open network and pg_hba from this host$/, () => 'indica l’indirizzo di consegna nelle impostazioni dell’istanza di recupero (es. l’HAProxy o il VIP del leader), oppure apri rete e pg_hba da questo host'],

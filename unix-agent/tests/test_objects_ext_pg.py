@@ -59,6 +59,8 @@ INSERT INTO app.prod SELECT g, 'p' || g, g FROM generate_series(1, 40) g;
 CREATE FUNCTION app.cheap_prods(maxp numeric) RETURNS SETOF app.prod LANGUAGE sql STABLE AS $$ SELECT * FROM app.prod WHERE price <= maxp $$;
 CREATE FUNCTION app.prod_label(p app.prod) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT p.name || ' @ ' || p.price $$;
 CREATE TABLE app.prod_snap (at timestamptz DEFAULT now(), item app.prod);
+CREATE TABLE app.stock (sku int PRIMARY KEY, qty int);
+INSERT INTO app.stock SELECT g, g * 2 FROM generate_series(1, 25) g;
 """
 S = {}
 
@@ -67,6 +69,9 @@ def setUpModule():
     base.setUpModule()
     q("postgres", "CREATE DATABASE %s" % DB)
     q(DB, DDL)
+    if int(q("postgres", "SHOW server_version_num")[0][0]) >= 140000:            # SQL-standard function bodies: bound to the table by identity, like a view
+        q(DB, "CREATE FUNCTION app.stock_total() RETURNS bigint LANGUAGE sql STABLE BEGIN ATOMIC SELECT sum(qty) FROM app.stock; END;"
+              "CREATE PROCEDURE app.stock_bump(n int) LANGUAGE sql BEGIN ATOMIC UPDATE app.stock SET qty = qty + n; END;")
     run_backup(F.ctx, "full")
     time.sleep(1.2)
     S["t_ok"] = q("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
@@ -200,6 +205,19 @@ class Ext(unittest.TestCase):
         q(DB, "ALTER TABLE app.prod_snap ALTER COLUMN item TYPE app.prod USING item::text::app.prod")      # the command the warning gives
         q(DB, "DROP TABLE app.%s" % old)                                                # cleaning the old copy up must not need CASCADE
         self.assertEqual(q(DB, "SELECT count(*) FROM pg_proc WHERE proname IN ('cheap_prods', 'prod_label')")[0][0], "2")
+
+    def test_12_sql_standard_bodies_follow_the_restored_table(self):
+        if int(q("postgres", "SHOW server_version_num")[0][0]) < 140000:
+            self.skipTest("BEGIN ATOMIC needs PostgreSQL 14")
+        q(DB, "DELETE FROM app.stock WHERE sku > 5")
+        self.switch()
+        r = self.go(["%s.app.stock" % DB])
+        self.assertEqual(q(DB, "SELECT app.stock_total()")[0][0], str(sum(g * 2 for g in range(1, 26))), "the function reads the RESTORED table")
+        q(DB, "CALL app.stock_bump(1)")
+        self.assertEqual(q(DB, "SELECT sum(qty) FROM app.stock")[0][0], str(sum(g * 2 + 1 for g in range(1, 26))), "the procedure writes the RESTORED table")
+        old = q(DB, "SELECT relname FROM pg_class WHERE relname LIKE 'stock_old_%' AND relkind = 'r'")[0][0]
+        q(DB, "DROP TABLE app.%s" % old)
+        self.assertEqual(q(DB, "SELECT count(*) FROM pg_proc WHERE proname IN ('stock_total', 'stock_bump')")[0][0], "2")
 
 
 if __name__ == "__main__":

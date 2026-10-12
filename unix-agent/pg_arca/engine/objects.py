@@ -340,12 +340,14 @@ SELECT DISTINCT p.oid::int FROM pg_depend d JOIN pg_proc p ON p.oid = d.refobjid
         schemas |= {x[0] for x in src.query("SELECT DISTINCT n.nspname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE p.oid = ANY(%s)" % arr(used))}
     schemas = {s for s in schemas if s not in SYS_SCHEMAS}
     flist = _jq(src, """
-SELECT COALESCE(jsonb_agg(jsonb_build_object('sig', p.oid::regprocedure::text, 'schema', n.nspname, 'name', p.proname, 'kind', p.prokind, 'ddl', pg_get_functiondef(p.oid),
+SELECT COALESCE(jsonb_agg(jsonb_build_object('oid', p.oid::int, 'sig', p.oid::regprocedure::text, 'schema', n.nspname, 'name', p.proname, 'kind', p.prokind, 'ddl', pg_get_functiondef(p.oid),
        'owner', pg_get_userbyid(p.proowner), 'acl', %s, 'comment', obj_description(p.oid, 'pg_proc')) ORDER BY p.oid), '[]'::jsonb)::text
 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = ANY(ARRAY[%s]) AND p.prokind IN ('f','p') AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
 """ % (ACL_SQL % "p.proacl", ",".join(sql_lit(s) for s in sorted(schemas)) or "NULL::text")) if schemas else []
     out["functions"] = flist or []
+    for f in out["functions"]:                    # used by the selected objects (defaults, checks, triggers, ...) vs merely in the same schema
+        f["used"] = f.get("oid") in set(used)
     # functions owned by an extension that the objects use: the extension is what must exist
     if used:
         for x in src.query("SELECT DISTINCT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid = d.refobjid WHERE d.classid = 'pg_proc'::regclass AND d.deptype = 'e' AND d.objid = ANY(%s)" % arr(used)):
@@ -455,7 +457,7 @@ def prereq_exists(sess, kind, item):
     return False
 
 
-def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None):
+def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None, quiet_unused=None):
     """Create the schemas/extensions/types/functions of `meta` that the destination does not have. Returns (created, problems).
     A problem never aborts: the table restore that follows reports precisely what is still missing."""
     created, problems = [], []
@@ -507,6 +509,7 @@ def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None):
             extra.append("ALTER COLLATION %s OWNER TO %s" % (qi(c["schema"], c["name"]), quote_ident(c["owner"])))
         run("collation %s.%s" % (c["schema"], c["name"]), c["ddl"], extra)
     pending = []
+    quiet = set()       # in the quarantine: functions that are only in the same schema as the selection (none of the objects uses them) - their failure is not news
     for t in p["types"]:
         if only_missing and prereq_exists(sess, "type", t):
             continue
@@ -527,6 +530,8 @@ def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None):
             extra.append("ALTER %s %s OWNER TO %s" % (kw, f["sig"], quote_ident(f["owner"])))
         extra += _acl_stmts(kw, f["sig"], [a for a in (f.get("acl") or []) if a["g"] == "PUBLIC" or roles_ok is None or a["g"] in roles_ok])
         pending.append(("function %s" % f["sig"], f["ddl"], extra))
+        if f.get("used") is False and (quiet_unused if quiet_unused is not None else not only_missing):
+            quiet.add("function %s" % f["sig"])
     # types and functions can need each other (a domain whose CHECK calls a function, a function taking a composite type): passes until nothing more
     # can be created; what still fails is reported with its last error
     last = {}
@@ -546,7 +551,7 @@ def ensure_prereqs(sess, meta, only_missing=True, roles_ok=None):
                 except EngineError as e:
                     problems.append("%s (owner/grants): %s" % (label, e.message[:160]))
         if len(nxt) == len(pending):
-            problems += ["%s: %s" % (label, last.get(label, "?")) for label, _, _ in nxt]
+            problems += ["%s: %s" % (label, last.get(label, "?")) for label, _, _ in nxt if label not in quiet]
             break
         pending = nxt
     return created, problems
@@ -718,7 +723,7 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
             if problems:
                 # functions using a recovered table's row type (RETURNS SETOF app.t, f(r app.t)) cannot exist before that table: a second pass after the load,
                 # and only what is still missing is reported
-                created2, problems = ensure_prereqs(sess, meta, only_missing=True, roles_ok=roles_ok)
+                created2, problems = ensure_prereqs(sess, meta, only_missing=True, roles_ok=roles_ok, quiet_unused=True)
                 meta["prereq_created"] += len(created2)
             if problems:
                 meta["warnings"] += ["prerequisite not recreated - %s" % p for p in problems]
@@ -792,8 +797,8 @@ def _slim(plan):
                      + ["policy %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_policies") or []]
                      + ["default di %s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []]
                      + ["partizione %s.%s → %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan.get("attach") or []]
-                     + ["funzione %s" % f["sig"] for f in plan.get("rowtype_funcs") or [] if f.get("def")])
-    for k in ("publications", "foreign_rules", "foreign_policies", "foreign_defaults", "rowtype_funcs"):
+                     + ["funzione %s" % f["sig"] for f in (plan.get("rowtype_funcs") or []) + (plan.get("body_funcs") or []) if f.get("def")])
+    for k in ("publications", "foreign_rules", "foreign_policies", "foreign_defaults", "rowtype_funcs", "body_funcs"):
         out.pop(k, None)
     out.pop("old_outbound_fks", None)
     return out
@@ -892,6 +897,13 @@ SELECT COALESCE(jsonb_agg(jsonb_build_object('oid', p.oid::int, 'sig', p.oid::re
        'in_args', EXISTS (SELECT 1 FROM unnest(coalesce(p.proallargtypes, p.proargtypes::oid[])) x WHERE x IN %s)) ORDER BY p.oid), '[]'::jsonb)::text
 FROM pg_proc p WHERE p.oid IN (SELECT d.objid FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_type'::regclass AND d.deptype = 'n' AND d.refobjid IN %s)
   AND NOT EXISTS (SELECT 1 FROM pg_depend e WHERE e.classid = 'pg_proc'::regclass AND e.objid = p.oid AND e.deptype = 'e')""" % (ACL_SQL % "p.proacl", rt, rt)) or []
+        # functions / procedures with an SQL-standard body (BEGIN ATOMIC, PostgreSQL 14+) are bound to the tables they use by identity, like views: after a
+        # rename they would go on reading and writing the OLD copy without any error. Re-created from their text (CREATE OR REPLACE keeps owner and grants)
+        rto = {f["oid"] for f in plan["rowtype_funcs"]}
+        plan["body_funcs"] = [f for f in (_jq(live, """
+SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('oid', p.oid::int, 'sig', p.oid::regprocedure::text, 'def', pg_get_functiondef(p.oid))), '[]'::jsonb)::text
+FROM pg_depend d JOIN pg_proc p ON d.classid = 'pg_proc'::regclass AND d.objid = p.oid
+WHERE d.refclassid = 'pg_class'::regclass AND d.refobjid = ANY(%s) AND p.prokind IN ('f', 'p')""" % arr(swap_oids)) or []) if f["oid"] not in rto]
         for f in plan["rowtype_funcs"]:
             if not f.get("def"):
                 plan["warnings"].append("%s uses the row type of a replaced table and cannot be recreated automatically (kind %s): it stays bound to the old copy" % (f["sig"], f["kind"]))
@@ -912,7 +924,7 @@ WHERE a.attnum > 0 AND NOT a.attisdropped AND a.atttypid IN %s AND c.relkind IN 
             pass
     else:
         plan["old_outbound_fks"], plan["live_views"], plan["publications"], plan["foreign_rules"], plan["foreign_policies"], plan["foreign_defaults"] = [], [], [], [], [], []
-        plan["rowtype_funcs"] = []
+        plan["rowtype_funcs"], plan["body_funcs"] = [], []
     have = {(f["schema"], f["table"], f["name"]) for f in plan["inbound_fks"]}
     # foreign keys that belonged to the recovered tables / pointed at the recreated ones (only where the other side exists now)
     for f in meta.get("fks") or []:
@@ -1320,6 +1332,16 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                 except EngineError as e:
                     live.query("ROLLBACK TO SAVEPOINT pgarca_rf")
                     plan["warnings"].append("%s uses the row type of a replaced table and was NOT recreated (%s): it stays bound to the old copy" % (f["sig"], e.message[:200]))
+            for f in plan.get("body_funcs") or []:
+                live.query("SAVEPOINT pgarca_bf")
+                try:
+                    live.query(f["def"])
+                    live.query("RELEASE SAVEPOINT pgarca_bf")
+                    plan.setdefault("rowtype_funcs_rebound", []).append(f["sig"])
+                except EngineError as e:
+                    live.query("ROLLBACK TO SAVEPOINT pgarca_bf")
+                    plan["warnings"].append("%s (SQL-standard body) could NOT be re-pointed at the recovered table (%s): it still reads/writes the OLD copy - "
+                                            "recreate it by hand" % (f["sig"], e.message[:200]))
             for x in plan.get("foreign_defaults") or []:    # same text, now resolved against the recovered table's sequence
                 live.query("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s" % (qi(x["schema"], x["table"]), quote_ident(x["column"]), x["expr"]))
             for x in plan.get("foreign_rules") or []:       # same text, now resolved against the recovered table
