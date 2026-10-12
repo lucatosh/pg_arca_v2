@@ -12,6 +12,7 @@
 #       PG_ARCA_USER=<OS user that owns PostgreSQL; default: detected from the running server, else postgres>   PG_ARCA_PG_ROLE=<superuser role, only if unrelated to the OS user>
 #       PG_ARCA_INSTANCE=<name> PG_ARCA_PGDATA=<data dir>   one more agent for ANOTHER PostgreSQL instance on the same server (several clusters on one host):
 #                             own config /etc/pg-arca/<name>, state /var/lib/pgarca/<name>, service pg-arca-agent-<name>, node name <host>-<name>
+#       PG_ARCA_ALLOW_PG_RESTART=0   do not let the agent restart PostgreSQL's systemd unit (default: allowed through a polkit rule limited to postgresql units)
 #       PG_ARCA_ROLE=worker   operational machine (backup server, host for the recovery instances): no database is searched; runs as postgres if present, else as a
 #                             dedicated system user "pgarca" created here
 # ==============================================================================
@@ -120,6 +121,29 @@ if [[ -n "${PG_ARCA_NO_SERVICE:-}" || ! -d /run/systemd/system ]]; then
   echo "  su $PGUSER_OS -c 'set -a; [ -f $CONF_DIR/enroll.env ] && . $CONF_DIR/enroll.env; set +a; export PYTHONPATH=$INSTALL_DIR PG_ARCA_CONF_FILE=$CONF_DIR/agent.conf; nohup sh -c \"while true; do python3 $INSTALL_DIR/pg-arca-agent.py >>$LOG_DIR/agent.out 2>&1; sleep 5; done\" >/dev/null 2>&1 &'"
   echo "  logs: tail -f $LOG_DIR/agent.out"
   exit 0
+fi
+# restart of a STANDALONE PostgreSQL from the console (after enabling WAL archiving or changing a restart-only parameter): the agent asks systemd to restart the
+# server's own unit. polkit lets the agent's user restart/start ONLY postgresql units (postgresql.service, postgresql@14-main, postgresql-16), never stop
+# them, nothing else. Opt out with PG_ARCA_ALLOW_PG_RESTART=0 (the console then shows the command to run by hand). Not for operational machines.
+if [[ "${PG_ARCA_ALLOW_PG_RESTART:-1}" != 0 && "$ROLE" != worker && -d /etc/polkit-1 ]]; then
+  install -d -m 0755 /etc/polkit-1/rules.d
+  cat > /etc/polkit-1/rules.d/50-pg-arca-restart.rules <<RULE
+// pg_arca: the agent (user $PGUSER_OS) may restart/start the PostgreSQL services of this server, nothing else (PG_ARCA_ALLOW_PG_RESTART=0 to disable)
+polkit.addRule(function(action, subject) {
+  if (action.id == "org.freedesktop.systemd1.manage-units" && subject.user == "$PGUSER_OS" &&
+      /^postgresql([@-][A-Za-z0-9_.@-]+)?\.service\$/.test(action.lookup("unit")) &&
+      (action.lookup("verb") == "restart" || action.lookup("verb") == "start")) {
+    return polkit.Result.YES;
+  }
+});
+RULE
+  chmod 0644 /etc/polkit-1/rules.d/50-pg-arca-restart.rules
+  echo "restart from the console: allowed for the PostgreSQL units only (/etc/polkit-1/rules.d/50-pg-arca-restart.rules; PG_ARCA_ALLOW_PG_RESTART=0 to disable)"
+elif [[ "${PG_ARCA_ALLOW_PG_RESTART:-1}" == 0 ]]; then
+  rm -f /etc/polkit-1/rules.d/50-pg-arca-restart.rules
+elif [[ "$ROLE" != worker ]]; then
+  echo "NOTE: polkit is not installed: restarting PostgreSQL from the console will not be possible (the console shows the command to run by hand)."
+  echo "      To allow it: install polkit (apt-get install polkitd / dnf install polkit) and run this installer again."
 fi
 cat > /etc/systemd/system/$UNIT.service <<UNIT
 [Unit]

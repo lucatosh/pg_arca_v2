@@ -3,6 +3,7 @@ import { Badge, Banner, Button, Card, Confirm, Empty } from '../ui';
 import { useOpRunner, revalidate } from '../hooks';
 import { OpPanel, Result } from './shared';
 import { Advice, Workload, advise } from '../tuning';
+import { RestartPg } from './RestartPg';
 
 const W: [Workload, string, string][] = [['oltp', 'Transazionale (OLTP)', 'Molte connessioni, query brevi'], ['mixed', 'Misto', 'Applicazioni e report insieme'], ['olap', 'Analitico', 'Poche query pesanti, grandi ordinamenti']];
 
@@ -28,7 +29,7 @@ export function TuningTab({ c }: { c: any }) {
       <div className="stack"><p style={{ margin: 0 }}><strong>{node.name}</strong>: {gb} GB di RAM, {node.sys.cpu} core.</p>
         <div className="grid g3">{W.map(([k, l, s]) => <label key={k} className={`opt ${w === k ? 'on' : ''}`}><input type="radio" name="wl" checked={w === k} onChange={() => setW(k)} /><div><div>{l}</div><div className="small muted">{s}</div></div></label>)}</div>
         {c.haState?.managedByPatroni ? <Banner kind="warn" title="Cluster Patroni">I parametri sono applicati al nodo scelto con ALTER SYSTEM. Per averli uguali su tutti i membri ripeti l’operazione su ciascuno (o usa la configurazione dinamica di Patroni): la pagina Rilevamento segnala le differenze.</Banner> : null}
-        {pending.length ? <Banner kind="info" title="Riavvio in attesa">Questi parametri cambieranno solo dopo un riavvio: {pending.join(', ')}.</Banner> : null}</div></Card>
+        {pending.length ? <Banner kind="info" title="Riavvio in attesa">Questi parametri cambieranno solo dopo un riavvio: {pending.join(', ')}.{!c.haState?.managedByPatroni ? <div style={{ marginTop: 8 }}><RestartPg c={c} onDone={() => revalidate(`/api/clusters/${encodeURIComponent(c.id)}`)} /></div> : null}</Banner> : null}</div></Card>
     <Card title="Consigli" actions={<Button kind="primary" disabled={!todo.length || r.busy} onClick={() => setAsk(todo)}>Applica tutti ({todo.length})</Button>} pad={false}>
       <div className="tablewrap"><table className="t"><thead><tr><th>Parametro</th><th>Attuale</th><th>Consigliato</th><th /></tr></thead><tbody>
         {rows.map(x => <tr key={x.name}><td><code>{x.name}</code><div className="small muted" style={{ maxWidth: 520 }}>{x.why}</div></td><td className="mono">{x.current}</td>

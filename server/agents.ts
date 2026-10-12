@@ -394,6 +394,8 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       if (!target) return { code: 409, body: { error: 'no_suitable_node', message: 'No online node can execute this operation right now.' } };
       if (!online(target)) return { code: 409, body: { error: 'node_offline', message: `Node ${target.name} is offline.` } };
       if (spec.needsPatroni && !target.snapshot?.patroni?.accessible) return { code: 409, body: { error: 'patroni_unavailable', message: 'Patroni REST API is not reachable from this node.' } };
+      if (type === 'pg_restart' && (target.snapshot?.patroni?.accessible || target.snapshot?.patroni?.configured))
+        return { code: 409, body: { error: 'patroni_managed', message: 'Questo nodo è gestito da Patroni: riavvialo con Patroni (scheda Alta affidabilità → Riavvia), mai alle sue spalle.' } };
       const { op, created } = await ops.submit(store, { type, clusterId: cluster.id, nodeId: target.id, params, idempotencyKey: key, createdBy: actor, ttlSeconds });
       return { code: created ? 202 : 200, body: { operation: op, replayed: !created } };
     } catch (e: any) {

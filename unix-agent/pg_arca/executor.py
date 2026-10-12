@@ -71,6 +71,7 @@ class OperationExecutor:
     def _register_builtin(self):
         r = self.register
         r("pg_reload", self.h_pg_reload, True)
+        r("pg_restart", self.h_pg_restart, False)          # never repeated blindly after an agent restart
         r("checkpoint", self.h_checkpoint, True)
         r("wal_switch", self.h_wal_switch, False)           # switching twice would create two segments
         r("discovery_scan", self.h_discovery, True)
@@ -406,6 +407,41 @@ class OperationExecutor:
         return {"changed": todo, "via": via, "restart_required": restart,
                 "next": ("Restart each member (Patroni: replicas first, then the leader) for archive_mode/wal_level to take effect." if via == "patroni" and restart else
                          "Restart PostgreSQL (systemctl restart <service>, or pg_ctl restart) for archive_mode/wal_level to take effect." if restart else "Applied with a reload; archiving is active.")}
+
+    def h_pg_restart(self, p):
+        """Restart a STANDALONE PostgreSQL (Patroni members: patroni_restart). How depends on how the server is managed: see pgrestart.py."""
+        from pg_arca import pgrestart
+        if self.patroni.configured:
+            raise OpError("this node is managed by Patroni: restart it with Patroni (HA tab -> Restart), never behind its back")
+        inst = (self.runtime.instance if self.runtime else None) or {}
+        data = self.config.get("pg_data") or inst.get("data_directory")
+        if not data:
+            raise OpError("no PostgreSQL instance found on this host")
+        plan = pgrestart.plan(data)
+        if p.get("dry_run"):
+            return {"dry_run": True, "plan": plan}
+        if plan["method"] == "refuse":
+            raise OpError(plan["why"])
+        before = None
+        try:
+            before, _ = self.db.query_json("SELECT COALESCE(json_agg(name), '[]'::json) FROM pg_settings WHERE pending_restart;")
+        except Exception:
+            pass
+        bindir = self.config.get("pg_bin_dir") or inst.get("bin_dir") or ""
+        import getpass
+        try:
+            how = pgrestart.run(plan, data, bindir, getpass.getuser(), log_dir=self.config.get("log_dir") or self.config.get("state_dir"))
+        except RuntimeError as e:
+            raise OpError(str(e))
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            time.sleep(2)
+            if self.db.ping():
+                break
+        else:
+            raise OpError("restarted (%s) but PostgreSQL does not answer after 180 s: look at its log" % how)
+        after, _ = self.db.query_json("SELECT COALESCE(json_agg(name), '[]'::json) FROM pg_settings WHERE pending_restart;")
+        return {"restarted": True, "how": how, "unit": plan.get("unit"), "pending_before": before or [], "pending_restart": after or []}
 
     def _patroni_managed(self):
         """True when this node is managed by Patroni. Then parameters live in the DCS (same call as `patronictl edit-config`) and ONLY there: ALTER SYSTEM,

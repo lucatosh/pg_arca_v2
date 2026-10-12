@@ -43,5 +43,9 @@ assert.deepStrictEqual(activityOf([op('backup_run', 'running'), op('backup_info'
   const again = await post('mario', 'k1', 'backup_run', { type: 'full' }); assert.strictEqual(again.status, 200, 'same request replayed: not a conflict');
   const b = await post('luca', 'k2', 'backup_run', { type: 'incr' }); assert.strictEqual(b.status, 409); assert.strictEqual(b.body.with.createdBy, 'mario');
   const act = await app.call('GET', '/api/clusters/c1/activity'); assert.strictEqual(act.body.activity.length, 1); assert.strictEqual(act.body.activity[0].createdBy, 'mario');
-  console.log('conflicts tests OK'); process.exit(0);
+  // standalone restart: interrupts data work like a Patroni restart; its dry run (how it would be done) never conflicts
+assert(conflictFor([op('backup_run', 'running')], 'c1', 'pg_restart', { confirm: 'RIAVVIA' }), 'restart during a backup');
+assert.strictEqual(conflictFor([op('backup_run', 'running')], 'c1', 'pg_restart', { dry_run: true }), null);
+assert(conflictFor([op('pg_restart', 'queued', { confirm: 'RIAVVIA' })], 'c1', 'backup_run', {}), 'backup while a restart is queued');
+console.log('conflicts tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

@@ -34,13 +34,16 @@ class ArchiveEnable(unittest.TestCase):
         self.assertEqual(start().returncode, 0)
         try:
             db = PostgresClient(user="postgres", port=port, host="", socket_dir=sock)
-            old_path = os.environ["PATH"]; os.environ["PATH"] = env["PATH"]
+            saved_env = dict(os.environ); os.environ.update(env)      # the agent's environment: a restart from the agent hands it to the new postmaster (archive_command needs it here)
             try:
-                ex = OperationExecutor({"state_dir": b + "/state"}, db, NoPatroni(), None, None)
+                ex = OperationExecutor({"state_dir": b + "/state", "pg_data": data, "pg_bin_dir": BIN}, db, NoPatroni(), None, None)
                 r = ex.h_archive_enable({})
                 self.assertTrue(r["restart_required"]); self.assertIn("archive_mode", r["changed"]); self.assertEqual(r["changed"].get("wal_level"), "replica")
                 self.assertEqual(r["changed"].get("wal_log_hints"), "on"); self.assertIn("pg-arca-wal archive %p %f", r["changed"]["archive_command"])
-                stop(); self.assertEqual(start().returncode, 0)
+                # the restart from the console (standalone, no systemd here: pg_ctl restart with the options it was started with)
+                self.assertEqual(ex.h_pg_restart({"dry_run": True})["plan"]["method"], "pg_ctl")
+                rr = ex.h_pg_restart({})
+                self.assertTrue(rr["restarted"], rr); self.assertIn("archive_mode", rr["pending_before"]); self.assertEqual(rr["pending_restart"], [], rr)
                 r2 = ex.h_archive_enable({})
                 self.assertTrue(r2.get("already_enabled"), r2)                                    # idempotent
                 # a foreign archiver is never replaced silently
@@ -49,7 +52,7 @@ class ArchiveEnable(unittest.TestCase):
                     ex.h_archive_enable({})
                 self.assertIn("changed", ex.h_archive_enable({"replace_foreign": True}))
             finally:
-                os.environ["PATH"] = old_path
+                os.environ.clear(); os.environ.update(saved_env)
             conn = PgConn(host=sock, port=port, user="postgres", bindir=BIN)
             ctx = Ctx(conn, data, b + "/repo", "main", wal, b + "/scr", process_max=2, compression="zlib", level=3, start_fast=True, log=lambda l, m: None,
                       agent_path=os.path.join(HERE, "pg-arca-wal"), key_file=None)

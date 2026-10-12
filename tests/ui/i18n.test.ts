@@ -16,4 +16,5 @@ assert.match(itCheck("object 'public.t_new' is not in backup 20261011-234032F an
 assert.match(itCheck("schema 'x y' has no tables in backup 20261011-234032F: it was created after that backup and is rebuilt from the WAL"), /^lo schema 'x y' non è nel backup/);
 assert.match(itCheck('roles missing on this server (gone_role): object owners and privileges were NOT restored; create the roles and restore again to keep them'), /^ruoli assenti su questo server \(gone_role\)/);
 assert.match(itFix('check the name: a wrong one is only found after the recovery; tables created and dropped after the backup are listed by the WAL forensics'), /^controlla il nome/);
+assert.match(itCheck('PostgreSQL was started by hand (outside systemd) while the agent is a systemd service: restarting it from the agent would tie the database to the agent\'s service. Restart it the way it was started (or put it under systemd)'), /^PostgreSQL è stato avviato a mano/);
 console.log('i18n OK');
