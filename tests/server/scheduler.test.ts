@@ -34,6 +34,11 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   assert.strictEqual((await tick(now + 35 * 60_000)).length, 0);
   // 25h later an incremental is due
     const s5 = await tick(now + 25 * 3600_000); assert(s5.length === 1 && s5[0].includes(':incr:'), JSON.stringify(s5));
+  // a tablespace created after the latest full: a full is taken at once (the restores of this cluster are refused until then), only once
+  { const s5op = st.peek().operations.find(o => o.idempotencyKey === s5[0])!; await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', s5op.id, 'succeeded', {});
+    await st.mutate(d => { const sn = d.nodes['n1'].snapshot; sn.backup.full_tablespace_oids = ['1663']; sn.postgres.tablespaces = [{ oid: '1663' }, { oid: '24601', location: '/srv/ts_new' }]; });
+    const s6 = await tick(now + 25 * 3600_000 + 60_000); assert(s6.length === 1 && s6[0].includes(':tsfull:24601:'), JSON.stringify(s6));
+    const s6op = st.peek().operations.find(o => o.idempotencyKey === s6[0])!; assert.strictEqual(s6op.params.type, 'full'); }
   // offline primary -> nothing; demo/direct clusters ignored
   console.log('ALL SCHEDULER TESTS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -711,6 +711,7 @@ class OperationExecutor:
         """Ephemeral-instance settings: agent.conf `ephemeral` first, then what the console resolved for this operation (global < environment < folder < cluster)."""
         merged = dict(self.config.get("ephemeral") or {})
         merged.update(getattr(self._tl, "eph", None) or {})
+        ctx.forensics_cache = os.path.join(self.config.get("state_dir", "/var/lib/pgarca/state"), "forensics")     # WAL scans of a restore reuse the per-segment cache
         return ctx.set_ephemeral(merged) if merged else ctx
 
     def _engine_refresh_summary(self, ctx):

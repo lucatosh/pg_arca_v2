@@ -56,7 +56,19 @@ class RepoSummary(object):
                            "stop_time": s.get("stop_time"), "duration_sec": s.get("duration_sec"), "start_lsn": s.get("start_lsn"), "stop_lsn": s.get("stop_lsn"),
                            "timeline": s.get("timeline"), "bytes_logical": st.get("bytes_logical", 0), "bytes_written": st.get("bytes_written", 0),
                            "reason": s.get("reason"), "pg_version": s.get("pg_version")})
-        return {"stanza": self.ctx.stanza, "configured": True, "sets": len(done), "failed_sets": len(failed),
+        # tablespaces known to the latest FULL backup (a restore replays the WAL from the full's start: a tablespace created after it is replayed on its
+        # live path, so restores on this server are refused until a new full exists - the console warns and the scheduler takes a full next)
+        fulls = [x for x in done if x.get("type") == "full"]
+        full_ts = None
+        if fulls:
+            fid = fulls[-1]["id"]
+            if getattr(self, "_full_ts", (None, None))[0] != fid:
+                try:
+                    self._full_ts = (fid, sorted(str(k) for k in (repo.load_catalog(fulls[-1]).get("tablespaces") or {}).keys()))
+                except Exception:
+                    self._full_ts = (fid, None)
+            full_ts = self._full_ts[1]
+        return {"stanza": self.ctx.stanza, "configured": True, "sets": len(done), "failed_sets": len(failed), "full_tablespace_oids": full_ts,
                 "last_backup": ({k: last.get(k) for k in ("id", "type", "start_time", "stop_time", "duration_sec", "stop_lsn")} if last else None),
                 "last_backup_age_hours": age, "last_failure": ({k: failed[-1].get(k) for k in ("id", "status", "reason", "start_time")} if failed else None),
                 "full_count": len([s for s in done if s["type"] == "full"]),

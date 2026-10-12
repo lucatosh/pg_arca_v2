@@ -150,6 +150,7 @@ class Ephemeral(object):
         if os.geteuid() == 0:
             raise EngineError("PGA-SEC-002", "refusing to start PostgreSQL as root", "run the agent as the postgres OS user")
         self.ctx = ctx
+        self.extra_dirs = []                               # tablespace locations created for the replay (removed in cleanup)
         self.name = name or ("eph-" + uuid.uuid4().hex[:8])
         if not re.match(r"^[A-Za-z0-9_.-]{1,64}$", self.name):
             raise EngineError("PGA-GEN-064", "invalid ephemeral instance name")
@@ -203,6 +204,21 @@ class Ephemeral(object):
         for oid, tgt in remap.items():
             os.makedirs(tgt, mode=0o700, exist_ok=True)
             os.symlink(tgt, os.path.join(self.dir, "pg_tblspc", oid))
+        # tablespaces CREATED after the base backup are replayed on their original absolute path (and an existing version directory there is removed):
+        # refused when that path holds a live tablespace on this host; a missing path is created for the replay and removed afterwards
+        from pg_arca.engine.restore import guard_created_tablespaces, tablespaces_created_in_window
+        created = tablespaces_created_in_window(self.ctx, chain, target_lsn)
+        g = guard_created_tablespaces(created, "the host running the recovery instance")
+        if g:
+            raise g
+        for t in created:
+            if t.get("path") and not os.path.exists(t["path"]):
+                try:
+                    os.makedirs(t["path"], mode=0o700)
+                    self.extra_dirs.append(t["path"])
+                except OSError as e:
+                    raise EngineError("PGA-RST-051", "the recovery replays CREATE TABLESPACE at %s, which cannot be created on this host (%s)" % (t["path"], e.strerror),
+                                      "take a new FULL backup (the tablespace is then relocated safely) or create that directory for the agent's user")
         stats = materialize(self.ctx, merged, self.dir, False, progress, cancel)
         stats["selected_bytes"], stats["cluster_bytes"] = estimate(merged), full_size
         prepare_skeleton(self.dir, cat)
@@ -340,6 +356,8 @@ class Ephemeral(object):
         if keep:
             return
         shutil.rmtree(self.dir, ignore_errors=True)
+        for d in getattr(self, "extra_dirs", []):            # only directories this instance created (they did not exist before)
+            shutil.rmtree(d, ignore_errors=True)
         if getattr(self, "sock_external", False):
             shutil.rmtree(self.sock, ignore_errors=True)
 

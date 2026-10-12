@@ -53,6 +53,17 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
       return r.created;
     };
 
+    // a tablespace created after the latest FULL: every restore replays its CREATE TABLESPACE on the live path (refused on this server) until a new full
+    // exists -> take one now, once per such tablespace (the agent reports the tablespaces the latest full knows)
+    const fullTs: string[] | null = Array.isArray(bk?.full_tablespace_oids) ? bk.full_tablespace_oids.map(String) : null;
+    const newTs = fullTs ? ((target.snapshot?.postgres?.tablespaces || []) as any[]).map(t => String(t.oid)).filter(o => !fullTs.includes(o)).sort() : [];
+    const recentFull = okRuns.some(r => r.type === 'full' && now - r.at < 30 * 60_000);
+    if (newTs.length && !recentFull) {
+      const key = `sched:${c.id}:tsfull:${newTs.join('-')}`;
+      const attempts = myOps.filter(o => o.idempotencyKey.startsWith(key)).length;
+      if (attempts < 3 && await submit('backup_run', { type: 'full', note: 'new tablespace since the last full backup' }, `${key}:${attempts}`)) continue;
+    }
+
     const needFull = !Number.isFinite(lastFull) || now - lastFull >= pol.fullEveryHours * h;
     if (needFull) {
       const bucket = Math.floor(now / (pol.fullEveryHours * h));

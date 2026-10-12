@@ -11,4 +11,9 @@ const k = (s: any) => evaluate(s, now).filter(i => i.code === 'restore_incomplet
 assert.strictEqual(k(st).length, 1); assert.match(k(st)[0].title, /shop_restored/);
 st.operations.push({ id: 'o1', type: 'restore_database', clusterId: 'c1', status: 'running', params: { new_name: 'shop_restored' } });
 assert.strictEqual(k(st).length, 0, 'while the restore runs it is not an incident');
+// tablespace created after the latest full: warned
+st.nodes.n1.snapshot.backup = { configured: true, full_tablespace_oids: ['16400'] };
+st.nodes.n1.snapshot.postgres.tablespaces = [{ oid: '16400', location: '/srv/ts_a' }, { oid: '16500', location: '/srv/ts_new' }];
+const tw = evaluate(st, now).filter(i => i.code === 'tablespace_after_full');
+assert.strictEqual(tw.length, 1); assert.match(tw[0].title, /ts_new/);
 console.log('restore_incomplete tests OK');

@@ -40,6 +40,64 @@ def merge_chain(repo, chain, include=None):
     return merged, mans[-1].get("tablespaces", {})
 
 
+def tablespaces_created_in_window(ctx, chain, target_lsn=None):
+    """CREATE TABLESPACE records the recovery of `chain` will replay (from the base backup's start, up to target_lsn when known). Their replay works on
+    the ABSOLUTE location written in the WAL - not on a relocated copy - and PostgreSQL REMOVES an existing version directory there: on the production
+    server that is production's own tablespace. Returns [{"oid", "path", "lsn"}]."""
+    from pg_arca.engine import walscan
+    start = chain[0].get("start_time") if chain else None
+    try:
+        r = walscan.scan(ctx, mode="tablespaces", hours=0, since_iso=start, limit=1000, budget_sec=600, cache_dir=getattr(ctx, "forensics_cache", None))
+    except EngineError as e:
+        if e.code == "PGA-WAL-002":                         # no WAL in the window: nothing to replay
+            return []
+        return _tablespaces_after_full_live(ctx, chain, e)
+    out = []
+    base = lsn_to_int(chain[0].get("start_lsn") or "0/0") if chain else 0
+    hi = lsn_to_int(target_lsn) if target_lsn else None
+    for e in r.get("created") or []:
+        v = lsn_to_int(e["lsn"])
+        if v < base or (hi is not None and v >= hi):
+            continue
+        out.append({"oid": e["rels"][0][0], "path": e.get("path"), "lsn": e["lsn"]})
+    return out
+
+
+def _tablespaces_after_full_live(ctx, chain, why):
+    """The WAL could not be read (no pg_waldump, archive unreadable): decide from what is certain instead - the tablespaces of the LIVE server that the
+    base full does not know were created after it, and their paths are the dangerous ones on this host."""
+    try:
+        known = set(str(k) for k in (ctx.repo.load_catalog(chain[0]).get("tablespaces") or {}).keys())
+        from pg_arca.engine.pgsession import PgSession
+        s = PgSession(ctx.conn.with_db("postgres"), read_only=True)
+        try:
+            rows = s.query("SELECT oid::text, pg_tablespace_location(oid) FROM pg_tablespace WHERE spcname NOT IN ('pg_default', 'pg_global')")
+        finally:
+            s.close()
+        ctx.log("warning", "WAL not readable for the tablespace check (%s): using the live server's tablespaces" % getattr(why, "message", why))
+        return [{"oid": r[0], "path": r[1], "lsn": "?"} for r in rows if r and r[0] not in known]
+    except Exception as e:                                  # nothing certain at all: the restore must not run blind on a host with tablespaces
+        raise EngineError("PGA-RST-052", "cannot verify whether the recovery would replay CREATE TABLESPACE on a live path: %s" % getattr(why, "message", why),
+                          "make pg_waldump available to the agent, or take a new FULL backup")
+
+
+def guard_created_tablespaces(created, where):
+    """None when replaying `created` is harmless here; else an EngineError to raise (the location is IN USE on this host)."""
+    def in_use(p):
+        try:
+            return os.path.isdir(p) and any(x.startswith("PG_") for x in os.listdir(p))      # a version directory = a tablespace lives there
+        except OSError:
+            return True                                    # cannot look: assume the worst
+    live = [t for t in (created or []) if t.get("path") and in_use(t["path"])]
+    if not live:
+        return None
+    t = live[0]
+    return EngineError("PGA-RST-050", "the recovery would replay CREATE TABLESPACE for %s (created after the base backup, at %s): PostgreSQL replays it on that "
+                                      "ABSOLUTE path and removes what it finds there - on this server that is the live tablespace. Refused on %s." % (t["path"], t["lsn"], where),
+                       "take a new FULL backup (the tablespace is then part of it and is relocated safely; the scheduler starts one by itself), choose a point in "
+                       "time before it was created, or run the recovery on a central recovery host where that path does not exist")
+
+
 def system_db_oids(cat):
     """Databases a partial (sparse) recovery always needs: template1 (OID 1, CREATE DATABASE) and the 'postgres' database (where connections land).
     'postgres' has the fixed OID 5 only since PostgreSQL 15; up to 14 it gets an OID assigned at initdb (e.g. 13780): read it from the backup catalog.
@@ -567,6 +625,20 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
         plan["space"] = [{"paths": v["paths"], "roles": v["roles"], "need": v["need"], "free": v["free"], "total": v["total"], "free_after": v.get("free_after")} for v in vols if v["need"] > 0]
         if delta and "space_warning" in plan:
             chk.append({"id": "dest_space", "level": "warn", "text": plan["space_warning"]})
+        try:
+            created = tablespaces_created_in_window(ctx, chain, target_lsn)
+        except EngineError as e:
+            created = []
+            chk.append({"id": "ts_created", "level": "warn", "text": "could not check the WAL for tablespaces created after the backup: %s" % e.message[:160]})
+        if created:
+            g = guard_created_tablespaces(created, "this server")
+            plan["tablespaces_created_after_backup"] = created
+            if g:
+                chk.append({"id": "ts_created", "level": "bad", "text": g.message, "fix": g.hint})
+            else:
+                chk.append({"id": "ts_created", "level": "warn",
+                            "text": "the recovery will create tablespace directories at their original paths (%s): start this copy only where those paths are free" % ", ".join(t["path"] for t in created[:3]),
+                            "fix": "a new FULL backup includes the tablespaces and lets them be relocated"})
         plan["preflight"] = restorecheck.summarize(chk)
         if not dry_run:
             restorecheck.enforce(chk)

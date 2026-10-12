@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from pg_arca.engine.util import EngineError, lsn_to_int, parse_wal_name, spec_path, wal_name
 
-CACHE_VERSION = 6                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
+CACHE_VERSION = 7                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
 LSN_RE = re.compile(rb"lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")
 XID_RE = re.compile(rb"tx:\s*(\d+)")
 TS_RE = re.compile(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)? [A-Za-z0-9+:-]+)")
@@ -32,8 +32,8 @@ TRIPLE_RE = re.compile(r"(\d+)/(\d+)/(\d+)")
 PAIR_RE = re.compile(r"(\d+)/(\d+)")
 FATAL_RE = re.compile(r"(different database system|incorrect|incompatible|not supported|unsupported|could not open|no such file|permission denied|invalid magic)", re.I)
 
-KINDS = {"events": ("Transaction", "Storage", "Database"), "databases": ("Database",), "dml": ("Heap",)}
-CODE = {"events": "E", "databases": "D", "dml": "M"}   # what a cache entry holds; "E" (everything) also answers a "D" question; "M" = row changes per transaction
+KINDS = {"events": ("Transaction", "Storage", "Database"), "databases": ("Database",), "dml": ("Heap",), "tablespaces": ("Tablespace",)}
+CODE = {"events": "E", "databases": "D", "dml": "M", "tablespaces": "T"}   # what a cache entry holds; "E" (everything) also answers a "D" question; "M" = row changes per transaction
 HEAP_RE = re.compile(rb"desc: (DELETE|UPDATE|HOT_UPDATE)\b.*?rel (\d+)/(\d+)/(\d+)")
 DML_KEEP = 20                                      # per segment and transaction: fewer changed rows than this are never part of a "mass" change worth caching
 
@@ -85,6 +85,13 @@ def parse_line(line):
         # A real TRUNCATE gives the table a new file (Storage CREATE + COMMIT dropping the old one, see fold_creates). On PostgreSQL 18 VACUUM's record even
         # carries an xid, so it cannot be told apart by that: reporting these was a false "table emptied" (version matrix, PG18).
         return None
+    elif line.startswith(b"rmgr: Tablespace"):
+        # CREATE TABLESPACE: its replay works on the ABSOLUTE location of the record (and removes an existing version directory there)
+        m = re.search(r'desc: CREATE (\d+) "(.*)"\s*$', line.decode("utf-8", "replace"))
+        ml = LSN_RE.search(line)
+        if not m or not ml:
+            return None
+        return {"lsn": ml.group(1).decode(), "xid": "?", "time": None, "kind": "CREATE TABLESPACE", "rels": [[m.group(1), ""]], "path": m.group(2), "nrels": 1}
     elif line.startswith(b"rmgr: Database"):
         if b"copy dir" in line and b"DROP" not in line:
             # CREATE DATABASE with the FILE_COPY strategy: "copy dir <spc>/<template db> to <spc>/<new db>" - a recovery must have the template's files
@@ -584,6 +591,8 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
                 e = dict(e)
                 e["seg"] = n
                 events.append(e)
+        if mode == "tablespaces":
+            return {"mode": "tablespaces", "created": [e for e in events if e["kind"] == "CREATE TABLESPACE"], "segments_scanned": len(scanned), "complete": not partial}
         creates = [e for e in events if e["kind"] == "CREATE DATABASE"]
         events = [e for e in events if e["kind"] != "CREATE DATABASE"]
         if mode == "databases":

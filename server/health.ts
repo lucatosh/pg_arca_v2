@@ -52,6 +52,14 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     const pg = primary?.snapshot?.postgres || {};
     const pol = resolvePolicy(st, c).policy;
 
+    // ---- tablespace created after the latest full backup: restores of this cluster are refused until a new full exists (the replay would hit the live path)
+    {
+      const bkx = primary?.snapshot?.backup;
+      const fts: string[] | null = Array.isArray(bkx?.full_tablespace_oids) ? bkx.full_tablespace_oids.map(String) : null;
+      const fresh = fts ? ((pg.tablespaces || []) as any[]).filter(t => !fts.includes(String(t.oid))) : [];
+      if (fresh.length) add({ severity: 'warning', code: 'tablespace_after_full', detail: fresh.map(t => t.oid).join('-'), title: `Tablespace nuovo dopo l’ultimo backup completo (${fresh.map(t => t.location).slice(0, 2).join(', ')})`,
+        cause: 'Un ripristino rigioca la creazione del tablespace sul suo percorso reale: su questo server sarebbe il tablespace in uso, quindi i ripristini sono bloccati finché non c’è un backup completo nuovo. Lo scheduler ne avvia uno; puoi farlo anche subito.', action: { label: 'Esegui un backup completo', page: 'backup' } });
+    }
     // ---- a database still marked "restore in progress" while no restore is running: the restore was interrupted (agent restart, crash) and the copy is INCOMPLETE
     const busy = new Set((st.operations || []).filter((o: any) => o.clusterId === c.id && ['queued', 'leased', 'running'].includes(o.status) && o.type === 'restore_database').map((o: any) => o.params?.new_name));
     for (const d of (pg.databases || []) as any[]) {
