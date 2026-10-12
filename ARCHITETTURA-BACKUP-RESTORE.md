@@ -123,6 +123,8 @@ La differenza reale oggi è funzionale (granularità del restore, catalogo, dedu
 | L'istanza effimera gira sul nodo | carico sul cluster | istanza effimera centralizzata e configurabile (globale/cluster) |
 | Serve sempre un PostgreSQL per leggere le righe | tipi custom, visibilità, multixact | decoder diretto dei chunk: ricerca, dietro flag, validato contro il restore classico prima di essere offerto |
 | Restore oggetto = una tabella, senza dipendenze | FK, viste, sequenze, trigger non vengono ricreati | restore oggetto v2: calcolo delle dipendenze, ricreazione, modalità schema (implementato, provato su PG16 locale) |
+| Lo scambio della promozione è UNA transazione | uno schema con migliaia di tabelle può superare la tabella dei lock del server | stimato prima di partire e rifiutato con il valore di `max_locks_per_transaction` da impostare (PGA-GEN-093); per ora nessuna promozione «a gruppi» automatica |
+| Vista materializzata ripristinata da sola | il contenuto è derivato | ricalcolata sui dati attuali (detto nel risultato) |
 
 ## 7b. Progetto: restore di oggetti con dipendenze e di schemi (v2)
 
@@ -162,10 +164,25 @@ Sicurezza e successo (blindatura):
 
 Da fare (ipotesi, **non** ancora implementate né misurate): estrazione per relazione invece che per database; verifica a campione dei chunk contro il hash prima di estrarre; ripresa di un restore interrotto; conteggio righe di controllo sulle tabelle piccole; misura delle stesse fasi sul lab Patroni e su un database da ≥ 100 GB.
 
+### 7d. Restore: casi reali gestiti (notte 11→12/10)
+
+- **Una partizione da sola o un figlio di ereditarietà**: i padri entrano nella quarantena come gusci vuoti (dump `--schema-only` dei soli antenati, sezioni pre-data/data/post-data nell'ordine di pg_dump, così l'ATTACH precede gli indici del padre), la tabella resta autonoma in quarantena (DETACH / NO INHERIT); nello scambio la tabella viva viene staccata (tenuta `_old_`) e quella recuperata riattaccata al padre VIVO con gli stessi limiti (`attached`). `as_new` = copia mai attaccata.
+- **Statistiche estese** (`CREATE STATISTICS`): pg_dump `-t` non le porta → lette dall'istanza recuperata e ricreate; quelle della copia vecchia rinominate.
+- **Sequenze condivise** (default di una tabella che usa una sequenza non sua): viaggiano con la tabella; nella promozione create solo se mancano, mai riportate indietro. **Default di ALTRE tabelle** che usano la sequenza posseduta dalla tabella sostituita: ripuntati alla nuova (altrimenti due sequenze darebbero gli stessi id).
+- **Domini con CHECK che chiamano funzioni**, funzioni che usano tipi: prerequisiti creati a passate finché si riesce.
+- **Vista / vista materializzata / sequenza da sole**: ricreate (prima «niente da fare»).
+- **Oggetti e database creati dopo l'ultimo backup**: il database si ricostruisce dai soli WAL (si estraggono solo i database di sistema; il CREATE DATABASE rigiocato dà oid, codifica, collation); una tabella nuova arriva con il redo. Istante precedente alla creazione → PGA-PITR-016.
+- **Il database come oggetto**: proprietario, ACL, limite connessioni, commento, `ALTER DATABASE/ROLE … IN DATABASE SET`, provider ICU/builtin, tablespace predefinito; proprietari e permessi di tutti gli oggetti quando i ruoli esistono (prima `--no-owner --no-acl` sempre).
+- **Consegna a un altro server**: tablespace assenti → `--no-tablespaces` con avviso; ruoli assenti → proprietari/permessi saltati con l'elenco.
+- **Legami per identità di altri oggetti** con la tabella sostituita: viste (già prima), regole e policy RLS di altre tabelle, appartenenza alle pubblicazioni (filtro di righe e colonne compresi); sottoscrizioni: avviso con il comando di refresh.
+- **Recupero di righe senza chiave primaria**: un indice univoco su colonne NOT NULL identifica le righe.
+- **Lock**: l'istanza di recupero dimensiona `max_locks_per_transaction` sulle relazioni del catalogo (pg_dump di 1500 tabelle falliva con «out of shared memory»).
+
 ## 8. Registro delle modifiche
 
 | Data | Modifica | Provato |
 |------|----------|---------|
+| 12/10 | Casi reali del restore (§7d): partizioni singole, ereditarietà, statistiche estese, sequenze condivise, domini con funzioni, oggetti/database creati dopo il backup, proprietà del database, consegna a un altro server, regole/policy/pubblicazioni/default ricollegati, righe senza PK, lock | PG16 reale: `test_objects_exotic_pg` 9, `test_objects_deps_pg` 9, `test_late_created_pg` 5, `test_restore_database_props_pg` 3, `test_into_other_server_pg` 2, scala 300/1500 tabelle; anche con repository cifrato e segmenti WAL da 64 MB; matrice 14-18 da rieseguire |
 | 11/10 | **Restore oggetti v2** (selezione multipla di tabelle/schemi, chiusura delle dipendenze, promozione `replace` atomica con FK in ingresso e viste riagganciate, `missing_only`, `as_new`, dry-run) | PG16 reale (`test_objects_v2.py`, 10 test); lab Patroni da rieseguire |
 | 11/10 | **Istanza di recupero configurabile** (globale/ambiente/cartella/cluster; sul nodo del target o centralizzata; binari per versione; scratch, porte, memoria; preflight; installazione PG privata o di sistema) | unit (`test_ephcfg.py` 15, `scoped.test.ts`) + `test_05a` su PG16; installazione apt/dnf e posizionamento centrale su rete **non provati** |
 | 11/10 | **Destinazione dei backup** (local / NFS / SMB montati; controllo reale per nodo: filesystem, scrittura O_EXCL+fsync+rename, spazio; applicazione solo dopo controllo riuscito su ogni nodo) | unit (`test_destcheck.py` 11, `destinations.test.ts`); mount NFS/SMB reali **non provati**; S3/Azure/GCS/SFTP = Anteprima |
