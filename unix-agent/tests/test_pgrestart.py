@@ -108,7 +108,8 @@ class Permission(unittest.TestCase):
         os.makedirs(os.path.join(d, "polkit-1"))
         self.assertIn("rule", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000))
         open(os.path.join(d, "r.rules"), "w").write("x")
-        self.assertIsNone(pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000))
+        self.assertIsNone(pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000, running=True))
+        self.assertIn("not running", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000, running=False))
 
 
 if __name__ == "__main__":

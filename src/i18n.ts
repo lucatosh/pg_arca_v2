@@ -118,6 +118,7 @@ const RULES: Rule[] = [
   [/^(?:PGA-WAL-022: )?WAL archive is missing (\d+) segment\(s\) required(?: by this restore)? \(first: (\S+)\)$/, m => `nell’archivio WAL mancano ${m[1]} segmenti necessari (il primo: ${m[2]})`],
   [/^polkit is not installed on this server, so the agent's user cannot restart system services: .*$/, () => 'su questo server polkit non è installato, quindi l’utente dell’agent non può riavviare i servizi di sistema: installalo (apt-get install polkitd / dnf install polkit) e rilancia l’installer di pg_arca, oppure riavvia PostgreSQL a mano'],
   [/^the polkit rule that lets the agent restart PostgreSQL units is missing \((.+)\): .*$/, m => `manca la regola polkit che permette all’agent di riavviare PostgreSQL (${m[1]}): rilancia come root l’installer di pg_arca, oppure riavvia PostgreSQL a mano`],
+  [/^the polkit service is installed but not running \(systemctl status polkit\), .*$/, () => 'il servizio polkit è installato ma non è attivo (systemctl status polkit): systemd non può autorizzare il riavvio. Avvialo, oppure riavvia PostgreSQL a mano'],
 ];
 const FIX: Rule[] = [
   [/^set the delivery address in the recovery instance settings \(e\.g\. the HAProxy \/ VIP of the leader\), or open network and pg_hba from this host$/, () => 'indica l’indirizzo di consegna nelle impostazioni dell’istanza di recupero (es. l’HAProxy o il VIP del leader), oppure apri rete e pg_hba da questo host'],

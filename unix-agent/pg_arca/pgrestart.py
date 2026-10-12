@@ -50,7 +50,16 @@ def postmaster_pid(data_dir):
         return None
 
 
-def systemd_permission(polkit_dir="/etc/polkit-1", rule_file=None, euid=None):
+def polkit_running(runner=subprocess.run):
+    """True/False when systemd can tell whether the polkit service runs, None when it cannot be asked."""
+    try:
+        r = runner(["systemctl", "is-active", "polkit"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (r.stdout or "").strip() == "active"
+
+
+def systemd_permission(polkit_dir="/etc/polkit-1", rule_file=None, euid=None, running=None):
     """None when the agent may restart a PostgreSQL unit (root, or the polkit rule the installer writes is there); otherwise why not and what to do."""
     if (os.geteuid() if euid is None else euid) == 0:
         return None
@@ -60,6 +69,9 @@ def systemd_permission(polkit_dir="/etc/polkit-1", rule_file=None, euid=None):
     if not os.path.exists(rule_file or POLKIT_FILE):
         return ("the polkit rule that lets the agent restart PostgreSQL units is missing (%s): run the pg_arca installer again as root, or restart PostgreSQL yourself"
                 % (rule_file or POLKIT_FILE))
+    if (polkit_running() if running is None else running) is False:
+        # installed but not running (it failed to start, or it was never started): systemd waits for it and the restart times out
+        return "the polkit service is installed but not running (systemctl status polkit), so systemd cannot authorize the restart: start it, or restart PostgreSQL yourself"
     return None
 
 
@@ -105,6 +117,10 @@ def run(p, data_dir, bindir, user, timeout=180, runner=subprocess.run, log_dir=N
                                        ("Allow it once as root: run the pg_arca installer again, or write %s with:\n%s" % (POLKIT_FILE, polkit_rule(user))) if polkit else
                                        "polkit is not installed on this server: install it (apt-get install polkitd / dnf install polkit) and run the pg_arca installer again. ",
                                        p["unit"]))
+            if re.search(r"(?i)method call timed out|connection timed out", err):
+                raise RuntimeError("systemd did not answer the restart request of %s in time (%s): usually the polkit service is not running (systemctl status polkit). "
+                                   "Check whether PostgreSQL was restarted (systemctl status %s) before trying again; or restart it yourself: sudo systemctl restart %s"
+                                   % (p["unit"], err.splitlines()[0][:160], p["unit"], p["unit"]))
             raise RuntimeError("systemctl restart %s failed: %s" % (p["unit"], err[:400]))
         return "systemctl restart %s" % p["unit"]
     if p["method"] == "pg_ctl":
