@@ -14,6 +14,7 @@ import { Store, NodeRecord, sha256, newSecret, newId, nowIso } from './store';
 import * as ops from './ops';
 import { OP_SPECS, validateOp } from './optypes';
 import { requiresApproval, requestApproval } from './approvals';
+import { applyDestination } from './destinations';
 import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
@@ -431,6 +432,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (!cluster) return res.status(404).json({ error: 'cluster_not_found' });
     const r = rec.type === 'hba_cluster_apply' ? await hbaFanout(store, cluster, rec.params, 'appr:' + id, rec.requestedBy)
       : rec.type === 'geo_switchover' ? await startSwitchover(store, rec.params.from, rec.params.to, rec.requestedBy)
+      : rec.type === 'destination_apply' ? await applyDestination(store, cluster, 'appr:' + id, rec.requestedBy)
       : await execute(cluster, rec.type, rec.params, rec.type === 'hba_restore' ? hbaTarget(store.peek(), cluster.id)?.id : rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
     if (r.code >= 400) return res.status(r.code).json(r.body);                    // not consumed: the approver can retry when the node is back
     await done('approved');

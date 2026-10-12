@@ -953,14 +953,62 @@ class OperationExecutor:
             fresh = load_config(os.environ.get("PG_ARCA_CONF_FILE") or None)
         except SystemExit:
             fresh = {}
+        old_wal = self.config.get("wal_archive_dir")
+        old_prev = list(self.config.get("wal_previous") or [])
         for k in ch:
             if k in fresh:
                 self.config[k] = fresh[k]
             elif ch[k] is None:
                 self.config.pop(k, None)
+        out = {"applied": sorted(ch)}
+        if p.get("verify_wal") and "wal_archive_dir" in ch and ch["wal_archive_dir"] and old_wal != self.config.get("wal_archive_dir"):
+            # the archive moves NOW (archive_command reads this configuration): prove that the next segment lands in the new directory; if it does not,
+            # go back to the old one at once - a WAL archive that silently stopped working is the worst outcome of a destination change
+            chk = self._verify_new_wal_dir(self.config["wal_archive_dir"])
+            out["wal_check"] = chk
+            if chk and not chk.get("archived"):
+                overrides.save(self.config, {"wal_archive_dir": old_wal, "wal_previous": old_prev or None})
+                self.config["wal_archive_dir"] = old_wal
+                if old_prev:
+                    self.config["wal_previous"] = old_prev
+                else:
+                    self.config.pop("wal_previous", None)
+                raise OpError("the WAL archive did not work in %s (segment %s not archived within %ss%s): the agent went back to %s, nothing was lost. "
+                              "Check the destination from the console (permissions of the PostgreSQL server user) and try again"
+                              % (ch["wal_archive_dir"], chk.get("segment"), chk.get("seconds"), ("; last error: " + chk["error"]) if chk.get("error") else "", old_wal))
         if self.runtime:
             self.runtime.refresh()
-        return {"settings": overrides.describe(self.config, self.runtime), "applied": sorted(ch)}
+        out["settings"] = overrides.describe(self.config, self.runtime)
+        return out
+
+    def _verify_new_wal_dir(self, wal_dir, wait=60):
+        """On a running primary that archives with pg-arca-wal: switch the WAL segment and wait for it in `wal_dir`. None when not applicable here."""
+        try:
+            if not (self.db and self.db.ping()):
+                return None
+            ok, out, _ = self.db.run_psql("SELECT CASE WHEN pg_is_in_recovery() THEN '' ELSE current_setting('archive_mode') || '|' || current_setting('archive_command') END")
+            if not ok or not out.strip() or "pg-arca-wal" not in out or out.split("|", 1)[0] == "off":
+                return None
+            ok, out, err = self.db.run_psql("SELECT pg_walfile_name(pg_switch_wal())")
+            if not ok:
+                return {"archived": False, "error": err.strip()[:200], "seconds": 0}
+            name = out.strip()
+        except Exception as e:
+            return {"archived": False, "error": str(e)[:200], "seconds": 0}
+        from pg_arca.wal_manager import WalManager
+        wm = WalManager(wal_dir)
+        t0 = time.time()
+        while time.time() - t0 < wait:
+            if wm.has_segment(name, anywhere=False):
+                return {"segment": name, "archived": True, "seconds": round(time.time() - t0, 1)}
+            time.sleep(1)
+        ae = None
+        try:
+            from pg_arca.runtime import _archive_error
+            ae = (_archive_error(wal_dir) or {}).get("error")
+        except Exception:
+            pass
+        return {"segment": name, "archived": False, "seconds": wait, "error": ae}
 
     def h_hba_expire(self, p):
         from pg_arca import hba_ops

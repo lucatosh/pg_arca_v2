@@ -14,6 +14,7 @@ import { Store, NodeRecord } from './store';
 import * as ops from './ops';
 import { audit } from './ops';
 import { registerKind, resolveScoped, KindSpec } from './scoped';
+import { requiresApproval, requestApproval } from './approvals';
 
 export const DEST_TYPES = ['local', 'nfs', 'smb'] as const;
 export const PREVIEW_TYPES = [
@@ -89,21 +90,64 @@ const stable = (v: any): string => JSON.stringify(v, (_k, x) => (x && typeof x =
 const CHECK_MAX_AGE_MS = 30 * 60 * 1000;
 const checkParams = (d: ResolvedDestination) => ({ type: d.type, ...(d.repo_path ? { repo_path: d.repo_path } : {}), ...(d.wal_path ? { wal_path: d.wal_path } : {}), require_mount: d.require_mount, ...(d.min_free_gb ? { min_free_gb: d.min_free_gb } : {}) });
 
+const online = (n: NodeRecord) => !!n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000;
+const nodesOf = (st: any, id: string): NodeRecord[] => (Object.values(st.nodes) as NodeRecord[]).filter(n => n.clusterId === id);
+
+/** Latest check per node for the CURRENT resolved destination (same parameters), with its age. */
+export function checksFor(st: any, c: any, d: ResolvedDestination) {
+  const want = stable(checkParams(d));
+  const out: Record<string, any> = {};
+  for (const n of nodesOf(st, c.id)) {
+    const op = [...st.operations].reverse().find((o: any) => o.type === 'destination_check' && o.clusterId === c.id && o.nodeId === n.id && stable({ ...o.params, bench: undefined }) === stable({ ...JSON.parse(want), bench: undefined }));
+    out[n.id] = op ? { opId: op.id, status: op.status, ok: op.status === 'succeeded' ? !!op.result?.ok : null, at: op.updatedAt, fresh: Date.now() - Date.parse(op.updatedAt) < CHECK_MAX_AGE_MS } : null;
+  }
+  return out;
+}
+
+/** Why the destination cannot be applied now (null = it can). */
+export function precheckApply(st: any, c: any): { code: number; body: any } | null {
+  if (c.isSandbox) return { code: 409, body: { error: 'demo_cluster' } };
+  const { dest } = destinationFor(st, c);
+  if (!dest) return { code: 409, body: { error: 'no_destination' } };
+  if (dest.wal_collision) return { code: 409, body: { error: 'wal_collision', message: dest.wal_collision } };
+  const nodes = nodesOf(st, c.id).filter(online);
+  if (!nodes.length) return { code: 409, body: { error: 'no_online_node' } };
+  const chk = checksFor(st, c, dest);
+  const bad = nodes.filter(n => !chk[n.id] || chk[n.id].ok !== true || !chk[n.id].fresh);
+  if (bad.length) return { code: 409, body: { error: 'check_required', message: `Prima di applicare serve un controllo riuscito e recente su ogni nodo (mancano: ${bad.map(n => n.name).join(', ')}).`, nodes: bad.map(n => n.name) } };
+  return null;
+}
+
+/**
+ * Apply the resolved destination to every online node of the cluster (also called when a four-eyes request is approved). Each agent keeps its OLD
+ * repository / WAL archive as a read-only previous location (restores and PITR keep working across the change) and, on the primary, proves that the
+ * next WAL segment lands in the new archive - or goes back to the old one by itself. Existing backups are not moved (destination_migrate does that).
+ */
+export async function applyDestination(store: Store, c: any, key: string, by: string): Promise<{ code: number; body: any }> {
+  const st = store.peek();
+  const pre = precheckApply(st, c);
+  if (pre) return pre;
+  const { dest } = destinationFor(st, c);
+  const out = [];
+  for (const n of nodesOf(st, c.id).filter(online)) {
+    const set: Record<string, string> = {};
+    if (dest!.repo_path) set.repo_path = dest!.repo_path;
+    if (dest!.wal_path) set.wal_archive_dir = dest!.wal_path;
+    const r = await ops.submit(store, { type: 'agent_config_set', clusterId: c.id, nodeId: n.id, params: { set, verify_wal: true }, idempotencyKey: `${key}:cfg:${n.id}`, createdBy: by, ttlSeconds: 300 });
+    out.push({ nodeId: n.id, nodeName: n.name, operation: r.op });
+  }
+  const prevOf = (n: any) => ({ repo: n.snapshot?.storage?.repo_path || null, wal: n.snapshot?.storage?.wal_path || null });
+  const prim = nodesOf(st, c.id).find(n => online(n) && n.snapshot?.postgres?.is_in_recovery === false);
+  await store.mutate(d => {
+    (d.settings.destinationApplied ||= {})[c.id] = { at: new Date().toISOString(), by, repo_path: dest!.repo_path, wal_path: dest!.wal_path, type: dest!.type, previous: prim ? prevOf(prim) : null };
+    audit(d, { clusterId: c.id, actor: by, action: 'destination.apply', status: 'OK', details: { ...dest } });
+  });
+  return { code: 202, body: { destination: dest, operations: out,
+    note: dest!.repo_path ? 'I backup già fatti restano nella posizione precedente, leggibili per i ripristini; la nuova destinazione parte con un backup completo (il prossimo backup lo diventa da sé). Puoi migrare il contenuto vecchio in background.' : undefined } };
+}
+
 export function mountDestinationRoutes(app: any, store: Store) {
   const actor = (req: Request) => (req as any).actor || 'admin';
-  const online = (n: NodeRecord) => !!n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000;
-  const nodesOf = (st: any, id: string): NodeRecord[] => (Object.values(st.nodes) as NodeRecord[]).filter(n => n.clusterId === id);
-
-  /** Latest check per node for the CURRENT resolved destination (same parameters), with its age. */
-  const checksFor = (st: any, c: any, d: ResolvedDestination) => {
-    const want = stable(checkParams(d));
-    const out: Record<string, any> = {};
-    for (const n of nodesOf(st, c.id)) {
-      const op = [...st.operations].reverse().find((o: any) => o.type === 'destination_check' && o.clusterId === c.id && o.nodeId === n.id && stable({ ...o.params, bench: undefined }) === stable({ ...JSON.parse(want), bench: undefined }));
-      out[n.id] = op ? { opId: op.id, status: op.status, ok: op.status === 'succeeded' ? !!op.result?.ok : null, at: op.updatedAt, fresh: Date.now() - Date.parse(op.updatedAt) < CHECK_MAX_AGE_MS } : null;
-    }
-    return out;
-  };
 
   app.get('/api/clusters/:id/destination', (req: Request, res: Response) => {
     const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
@@ -168,32 +212,20 @@ export function mountDestinationRoutes(app: any, store: Store) {
     res.status(202).json({ destination: dest, operations: out });
   });
 
-  // apply: only when EVERY online node has a fresh, successful check of exactly this destination
+  // apply: only when EVERY online node has a fresh, successful check of exactly this destination. On a protected environment it is a four-eyes request.
   app.post('/api/clusters/:id/destination/apply', async (req: Request, res: Response) => {
     const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
-    const { dest } = destinationFor(st, c);
-    if (!dest) return res.status(409).json({ error: 'no_destination' });
-    if (dest.wal_collision) return res.status(409).json({ error: 'wal_collision', message: dest.wal_collision });
     const key = String(req.headers['idempotency-key'] || '');
     if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
-    const nodes = nodesOf(st, c.id).filter(online);
-    if (!nodes.length) return res.status(409).json({ error: 'no_online_node' });
-    const chk = checksFor(st, c, dest);
-    const bad = nodes.filter(n => !chk[n.id] || chk[n.id].ok !== true || !chk[n.id].fresh);
-    if (bad.length) return res.status(409).json({ error: 'check_required', message: `Prima di applicare serve un controllo riuscito e recente su ogni nodo (mancano: ${bad.map(n => n.name).join(', ')}).`, nodes: bad.map(n => n.name) });
-    const out = [];
-    for (const n of nodes) {
-      const set: Record<string, string> = {};
-      if (dest.repo_path) set.repo_path = dest.repo_path;
-      if (dest.wal_path) set.wal_archive_dir = dest.wal_path;
-      const r = await ops.submit(store, { type: 'agent_config_set', clusterId: c.id, nodeId: n.id, params: { set }, idempotencyKey: `${key}:cfg:${n.id}`, createdBy: actor(req), ttlSeconds: 300 });
-      out.push({ nodeId: n.id, nodeName: n.name, operation: r.op });
+    const pre = precheckApply(st, c);
+    if (pre) return res.status(pre.code).json(pre.body);
+    if (requiresApproval(st, c, 'destination_apply', {})) {
+      const { dest } = destinationFor(st, c);
+      const rec = await requestApproval(store, audit, { cluster: c, type: 'destination_apply', params: { repo_path: dest!.repo_path, wal_path: dest!.wal_path }, key, actor: actor(req) });
+      return res.status(202).json({ approval: rec, message: 'Cambio di destinazione su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
     }
-    await store.mutate(d => {
-      (d.settings.destinationApplied ||= {})[c.id] = { at: new Date().toISOString(), by: actor(req), repo_path: dest.repo_path, wal_path: dest.wal_path, type: dest.type };
-      audit(d, { clusterId: c.id, actor: actor(req), action: 'destination.apply', status: 'OK', details: { ...dest } });
-    });
-    res.status(202).json({ destination: dest, operations: out, note: dest.repo_path ? 'I backup esistenti restano nel percorso precedente: la nuova catena parte con un nuovo backup completo.' : undefined });
+    const r = await applyDestination(store, c, key, actor(req));
+    res.status(r.code).json(r.body);
   });
 }

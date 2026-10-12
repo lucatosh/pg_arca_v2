@@ -10,7 +10,7 @@ export const APPROVABLE_ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 /** What counts as risky: it changes live access, live parameters, the HA topology or overwrites/deletes live data. */
 export function isRisky(type: string, params: any = {}): boolean {
   if (type === 'pg_restart' && params.dry_run) return false;                 // only says HOW it would restart
-  if (['hba_cluster_apply', 'hba_apply', 'hba_rollback', 'hba_restore', 'pg_set_param', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'pg_restart', 'patroni_reinit', 'archive_enable', 'patroni_config_patch', 'patroni_pause', 'ephemeral_install', 'geo_promote', 'geo_demote', 'geo_switchover'].includes(type)) return true;
+  if (['hba_cluster_apply', 'hba_apply', 'hba_rollback', 'hba_restore', 'pg_set_param', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'pg_restart', 'patroni_reinit', 'archive_enable', 'patroni_config_patch', 'patroni_pause', 'ephemeral_install', 'geo_promote', 'geo_demote', 'geo_switchover', 'destination_apply', 'destination_drop_old'].includes(type)) return true;
   if (type === 'restore_promote') return params.mode === 'replace';
   if (type === 'restore_instance') return !!params.keep_archiving;               // a copy that will write into production's WAL archive
   if (type === 'restore_apply_rows') return (params.delete_keys || []).length > 0 || (params.restore_keys || []).length > 0;
@@ -20,7 +20,7 @@ export const advanced = (st: any) => ({ approvals: {} as Record<string, boolean>
 export const requiresApproval = (st: any, cluster: any, type: string, params: any) => !!advanced(st).approvals[cluster.environment] && isRisky(type, params);
 
 export function describeOp(type: string, params: any = {}): string {
-  const m: Record<string, string> = { hba_cluster_apply: 'Modifica delle regole di accesso (pg_hba) su tutto il cluster', hba_apply: 'Modifica delle regole di accesso (pg_hba)', hba_rollback: 'Ripristino delle regole di accesso precedenti', hba_restore: 'Ripristino di una versione precedente delle regole di accesso (DCS Patroni)', pg_set_param: `Cambio del parametro ${params.name ?? ''} = ${params.value ?? ''}`,
+  const m: Record<string, string> = { destination_apply: `Cambio della destinazione dei backup${params.repo_path ? ' → ' + params.repo_path : ''}`, destination_drop_old: `Eliminazione della posizione precedente dei backup ${params.path ?? ''}`, hba_cluster_apply: 'Modifica delle regole di accesso (pg_hba) su tutto il cluster', hba_apply: 'Modifica delle regole di accesso (pg_hba)', hba_rollback: 'Ripristino delle regole di accesso precedenti', hba_restore: 'Ripristino di una versione precedente delle regole di accesso (DCS Patroni)', pg_set_param: `Cambio del parametro ${params.name ?? ''} = ${params.value ?? ''}`,
     patroni_switchover: 'Switchover pianificato', patroni_failover: 'Failover forzato', patroni_restart: 'Riavvio via Patroni', pg_restart: 'Riavvio di PostgreSQL', patroni_reinit: 'Ricostruzione di una replica', archive_enable: 'Attivazione archiviazione WAL', patroni_config_patch: 'Modifica della configurazione Patroni', patroni_pause: 'Manutenzione Patroni',
     restore_promote: 'Sostituzione di tabelle con quelle ripristinate', ephemeral_install: `Installazione dei binari PostgreSQL ${params.major ?? ''} per i ripristini`, restore_apply_rows: `Recupero righe in ${params.object ?? ''}` };
   return m[type] || type;

@@ -73,5 +73,19 @@ import { validateOp } from '../../server/optypes';
   // changing the destination invalidates the previous checks
   await call('PUT', '/api/scoped/destination/assignments', { scope: 'cluster', key: 'c1', value: { repoPath: '/mnt/other/pgarca' } });
   r = await call('POST', '/api/clusters/c1/destination/apply', {}, 'ap5'); assert.equal(r.status, 409, 'checks of the old destination do not count');
+  assert.equal(cfg.params.verify_wal, true, 'the primary proves the new WAL archive (or goes back to the old one)');
+  // four-eyes on a protected environment: the apply becomes a request; approved by another admin it runs exactly the same way
+  r = await call('POST', '/api/clusters/c1/destination/check', {}, 'k3');
+  for (const o of r.body.operations) await finish(o.operation.id, true);
+  await store.mutate(d => { d.settings.advanced = { ...(d.settings.advanced || {}), approvals: { prod: true } }; });
+  const nOps = store.peek().operations.length;
+  r = await call('POST', '/api/clusters/c1/destination/apply', {}, 'ap6'); assert.equal(r.status, 202); assert(r.body.approval, JSON.stringify(r.body));
+  assert.equal(store.peek().operations.length, nOps, 'nothing applied before the approval');
+  assert.match(r.body.approval.summary, /destinazione dei backup.*\/mnt\/other\/pgarca/);
+  await store.mutate(d => { d.settings.approvalRequests.find((x: any) => x.id === r.body.approval.id).requestedBy = 'someone-else'; });
+  const ap = await call('POST', `/api/approvals/${r.body.approval.id}/approve`, {});
+  assert.equal(ap.status, 200, JSON.stringify(ap.body)); assert.equal(ap.body.operations.length, 2);
+  assert.equal(ap.body.operations[0].operation.params.set.repo_path, '/mnt/other/pgarca');
+  assert.equal(store.peek().settings.destinationApplied.c1.repo_path, '/mnt/other/pgarca');
   console.log('destination tests OK');
 })().catch(e => { console.error(e); process.exit(1); });
