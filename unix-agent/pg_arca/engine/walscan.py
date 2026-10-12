@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from pg_arca.engine.util import EngineError, lsn_to_int, parse_wal_name, spec_path, wal_name
 
-CACHE_VERSION = 5                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
+CACHE_VERSION = 6                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
 LSN_RE = re.compile(rb"lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")
 XID_RE = re.compile(rb"tx:\s*(\d+)")
 TS_RE = re.compile(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)? [A-Za-z0-9+:-]+)")
@@ -86,6 +86,13 @@ def parse_line(line):
         # carries an xid, so it cannot be told apart by that: reporting these was a false "table emptied" (version matrix, PG18).
         return None
     elif line.startswith(b"rmgr: Database"):
+        if b"copy dir" in line and b"DROP" not in line:
+            # CREATE DATABASE with the FILE_COPY strategy: "copy dir <spc>/<template db> to <spc>/<new db>" - a recovery must have the template's files
+            m = re.search(r"copy dir (\d+)/(\d+) to (\d+)/(\d+)", line.split(b"desc:", 1)[-1].decode("ascii", "replace"))
+            ml = LSN_RE.search(line)
+            if not m or not ml:
+                return None
+            return {"lsn": ml.group(1).decode(), "xid": "?", "time": None, "kind": "CREATE DATABASE", "rels": [[m.group(2), m.group(4)]], "nrels": 1}
         if b"DROP" not in line:
             return None
         desc = line.split(b"desc:", 1)[-1].decode("ascii", "replace")
@@ -464,7 +471,7 @@ def window_start(ctx, hours=None, since_backup=False, since_iso=None):
 
 
 def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since=None, until=None, limit=20, cache_dir=None, progress=None, cancel=None, budget_sec=900, workers=None, detail=False,
-         min_rows=1000):
+         min_rows=1000, keep_creates=False):
     """Returns {"events": [...ascending...], "segments_scanned", "segments_cached", "segments_total", "complete", "window": {...}, "elapsed_sec", ["suggestion"]}.
     mode "events": DROP / TRUNCATE / DROP DATABASE; mode "databases": only DROP DATABASE (the cheap one: no Transaction records are printed);
     mode "dml": transactions that DELETEd / UPDATEd at least `min_rows` rows of one table (a DELETE or UPDATE without WHERE) - reads every row change, slower."""
@@ -577,6 +584,8 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
                 e = dict(e)
                 e["seg"] = n
                 events.append(e)
+        creates = [e for e in events if e["kind"] == "CREATE DATABASE"]
+        events = [e for e in events if e["kind"] != "CREATE DATABASE"]
         if mode == "databases":
             events = [e for e in events if e["kind"] == "DROP DATABASE"]     # a cache entry from a full scan also holds table events
         if mode == "dml":
@@ -629,6 +638,8 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
         if mode == "events" and out:
             last = out[-1]
             res["suggestion"] = {"target_lsn": last["lsn"], "inclusive": False, "note": "restoring with this LSN and inclusive=false stops just BEFORE the last event"}
+        if keep_creates:
+            res["creates"] = creates
         if mode == "databases":
             dropped = {}
             for e in out:

@@ -487,11 +487,21 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
         # template1 is always extracted, template0 must be too (CREATE DATABASE ... TEMPLATE template0 is common for a specific encoding/locale)
         keep = set()
         try:
-            t0 = ctx.repo.load_catalog(chain[-1])["databases"].get("template0")
+            cat = ctx.repo.load_catalog(chain[-1])
+            t0 = cat["databases"].get("template0")
             if t0 and t0.get("oid"):
                 keep.add(int(t0["oid"]))
-        except EngineError:
-            pass
+            # a USER database used as template (CREATE DATABASE b TEMPLATE a, FILE_COPY): its files are copied by the replay -> extract it too.
+            # Found in the WAL since the backup (Database records only: cheap, cached)
+            from pg_arca.engine import walscan
+            known = set(int(d["oid"]) for d in cat["databases"].values() if d.get("oid"))
+            r = walscan.scan(ctx, mode="databases", since_backup=True, limit=200, cache_dir=getattr(ctx, "forensics_cache", None), budget_sec=300, keep_creates=True)
+            for e in r.get("creates") or []:
+                src = int(e["rels"][0][0])
+                if src in known:
+                    keep.add(src)
+        except EngineError as e:
+            ctx.log("warning", "templates of databases created after the backup not determined: %s" % e.message)
         eph, info = _recover(ctx, chain, keep, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
         s = PgSession(eph.conn("postgres"), read_only=True)
         try:

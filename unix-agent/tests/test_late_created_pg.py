@@ -31,6 +31,8 @@ def setUpModule():
     base.setUpModule()
     q("postgres", "CREATE DATABASE old_db")
     q("old_db", "CREATE TABLE t_old AS SELECT g AS id, md5(g::text) AS v FROM generate_series(1, 5000) g")
+    q("postgres", "CREATE DATABASE tmpl_src")
+    q("tmpl_src", "CREATE TABLE seed AS SELECT g AS id FROM generate_series(1, 1234) g")
     run_backup(F.ctx, "full")
     time.sleep(1.2)
     S["before_new"] = now_txt()                                      # after the backup, before the new database exists
@@ -40,6 +42,8 @@ def setUpModule():
     q("postgres", "CREATE DATABASE new_db ENCODING 'UTF8' TEMPLATE template0%s" % (" STRATEGY FILE_COPY" if major >= 15 else ""))
     q("new_db", "CREATE TABLE fresh (id int PRIMARY KEY, note text); INSERT INTO fresh SELECT g, 'n' || g FROM generate_series(1, 3000) g")
     q("old_db", "CREATE TABLE t_new (id int PRIMARY KEY, v text); INSERT INTO t_new SELECT g, 'x' || g FROM generate_series(1, 777) g")
+    # a USER database as template, FILE_COPY: the replay copies tmpl_src's files, which a sparse recovery would not have extracted
+    q("postgres", "CREATE DATABASE from_tmpl TEMPLATE tmpl_src%s" % (" STRATEGY FILE_COPY" if major >= 15 else ""))
     time.sleep(1.2)
     S["t_ok"] = now_txt()
     time.sleep(1.2)
@@ -82,6 +86,10 @@ class Late(unittest.TestCase):
         restore_object(F.ctx, "new_db.public.fresh", target_time=S["t_ok"], stage_db="pgarca_stage_late2")
         promote_object(F.ctx, "pgarca_stage_late2", "new_db", mode="replace", drop_stage=True)
         self.assertEqual(q("new_db", "SELECT count(*) FROM fresh")[0][0], "3000")
+
+    def test_06_database_cloned_from_a_user_template(self):
+        restore_database(F.ctx, "from_tmpl", target_time=S["t_ok"], new_name="from_tmpl_back")
+        self.assertEqual(q("from_tmpl_back", "SELECT count(*) FROM seed")[0][0], "1234")
 
 
 if __name__ == "__main__":
