@@ -168,6 +168,14 @@ class Deps(unittest.TestCase):
         row = [r for r in plan["tables"] if r["name"] == "suppliers"][0]
         self.assertEqual(row.get("schema_drift", {}).get("columns_only_now"), ["vat"], row)
         self.assertTrue(any("changed shape" in w for w in plan["warnings"]), plan["warnings"])
+        # ... and the rows can still be recovered: the new column keeps its value (updated rows) or gets its default (re-inserted rows)
+        from pg_arca.engine.granular import apply_rows
+        q(DB, "UPDATE app.suppliers SET vat = 'IT1', name = 'wrong' WHERE id = (SELECT min(id) FROM app.suppliers)")
+        k = q(DB, "SELECT min(id) FROM app.suppliers")[0][0]
+        before = q("pgarca_stage_shape", "SELECT name FROM app.suppliers WHERE id = %s" % k)[0][0]
+        r = apply_rows(F.ctx, "pgarca_stage_shape", "%s.app.suppliers" % DB, restore_keys=["[%s]" % k])
+        self.assertEqual(r["updated"], 1); self.assertIn("vat", r.get("note", ""))
+        self.assertEqual(q(DB, "SELECT name, vat FROM app.suppliers WHERE id = %s" % k)[0], [before, "IT1"])
         q("postgres", "DROP DATABASE pgarca_stage_shape")
 
 

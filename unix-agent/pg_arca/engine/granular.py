@@ -1175,9 +1175,9 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
             raise EngineError("PGA-GEN-086", "primary key differs or is missing (restored: %s, live: %s)" % (si["pk"] or "none", li["pk"] or "none"))
         writable = [c for c in li["cols"] if c in si["cols"] and c not in li["generated"]]
         missing = [c for c in li["cols"] if c not in si["cols"] and c not in li["generated"]]
-        if missing and restore_keys:
-            raise EngineError("PGA-GEN-091", "live table has columns that the restored table does not have (%s): rows would lose those values" % ", ".join(missing),
-                              "use promote, or restore only after the columns were removed")
+        # columns added after the restore point (a migration): only the columns both sides have are written - an updated row keeps its current
+        # value in the new columns, a re-inserted row gets their DEFAULT (a NOT NULL column without default makes the whole transaction fail: said)
+        res_note = ("columns only in the live table (%s): kept as they are for updated rows, DEFAULT for re-inserted rows" % ", ".join(missing)) if missing else None
         keyexpr = "jsonb_build_array(%s)::text" % ",".join("t.%s" % quote_ident(c) for c in li["pk"])
         rows = _sample(st, fq, si["pk"], restore_keys) if restore_keys else {}
         absent = [k for k in restore_keys if k not in rows]
@@ -1189,6 +1189,8 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
         will_delete = [k for k in delete_keys if k in cur]
         res = {"object": spec, "inserted": len(will_insert), "updated": len(will_update), "deleted": len(will_delete),
                "ignored_delete_keys": len(delete_keys) - len(will_delete), "dry_run": bool(dry_run)}
+        if res_note:
+            res["note"] = res_note
         if dry_run:
             return res
         ts = now_utc().strftime("%Y%m%d%H%M%S")
@@ -1212,11 +1214,14 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
                 part = will_delete[i:i + 500]
                 tg.query("DELETE FROM %s t WHERE %s = ANY(ARRAY[%s])" % (fq, keyexpr, ",".join(sql_lit(k) for k in part)))
             tg.query("COMMIT")
-        except BaseException:
+        except BaseException as e:
             try:
                 tg.query("ROLLBACK")
             except EngineError:
                 pass
+            if isinstance(e, EngineError) and missing and "null value" in e.message:
+                raise EngineError("PGA-GEN-091", "nothing applied: a column added after the restore point is NOT NULL without a default (%s): re-inserted rows have no value for it"
+                                  % ", ".join(missing), "update only rows that still exist, or give the column a default")
             raise
         return res
     finally:
