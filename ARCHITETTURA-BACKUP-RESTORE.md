@@ -177,11 +177,17 @@ Da fare (ipotesi, **non** ancora implementate né misurate): estrazione per rela
 - **Legami per identità di altri oggetti** con la tabella sostituita: viste (già prima), regole e policy RLS di altre tabelle, appartenenza alle pubblicazioni (filtro di righe e colonne compresi); sottoscrizioni: avviso con il comando di refresh.
 - **Recupero di righe senza chiave primaria**: un indice univoco su colonne NOT NULL identifica le righe.
 - **Lock**: l'istanza di recupero dimensiona `max_locks_per_transaction` sulle relazioni del catalogo (pg_dump di 1500 tabelle falliva con «out of shared memory»).
+- **Tablespace creati dopo il full (sicurezza)**: il recupero rigioca i WAL dall'inizio del FULL; `CREATE TABLESPACE` viene rigiocato sul percorso ASSOLUTO del record, PostgreSQL cancella la cartella di versione che trova lì e ripunta `pg_tblspc` → sull'host di produzione cancellerebbe il tablespace vivo. Prima di ogni recupero i WAL vengono cercati (record Tablespace, cache); percorso in uso → rifiuto (PGA-RST-050), percorso assente → creato per il recupero e rimosso; lo scheduler avvia un FULL appena compare un tablespace nuovo.
+- **Copia d'istanza sicura**: `archive_mode=off`, niente standby sincroni né primario da seguire (salvo `keep_archiving`).
+- **Annullamento e interruzioni**: Annulla interrompe pg_dump/pg_restore; database in riempimento marcato «restore IN PROGRESS», quarantena marcata `building` (mai promossa incompleta).
+- **Forense DELETE/UPDATE di massa** (`wal_forensics` mode `dml`): righe modificate per transazione e tabella, ROLLBACK esclusi, ripristino «subito prima» con `target_xid` + `inclusive=false`.
+- **Database clonati da un template utente con FILE_COPY**: il template è trovato nei record `copy dir` ed estratto.
 
 ## 8. Registro delle modifiche
 
 | Data | Modifica | Provato |
 |------|----------|---------|
+| 12/10 | Sicurezza: tablespace creati dopo il full non toccano più il tablespace vivo; copia d'istanza senza archiviazione; annullamento e ripristini interrotti; forense DML; template FILE_COPY | PG16 reale: `test_tablespace_later_pg`, `test_cancel_restore_pg`, `test_forensics_dml_pg`, `test_late_created_pg` 6, `test_archive_enable_pg` |
 | 12/10 | Casi reali del restore (§7d): partizioni singole, ereditarietà, statistiche estese, sequenze condivise, domini con funzioni, oggetti/database creati dopo il backup, proprietà del database, consegna a un altro server, regole/policy/pubblicazioni/default ricollegati, righe senza PK, lock | PG16 reale: `test_objects_exotic_pg` 9, `test_objects_deps_pg` 9, `test_late_created_pg` 5, `test_restore_database_props_pg` 3, `test_into_other_server_pg` 2, scala 300/1500 tabelle; anche con repository cifrato e segmenti WAL da 64 MB; matrice 14-18 da rieseguire |
 | 11/10 | **Restore oggetti v2** (selezione multipla di tabelle/schemi, chiusura delle dipendenze, promozione `replace` atomica con FK in ingresso e viste riagganciate, `missing_only`, `as_new`, dry-run) | PG16 reale (`test_objects_v2.py`, 10 test); lab Patroni da rieseguire |
 | 11/10 | **Istanza di recupero configurabile** (globale/ambiente/cartella/cluster; sul nodo del target o centralizzata; binari per versione; scratch, porte, memoria; preflight; installazione PG privata o di sistema) | unit (`test_ephcfg.py` 15, `scoped.test.ts`) + `test_05a` su PG16; installazione apt/dnf e posizionamento centrale su rete **non provati** |
