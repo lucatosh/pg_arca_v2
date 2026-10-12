@@ -343,6 +343,22 @@ def user_objects(d):
     return out, (not linked)
 
 
+def ensure_retention_floor(ctx):
+    """An archive whose retention ran before the floor marker existed (older agent): write the floor now from the oldest backup still kept - by this stanza
+    or by a sibling sharing the archive - so that legitimately removed segments are not reported as holes. Never lowers an existing floor."""
+    if ctx.wal.retention_floor():
+        return None
+    repo = ctx.repo
+    done = [x for x in repo.sets() if x.get("status") == "COMPLETE" and x.get("start_lsn")]
+    if not done:
+        return None
+    floor_lsn = min([min(lsn_to_int(x["start_lsn"]) for x in done)] + _sibling_floors(repo, done))
+    seg = done[0].get("wal_segment_size") or ctx.seg_size
+    floor = wal_segno(floor_lsn, seg)
+    ctx.wal.set_retention_floor(floor, "%X/%08X" % (floor_lsn >> 32, floor_lsn & 0xFFFFFFFF))
+    return floor
+
+
 def catalog_all(ctx, max_sets=12):
     """Databases of the newest backups merged: every database that was in ANY of them, described by the newest set that holds it (`last_set`, `last_stop`) and flagged
     `in_latest`. A database that is in older backups but not in the latest one was dropped before the latest backup: it can still be restored from the older one."""

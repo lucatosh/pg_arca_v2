@@ -179,6 +179,13 @@ class Runtime(object):
                     self._hba_check = None
             if getattr(self, "_hba_check", None) is not None:
                 pg["hba_patroni_local"] = self._hba_check
+        if wal and cas is not None and not getattr(self, "_floor_checked", False):
+            self._floor_checked = True                    # once per agent start: archives expired by an older agent get their floor marker
+            try:
+                from pg_arca.engine.maintenance import ensure_retention_floor
+                ensure_retention_floor(cas.ctx)
+            except Exception:
+                logger.debug("retention floor init failed", exc_info=True)
         ae = _archive_error(self.config.get("wal_archive_dir"))
         if ae:
             pg["archive_error"] = ae

@@ -96,6 +96,20 @@ class Cancel(unittest.TestCase):
             self.assertEqual(e.exception.code, "PGA-GEN-094", e.exception)
         q("postgres", "DROP DATABASE pgarca_stage_half")
 
+    def test_retention_floor_initialised_once(self):
+        # an archive expired by an older agent (no floor marker): the floor is set from the oldest kept backup, never lowered afterwards
+        from pg_arca.engine.maintenance import ensure_retention_floor
+        from pg_arca.engine.util import lsn_to_int, wal_segno
+        p = os.path.join(F.ctx.wal.wal_dir, F.ctx.wal.FLOOR_FILE)
+        if os.path.exists(p):
+            os.unlink(p)
+        F.ctx.wal._cont_cache = (0, None, None)
+        oldest = min(lsn_to_int(x["start_lsn"]) for x in F.ctx.repo.sets() if x.get("status") == "COMPLETE")
+        self.assertEqual(ensure_retention_floor(F.ctx), wal_segno(oldest, F.ctx.seg_size))
+        self.assertEqual(F.ctx.wal.retention_floor(), wal_segno(oldest, F.ctx.seg_size))
+        F.ctx.wal.set_retention_floor(wal_segno(oldest, F.ctx.seg_size) + 5)
+        self.assertIsNone(ensure_retention_floor(F.ctx), "an existing floor is never touched")
+
 
 if __name__ == "__main__":
     unittest.main()
