@@ -195,6 +195,12 @@ def safe_relpath(rel):
     return rel
 
 
+def read_file(path, binary=False, first_line=False, errors=None):
+    """Whole content (or the first line) of a file, closed at once: a long-running agent never leaves a file to the garbage collector."""
+    with open(path, "rb" if binary else "r", **({} if binary or not errors else {"errors": errors})) as f:
+        return f.readline() if first_line else f.read()
+
+
 def tail_file(path, n=25):
     try:
         with open(path, "r", errors="replace") as f:

@@ -91,20 +91,24 @@ class PgSession(object):
             raise EngineError("PGA-CFG-001", "cannot execute psql (%s)" % e, "install the PostgreSQL client or set pg_bin_dir")
         self._t = threading.Thread(target=self._drain, daemon=True)
         self._t.start()
-        first = self.one("SELECT 1")
-        if first != "1":
-            raise EngineError("PGA-CFG-002", "cannot connect to %s: %s" % (self.dbname, self._why("no error from the server; first answer was %r, psql %s" % (first, "exited with %s" % self.p.poll() if self.p.poll() is not None else "still running"))),
-                              "check socket/port/user and pg_hba.conf")
-        # A backup session sits idle for hours while files are copied: server-side idle timeouts (PG14+ idle_session_timeout, idle_in_transaction_session_timeout)
-        # must not kill it. Error detection below needs English messages (superuser only). Each setting is optional: unknown/forbidden ones are ignored.
-        self.one("DO $$ BEGIN "
-                 "BEGIN PERFORM set_config('idle_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
-                 "BEGIN PERFORM set_config('idle_in_transaction_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
-                 "BEGIN PERFORM set_config('lc_messages','C',false); EXCEPTION WHEN OTHERS THEN NULL; END; END $$")
-        self.version_num = int(self.one("SHOW server_version_num"))
-        self.version = self.one("SHOW server_version")
-        from pg_arca.pgcompat import Profile
-        self.profile = Profile(self.version_num)          # every version difference is answered by this profile
+        try:
+            first = self.one("SELECT 1")
+            if first != "1":
+                raise EngineError("PGA-CFG-002", "cannot connect to %s: %s" % (self.dbname, self._why("no error from the server; first answer was %r, psql %s" % (first, "exited with %s" % self.p.poll() if self.p.poll() is not None else "still running"))),
+                                  "check socket/port/user and pg_hba.conf")
+            # A backup session sits idle for hours while files are copied: server-side idle timeouts (PG14+ idle_session_timeout, idle_in_transaction_session_timeout)
+            # must not kill it. Error detection below needs English messages (superuser only). Each setting is optional: unknown/forbidden ones are ignored.
+            self.one("DO $$ BEGIN "
+                     "BEGIN PERFORM set_config('idle_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
+                     "BEGIN PERFORM set_config('idle_in_transaction_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
+                     "BEGIN PERFORM set_config('lc_messages','C',false); EXCEPTION WHEN OTHERS THEN NULL; END; END $$")
+            self.version_num = int(self.one("SHOW server_version_num"))
+            self.version = self.one("SHOW server_version")
+            from pg_arca.pgcompat import Profile
+            self.profile = Profile(self.version_num)          # every version difference is answered by this profile
+        except BaseException:
+            self.close()            # a session that never came up must not leave its psql process and three pipes behind (a long-running agent would run out of them)
+            raise
 
     def _drain(self):
         for line in self.p.stderr:
@@ -188,6 +192,7 @@ class PgSession(object):
         except Exception:
             try:
                 self.p.kill()
+                self.p.wait(timeout=5)          # reaped, not left a zombie
             except Exception:
                 pass
         for f in (self.p.stdin, self.p.stdout, self.p.stderr):

@@ -18,7 +18,7 @@ import time
 import uuid
 
 from pg_arca.engine import ENGINE_VERSION
-from pg_arca.engine.util import (CHUNK_SIZE, HASH_NAME, EngineError, chunk_hash, compress, decompress, fsync_dir, iso, read_json,
+from pg_arca.engine.util import (read_file, CHUNK_SIZE, HASH_NAME, EngineError, chunk_hash, compress, decompress, fsync_dir, iso, read_json,
                                  write_file_atomic, write_json)
 
 DEDUP_TOUCH_AFTER = 3600          # refresh mtime of a reused chunk at most once per hour (GC grace relies on it)
@@ -162,7 +162,7 @@ class Repo(object):
                               "wait for it to finish; locks are released automatically if the process dies")
         tokfile = self.sp("locks", name + ".token")
         try:
-            tok = int(open(tokfile).read().strip())
+            tok = int(read_file(tokfile).strip())
         except (IOError, OSError, ValueError):
             tok = 0
         tok += 1
@@ -191,7 +191,7 @@ class Repo(object):
                         pass
                 return h, 0, True
             try:                                                   # written around a crash: do not trust it blindly
-                if self.hash(decompress(self._unpack(open(dst, "rb").read(), h))) == h:
+                if self.hash(decompress(self._unpack(read_file(dst, binary=True), h))) == h:
                     return h, 0, True
             except Exception:
                 pass

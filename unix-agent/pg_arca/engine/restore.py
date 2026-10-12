@@ -12,7 +12,7 @@ from pg_arca.engine.backup import _check_cancel, build_chain
 from pg_arca.pgcompat import Profile, require_supported, set_profile
 from pg_arca.engine.pgdata import list_directories
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
-from pg_arca.engine.util import (parse_wal_name, last_wal_segno, EngineError, chunk_hash, human, iso, lsn_to_int, parse_target_time, safe_relpath, target_time_to_dt, wal_name,
+from pg_arca.engine.util import (read_file, parse_wal_name, last_wal_segno, EngineError, chunk_hash, human, iso, lsn_to_int, parse_target_time, safe_relpath, target_time_to_dt, wal_name,
                                  wal_segno, read_json, write_json)
 
 
@@ -221,7 +221,8 @@ def prepare_skeleton(dest, catalog, keep_oids=()):
     """Directory skeleton required by recovery (service dirs + one dir per database)."""
     pgver = ""
     try:
-        pgver = open(os.path.join(dest, "PG_VERSION")).read().strip()
+        with open(os.path.join(dest, "PG_VERSION")) as f:
+            pgver = f.read().strip()
     except (IOError, OSError):
         pass
     made = 0
@@ -259,7 +260,7 @@ def _conf_preload(dest):
     val = None
     for fn in ("postgresql.conf", "postgresql.auto.conf"):
         try:
-            for line in open(os.path.join(dest, fn), errors="replace"):
+            for line in read_file(os.path.join(dest, fn), errors="replace").splitlines():
                 m = re.match(r"^\s*shared_preload_libraries\s*=?\s*'([^']*)'", line)
                 if m:
                     val = m.group(1)

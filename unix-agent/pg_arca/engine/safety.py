@@ -2,7 +2,7 @@
 
 import os
 
-from pg_arca.engine.util import EngineError
+from pg_arca.engine.util import EngineError, read_file
 
 
 def collect_protected_paths(ctx):
@@ -83,7 +83,7 @@ def assert_writable_target(ctx, target, what="destination"):
     pid_file = os.path.join(target, "postmaster.pid")
     if os.path.exists(pid_file):
         try:
-            pid = int(open(pid_file).readline().strip())
+            pid = int(read_file(pid_file, first_line=True).strip())
             os.kill(pid, 0)
             raise EngineError("PGA-SEC-004", "%s '%s' contains a running postmaster (pid %d)" % (what, target, pid), "stop PostgreSQL first")
         except (ValueError, ProcessLookupError, OSError):

@@ -10,6 +10,13 @@ from pg_arca.wal_manager import WalManager
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FAKES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fakes")
 
+def pin_instance(rt, inst):
+    """Discovery sees only the fake instance: on a box where real PostgreSQL clusters run (a developer machine, the test lab) the periodic
+    re-discovery would otherwise bind the agent to one of them and the console would never get the fake node's telemetry."""
+    rt.engine.scan_all = lambda: {"postgres_instances": [dict(inst)], "patroni_clusters": []}
+    rt.refresh()
+
+
 class Admin:
     def __init__(self, base): self.base, self.cookie = base, None
     def call(self, method, path, body=None, key=None):
@@ -30,7 +37,7 @@ class E2E(unittest.TestCase):
         line = cls.proc.stdout.readline(); assert line.startswith("READY"), line
         cls.base = "http://127.0.0.1:%s" % line.split()[1]
     @classmethod
-    def tearDownClass(cls): cls.proc.terminate(); cls.proc.wait()
+    def tearDownClass(cls): cls.proc.terminate(); cls.proc.wait(); cls.proc.stdout.close()
 
     def test_full_lifecycle(self):
         adm = Admin(self.base)
@@ -44,7 +51,7 @@ class E2E(unittest.TestCase):
             "repo_path": os.path.join(t, "repo"), "heartbeat_interval_seconds": 1, "pg_host": "127.0.0.1"})
         rt = Runtime(cfg)
         # discovery on a box without a running PG: instance is None. Bind the fake psql explicitly.
-        rt.instance = {"data_directory": "/fake/pgdata", "cluster_key": "sysid:7312345678901234567", "port": 5432}
+        pin_instance(rt, {"data_directory": "/fake/pgdata", "cluster_key": "sysid:7312345678901234567", "port": 5432})
         ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: {"summary": {"postgres_instances_found": 1}})
         client = ConsoleClient(cfg, rt, ex, WalManager(cfg["wal_archive_dir"], "none"), None)
         client.start()
@@ -89,7 +96,7 @@ class E2E(unittest.TestCase):
             "credentials_file": os.path.join(t, "cred.json"), "state_dir": os.path.join(t, "state"), "wal_archive_dir": os.path.join(t, "wal"),
             "repo_path": os.path.join(t, "repo"), "heartbeat_interval_seconds": 1, "pg_host": "127.0.0.1"})
         rt = Runtime(cfg)
-        rt.instance = {"data_directory": "/fake/pgdata", "cluster_key": "sysid:555", "port": 5432}
+        pin_instance(rt, {"data_directory": "/fake/pgdata", "cluster_key": "sysid:555", "port": 5432})
         ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: {"summary": {}})
         client = ConsoleClient(cfg, rt, ex, WalManager(cfg["wal_archive_dir"], "none"), None)
         client.start()
@@ -136,7 +143,7 @@ class E2E(unittest.TestCase):
             "repo_path": os.path.join(t, "repo"), "heartbeat_interval_seconds": 1, "pg_host": "127.0.0.1"})
         open(os.path.join(t, "enroll.env"), "w").write("PG_ARCA_ENROLL_TOKEN=%s\n" % tok["token"])
         rt = Runtime(cfg)
-        rt.instance = {"data_directory": "/fake/pgdata", "cluster_key": "sysid:777", "port": 5432}
+        pin_instance(rt, {"data_directory": "/fake/pgdata", "cluster_key": "sysid:777", "port": 5432})
         ex = OperationExecutor(cfg, rt.db, rt.patroni, discovery=lambda: {"summary": {}})
         client = ConsoleClient(cfg, rt, ex, WalManager(cfg["wal_archive_dir"], "none"), None)
         client.start()

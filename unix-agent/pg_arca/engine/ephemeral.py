@@ -24,7 +24,7 @@ from pg_arca.pgcompat import Profile, binary_profile, require_same_major, requir
 from pg_arca.engine.restore import (check_wal_for_chain, choose_set, count_targets, estimate, install_external_conf, materialize, merge_chain,
                                     prepare_skeleton, recovery_lines, sparse_filter)
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
-from pg_arca.engine.util import EngineError, human, iso, parse_target_time, tail_file
+from pg_arca.engine.util import EngineError, human, iso, parse_target_time, tail_file, read_file
 
 GUC_REMOVE = ["data_directory", "hba_file", "ident_file", "config_file", "external_pid_file", "archive_cleanup_command", "recovery_end_command",
               "primary_conninfo", "primary_slot_name", "recovery_min_apply_delay", "ssl_cert_file", "ssl_key_file", "ssl_ca_file", "ssl_crl_file",
@@ -367,7 +367,7 @@ class Ephemeral(object):
         if keep:
             try:                                               # kept on purpose: the reaper leaves it alone for a day even after the agent restarts
                 m = os.path.join(self.dir, ".pgarca-scratch")
-                info = json.load(open(m))
+                info = json.loads(read_file(m))
                 info["kept"] = iso()
                 with open(m, "w") as f:
                     json.dump(info, f)
@@ -434,7 +434,7 @@ def reap_stale(ctx, kept_ttl=24 * 3600, grace=60):
         if not os.path.exists(m):
             continue
         try:
-            info = json.load(open(m))
+            info = json.loads(read_file(m))
         except (ValueError, IOError, OSError):
             info = {}
         if info.get("pid") and _alive(info["pid"], info.get("start")):
@@ -447,8 +447,8 @@ def reap_stale(ctx, kept_ttl=24 * 3600, grace=60):
         pidf = os.path.join(p, "postmaster.pid")
         if os.path.exists(pidf):
             try:
-                pid = int(open(pidf).readline().strip())
-                cmd = open("/proc/%d/cmdline" % pid, "rb").read().replace(b"\0", b" ").decode("utf-8", "replace")
+                pid = int(read_file(pidf, first_line=True).strip())
+                cmd = read_file("/proc/%d/cmdline" % pid, binary=True).replace(b"\0", b" ").decode("utf-8", "replace")
                 if "postgres" in cmd and (p in cmd or os.path.realpath(p) in cmd):
                     os.kill(pid, signal.SIGINT)                # fast shutdown, then hard if it does not go
                     for _ in range(20):
