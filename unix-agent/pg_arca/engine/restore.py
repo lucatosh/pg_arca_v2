@@ -238,6 +238,35 @@ def prepare_skeleton(dest, catalog, keep_oids=()):
     return made
 
 
+# preloaded libraries whose background workers act on OTHER servers (or replay a schedule) as soon as a copy starts: pg_cron connects to the
+# nodename:nodeport stored in each job (localhost:5432 = production when the copy runs on the same host), pglogical / pgactive / bdr connect to
+# their peers. A restored COPY starts without them; security libraries (anon, sepgsql, passwordcheck, ...) and the rest are kept.
+COPY_BLOCKED_LIBS = ("pg_cron", "pglogical", "pgactive", "bdr", "pg_partman_bgw", "pg_background", "pg_squeeze", "timescaledb_osm")
+
+
+def copy_preload_filter(value):
+    """shared_preload_libraries value -> (new value or None when nothing to remove, removed list)."""
+    libs = [x.strip().strip('"') for x in (value or "").split(",") if x.strip()]
+    gone = [x for x in libs if os.path.basename(x).split(".")[0] in COPY_BLOCKED_LIBS]
+    if not gone:
+        return None, []
+    return ",".join(x for x in libs if x not in gone), gone
+
+
+def _conf_preload(dest):
+    """Last shared_preload_libraries set in the restored postgresql.conf / postgresql.auto.conf (backups older than the catalog setting)."""
+    val = None
+    for fn in ("postgresql.conf", "postgresql.auto.conf"):
+        try:
+            for line in open(os.path.join(dest, fn), errors="replace"):
+                m = re.match(r"^\s*shared_preload_libraries\s*=?\s*'([^']*)'", line)
+                if m:
+                    val = m.group(1)
+        except OSError:
+            continue
+    return val
+
+
 def ensure_tablespace_version_dirs(datadir, tablespaces, files, major, catversion=None):
     """Create pg_tblspc/<oid>/PG_<major>_<catversion> for every tablespace. The manifest lists files, not directories: a tablespace that was empty at
     backup time (or whose files all belong to databases a sparse recovery leaves out) would otherwise have no version directory, and a CREATE DATABASE
@@ -707,13 +736,21 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
         safe = ["archive_mode = 'off'", "synchronous_standby_names = ''"]
         if not prof.recovery_conf_file:                     # >= 12: these are server settings (before, they lived in recovery.conf, which we write ourselves)
             safe += ["primary_conninfo = ''", "primary_slot_name = ''"]
+        spl = (cat.get("settings") or {}).get("shared_preload_libraries")
+        if spl is None:
+            spl = _conf_preload(dest)
+        newv, gone = copy_preload_filter(spl)
+        if gone:
+            safe.append("shared_preload_libraries = '%s'" % newv.replace("'", "''"))
+            plan["copy_libraries_removed"] = gone
         if prof.num >= 100000:
             # logical replication SUBSCRIPTIONS of the copy would connect to the real publisher and consume the real subscriber's slot: that
             # subscriber then silently misses those changes. The copy starts with no apply worker (subscriptions stay defined, nothing runs)
             safe.append("max_logical_replication_workers = 0")
         with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
             f.write("\n# ==== pg_arca: restored COPY (%s) - safe to start next to production: it does not archive into production's WAL archive, waits for no\n"
-                    "# synchronous standby, follows no primary and runs no logical replication subscription. Remove these lines only if this copy REPLACES\n"
+                    "# synchronous standby, follows no primary, runs no logical replication subscription and loads no library that works on other\n"
+                    "# servers by itself (pg_cron jobs connect to the host:port stored in each job). Remove these lines only if this copy REPLACES\n"
                     "# the original server. ====\n%s\n" % (iso(), "\n".join(safe)))
         plan["copy_safety"] = safe
     prof.install_recovery(dest, recovery_lines(ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm,

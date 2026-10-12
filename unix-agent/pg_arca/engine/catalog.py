@@ -20,6 +20,10 @@ def snapshot_catalog(conn, log=None):
         dbs = ctl.query("SELECT oid, datname, pg_encoding_to_char(encoding), datallowconn, COALESCE(pg_database_size(oid),0), "
                         "datcollate, datctype, dattablespace FROM pg_database ORDER BY oid")
         tbs = ctl.query("SELECT oid, spcname, COALESCE(pg_tablespace_location(oid),'') FROM pg_tablespace ORDER BY oid")
+        try:
+            spl = ctl.scalar("SELECT current_setting('shared_preload_libraries')")
+        except EngineError:
+            spl = None
         try:                                                # logical replication subscriptions (a restored copy must be told how to handle them)
             subs = ctl.query("SELECT d.datname, s.subname, COALESCE(s.subslotname, ''), s.subenabled FROM pg_subscription s JOIN pg_database d ON d.oid = s.subdbid ORDER BY 1, 2")
         except EngineError:
@@ -27,6 +31,8 @@ def snapshot_catalog(conn, log=None):
     finally:
         ctl.close()
     cat = {"captured": iso(), "databases": {}, "tablespaces": {r[0]: {"name": r[1], "location": r[2]} for r in tbs if len(r) >= 3}}
+    if spl is not None:
+        cat["settings"] = {"shared_preload_libraries": spl}
     cat["subscriptions"] = [{"db": r[0], "name": r[1], "slot": r[2], "enabled": r[3] == "t"} for r in subs if len(r) >= 4]
     for row in dbs:
         if len(row) < 8:

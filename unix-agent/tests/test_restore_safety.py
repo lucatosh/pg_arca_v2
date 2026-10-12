@@ -42,5 +42,22 @@ class WalChainAcrossTimelines(unittest.TestCase):
         self.assertEqual(restore.check_wal_for_chain(ctx, [full, incr]), [mk(2, 3)])
 
 
+class CopyPreload(unittest.TestCase):
+    def test_background_libraries_removed_security_ones_kept(self):
+        self.assertEqual(restore.copy_preload_filter("pg_stat_statements, pg_cron,anon"), ("pg_stat_statements,anon", ["pg_cron"]))
+        self.assertEqual(restore.copy_preload_filter("$libdir/pglogical,auto_explain"), ("auto_explain", ["$libdir/pglogical"]))
+        self.assertEqual(restore.copy_preload_filter("pg_cron"), ("", ["pg_cron"]))
+        self.assertEqual(restore.copy_preload_filter("pg_stat_statements"), (None, []))
+        self.assertEqual(restore.copy_preload_filter(""), (None, []))
+        self.assertEqual(restore.copy_preload_filter(None), (None, []))
+
+    def test_value_read_from_restored_files_when_the_catalog_is_old(self):
+        import tempfile, os
+        d = tempfile.mkdtemp()
+        open(os.path.join(d, "postgresql.conf"), "w").write("shared_preload_libraries = 'pg_stat_statements'   # x\n")
+        open(os.path.join(d, "postgresql.auto.conf"), "w").write("shared_preload_libraries = 'pg_cron, pg_stat_statements'\n")
+        self.assertEqual(restore._conf_preload(d), "pg_cron, pg_stat_statements")
+
+
 if __name__ == "__main__":
     unittest.main()
