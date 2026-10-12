@@ -100,7 +100,7 @@ class DbProps(unittest.TestCase):
             q("postgres", "CREATE TABLESPACE %s LOCATION '%s'" % (n, d))
         q("postgres", "CREATE DATABASE ts_app TABLESPACE ts_db")
         q("ts_app", "CREATE TABLE cold AS SELECT g AS id FROM generate_series(1, 1000) g; CREATE TABLE hot (id int PRIMARY KEY) TABLESPACE ts_hot; INSERT INTO hot SELECT generate_series(1, 500)")
-        run_backup(F.ctx, "incr")
+        run_backup(F.ctx, "full")                    # a FULL: tablespaces created after the full are refused on this host (see test_tablespace_later_pg)
         time.sleep(1.2)
         q("postgres", "SELECT pg_switch_wal()")
         time.sleep(2)
