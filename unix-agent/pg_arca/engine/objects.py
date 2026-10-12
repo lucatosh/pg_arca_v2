@@ -721,8 +721,25 @@ SELECT COALESCE(jsonb_agg(jsonb_build_object('name', k.conname, 'schema', n.nspn
 FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE k.contype = 'f' AND k.conparentid = 0 AND k.conrelid = ANY(%s) AND NOT (k.confrelid = ANY(%s))""" % (arr(swap_oids), arr(swap_oids))) or []
         plan["live_views"] = collect_views(live, swap_oids, [])
+        # logical replication: a table listed by name in a publication stays in it after the rename (the kept copy would go on being published and the
+        # recovered table would silently NOT be): the swap moves the membership, with its row filter / column list (PostgreSQL 15+)
+        has15 = int(live.scalar("SHOW server_version_num")) >= 150000
+        plan["publications"] = _jq(live, """
+SELECT COALESCE(jsonb_agg(jsonb_build_object('pub', p.pubname, 'schema', n.nspname, 'table', c.relname, 'qual', %s, 'cols', %s)), '[]'::jsonb)::text
+FROM pg_publication_rel pr JOIN pg_publication p ON p.oid = pr.prpubid JOIN pg_class c ON c.oid = pr.prrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE pr.prrelid = ANY(%s)""" % ("pg_get_expr(pr.prqual, pr.prrelid)" if has15 else "NULL::text",
+                                 "(SELECT jsonb_agg(a.attname ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = pr.prrelid AND a.attnum = ANY(pr.prattrs))" if has15 else "NULL::jsonb",
+                                 arr(swap_oids))) or []
+        # this server SUBSCRIBES to the table (logical replication): the apply worker knows the old table by its identity; after the swap the recovered table
+        # receives nothing until the subscription is refreshed (copy_data = false: the rows are the recovered ones)
+        try:
+            for (sub,) in live.query("SELECT DISTINCT s.subname FROM pg_subscription_rel sr JOIN pg_subscription s ON s.oid = sr.srsubid WHERE sr.srrelid = ANY(%s)" % arr(swap_oids)):
+                plan["warnings"].append("subscription %s replicates a table being replaced: after the swap run ALTER SUBSCRIPTION %s REFRESH PUBLICATION WITH (copy_data = false), "
+                                        "otherwise the recovered table receives no changes" % (sub, quote_ident(sub)))
+        except EngineError:
+            pass
     else:
-        plan["old_outbound_fks"], plan["live_views"] = [], []
+        plan["old_outbound_fks"], plan["live_views"], plan["publications"] = [], [], []
     have = {(f["schema"], f["table"], f["name"]) for f in plan["inbound_fks"]}
     # foreign keys that belonged to the recovered tables / pointed at the recreated ones (only where the other side exists now)
     for f in meta.get("fks") or []:
@@ -1083,6 +1100,14 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     orig = orig_of.get((ssch, sq)) or (sq[:len(sq) - len(sfx_new)] if sq.endswith(sfx_new) else sq)
                     live.query("ALTER SEQUENCE %s RENAME TO %s" % (qi(ssch, sq), quote_ident(orig)))
                 live.query("ALTER TABLE %s RENAME TO %s" % (qi(sch, tmpn), quote_ident(nm)))
+            for pb in plan.get("publications") or []:       # the recovered table takes the old one's place in the publication (same filter / columns)
+                r_old = next((r for r in swapped if r["schema"] == pb["schema"] and r["name"] == pb["table"]), None)
+                if not r_old:
+                    continue
+                live.query("ALTER PUBLICATION %s DROP TABLE %s" % (quote_ident(pb["pub"]), qi(pb["schema"], r_old["old_kept_as"])))
+                live.query("ALTER PUBLICATION %s ADD TABLE %s%s%s" % (quote_ident(pb["pub"]), qi(pb["schema"], pb["table"]),
+                                                                       (" (%s)" % ", ".join(quote_ident(c) for c in pb["cols"])) if pb.get("cols") else "",
+                                                                       (" WHERE (%s)" % pb["qual"]) if pb.get("qual") else ""))
             for a in plan["attach"]:                          # failing here undoes the whole swap (e.g. another partition now covers the same values)
                 try:
                     if a["part"]:
@@ -1175,6 +1200,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                       skipped=["%s.%s" % (r["schema"], r["name"]) for r in plan["tables"] if r["action"] == "skip"],
                       foreign_keys_reattached=len(validate_later) - len(invalid), foreign_keys_unvalidated=len(invalid),
                       attached=["%s.%s -> %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan["attach"]],
+                      publications_moved=["%s: %s.%s" % (pb["pub"], pb["schema"], pb["table"]) for pb in plan.get("publications") or []],
                       views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]),
                       sequences_created=["%s.%s" % (x["schema"], x["name"]) for x in seq_new], sequences_advanced=moved)
         if any(v.get("kind") == "m" for v in plan["recovered_views"]):

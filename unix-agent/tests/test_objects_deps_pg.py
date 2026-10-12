@@ -120,6 +120,20 @@ class Deps(unittest.TestCase):
         self.assertEqual((r["inserted"], r["updated"]), (10, 1))
         self.assertEqual(q(DB, "SELECT count(*), count(*) FILTER (WHERE note = 'changed') FROM app.no_pk")[0], ["100", "0"])
 
+    def test_07_published_table_stays_published(self):
+        # logical replication: after the swap the RECOVERED table must be the one in the publication (with its row filter), not the kept old copy
+        major = int(q("postgres", "SHOW server_version_num")[0][0]) // 10000
+        filt = " WHERE (id > 10)" if major >= 15 else ""
+        q(DB, "CREATE PUBLICATION pub_sup FOR TABLE app.suppliers%s" % filt)
+        q(DB, "DELETE FROM app.suppliers WHERE id > 40")
+        self.switch()
+        r = self.go(["%s.app.suppliers" % DB])
+        self.assertIn("pub_sup: app.suppliers", r.get("publications_moved") or [], r)
+        tabs = [x[0] for x in q(DB, "SELECT tablename FROM pg_publication_tables WHERE pubname = 'pub_sup'")]
+        self.assertEqual(tabs, ["suppliers"])
+        if major >= 15:
+            self.assertIn("id > 10", q(DB, "SELECT rowfilter FROM pg_publication_tables WHERE pubname = 'pub_sup'")[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()
