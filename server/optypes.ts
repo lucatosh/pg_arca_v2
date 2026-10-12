@@ -160,6 +160,10 @@ Object.assign(OP_SPECS, {
                                     (p.start_fast !== undefined && typeof p.start_fast !== 'boolean' ? 'start_fast must be boolean' : null) },
   backup_info:   { mutating: false, target: 'any_node', lane: 'control', validate: () => null },
   backup_verify: { ...dataOp, mutating: false, validate: (p: any) => p.restore_test && p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null },
+  destination_migrate: { ...dataOp, target: 'primary', validate: (p: any) => {
+    for (const k of ['source_repo', 'source_wal']) if (p[k] !== undefined && !(typeof p[k] === 'string' && p[k].startsWith('/') && !p[k].split('/').includes('..'))) return `${k}: absolute path`;
+    if (p.throttle_mb_s !== undefined && !(Number(p.throttle_mb_s) >= 0 && Number(p.throttle_mb_s) <= 100000)) return 'throttle_mb_s 0..100000';
+    return null; } },
   backup_expire: { ...dataOp, cancellable: false, validate: (p: any) => p.retention_full !== undefined && !(Number(p.retention_full) >= 1 && Number(p.retention_full) <= 365) ? 'retention_full 1..365' : null },
   backup_catalog: { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => (p.set && p.set !== 'latest' && p.set !== 'all' && !setId.test(String(p.set))) ? 'invalid backup set id' : (p.database && !pgName(p.database) ? 'invalid database' : null) },
   restore_plan:  { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => ['instance', 'database', 'object'].includes(p.scope) ? targetErr(p) : 'scope must be instance|database|object' },

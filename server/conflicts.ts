@@ -11,15 +11,15 @@ import type { Operation } from './store';
 
 const ACTIVE = new Set(['queued', 'leased', 'running']);
 const BACKUP_SETS_READERS = ['restore_instance', 'restore_database', 'restore_object', 'restore_drill', 'backup_verify', 'restore_plan', 'backup_catalog'];
-const DATA_WORK = ['backup_run', 'backup_expire', 'restore_instance', 'restore_database', 'restore_object', 'restore_promote', 'restore_drill', 'restore_apply_rows', 'archive_enable'];
+const DATA_WORK = ['backup_run', 'backup_expire', 'destination_migrate', 'restore_instance', 'restore_database', 'restore_object', 'restore_promote', 'restore_drill', 'restore_apply_rows', 'archive_enable'];
 const HA_DISRUPTIVE = ['pg_restart', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'patroni_reinit', 'geo_promote', 'geo_demote'];
 /** at most one of each, queued or running, per cluster */
 /** operations that rewrite the same thing (pg_hba: the file or the DCS list): never two at once on a cluster, whatever their exact type */
 const GROUPS: string[][] = [['hba_apply', 'hba_restore', 'hba_expire', 'hba_rollback'], ['geo_archive_fallback', 'geo_promote', 'geo_demote']];
-const SINGLETON = ['pg_restart', 'backup_run', 'backup_expire', 'backup_verify', 'archive_enable', 'restore_instance', 'restore_drill', 'patroni_switchover', 'patroni_failover', 'patroni_pause', 'patroni_config_patch', 'hba_apply', 'ephemeral_install', 'geo_promote', 'geo_demote'];
+const SINGLETON = ['pg_restart', 'backup_run', 'backup_expire', 'destination_migrate', 'backup_verify', 'archive_enable', 'restore_instance', 'restore_drill', 'patroni_switchover', 'patroni_failover', 'patroni_pause', 'patroni_config_patch', 'hba_apply', 'ephemeral_install', 'geo_promote', 'geo_demote'];
 
 export const OP_IT: Record<string, string> = {
-  backup_run: 'un backup', backup_expire: 'la pulizia dei backup scaduti', backup_verify: 'una verifica dei backup', archive_enable: 'l’attivazione dell’archiviazione WAL',
+  backup_run: 'un backup', backup_expire: 'la pulizia dei backup scaduti', destination_migrate: 'la migrazione dei backup nella nuova destinazione', backup_verify: 'una verifica dei backup', archive_enable: 'l’attivazione dell’archiviazione WAL',
   restore_instance: 'un ripristino dell’istanza', restore_database: 'un ripristino di database', restore_object: 'un ripristino di oggetti', restore_promote: 'una promozione dalla quarantena',
   restore_drill: 'una prova di ripristino', restore_apply_rows: 'un recupero di righe', patroni_switchover: 'uno switchover', patroni_failover: 'un failover', patroni_restart: 'un riavvio', pg_restart: 'un riavvio di PostgreSQL',
   patroni_reinit: 'la ricostruzione di una replica', patroni_pause: 'la pausa di Patroni', patroni_config_patch: 'una modifica della configurazione Patroni', hba_apply: 'una modifica di pg_hba', hba_restore: 'il ripristino di una versione di pg_hba', hba_expire: 'la rimozione delle regole pg_hba scadute', hba_rollback: 'il ripristino del pg_hba precedente', geo_archive_fallback: 'la configurazione della riserva dall’archivio',
@@ -40,6 +40,8 @@ export function conflictFor(operations: Operation[], clusterId: string, type: st
     const grp = GROUPS.find(g => g.includes(type));
     if (grp && grp.includes(o.type) && o.type !== type) return hit(o, `C’è ${it(o.type)} che ${state(o)} su questo cluster (avviato ${who(o)}): ${it(type)} tocca la stessa configurazione. Attendi che finisca.`);
     if ((SINGLETON.includes(type) || grp) && o.type === type) return hit(o, `C’è ${it(type)} che ${state(o)} su questo cluster (avviato ${who(o)}). Attendi che finisca o annullalo.`);
+    if ((type === 'destination_migrate' && o.type === 'backup_expire') || (type === 'backup_expire' && o.type === 'destination_migrate' && !o.params?.dry_run))
+      return hit(o, `${it(o.type)} ${state(o)} (avviata ${who(o)}): la pulizia e la migrazione lavorano sugli stessi backup. Attendi che finisca.`);
     if (type === 'backup_expire' && BACKUP_SETS_READERS.includes(o.type) && o.type !== 'restore_plan' && o.type !== 'backup_catalog')
       return hit(o, `La pulizia dei backup scaduti potrebbe eliminare il backup che sta usando ${it(o.type)} (avviato ${who(o)}): riprova quando è finito.`);
     if (BACKUP_SETS_READERS.includes(type) && o.type === 'backup_expire' && type !== 'restore_plan' && type !== 'backup_catalog')

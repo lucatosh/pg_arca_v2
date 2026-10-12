@@ -104,6 +104,7 @@ class OperationExecutor:
         r("agent_config_get", self.h_cfg_get, True)
         r("agent_config_set", self.h_cfg_set, True)       # same input -> same file: idempotent
         r("destination_check", self.h_destination_check, True)
+        r("destination_migrate", self.h_destination_migrate, True)      # resumable: running it again continues where it stopped
         r("ephemeral_preflight", self.h_ephemeral_preflight, True)
         r("ephemeral_install", self.h_ephemeral_install, False)
         r("restore_drill", self.h_restore_drill, False)
@@ -860,6 +861,37 @@ class OperationExecutor:
             res["ok"] = all(x["ok"] for x in res["paths"])
         elif not pg_up:
             res["server_probe"] = "not run: no running PostgreSQL on this node (the agent's own identity was tested)"
+        return res
+
+    def h_destination_migrate(self, p):
+        """Copy what is still only in the previous backup location (this cluster's sets + WAL) into the current one, verified and resumable.
+        dry_run: the plan only (sizes, free space, estimated time). When everything is copied the previous location is dropped from the read list
+        (restores no longer need it); it is never deleted here."""
+        from pg_arca.engine import migrate
+        from pg_arca import overrides
+        ctx = self._ctx_ro()
+        src_repo, src_wal = p.get("source_repo"), p.get("source_wal")
+        if src_repo and src_repo not in (ctx.repo.previous or []):
+            raise OpError("%s is not a previous backup location of this cluster" % src_repo)
+        if src_wal and src_wal not in (ctx.wal.previous or []):
+            raise OpError("%s is not a previous WAL archive location of this cluster" % src_wal)
+        if p.get("dry_run"):
+            return migrate.plan(ctx, src_repo, src_wal)
+        res = migrate.run(ctx, src_repo, src_wal, throttle_mb_s=float(p.get("throttle_mb_s") or 0), progress=self._progress, cancel=self._cancelled)
+        if res["complete"]:
+            ch = {}
+            for key, val in (("repo_previous", res["source"]["repo"]), ("wal_previous", res["source"]["wal"])):
+                if val:
+                    left = [x for x in (self.config.get(key) or []) if x != val]
+                    ch[key] = left or None
+            if ch:
+                overrides.save(self.config, ch)
+                for k, v in ch.items():
+                    if v is None:
+                        self.config.pop(k, None)
+                    else:
+                        self.config[k] = v
+                res["previous_removed_from_reads"] = True
         return res
 
     def h_ephemeral_preflight(self, p):
