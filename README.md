@@ -21,7 +21,7 @@ Console e agent per **backup, ripristino a un istante preciso (PITR) e gestione 
 | Pulizia (retention, garbage collection dei blocchi, WAL) | Funziona | idem |
 | Ricerca DROP/TRUNCATE nei WAL (`pg_waldump`) | Funziona | idem |
 | Pianificazione backup (idempotente, back-off, retention, verifica periodica) | Funziona | `tests/server/scheduler.test.ts` |
-| Alta affidabilità: switchover, failover, riavvio membro, manutenzione (Patroni) | Scritto con precondizioni e verifica dell’effetto; **mai provato su un cluster Patroni reale** | Test con Patroni simulato |
+| Alta affidabilità: switchover, failover, riavvio membro, manutenzione (Patroni) | Precondizioni e verifica dell’effetto; switchover provati dalla console sul lab Patroni reale (3 nodi e coppia geo) | Test con Patroni simulato, `tools/lab/scenario-geo.py`, `scenario-ha.sh` |
 | Parametri (`ALTER SYSTEM` + reload) | Scritto; provato con psql simulato | `unix-agent/tests` |
 | Interfaccia web | Funziona nel browser (Chromium) con agent simulato | `tests/ui/e2e.cjs` |
 | Strategie di backup per cartella / ambiente / cluster (modelli suggeriti e personalizzati, ereditarietà) | Funziona: risolte a ogni tick dello scheduler, nessuna copia | `tests/server/policies.test.ts`, `tests/ui/e2e.cjs` |
@@ -51,7 +51,11 @@ Console e agent per **backup, ripristino a un istante preciso (PITR) e gestione 
 | LDAP/AD | **Anteprima**: visibile e marcata, senza funzione dietro | — |
 | Velocità rispetto a pgBackRest | **Mai misurata**: nessuna affermazione | — |
 
-Limiti noti: il ripristino di una tabella non include chiavi esterne, viste, sequenze; i backup da standby richiedono `archive_mode=always`; gli incrementali richiedono `data_checksums` o `wal_log_hints`; backup e ripristino richiedono l’agent sul server.
+| Restore: oggetti con nomi insoliti (spazi, unicode, punti, 63 caratteri), RLS, exclusion, ereditarietà, **singola partizione** (riattaccata alla tabella viva), statistiche estese, sequenze condivise, domini con funzioni, viste/sequenze da sole, oggetti e database **creati dopo l'ultimo backup**, proprietari/permessi/impostazioni del database, consegna a un altro server senza i suoi tablespace/ruoli, pubblicazioni/regole/policy/default di altre tabelle ricollegati, schema di 1500 tabelle (limite dei lock detto prima) | Provato su PostgreSQL 16 reale; matrice 14-18 da rieseguire con questi test | `test_objects_exotic_pg.py`, `test_objects_deps_pg.py`, `test_late_created_pg.py`, `test_restore_database_props_pg.py`, `test_into_other_server_pg.py`, `test_scale_schema_pg.py` (opt-in) |
+| Riavvio di un PostgreSQL singolo dalla console (unità systemd del server via polkit limitato, o pg_ctl senza systemd) | `pg_ctl` provato su PG16 reale; systemd/polkit con test simulati, **da provare sul lab** | `test_pgrestart.py`, `test_archive_enable_pg.py` |
+| Aggancio: token per più server (nodi Patroni), esito dell'iscrizione stampato dall'installer, token scaduto/usato → annuncio per approvazione | Agent reale contro console reale | `tests/server/api.test.ts`, `test_e2e_console.py` |
+
+Limiti noti: i backup da standby richiedono `archive_mode=always`; gli incrementali richiedono `data_checksums` o `wal_log_hints`; backup e ripristino richiedono l’agent sul server; una vista materializzata ripristinata da sola viene ricalcolata sui dati attuali; il recupero riga per riga richiede una chiave primaria o un indice univoco su colonne NOT NULL; una tabella creata dopo l'ultimo backup ed eliminata prima del successivo non ha un nome nell'analisi dei WAL (si ripristina l'intero database a un istante prima dell'eliminazione).
 
 ## Architettura
 
