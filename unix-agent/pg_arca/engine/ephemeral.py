@@ -81,7 +81,7 @@ def read_pg_control(conn, datadir):
     return res
 
 
-def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=False, shared_buffers="256MB", base_conf_missing=False, profile=None):
+def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=False, shared_buffers="256MB", base_conf_missing=False, profile=None, lock_slots=0):
     """Rewrite the instance configuration with an allowlist approach. Returns (removed, forced)."""
     removed = []
     for fn in ("postgresql.conf", "postgresql.auto.conf"):
@@ -128,6 +128,11 @@ def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=Fal
         v = pgcontrol.get(key)
         if v not in (None, ""):
             forced[guc] = str(int(v))
+    # never LOWER than the source (hot standby refuses to start), raised when the relations to read need more lock slots than the source's setting offers:
+    # slots = max_locks_per_transaction x (max_connections + max_prepared_transactions)
+    conns = int(forced.get("max_connections") or 100) + int(forced.get("max_prepared_transactions") or 0)
+    want = max(int(forced.get("max_locks_per_transaction") or 64), 128, -(-int(lock_slots or 0) // max(conns, 1)) + 64)
+    forced["max_locks_per_transaction"] = str(min(want, 1 << 20))
     for fn in ("postgresql.conf", "postgresql.auto.conf"):        # auto.conf is read LAST: forcing only postgresql.conf lets a backed-up auto.conf win (port, listen_addresses, archive_mode...)
         with open(os.path.join(scratch, fn), "a") as f:
             f.write("\n# ==== pg_arca: forced configuration of the ephemeral instance (generated %s) ====\n" % iso())
@@ -208,7 +213,12 @@ class Ephemeral(object):
             if os.path.exists(p):
                 os.remove(p)
         ctl = read_pg_control(self.conn(), self.dir)
-        removed, forced = quarantine_config(self.dir, ctl, self.port, self.sock, self.ctx.restore_command, sparse, self.shared_buffers, profile=prof)
+        # pg_dump of a big schema takes one lock per table/sequence in ONE transaction: size the lock table for the relations we will read (catalog of the backup)
+        nrel = 0
+        for d in (cat.get("databases") or {}).values():
+            if keep_oids is None or int(d.get("oid") or 0) in set(keep_oids):
+                nrel += sum(1 for r in d.get("relations", []) if r.get("kind") in ("r", "p", "S", "m", "v", "f"))
+        removed, forced = quarantine_config(self.dir, ctl, self.port, self.sock, self.ctx.restore_command, sparse, self.shared_buffers, profile=prof, lock_slots=nrel * 2)
         from pg_arca.engine.restore import effective_targets
         t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, self.ctx)
         prof.install_recovery(self.dir, recovery_lines(self.ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm, "pause", inclusive))

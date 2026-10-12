@@ -281,7 +281,8 @@ function PromotePlan({ p }: { p: any }) {
     <dl className="kv"><dt>Chiavi esterne da ricollegare</dt><dd>{num((p.inbound_fks || []).length + (p.outbound_fks || []).length)}{(p.inbound_fks || []).length ? <span className="small muted"> — {(p.inbound_fks as any[]).slice(0, 4).map(f => `${f.table}→${f.ref_table}`).join(', ')}{p.inbound_fks.length > 4 ? '…' : ''}</span> : null}</dd>
       <dt>Viste da ricreare</dt><dd>{num((p.views || []).length)}{(p.views || []).length ? <span className="small muted"> — {(p.views as any[]).slice(0, 4).map(v => v.name).join(', ')}{p.views.length > 4 ? '…' : ''}</span> : null}</dd>
       {p.missing_prereq && Object.values(p.missing_prereq).some((x: any) => x.length) ? <><dt>Da creare prima</dt><dd className="small">{Object.entries(p.missing_prereq).filter(([, v]: any) => v.length).map(([k, v]: any) => `${k}: ${v.join(', ')}`).join(' · ')}</dd></> : null}</dl>
-    {(p.warnings || []).map((w: string, i: number) => <div key={i} className="small" style={{ color: 'var(--warn, #d9a441)' }}>{w}</div>)}</div>;
+    {(p.blocking || []).length ? <Banner kind="bad" title="La promozione non può partire">{(p.blocking as string[]).map((w, i) => <div key={i} className="small">{itCheck(w)}</div>)}</Banner> : null}
+    {(p.warnings || []).map((w: string, i: number) => <div key={i} className="small" style={{ color: 'var(--warn, #d9a441)' }}>{itCheck(w)}</div>)}</div>;
 }
 
 function Promote({ stage, what, deps, warnings, mode, setMode, drop, setDrop, runner, preview, ask, schema, setSchema }: { stage: string; what: string[]; deps?: any; warnings?: string[]; mode: PMode; setMode: (m: PMode) => void; drop: boolean; setDrop: (b: boolean) => void; runner: ReturnType<typeof useOpRunner>; preview: ReturnType<typeof useOpRunner>; ask: () => void; schema: string; setSchema: (s: string) => void }) {

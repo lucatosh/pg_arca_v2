@@ -774,6 +774,24 @@ WHERE k.contype = 'f' AND k.conparentid = 0 AND k.conrelid = ANY(%s) AND NOT (k.
     plan["missing_roles"] = [r for r in (meta.get("roles") or []) if r not in present]
     if plan["missing_roles"]:
         plan["warnings"].append("roles not present here (%s): owners and grants of the recovered objects are NOT applied" % ", ".join(plan["missing_roles"][:6]))
+    # the swap is ONE transaction: every renamed/created relation (tables, their indexes, TOAST, sequences: old and new) holds a lock until COMMIT.
+    # A big schema can exceed the server's lock table (max_locks_per_transaction x (max_connections + max_prepared_transactions)) and fail half-way
+    # with "out of shared memory" - known BEFORE starting, so it is said now.
+    acting_tabs = [r for r in plan["tables"] if r["action"] in ("swap", "create", "copy")]       # phase 1 (pg_restore --single-transaction) locks them too
+    if acting_tabs:
+        per = live.scalar("SELECT coalesce(sum(1 + (SELECT count(*) FROM pg_index i WHERE i.indrelid = c.oid) + CASE WHEN c.reltoastrelid <> 0 THEN 2 ELSE 0 END), 0) "
+                          "FROM pg_class c WHERE c.oid = ANY(ARRAY[%s]::oid[])" % (",".join(str(x) for x in swap_oids) or "0")) if swap_oids else "0"
+        swapped_rel = int(per or 0)
+        need = 2 * swapped_rel + 4 * (len(acting_tabs) - len(swap_oids)) + 2 * (len(plan["views"]) + len(plan["inbound_fks"]) + len(plan["outbound_fks"])) + 50
+        cap = live.scalar("SELECT current_setting('max_locks_per_transaction')::int * (current_setting('max_connections')::int + current_setting('max_prepared_transactions')::int)")
+        cap = int(cap or 0)
+        plan["locks"] = {"needed_about": need, "server_slots": cap}
+        if cap and cap // 2 < need <= cap * 85 // 100:
+            plan["warnings"].append("the swap needs about %d of the server's %d lock slots in one transaction: busy servers may run out (raise max_locks_per_transaction if it fails)" % (need, cap))
+        if cap and need > cap * 85 // 100:
+            plan["blocking"].append("the swap needs about %d locks in one transaction, the server's lock table has %d slots shared by all sessions "
+                                    "(max_locks_per_transaction x connections): it would fail with 'out of shared memory'. Raise max_locks_per_transaction "
+                                    "(restart needed) to at least %d, or restore and promote in smaller groups of tables" % (need, cap, -(-need * 2 // max(1, cap // max(1, int(live.scalar("SHOW max_locks_per_transaction") or 64)))) + 64))
     for f in plan["inbound_fks"]:
         f.pop("def_full", None)
     plan["counts"] = {"tables": len(plan["tables"]), "swap": sum(1 for r in plan["tables"] if r["action"] == "swap"), "create": sum(1 for r in plan["tables"] if r["action"] == "create"),
@@ -898,6 +916,8 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
         if dry_run:
             plan["dry_run"] = True
             return _slim(plan)
+        if plan["blocking"]:
+            raise EngineError("PGA-GEN-093", "promotion not started: %s" % "; ".join(plan["blocking"]), "nothing was changed; the recovered objects stay in %s" % stage_db)
         todo = [r for r in plan["tables"] if r["action"] != "skip"]
         # sequences selected alone or used by the tables' defaults: created when missing; an existing one is never replaced (other tables use it)
         # and never moves backwards (ids handed out since the target may be referenced elsewhere)
