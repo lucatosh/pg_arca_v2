@@ -558,12 +558,14 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     plan["database_bytes"] = entry["size"]
     taken = None
     dest_err = None
+    dest_standby = False
     try:                                                                                 # fail fast BEFORE the long recovery (and show it in the plan)
         admin = _dest_conn(ctx, into)
         s = PgSession(admin.with_db("postgres"), read_only=True)
         try:
             if s.scalar("SELECT 1 FROM pg_database WHERE datname=%s" % sql_lit(new_name)) == "1":
                 taken = new_name
+            dest_standby = s.scalar("SELECT pg_is_in_recovery()") == "t"
         finally:
             s.close()
     except Exception as e:
@@ -585,6 +587,9 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     if entry.get("late"):
         checks.append(_late_check(entry, "database '%s'" % db))
         plan["created_after_backup"] = True
+    if dest_standby:
+        checks.append({"id": "dest_standby", "level": "bad", "text": "the server that would receive the result is a standby (read-only): nothing can be created there",
+                       "fix": "run the restore from the primary's node, or set the delivery address in the recovery instance settings to the primary (HAProxy / VIP of the leader)"})
     if dest_err:
         where = ("%s:%s" % (into.get("host"), into.get("port", 5432))) if isinstance(into, dict) else "the local PostgreSQL"
         last = dest_err.strip().splitlines()[-1] if dest_err.strip() else dest_err
@@ -717,12 +722,14 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     plan["saved_pct"] = round(100.0 * (1 - plan["extract_bytes"] / float(max(plan["cluster_bytes"], 1))), 1)
     taken = None
     dest_err = None
+    dest_standby = False
     try:
         admin = _dest_conn(ctx, into)
         s = PgSession(admin.with_db("postgres"), read_only=True)
         try:
             if s.scalar("SELECT 1 FROM pg_database WHERE datname=%s" % sql_lit(stage)) == "1":
                 taken = stage
+            dest_standby = s.scalar("SELECT pg_is_in_recovery()") == "t"
         finally:
             s.close()
     except Exception as e:
@@ -743,6 +750,9 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
                            "text": "%s %s and it does not exist in %s now: it comes back only if it was created after that backup (and dropped since)" % (late_objs, target["id"], db),
                            "fix": "check the name: a wrong one is only found after the recovery; tables created and dropped after the backup are listed by the WAL forensics"})
         plan["created_after_backup"] = True
+    if dest_standby:
+        checks.append({"id": "dest_standby", "level": "bad", "text": "the server that would receive the result is a standby (read-only): nothing can be created there",
+                       "fix": "run the restore from the primary's node, or set the delivery address in the recovery instance settings to the primary (HAProxy / VIP of the leader)"})
     if dest_err:
         where = ("%s:%s" % (into.get("host"), into.get("port", 5432))) if isinstance(into, dict) else "the local PostgreSQL"
         last = dest_err.strip().splitlines()[-1] if dest_err.strip() else dest_err
