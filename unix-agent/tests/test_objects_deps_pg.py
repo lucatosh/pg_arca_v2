@@ -160,6 +160,16 @@ class Deps(unittest.TestCase):
         b = int(q(DB, "INSERT INTO app.invoices_archive(note) VALUES ('x') RETURNING id")[0][0])
         self.assertEqual(b, a + 1, "one shared sequence, as before the restore")
 
+    def test_10_replacing_a_table_that_changed_shape_is_said(self):
+        # a migration added a column after the restore point: the plan must say that replacing brings back the old shape
+        q(DB, "ALTER TABLE app.suppliers ADD COLUMN vat text")
+        restore_object(F.ctx, DB, objects=["%s.app.suppliers" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_shape")
+        plan = promote_object(F.ctx, "pgarca_stage_shape", DB, mode="replace", dry_run=True)
+        row = [r for r in plan["tables"] if r["name"] == "suppliers"][0]
+        self.assertEqual(row.get("schema_drift", {}).get("columns_only_now"), ["vat"], row)
+        self.assertTrue(any("changed shape" in w for w in plan["warnings"]), plan["warnings"])
+        q("postgres", "DROP DATABASE pgarca_stage_shape")
+
 
 if __name__ == "__main__":
     unittest.main()

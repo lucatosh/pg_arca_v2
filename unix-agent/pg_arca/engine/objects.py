@@ -702,7 +702,16 @@ def _slim(plan):
     return out
 
 
-def _live_plan(live, meta, mode, ts):
+COLS_SQL = ("SELECT COALESCE(jsonb_object_agg(a.attname, format_type(a.atttypid, a.atttypmod)), '{}'::jsonb)::text FROM pg_attribute a "
+            "WHERE a.attrelid = to_regclass(%s) AND a.attnum > 0 AND NOT a.attisdropped")
+
+
+def _columns(sess, schema, name):
+    r = sess.scalar(COLS_SQL % sql_lit(qi(schema, name)))
+    return json.loads(r) if r else {}
+
+
+def _live_plan(live, meta, mode, ts, stage_cols=None):
     """Inspect the live database and say exactly what promotion would do. Nothing is changed."""
     sfx_new, sfx_old = "_pitr_" + ts, "_old_" + ts
     plan = {"mode": mode, "suffix": ts, "tables": [], "inbound_fks": [], "outbound_fks": [], "views": [], "warnings": list(meta.get("warnings") or []), "blocking": [], "old_kept_as": []}
@@ -714,6 +723,20 @@ def _live_plan(live, meta, mode, ts):
         row = {"schema": t["schema"], "name": t["name"], "kind": t["kind"], "action": act, "exists_now": ex, "rows_at_target": (meta.get("counts") or {}).get("%s.%s" % (t["schema"], t["name"]))}
         if act == "swap":
             row["old_kept_as"] = _short(t["name"], sfx_old)
+            # the table changed SHAPE since the target (columns added / retyped by a migration): replacing it brings back the old shape, and the
+            # application that uses the new columns breaks. Said in the plan, never silently.
+            sc = (stage_cols or {}).get((t["schema"], t["name"]))
+            if sc:
+                lc = _columns(live, t["schema"], t["name"])
+                added = sorted(c for c in lc if c not in sc)
+                retyped = sorted(c for c in lc if c in sc and lc[c] != sc[c])
+                if added or retyped:
+                    row["schema_drift"] = {"columns_only_now": added, "type_changed": retyped}
+                    plan["warnings"].append("%s.%s changed shape since the restore point (%s%s): replacing it brings back the OLD columns - the current ones "
+                                            "stay only in %s; consider 'as new' or recovering rows" % (t["schema"], t["name"],
+                                                                                                      ("columns added since: %s" % ", ".join(added)) if added else "",
+                                                                                                      ("%stype changed: %s" % ("; " if added else "", ", ".join(retyped))) if retyped else "",
+                                                                                                      row["old_kept_as"]))
             plan["old_kept_as"].append("%s.%s" % (t["schema"], row["old_kept_as"]))
             swap_oids.append(int(live.scalar("SELECT %s::regclass::oid::int" % sql_lit(qi(t["schema"], t["name"])))))
         if act == "copy":
@@ -926,6 +949,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
     stg = PgSession(admin.with_db(stage_db))
     try:
         meta = read_meta(stg)
+        stage_cols = {}
+        if meta and not meta.get("building"):
+            for t in meta.get("tables") or []:
+                stage_cols[(t["schema"], t["name"])] = _columns(stg, t["schema"], t["name"])
     finally:
         stg.close()
     if not meta:
@@ -952,7 +979,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
     created_tmp = []                                         # live objects created in phase 1 (dropped again if anything fails)
     created_seq = []
     try:
-        plan = _live_plan(live, meta, mode, ts)
+        plan = _live_plan(live, meta, mode, ts, stage_cols)
         if target_schema:
             names = [r["name"] for r in plan["tables"] if r["action"] != "skip"]
             dup = sorted(set(n for n in names if names.count(n) > 1))
