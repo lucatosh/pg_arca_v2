@@ -19,7 +19,10 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
 
   const acts: { group: string; items: Act[] }[] = [
     { group: 'PostgreSQL', items: [
-      { id: 'restart', label: 'Riavvia PostgreSQL', hint: 'Riavvio ordinato tramite Patroni. Il nodo non risponde per qualche secondo' + (isPrimary ? ' e, essendo il primario, le applicazioni perdono la connessione.' : '.'), danger: true, disabled: patroni ? undefined : noPatroni, run: () => r.run('patroni_restart', { member: node.name }) },
+      patroni || !hasAgent
+        ? { id: 'restart', label: 'Riavvia PostgreSQL', hint: 'Riavvio ordinato tramite Patroni. Il nodo non risponde per qualche secondo' + (isPrimary ? ' e, essendo il primario, le applicazioni perdono la connessione.' : '.'), danger: true, disabled: patroni ? undefined : noAgent, run: () => r.run('patroni_restart', { member: node.name }) }
+        : { id: 'restart', label: 'Riavvia PostgreSQL', hint: 'Riavvio nel modo in cui il server è gestito (il suo servizio systemd, oppure pg_ctl dove non c’è systemd). Tutte le connessioni vengono chiuse; se la configurazione ha errori che impedirebbero l’avvio, il riavvio viene rifiutato prima.', danger: true, typed: true, run: () => r.run('pg_restart', { confirm: 'RIAVVIA' }, { nodeId: nid }) },
+
       { id: 'reload', label: 'Ricarica la configurazione', hint: 'Rilegge postgresql.conf e pg_hba.conf senza riavviare. Sicuro da eseguire in qualsiasi momento.', disabled: hasAgent ? undefined : noAgent, run: () => r.run('pg_reload', {}, { nodeId: nid }) },
       { id: 'checkpoint', label: 'Esegui un checkpoint', hint: 'Forza la scrittura su disco dei dati in memoria. Utile prima di un backup o di un riavvio.', disabled: !isPrimary ? 'Solo sul primario' : hasAgent ? undefined : noAgent, run: () => r.run('checkpoint', {}, { nodeId: nid }) },
       { id: 'walsw', label: 'Chiudi il file WAL corrente', hint: 'Fa archiviare subito il WAL in corso: accorcia la perdita massima in caso di disastro.', disabled: !isPrimary ? 'Solo sul primario' : hasAgent ? undefined : noAgent, run: () => r.run('wal_switch', {}, { nodeId: nid }) },
