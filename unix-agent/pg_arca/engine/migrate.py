@@ -302,3 +302,32 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
     return {"source": p["source"], "destination": p["destination"], "copied": copied, "complete": complete, "seconds": round(time.time() - t0, 1),
             "left": {"sets": [s["id"] for s in rest["sets"]], "wal_files": len(rest["wal"])},
             "note": "the previous location was not deleted: it is no longer needed for restores" if complete else "some content is still only in the previous location"}
+
+
+def drop_previous(ctx, src_repo=None, src_wal=None, abandon=False):
+    """Delete THIS cluster's content from a previous location: its stanza (sets) and the chunks no other stanza there still uses (garbage collection
+    with the usual grace), and its WAL files. Refused while a set or WAL file of this cluster exists ONLY there, unless abandon=True (the PITR
+    history they carry is lost on purpose). Other clusters' content in the same root is never touched."""
+    from pg_arca.engine.maintenance import _gc_cas
+    from pg_arca.engine.repo import Repo
+    left = _inventory(ctx, src_repo, src_wal)
+    if (left["sets"] or left["wal"]) and not abandon:
+        raise EngineError("PGA-MIG-020", "%d backup set(s) and %d WAL file(s) of this cluster exist only in the previous location: deleting it would lose them"
+                          % (len(left["sets"]), len(left["wal"])), "migrate them first, or confirm that this history is no longer needed")
+    out = {"sets_removed": 0, "chunks_removed": 0, "bytes_freed": 0, "wal_removed": 0, "abandoned": {"sets": [s["id"] for s in left["sets"]], "wal_files": len(left["wal"])} if abandon else None}
+    if src_repo:
+        sd = os.path.join(src_repo, "stanza", ctx.stanza)
+        if os.path.isdir(sd):
+            out["sets_removed"] = len([x for x in os.listdir(os.path.join(sd, "backup")) if not x.startswith(".")]) if os.path.isdir(os.path.join(sd, "backup")) else 0
+            shutil.rmtree(sd)
+        if os.path.isdir(os.path.join(src_repo, "cas")) and os.path.isdir(os.path.join(src_repo, "stanza")):
+            freed, removed = _gc_cas(Repo(src_repo, ctx.stanza, crypto=ctx.crypto))
+            out["chunks_removed"], out["bytes_freed"] = removed, freed
+    if src_wal and os.path.isdir(src_wal):
+        for n in os.listdir(src_wal):
+            p = os.path.join(src_wal, n)
+            if os.path.isfile(p) and n != "ARCHIVE_OWNER.json":
+                out["bytes_freed"] += os.path.getsize(p)
+                os.unlink(p)
+                out["wal_removed"] += 1
+    return out

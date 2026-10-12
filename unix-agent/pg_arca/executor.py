@@ -105,6 +105,7 @@ class OperationExecutor:
         r("agent_config_set", self.h_cfg_set, True)       # same input -> same file: idempotent
         r("destination_check", self.h_destination_check, True)
         r("destination_migrate", self.h_destination_migrate, True)      # resumable: running it again continues where it stopped
+        r("destination_drop_old", self.h_destination_drop_old, False)
         r("ephemeral_preflight", self.h_ephemeral_preflight, True)
         r("ephemeral_install", self.h_ephemeral_install, False)
         r("restore_drill", self.h_restore_drill, False)
@@ -892,6 +893,37 @@ class OperationExecutor:
                     else:
                         self.config[k] = v
                 res["previous_removed_from_reads"] = True
+        return res
+
+    def h_destination_drop_old(self, p):
+        """Delete this cluster's content from a previous backup location. Only with confirm == 'ELIMINA'; refused while something exists only there unless
+        abandon (that PITR history is lost on purpose). The location leaves the read list."""
+        from pg_arca.engine import migrate
+        from pg_arca import overrides
+        if p.get("confirm") != "ELIMINA":
+            raise OpError("type ELIMINA to confirm: this deletes backups and WAL of this cluster from the previous location")
+        ctx = self._ctx_ro()
+        src_repo, src_wal = p.get("source_repo"), p.get("source_wal")
+        if not src_repo and not src_wal:
+            raise OpError("say which previous location (source_repo / source_wal)")
+        if src_repo and src_repo not in (ctx.repo.previous or []):
+            raise OpError("%s is not a previous backup location of this cluster" % src_repo)
+        if src_wal and src_wal not in (ctx.wal.previous or []):
+            raise OpError("%s is not a previous WAL archive location of this cluster" % src_wal)
+        if not ctx.repo.own_complete_sets():
+            raise OpError("the current location has no complete backup yet: keep the previous one until a full backup exists here")
+        res = migrate.drop_previous(ctx, src_repo, src_wal, abandon=bool(p.get("abandon")))
+        ch = {}
+        for key, val in (("repo_previous", src_repo), ("wal_previous", src_wal)):
+            if val:
+                left = [x for x in (self.config.get(key) or []) if x != val]
+                ch[key] = left or None
+        overrides.save(self.config, ch)
+        for k, v in ch.items():
+            if v is None:
+                self.config.pop(k, None)
+            else:
+                self.config[k] = v
         return res
 
     def h_ephemeral_preflight(self, p):

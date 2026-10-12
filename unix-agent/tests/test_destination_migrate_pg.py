@@ -93,6 +93,24 @@ class Migrate(unittest.TestCase):
             migrate._space = real
             os.rename(os.path.join(S["new_repo"], "stanza", "main", "backup.moved"), os.path.join(S["new_repo"], "stanza", "main", "backup"))
 
+    def test_05_drop_previous_only_when_nothing_is_lost(self):
+        ctx = mk()
+        q("mig", "UPDATE t SET v = 'third' WHERE id = 1")
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(3)
+        # a new WAL file appears only in the OLD archive (written before the switch? no: simulate a late file) -> refused
+        open(os.path.join(F.wal, "000000010000000000000FFF"), "wb").write(b"x" * 16)
+        from pg_arca.engine.util import EngineError
+        with self.assertRaises(EngineError) as cm:
+            migrate.drop_previous(ctx, F.repo, F.wal)
+        self.assertEqual(cm.exception.code, "PGA-MIG-020")
+        r = migrate.drop_previous(ctx, F.repo, F.wal, abandon=True)
+        self.assertEqual(r["abandoned"]["wal_files"], 1)
+        self.assertGreater(r["sets_removed"], 0); self.assertGreater(r["wal_removed"], 0)
+        self.assertFalse(os.path.isdir(os.path.join(F.repo, "stanza", "main")))
+        restore_database(mk(previous=False), "mig", target_time=S["t_old"], new_name="mig_old2")      # the migrated copy is all that is needed
+        self.assertEqual(q("mig_old2", "SELECT count(*) FROM t")[0][0], "20000")
+
 
 if __name__ == "__main__":
     unittest.main()
