@@ -211,6 +211,36 @@ promote_object(ctx, "pgarca_stage_kill", "", mode="replace", drop_stage=False, p
         self.assertEqual(q(DB, "SELECT count(*) FROM acc")[0][0], "1000", "the live table was never touched")
         q("postgres", "DROP DATABASE pgarca_stage_kill")
 
+    def test_06_agent_killed_during_a_recovery_leaves_no_instance_running(self):
+        script = os.path.join(F.base, "killrec.py")
+        open(script, "w").write("""
+import os, sys
+sys.path.insert(0, %r)
+from pg_arca.engine.ctx import Ctx
+from pg_arca.engine.pgsession import PgConn
+from pg_arca.engine.granular import restore_database
+ctx = Ctx(PgConn(host=%r, port=%d, user="postgres", bindir=%r), %r, %r, "main", %r, %r, key_file=%r, agent_path=%r, seg_size=%d, compression="zlib")
+def die(p):
+    if p.get("phase") == "transfer":
+        os._exit(9)
+restore_database(ctx, %r, new_name="faults_killed", progress=die)
+""" % (os.path.dirname(os.path.dirname(os.path.abspath(__file__))), F.sock, F.port, BIN, F.src, F.repo, F.wal, F.scratch, F.key or None, F.ctx.agent_path, F.seg, DB))
+        r = subprocess.run([sys.executable, script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(r.returncode, 9, r.stderr[-800:])
+        left = [d for d in os.listdir(F.scratch) if d.startswith("eph-")]
+        self.assertTrue(left, "the dead agent left its recovery instance behind")
+        pid = int(open(os.path.join(F.scratch, left[0], "postmaster.pid")).readline())
+        os.kill(pid, 0)                                                        # and it is still running
+        from pg_arca.engine import ephemeral
+        os.utime(os.path.join(F.scratch, left[0], ".pgarca-scratch"), (time.time() - 120, time.time() - 120))
+        gone = ephemeral.reap_stale(F.ctx)
+        self.assertEqual(gone, left)
+        time.sleep(1)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+        self.assertFalse(os.path.exists(os.path.join(F.scratch, left[0])))
+        self.assertEqual(q("postgres", "SELECT 1")[0][0], "1", "the live server was not touched")
+
 
 if __name__ == "__main__":
     unittest.main()

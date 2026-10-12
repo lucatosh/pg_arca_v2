@@ -160,6 +160,10 @@ class Ephemeral(object):
             raise EngineError("PGA-GEN-064", "invalid ephemeral instance name")
         root = ctx.scratch_dir
         try:
+            reap_stale(ctx)                                    # what an interrupted operation left behind is not allowed to eat this one's disk and memory
+        except Exception:
+            pass
+        try:
             os.makedirs(root, mode=0o700, exist_ok=True)
         except OSError as e:
             raise EngineError("PGA-SEC-020", "cannot create scratch directory %s: %s" % (root, e), "set scratch_dir to a writable path with enough space")
@@ -180,7 +184,7 @@ class Ephemeral(object):
         self.logf = None
         self.shared_buffers = shared_buffers
         with open(os.path.join(self.dir, ".pgarca-scratch"), "w") as f:
-            json.dump({"name": self.name, "pid": os.getpid(), "created": iso(), "stanza": ctx.stanza, "engine": ENGINE_VERSION}, f)
+            json.dump({"name": self.name, "pid": os.getpid(), "start": _proc_start(os.getpid()), "created": iso(), "stanza": ctx.stanza, "engine": ENGINE_VERSION}, f)
 
     # ------------------------------------------------------------------ build
     def conn(self, dbname="postgres"):
@@ -361,6 +365,14 @@ class Ephemeral(object):
             keep = True
             self.ctx.log("warn", "ephemeral instance kept for inspection (keep_on_failure): %s" % self.dir)
         if keep:
+            try:                                               # kept on purpose: the reaper leaves it alone for a day even after the agent restarts
+                m = os.path.join(self.dir, ".pgarca-scratch")
+                info = json.load(open(m))
+                info["kept"] = iso()
+                with open(m, "w") as f:
+                    json.dump(info, f)
+            except (OSError, ValueError):
+                pass
             return
         shutil.rmtree(self.dir, ignore_errors=True)
         for d in getattr(self, "extra_dirs", []):            # only directories this instance created (they did not exist before)
@@ -384,11 +396,38 @@ def short_socket_dir(preferred, limit=100):
     raise EngineError("PGA-EPH-040", "no directory short enough for the PostgreSQL socket (limit ~107 bytes): %s" % preferred, "use a shorter scratch_dir")
 
 
-def reap_stale(ctx, ttl=4 * 3600):
-    """Remove scratch dirs whose creator process is gone and whose age exceeds ttl; kill leftover postmasters."""
-    root, n = ctx.scratch_dir, 0
-    if not os.path.isdir(root):
-        return 0
+def _proc_start(pid):
+    """Start time of a process (clock ticks since boot, /proc/<pid>/stat field 22): with the pid it identifies THAT process, not a later one reusing the pid."""
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            return int(f.read().rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _alive(pid, start=None):
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    except (ValueError, TypeError, OSError):
+        return False
+    if start is not None:
+        cur = _proc_start(int(pid))
+        if cur is not None and cur != start:
+            return False                                       # the pid was reused by another process: the creator is gone
+    return True
+
+
+def reap_stale(ctx, kept_ttl=24 * 3600, grace=60):
+    """Recovery instances whose creator (the agent process that started them) is gone: an agent killed during a restore leaves a running postmaster (memory,
+    a port) and the extracted files (disk). Their postmaster is stopped - only after checking that the pid really is a postgres of THAT directory - and the
+    directory removed. Kept on purpose (keep_on_failure): left alone for `kept_ttl`. Returns the names removed."""
+    root, out = ctx.scratch_dir, []
+    if not root or not os.path.isdir(root):
+        return out
     for d in sorted(os.listdir(root)):
         p = os.path.join(root, d)
         m = os.path.join(p, ".pgarca-scratch")
@@ -396,21 +435,34 @@ def reap_stale(ctx, ttl=4 * 3600):
             continue
         try:
             info = json.load(open(m))
-            os.kill(info.get("pid", -1), 0)
-            continue
         except (ValueError, IOError, OSError):
-            pass
-        if time.time() - os.path.getmtime(m) < ttl:
+            info = {}
+        if info.get("pid") and _alive(info["pid"], info.get("start")):
+            continue
+        age = time.time() - os.path.getmtime(m)
+        if age < grace:
+            continue
+        if info.get("kept") and age < kept_ttl:
             continue
         pidf = os.path.join(p, "postmaster.pid")
         if os.path.exists(pidf):
             try:
                 pid = int(open(pidf).readline().strip())
-                os.kill(pid, signal.SIGINT)
-                time.sleep(2)
-                os.kill(pid, signal.SIGKILL)
+                cmd = open("/proc/%d/cmdline" % pid, "rb").read().replace(b"\0", b" ").decode("utf-8", "replace")
+                if "postgres" in cmd and (p in cmd or os.path.realpath(p) in cmd):
+                    os.kill(pid, signal.SIGINT)                # fast shutdown, then hard if it does not go
+                    for _ in range(20):
+                        time.sleep(0.25)
+                        if not _alive(pid):
+                            break
+                    else:
+                        os.kill(pid, signal.SIGKILL)
             except (ValueError, OSError):
                 pass
         shutil.rmtree(p, ignore_errors=True)
-        n += 1
-    return n
+        out.append(d)
+        try:
+            ctx.log("warning", "removed the recovery instance %s left by an interrupted operation" % d)
+        except Exception:
+            pass
+    return out

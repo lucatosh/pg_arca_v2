@@ -197,9 +197,11 @@ class Runtime(object):
             try:
                 from pg_arca.engine.ctx import Ctx
                 from pg_arca.engine.granular import cleanup_interrupted_promotions
+                from pg_arca.engine.ephemeral import reap_stale
                 jdir = os.path.join(self.config.get("state_dir", "/var/lib/pgarca/state"), "promotions")
+                c = Ctx.from_config(self.config, self)
+                reap_stale(c)                            # recovery instances left running by the previous agent process
                 if os.path.isdir(jdir) and os.listdir(jdir):
-                    c = Ctx.from_config(self.config, self)
                     c.promote_journal_dir = jdir
                     cleanup_interrupted_promotions(c)
             except Exception:
