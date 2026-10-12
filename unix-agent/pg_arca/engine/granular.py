@@ -739,6 +739,17 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         _pg_restore(admin, new_name, dumpfile, jobs, extra=extra, keep_owners=keep, cancel=cancel)
         _check_cancel(cancel)                              # cancelled while the last step finished: the new database is removed, as promised
         _detach_subscriptions(admin, new_name, warns)
+        try:
+            us = PgSession(admin.with_db(new_name), read_only=True)
+            try:
+                unl = [r[0] for r in us.query("SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relpersistence = 'u' "
+                                             "AND c.relkind IN ('r', 'p') ORDER BY 1") if r and r[0]]
+            finally:
+                us.close()
+            if unl:
+                warns.append("%d UNLOGGED table(s) restored EMPTY: their rows are in no backup (%s)" % (len(unl), ", ".join(unl[:6])))
+        except EngineError:
+            pass
         warns += list((props or {}).pop("_warnings", []) if props else [])
         _mark_db(admin, new_name, None)                    # complete: the marker goes (the original comment, if any, is set right after)
         _apply_db_props(admin, new_name, props, warns)
@@ -1139,6 +1150,10 @@ def _table_info(sess, fq):
     reg = sess.scalar("SELECT to_regclass(%s) IS NOT NULL" % sql_lit(fq))
     if reg != "t":
         return None
+    if sess.scalar("SELECT relpersistence FROM pg_class WHERE oid = %s::regclass" % sql_lit(fq)) == "u":
+        # an UNLOGGED table has no rows in any backup: comparing would call every live row "added since" and offer to delete them all
+        raise EngineError("PGA-GEN-095", "%s is UNLOGGED: PostgreSQL does not write its rows to the WAL, so no backup contains them - there is nothing to compare or recover" % fq,
+                          "rows of an unlogged table cannot be recovered from backups; the live table was not touched")
     cols = [r[0] for r in sess.query("SELECT attname FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum" % sql_lit(fq))]
     gen = set(r[0] for r in sess.query("SELECT attname FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND NOT attisdropped AND attgenerated<>''" % sql_lit(fq)))
     pk = [r[0] for r in sess.query("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=ANY(i.indkey) WHERE i.indrelid=%s::regclass AND i.indisprimary ORDER BY array_position(i.indkey::int2[], a.attnum)" % sql_lit(fq))]

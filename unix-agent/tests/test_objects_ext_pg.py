@@ -61,6 +61,8 @@ CREATE FUNCTION app.prod_label(p app.prod) RETURNS text LANGUAGE sql IMMUTABLE A
 CREATE TABLE app.prod_snap (at timestamptz DEFAULT now(), item app.prod);
 CREATE TABLE app.stock (sku int PRIMARY KEY, qty int);
 INSERT INTO app.stock SELECT g, g * 2 FROM generate_series(1, 25) g;
+CREATE UNLOGGED TABLE app.sessions (id int PRIMARY KEY, token text);
+INSERT INTO app.sessions SELECT g, md5(g::text) FROM generate_series(1, 50) g;
 """
 S = {}
 
@@ -218,6 +220,27 @@ class Ext(unittest.TestCase):
         old = q(DB, "SELECT relname FROM pg_class WHERE relname LIKE 'stock_old_%' AND relkind = 'r'")[0][0]
         q(DB, "DROP TABLE app.%s" % old)
         self.assertEqual(q(DB, "SELECT count(*) FROM pg_proc WHERE proname IN ('stock_total', 'stock_bump')")[0][0], "2")
+
+    def test_13_unlogged_table_is_never_replaced_by_an_empty_copy(self):
+        # UNLOGGED data is in no backup: the recovered copy is empty. Replacing the live table would only lose its rows.
+        q(DB, "INSERT INTO app.sessions VALUES (999, 'live')")
+        self.switch()
+        restore_object(F.ctx, DB, objects=["%s.app.sessions" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_unl")
+        plan = promote_object(F.ctx, "pgarca_stage_unl", DB, mode="replace", dry_run=True)
+        row = [t for t in plan["tables"] if t["name"] == "sessions"][0]
+        self.assertEqual(row["action"], "skip", plan)
+        self.assertTrue(any("sessions" in w and "UNLOGGED" in w for w in plan["warnings"]), plan["warnings"])
+        from pg_arca.engine.util import EngineError
+        with self.assertRaises(EngineError) as cm:                        # row recovery would call every live row "added since"
+            diff_object(F.ctx, "pgarca_stage_unl", "%s.app.sessions" % DB)
+        self.assertEqual(cm.exception.code, "PGA-GEN-095")
+        promote_object(F.ctx, "pgarca_stage_unl", DB, mode="replace", drop_stage=True)
+        self.assertEqual(q(DB, "SELECT count(*) FROM app.sessions")[0][0], "51", "the live rows are still there")
+        q(DB, "DROP TABLE app.sessions")
+        restore_object(F.ctx, DB, objects=["%s.app.sessions" % DB], target_time=S["t_ok"], stage_db="pgarca_stage_unl2")
+        r = promote_object(F.ctx, "pgarca_stage_unl2", DB, mode="missing_only", drop_stage=True)
+        self.assertEqual(q(DB, "SELECT relpersistence FROM pg_class WHERE oid = 'app.sessions'::regclass")[0][0], "u", "comes back as UNLOGGED (structure), empty")
+        self.assertTrue(any("UNLOGGED" in w for w in (r.get("plan") or {}).get("warnings", [])), r)
 
 
 if __name__ == "__main__":

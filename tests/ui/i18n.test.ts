@@ -34,4 +34,5 @@ assert.match(itCheck('/srv/b is on ext4'), /^\/srv\/b è su ext4$/);
 assert.match(itCheck('repository + WAL archive: 1.2 GiB to copy, 30.0 GiB free (28.8 GiB after)'), /^repository e archivio WAL: 1\.2 GiB da copiare/);
 assert.match(itCheck('the current location /old holds 3 backup set(s): after the change they stay there, still read by restores, and can be migrated in the background'), /^la posizione attuale \/old contiene 3 backup/);
 assert.match(itFix('chmod o-rwx /srv/b (or enable repository encryption)'), /^chmod o-rwx \/srv\/b \(oppure attiva/);
+assert.match(itCheck('app.sessions is UNLOGGED: its rows are in no backup (PostgreSQL does not log them), so the recovered copy is empty - the live table is kept as it is'), /^app\.sessions è UNLOGGED/);
 console.log('i18n OK');

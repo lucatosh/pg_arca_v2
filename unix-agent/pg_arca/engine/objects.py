@@ -102,7 +102,7 @@ WITH RECURSIVE pick AS (
 ), parts(oid) AS (
   SELECT oid FROM pick UNION SELECT i.inhrelid FROM pg_inherits i JOIN parts p ON i.inhparent = p.oid
 )
-SELECT COALESCE(jsonb_agg(jsonb_build_object('oid', c.oid::int, 'schema', n.nspname, 'name', c.relname, 'kind', c.relkind, 'part', c.relispartition,
+SELECT COALESCE(jsonb_agg(jsonb_build_object('oid', c.oid::int, 'schema', n.nspname, 'name', c.relname, 'kind', c.relkind, 'part', c.relispartition, 'persistence', c.relpersistence,
        'owner', pg_get_userbyid(c.relowner), 'acl', %s, 'comment', obj_description(c.oid, 'pg_class'), 'opts', c.reloptions,
        'owned', EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a','i')))
        ORDER BY c.oid), '[]'::jsonb)::text
@@ -658,7 +658,7 @@ def build_stage(admin, eph, dbentry, sel, spec_label, stage, info, plan_extra, p
         tset = {(t["schema"], t["name"]) for t in info["tables"]}
         drop_fks = {(f["schema"], f["table"], f["name"]) for f in info["fks"] if (f["schema"], f["table"]) in tset and (f["ref_schema"], f["ref_table"]) not in tset}
         meta = {"version": 1, "created": now_utc().isoformat(timespec="seconds"), "database": dbname, "selection": sel, "label": spec_label,
-                "tables": [{"schema": t["schema"], "name": t["name"], "kind": t["kind"], "part": t["part"], "owner": t["owner"]} for t in info["tables"]],
+                "tables": [{"schema": t["schema"], "name": t["name"], "kind": t["kind"], "part": t["part"], "owner": t["owner"], "persistence": t.get("persistence")} for t in info["tables"]],
                 "sequences": [{"schema": s["schema"], "name": s["name"], "owner": s["owner"], "acl": s["acl"]} for s in info["sequences"]],
                 "owned_sequences": info.get("owned_sequences") or [],
                 "views": info["views"], "fks": info["fks"], "positions": info["sequence_positions"], "roles": info["roles"],
@@ -822,7 +822,18 @@ def _live_plan(live, meta, mode, ts, stage_cols=None):
     for t in meta["tables"]:
         ex = _exists(live, t["schema"], t["name"])
         act = "copy" if mode == "as_new" else ("skip" if (mode == "missing_only" and ex) else ("swap" if ex else "create"))
+        if t.get("persistence") == "u":
+            # UNLOGGED: PostgreSQL never writes its rows to the WAL, so no backup holds them - the recovered table is always EMPTY. Replacing the live one
+            # would only lose its rows: it is kept. Brought back where it is missing (structure, indexes, grants), empty.
+            if act == "swap":
+                act = "skip"
+                plan["warnings"].append("%s.%s is UNLOGGED: its rows are in no backup (PostgreSQL does not log them), so the recovered copy is empty - the live table is kept as it is"
+                                        % (t["schema"], t["name"]))
+            elif act in ("create", "copy"):
+                plan["warnings"].append("%s.%s is UNLOGGED: it comes back with its structure but EMPTY (its rows are in no backup)" % (t["schema"], t["name"]))
         row = {"schema": t["schema"], "name": t["name"], "kind": t["kind"], "action": act, "exists_now": ex, "rows_at_target": (meta.get("counts") or {}).get("%s.%s" % (t["schema"], t["name"]))}
+        if t.get("persistence") == "u":
+            row["unlogged"] = True
         if act == "swap":
             row["old_kept_as"] = _short(t["name"], sfx_old)
             # the table changed SHAPE since the target (columns added / retyped by a migration): replacing it brings back the old shape, and the

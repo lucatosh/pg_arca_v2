@@ -109,6 +109,10 @@ const RULES: Rule[] = [
   [/^after the copy only (.+) GiB \((\d+)%\) would stay free at (.+)$/, m => `dopo la copia in ${m[3]} resterebbero liberi solo ${m[1]} GiB (${m[2]}%)`],
   [/^(repository(?: \+ WAL archive)?|WAL archive): (.+) GiB to copy, (.+) GiB free \((.+) GiB after\)$/, m => `${m[1] === 'WAL archive' ? 'archivio WAL' : m[1].includes('+') ? 'repository e archivio WAL' : 'repository'}: ${m[2]} GiB da copiare, ${m[3]} GiB liberi (${m[4]} GiB dopo)`],
   [/^(\d+) free inodes at (.+), about (\d+) files to copy$/, m => `${m[1]} inode liberi in ${m[2]}, circa ${m[3]} file da copiare`],
+  [/^(.+?) is UNLOGGED: its rows are in no backup \(PostgreSQL does not log them\), so the recovered copy is empty - the live table is kept as it is$/, m => `${m[1]} è UNLOGGED: le sue righe non sono in nessun backup (PostgreSQL non le scrive nel WAL), la copia recuperata è vuota - la tabella attuale resta com’è`],
+  [/^(.+?) is UNLOGGED: it comes back with its structure but EMPTY \(its rows are in no backup\)$/, m => `${m[1]} è UNLOGGED: torna con la sua struttura ma VUOTA (le sue righe non sono in nessun backup)`],
+  [/^(\d+) UNLOGGED table\(s\) restored EMPTY: their rows are in no backup \((.+)\)$/, m => `${m[1]} tabelle UNLOGGED ripristinate VUOTE: le loro righe non sono in nessun backup (${m[2]})`],
+  [/^(?:PGA-GEN-095: )?(.+?) is UNLOGGED: PostgreSQL does not write its rows to the WAL, so no backup contains them - there is nothing to compare or recover$/, m => `${m[1]} è UNLOGGED: PostgreSQL non scrive le sue righe nel WAL, nessun backup le contiene - non c’è nulla da confrontare o recuperare`],
 ];
 const FIX: Rule[] = [
   [/^set the delivery address in the recovery instance settings \(e\.g\. the HAProxy \/ VIP of the leader\), or open network and pg_hba from this host$/, () => 'indica l’indirizzo di consegna nelle impostazioni dell’istanza di recupero (es. l’HAProxy o il VIP del leader), oppure apri rete e pg_hba da questo host'],

@@ -147,7 +147,13 @@ class DbProps(unittest.TestCase):
         time.sleep(2)
         t = q("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
         time.sleep(1.2)
+        q("props_db", "CREATE UNLOGGED TABLE app.scratchpad AS SELECT 1 AS x")
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(2)
+        t = q("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
+        time.sleep(1.2)
         r = restore_database(F.ctx, "props_db", target_time=t, new_name="props_back5")
+        self.assertTrue(any("UNLOGGED" in w and "app.scratchpad" in w for w in r.get("warnings") or []), r.get("warnings"))
         self.assertTrue(r.get("owners_and_privileges"), r.get("warnings"))
         lo = "SELECT pg_get_userbyid(lomowner), lomacl::text FROM pg_largeobject_metadata WHERE oid = 424242"
         self.assertEqual(q("props_back5", lo), q("props_db", lo))
