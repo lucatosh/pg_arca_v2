@@ -108,8 +108,8 @@ class Fuzz(unittest.TestCase):
         live = list(self.tables)
         t = r.choice(live) if live else None
         act = r.choices(["insert", "update", "delete", "truncate", "alter", "drop", "create", "vacuum_full", "index", "switch", "full", "incr", "diff",
-                         "alter_type", "drop_column", "rename", "incr_under_load", "big_txn", "checkpoint"],
-                        weights=[18, 14, 10, 3, 4, 3, 4, 3, 3, 6, 2, 6, 2, 2, 2, 2, 4, 2, 2])[0]
+                         "alter_type", "drop_column", "rename", "incr_under_load", "big_txn", "checkpoint", "expire"],
+                        weights=[18, 14, 10, 3, 4, 3, 4, 3, 3, 6, 2, 6, 2, 2, 2, 2, 4, 2, 2, 2])[0]
         if act in ("drop", "truncate", "alter", "alter_type", "drop_column", "rename") and len(live) < 2:
             act = "insert"
         if act == "insert":
@@ -138,6 +138,14 @@ class Fuzz(unittest.TestCase):
             q("postgres", "SELECT pg_switch_wal()")
         elif act == "checkpoint":
             q("postgres", "CHECKPOINT")
+        elif act == "expire":                             # retention: whatever it deletes, every instant after the oldest kept full must stay restorable
+            from pg_arca.engine.maintenance import expire
+            keep = r.randint(1, 3)
+            res = expire(F.ctx, retention_full=keep)
+            fulls = [m for m in F.ctx.repo.complete_sets() if m["type"] == "full"]
+            if fulls:
+                self.floor = max(getattr(self, "floor", ""), fulls[0].get("stop_time") or "")
+            self.log.append("   expire keep=%d deleted %s" % (keep, res.get("delete_sets")))
         elif act == "alter_type":                         # a table rewrite (new relfilenode) under the same name
             col = {"plain": "a", "part": "k", "serial": "id", "toast": "id"}[self.tables[t]]
             if self.tables[t] == "part":
@@ -191,8 +199,17 @@ class Fuzz(unittest.TestCase):
         return "%s at step %d (%s) differs.\n  expected %s\n  got      %s\n  seed %d - replay with PG_ARCA_FUZZ_SEED=%d\n  history:\n    %s" % (
             what, point[2], point[0], want, got, SEED, SEED, "\n    ".join(self.log))
 
+    def _restorable(self):
+        """Instants still covered after retention: after the end of the oldest full that was kept."""
+        fl = getattr(self, "floor", "")
+        if not fl:
+            return list(self.points)
+        from pg_arca.engine.util import target_time_to_dt
+        f = target_time_to_dt(fl.replace("T", " ") if "+" in fl or "Z" in fl else fl + "+00")
+        return [p for p in self.points if f is None or target_time_to_dt(p[0]) > f]
+
     def test_database_restores_match_every_recorded_instant(self):
-        pts = self.rng.sample(self.points, min(RESTORES, len(self.points)))
+        pts = self.rng.sample(self._restorable(), min(RESTORES, len(self._restorable())))
         for i, p in enumerate(sorted(pts, key=lambda x: x[2])):
             name = "fz_r%d" % i
             restore_database(F.ctx, DB, target_time=p[0], new_name=name)
@@ -201,7 +218,7 @@ class Fuzz(unittest.TestCase):
             q("postgres", "DROP DATABASE %s" % name)
 
     def test_table_restores_match(self):
-        cands = [(p, t) for p in self.points for t in p[1]]
+        cands = [(p, t) for p in self._restorable() for t in p[1]]
         for i, (p, t) in enumerate(self.rng.sample(cands, min(RESTORES, len(cands)))):
             stage = "pgarca_stage_fz%d" % i
             restore_object(F.ctx, DB, objects=["%s.public.%s" % (DB, t)], target_time=p[0], stage_db=stage)
@@ -215,7 +232,7 @@ class Fuzz(unittest.TestCase):
         from pg_arca.engine.restore import restore_instance
         from pg_arca.engine.pgsession import PgConn, PgSession
         from tests.test_engine_pg import BIN, sh
-        p = self.rng.choice(self.points)
+        p = self.rng.choice(self._restorable())
         dest = os.path.join(F.base, "fz_inst")
         restore_instance(F.ctx, dest=dest, target_time=p[0], action="promote")
         port = F.port + 21

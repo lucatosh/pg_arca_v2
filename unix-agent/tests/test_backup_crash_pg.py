@@ -1,0 +1,109 @@
+"""The agent is killed (SIGKILL: power loss, OOM killer) in the middle of a backup, while chunks are being written. Afterwards:
+  - the next backup runs (the stale lock does not block it; the interrupted set is marked FAILED, never used as a parent or for a restore)
+  - chunks written around the crash are re-verified before being trusted for deduplication
+  - a deep verify of the repository is clean, a restore gives exactly the data, retention removes the interrupted set
+
+  as root:   su postgres -s /bin/bash -c 'cd unix-agent && python3 -m unittest tests.test_backup_crash_pg -v'
+"""
+import os
+import signal
+import subprocess
+import sys
+import time
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tests import test_engine_pg as base
+from tests.test_engine_pg import F, q
+
+from pg_arca.engine.backup import run_backup
+from pg_arca.engine.granular import restore_database
+from pg_arca.engine.maintenance import expire, verify
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHILD = r'''
+import os, sys
+sys.path.insert(0, %(here)r)
+from pg_arca.engine.ctx import Ctx
+from pg_arca.engine.pgsession import PgConn
+from pg_arca.engine.backup import run_backup
+ctx = Ctx(PgConn(host=%(sock)r, port=%(port)d, user="postgres", bindir=%(bin)r), %(src)r, %(repo)r, "main", %(wal)r, %(scratch)r, process_max=1, compression="zlib",
+          level=9, start_fast=True, seg_size=%(seg)d, agent_path=%(walbin)r, key_file=%(key)r)
+run_backup(ctx, %(type)r)
+'''
+
+
+def child(btype):
+    code = CHILD % {"here": HERE, "sock": F.sock, "port": F.port, "bin": base.BIN, "src": F.src, "repo": F.repo, "wal": F.wal, "scratch": F.scratch, "seg": F.seg,
+                    "walbin": F.ctx.agent_path, "key": F.key or None, "type": btype}
+    return subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+
+
+def setUpModule():
+    base.setUpModule()
+    q("postgres", "CREATE DATABASE crashdb")
+    # enough distinct data that a level-9 single-process backup takes several seconds
+    q("crashdb", "CREATE TABLE big AS SELECT g AS id, md5(g::text) || md5((g * 7)::text) || repeat(md5(random()::text), 4) AS v FROM generate_series(1, 600000) g")
+    q("crashdb", "ALTER TABLE big ADD PRIMARY KEY (id)")
+
+
+def tearDownModule():
+    base.tearDownModule()
+
+
+class Crash(unittest.TestCase):
+    def test_killed_full_backup_then_everything_still_works(self):
+        sets_dir = os.path.join(F.repo, "stanza", "main", "backup")
+        p = child("full")
+        # wait until the backup really writes chunks (the set directory exists and the CAS grows), then kill it hard
+        t0 = time.time()
+        cas = os.path.join(F.repo, "cas")
+        while time.time() - t0 < 60:
+            n = sum(len(fs) for _, _, fs in os.walk(cas)) if os.path.isdir(cas) else 0
+            if n > 300:
+                break
+            time.sleep(0.2)
+        self.assertIsNone(p.poll(), "the backup finished before it could be interrupted: make the data bigger")
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        killed = [d for d in os.listdir(sets_dir)] if os.path.isdir(sets_dir) else []
+        self.assertTrue(killed, "an interrupted set is on disk")
+        # the next backup: not blocked by the dead one's lock, never builds on it
+        q("crashdb", "UPDATE big SET v = 'after crash' WHERE id <= 1000")
+        m = run_backup(F.ctx, "incr")
+        self.assertEqual(m["type"], "full", "no complete full existed: the incremental becomes a full, never a child of the interrupted set")
+        statuses = {s["id"]: s.get("status") for s in F.ctx.repo.sets()}
+        self.assertEqual(statuses[killed[0]], "FAILED", statuses)
+        v = verify(F.ctx, deep=True)
+        self.assertTrue(v["ok"], v["problems"])
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(2)
+        restore_database(F.ctx, "crashdb", new_name="crashdb_back")
+        self.assertEqual(q("crashdb_back", "SELECT count(*), count(*) FILTER (WHERE v = 'after crash'), md5(string_agg(v, '' ORDER BY id)) FROM big"),
+                         q("crashdb", "SELECT count(*), count(*) FILTER (WHERE v = 'after crash'), md5(string_agg(v, '' ORDER BY id)) FROM big"))
+        r = expire(F.ctx, retention_full=1)
+        self.assertIn(killed[0], r["delete_sets"], "retention removes the interrupted set")
+        self.assertTrue(verify(F.ctx, deep=True)["ok"])
+
+    def test_z_killed_incremental_does_not_break_the_chain(self):
+        q("crashdb", "UPDATE big SET v = md5(v) WHERE id % 3 = 0")
+        p = child("incr")
+        time.sleep(1.5)
+        if p.poll() is None:
+            os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        q("crashdb", "UPDATE big SET v = 'last' WHERE id = 1")
+        m = run_backup(F.ctx, "incr")
+        self.assertEqual(m["status"], "COMPLETE")
+        parent = F.ctx.repo.set_meta(m["parent"]) if m.get("parent") else None
+        self.assertTrue(parent is None or parent.get("status") == "COMPLETE", "the parent of the new incremental is a complete set")
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(2)
+        restore_database(F.ctx, "crashdb", new_name="crashdb_back2")
+        self.assertEqual(q("crashdb_back2", "SELECT v FROM big WHERE id = 1")[0][0], "last")
+        self.assertEqual(q("crashdb_back2", "SELECT md5(string_agg(v, '' ORDER BY id)) FROM big"), q("crashdb", "SELECT md5(string_agg(v, '' ORDER BY id)) FROM big"))
+
+
+if __name__ == "__main__":
+    unittest.main()
