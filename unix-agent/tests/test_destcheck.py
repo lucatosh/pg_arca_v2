@@ -160,12 +160,10 @@ class Identities(unittest.TestCase):
         self.assertEqual(r["identity"]["dir_mode"], "0700")
 
     def test_wal_archive_of_another_cluster_is_refused(self):
+        from pg_arca.wal_manager import WalManager
         d = os.path.join(self.t, "wal")
         os.makedirs(d, mode=0o700)
-        self.assertEqual(destcheck.claim_wal_dir(d, "111", "main", "erp")[0], True)
-        self.assertEqual(destcheck.claim_wal_dir(d, "111")[0], True, "the same cluster again")
-        ok, owner = destcheck.claim_wal_dir(d, "222", "main", "crm")
-        self.assertFalse(ok); self.assertEqual(owner["cluster"], "erp")
+        WalManager(d)._check_owner("111")                      # what the archive itself writes on its first segment
         r = destcheck.check_path("wal", d, table=[("/", "ext4", "/dev/vda")], owner={"system_identifier": "222"})
         self.assertEqual(lv(r, "wal_owner"), ["bad"]); self.assertFalse(r["ok"])
         r = destcheck.check_path("wal", d, table=[("/", "ext4", "/dev/vda")], owner={"system_identifier": "111"})

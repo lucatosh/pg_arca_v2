@@ -55,11 +55,6 @@ class ServerProbe(unittest.TestCase):
         finally:
             os.chmod(d, 0o700)
 
-    def test_wal_owner_marker_written_once(self):
-        d = os.path.realpath(tempfile.mkdtemp(dir=F.base))
-        sysid = run_sql("SELECT 1") and PgSession(F.ctx.conn.with_db("postgres")).scalar("SELECT system_identifier FROM pg_control_system()")
-        self.assertTrue(destcheck.claim_wal_dir(d, sysid, "main")[0])
-        self.assertEqual(destcheck.read_wal_owner(d)["system_identifier"], str(sysid))
 
 
 if __name__ == "__main__":

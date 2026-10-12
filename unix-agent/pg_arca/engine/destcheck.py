@@ -328,8 +328,8 @@ def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None,
     if kind == "wal" and owner:
         o = read_wal_owner(real)
         if o and str(o.get("system_identifier")) != str(owner.get("system_identifier")):
-            add("wal_owner", "bad", "this WAL archive already belongs to another cluster (%s, system identifier %s): two clusters in one archive overwrite each other's segments"
-                % (o.get("cluster") or o.get("stanza") or "?", o.get("system_identifier")), "give every cluster its own WAL directory (for example .../{cluster}/wal)")
+            add("wal_owner", "bad", "this WAL archive already belongs to another database (system identifier %s): two clusters in one archive overwrite each other's segments"
+                % o.get("system_identifier"), "give every cluster its own WAL directory (for example .../{cluster}/wal)")
         elif o:
             add("wal_owner", "ok", "WAL archive of this cluster (system identifier %s)" % o.get("system_identifier"))
         elif res["inventory"].get("wal_files"):
@@ -362,44 +362,15 @@ def check_destination(p, protected=(), current_repo=None, current_wal=None, tabl
     return out
 
 
-WAL_OWNER = ".pgarca-owner.json"
-
-
 def read_wal_owner(directory):
+    """The archive's owner marker, written by the archive itself on the first segment (wal_manager.OWNER_FILE): {system_identifier, since}."""
+    import json
+    from pg_arca.wal_manager import OWNER_FILE
     try:
-        import json
-        with open(os.path.join(directory, WAL_OWNER)) as f:
+        with open(os.path.join(directory, OWNER_FILE)) as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
-
-
-def claim_wal_dir(directory, system_identifier, stanza=None, cluster=None):
-    """Mark a WAL archive directory as this cluster's (system identifier). Never overwrites another cluster's marker: returns (ok, owner_found)."""
-    import json
-    if not system_identifier or not os.path.isdir(directory):
-        return False, None
-    cur = read_wal_owner(directory)
-    if cur:
-        return str(cur.get("system_identifier")) == str(system_identifier), cur
-    tmp = os.path.join(directory, WAL_OWNER + ".%s.tmp" % uuid.uuid4().hex[:8])
-    try:
-        with open(tmp, "w") as f:
-            json.dump({"system_identifier": str(system_identifier), "stanza": stanza, "cluster": cluster, "claimed": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f)
-            f.flush()
-            os.fsync(f.fileno())
-        try:
-            os.link(tmp, os.path.join(directory, WAL_OWNER))          # exclusive: two nodes claiming at once cannot both win
-        except FileExistsError:
-            pass
-        return str((read_wal_owner(directory) or {}).get("system_identifier")) == str(system_identifier), read_wal_owner(directory)
-    except OSError:
-        return False, None
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
 
 
 def server_probe(run_sql, tool, directory, env_prefix=""):
