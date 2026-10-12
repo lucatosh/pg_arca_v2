@@ -13,6 +13,7 @@ The console delivers operations AT-LEAST-ONCE (lease + redelivery). Safety comes
 import json
 import shlex
 import shutil
+import subprocess
 import logging
 import os
 import re
@@ -418,6 +419,18 @@ class OperationExecutor:
         if not data:
             raise OpError("no PostgreSQL instance found on this host")
         plan = pgrestart.plan(data)
+        # a configuration file with an error makes PostgreSQL refuse to START (a reload only logs it): never restart into that
+        bad = None
+        try:
+            bad, _ = self.db.query_json("SELECT COALESCE(json_agg(json_build_object('file', sourcefile, 'line', sourceline, 'name', name, 'error', error)), '[]'::json) "
+                                        "FROM pg_file_settings f WHERE error IS NOT NULL "
+                                        "AND NOT (f.name IS NOT NULL AND EXISTS (SELECT 1 FROM pg_settings s WHERE s.name = f.name AND s.pending_restart));")
+        except Exception:
+            bad = None
+        if bad:
+            plan = dict(plan, method="refuse", config_errors=bad,
+                        why="the configuration has errors PostgreSQL would refuse at start: %s" % "; ".join(
+                            "%s line %s%s: %s" % (b.get("file"), b.get("line"), (" (%s)" % b["name"]) if b.get("name") else "", b.get("error")) for b in bad[:5]))
         if p.get("dry_run"):
             return {"dry_run": True, "plan": plan}
         if plan["method"] == "refuse":
@@ -439,7 +452,21 @@ class OperationExecutor:
             if self.db.ping():
                 break
         else:
-            raise OpError("restarted (%s) but PostgreSQL does not answer after 180 s: look at its log" % how)
+            diag = ""
+            try:
+                if plan.get("unit"):
+                    r = subprocess.run(["systemctl", "status", "--no-pager", "-n", "15", plan["unit"]], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       universal_newlines=True, timeout=20)
+                    diag = r.stdout[-1500:]
+                else:
+                    lg = os.path.join(self.config.get("log_dir") or self.config.get("state_dir") or "/tmp", "postgresql-restarted-by-pg_arca.log")
+                    with open(lg, "rb") as f:
+                        f.seek(max(0, os.path.getsize(lg) - 1500))
+                        diag = f.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+            raise OpError("restarted (%s) but PostgreSQL does not answer after 180 s - it may have refused to start (a parameter it cannot use?).%s"
+                          % (how, ("\nLast lines:\n" + diag.strip()) if diag.strip() else " Look at its log."))
         after, _ = self.db.query_json("SELECT COALESCE(json_agg(name), '[]'::json) FROM pg_settings WHERE pending_restart;")
         return {"restarted": True, "how": how, "unit": plan.get("unit"), "pending_before": before or [], "pending_restart": after or []}
 

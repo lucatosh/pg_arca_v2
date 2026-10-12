@@ -43,6 +43,22 @@ class ArchiveEnable(unittest.TestCase):
                 self.assertEqual(r["changed"].get("wal_log_hints"), "on"); self.assertIn("pg-arca-wal archive %p %f", r["changed"]["archive_command"])
                 # the restart from the console (standalone, no systemd here: pg_ctl restart with the options it was started with)
                 self.assertEqual(ex.h_pg_restart({"dry_run": True})["plan"]["method"], "pg_ctl")
+                # a broken configuration is refused BEFORE the restart (PostgreSQL would not come back)
+                db.alter_system("work_mem", "64MB")
+                with open(data + "/postgresql.auto.conf", "a") as f:
+                    f.write("shared_buffers = 'not-a-size'\n")
+                db.run_psql("SELECT pg_reload_conf();")
+                time.sleep(1)
+                pl = ex.h_pg_restart({"dry_run": True})["plan"]
+                self.assertEqual(pl["method"], "refuse", pl); self.assertIn("shared_buffers", pl["why"])
+                with self.assertRaises(OpError):
+                    ex.h_pg_restart({})
+                with open(data + "/postgresql.auto.conf") as f:
+                    lines = [l for l in f if "not-a-size" not in l]
+                with open(data + "/postgresql.auto.conf", "w") as f:
+                    f.writelines(lines)
+                db.run_psql("SELECT pg_reload_conf();")
+                time.sleep(1)
                 rr = ex.h_pg_restart({})
                 self.assertTrue(rr["restarted"], rr); self.assertIn("archive_mode", rr["pending_before"]); self.assertEqual(rr["pending_restart"], [], rr)
                 r2 = ex.h_archive_enable({})
