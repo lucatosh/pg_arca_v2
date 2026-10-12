@@ -16,7 +16,7 @@ from pg_arca.engine import objects as objmod, restorecheck
 from pg_arca.engine.catalog import find_object
 from pg_arca.engine.ephemeral import Ephemeral, TargetNotReached
 from pg_arca.engine.pgsession import PgConn, PgSession, run_dump, run_tool
-from pg_arca.engine.restore import check_wal_for_chain, choose_set, count_targets, estimate, merge_chain, sparse_filter, system_db_oids
+from pg_arca.engine.restore import check_wal_for_chain, flush_current_wal, choose_set, count_targets, estimate, merge_chain, sparse_filter, system_db_oids
 from pg_arca.engine.util import EngineError, human, lsn_to_int, now_utc, parse_target_time, quote_ident, sql_lit, target_time_to_dt, wal_name, wal_segno
 
 import re as _re
@@ -665,7 +665,12 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         plan["dry_run"] = True
         return plan
     restorecheck.enforce(checks)
+    if progress:
+        progress({"phase": "prepare", "note": "archiving the current WAL segment"})
+    flushed = flush_current_wal(ctx, chain, tt, target_lsn, target_xid, target_name, cancel=cancel)
     eph, info = _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+    if flushed:
+        info["wal_flushed"] = flushed
     created = False
     tmp = tempfile.mkdtemp(prefix="pgarca-dump-")
     try:
@@ -833,7 +838,12 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
         plan["dry_run"] = True
         return plan
     restorecheck.enforce(checks)
+    if progress:
+        progress({"phase": "prepare", "note": "archiving the current WAL segment"})
+    flushed = flush_current_wal(ctx, chain, tt, target_lsn, target_xid, target_name, cancel=cancel)
     eph, info = _recover_db(ctx, chain, dbentry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+    if flushed:
+        info["wal_flushed"] = flushed
     created = False
     try:
         src = PgSession(eph.conn(db), read_only=True)

@@ -1,5 +1,6 @@
 """Restore: chain merge, parallel verified materialization, sparse (single-DB) extraction, skeletonization, recovery config."""
 
+import datetime
 import os
 import re
 import shutil
@@ -265,6 +266,44 @@ def _conf_preload(dest):
         except OSError:
             continue
     return val
+
+
+def flush_current_wal(ctx, chain, target_time=None, target_lsn=None, target_xid=None, target_name=None, wait=90, cancel=None):
+    """A target of 'now' (or of the last minutes) needs the WAL the source has not archived yet: with archive_timeout = 60 the last seconds may be
+    only in the current segment, and the recovery would stop earlier ('target clamped'). When the backed-up server is reachable here as a PRIMARY
+    (same system identifier as the backups), the segment is switched and its archiving awaited. Never fatal; returns what happened or None."""
+    if target_lsn or target_xid or target_name:
+        return None                                 # explicit positions: the user knows where they are (and recent ones are flushed by the scan anyway)
+    if target_time:
+        try:
+            dt = target_time_to_dt(parse_target_time(target_time))
+            if (datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds() > 900:
+                return None                         # long archived already
+        except Exception:
+            return None
+    from pg_arca.engine.pgsession import PgSession
+    try:
+        s = PgSession(ctx.conn.with_db("postgres"))
+    except Exception:
+        return None
+    try:
+        sysid = s.scalar("SELECT system_identifier FROM pg_control_system()")
+        if not chain or str(chain[0].get("system_identifier") or "") != str(sysid or "-"):
+            return None                             # another cluster (a central recovery host's own PostgreSQL): never touched
+        if s.scalar("SELECT pg_is_in_recovery()") != "f":
+            return None
+        name = s.scalar("SELECT pg_walfile_name(pg_switch_wal())")
+    except EngineError:
+        return None
+    finally:
+        s.close()
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        if name and ctx.wal.has_segment(name):
+            return {"segment": name, "archived": True, "seconds": round(time.time() - t0, 1)}
+        _check_cancel(cancel)
+        time.sleep(0.5)
+    return {"segment": name, "archived": False, "seconds": wait}
 
 
 def ensure_tablespace_version_dirs(datadir, tablespaces, files, major, catversion=None):
