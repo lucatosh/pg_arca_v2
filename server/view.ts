@@ -116,7 +116,7 @@ export function deriveCluster(opts: {
   const prior = opts.prior || {};
   const dbs = (pg.databases || []).map((d: any) => {
     const old = (prior.databases || []).find((x: any) => x.name === d.name);
-    return { oid: String(d.oid), name: d.name, size: num(d.size), schemas: old?.schemas || [] };
+    return { oid: String(d.oid), name: d.name, size: num(d.size), schemas: old?.schemas || [], ...(d.restoring ? { restoring: true } : {}) };
   });
   return {
     ...prior,

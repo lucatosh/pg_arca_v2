@@ -52,6 +52,13 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     const pg = primary?.snapshot?.postgres || {};
     const pol = resolvePolicy(st, c).policy;
 
+    // ---- a database still marked "restore in progress" while no restore is running: the restore was interrupted (agent restart, crash) and the copy is INCOMPLETE
+    const busy = new Set((st.operations || []).filter((o: any) => o.clusterId === c.id && ['queued', 'leased', 'running'].includes(o.status) && o.type === 'restore_database').map((o: any) => o.params?.new_name));
+    for (const d of (pg.databases || []) as any[]) {
+      if (d?.restoring && !busy.has(d.name)) add({ severity: 'warning', code: 'restore_incomplete', detail: d.name, title: `Database ${d.name}: ripristino interrotto`,
+        cause: 'Il ripristino che lo stava riempiendo non è arrivato alla fine: il contenuto è incompleto. Eliminalo e ripeti il ripristino.', action: { label: 'Vai al ripristino', page: 'restore' } });
+    }
+
     // ---- backups
     const bk = (nodes.filter(n => n.snapshot?.backup?.configured).sort((a, b) => (b.snapshot.backup.sets || 0) - (a.snapshot.backup.sets || 0))[0] || primary)?.snapshot?.backup;
     const sets: any[] = (bk?.recent_sets || []).filter((s: any) => s.status === 'COMPLETE');

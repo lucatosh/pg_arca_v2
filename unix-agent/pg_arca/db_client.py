@@ -33,7 +33,7 @@ SELECT json_build_object(
   'timeline', (CASE WHEN pg_is_in_recovery() THEN (SELECT timeline_id FROM pg_control_checkpoint()) ELSE ('x' || substr(pg_walfile_name(pg_current_wal_insert_lsn()), 1, 8))::bit(32)::int END),
   'system_identifier', (SELECT system_identifier::text FROM pg_control_system()),
   'port', current_setting('port')::int,
-  'databases', (SELECT COALESCE(json_agg(json_build_object('oid', oid::int, 'name', datname) ORDER BY datname), '[]'::json)
+  'databases', (SELECT COALESCE(json_agg(json_build_object('oid', oid::int, 'name', datname, 'restoring', shobj_description(oid, 'pg_database') LIKE 'pg_arca: restore IN PROGRESS%') ORDER BY datname), '[]'::json)
                   FROM pg_database WHERE NOT datistemplate AND datallowconn),
   'connections', json_build_object('used', (SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'),
                                    'max', current_setting('max_connections')::int),

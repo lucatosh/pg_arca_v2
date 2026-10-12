@@ -28,6 +28,22 @@ def _check_name(n, what):
         raise EngineError("PGA-GEN-065", "invalid %s %r (letters, digits, _ and $; max 63; must not start with a digit)" % (what, n))
 
 
+RESTORING_MARK = "pg_arca: restore IN PROGRESS"
+
+
+def _mark_db(admin, name, text):
+    """A database being filled by a restore carries a comment saying so: if the agent dies half-way, the telemetry shows it as incomplete
+    (never mistaken for a good copy). None removes it."""
+    try:
+        s = PgSession(admin.with_db("postgres"))
+        try:
+            s.query("COMMENT ON DATABASE %s IS %s" % (quote_ident(name), sql_lit(text) if text else "NULL"))
+        finally:
+            s.close()
+    except EngineError:
+        pass
+
+
 def _check_cancel(cancel):
     if cancel and cancel():
         from pg_arca.engine.util import Cancelled
@@ -610,9 +626,11 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
                 warns.append("tablespaces missing on this server (%s): every object was created in the database's default tablespace" % ", ".join(gone_ts))
         _create_db(admin, new_name, entry, props)
         created = True
+        _mark_db(admin, new_name, "%s since %s (from %s at %s): incomplete until this comment is gone - do not use" % (RESTORING_MARK, now_utc().isoformat(timespec="seconds"), db, plan.get("target")))
         _pg_restore(admin, new_name, dumpfile, jobs, extra=extra, keep_owners=keep, cancel=cancel)
         _check_cancel(cancel)                              # cancelled while the last step finished: the new database is removed, as promised
         warns += list((props or {}).pop("_warnings", []) if props else [])
+        _mark_db(admin, new_name, None)                    # complete: the marker goes (the original comment, if any, is set right after)
         _apply_db_props(admin, new_name, props, warns)
         if warns:
             info["warnings"] = (info.get("warnings") or []) + warns

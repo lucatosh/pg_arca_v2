@@ -111,6 +111,27 @@ class DbProps(unittest.TestCase):
         self.assertEqual(q("ts_app_back", "SELECT (SELECT count(*) FROM cold) + (SELECT count(*) FROM hot)")[0][0], "1500")
         self.assertTrue(r)
 
+    def test_04_interrupted_restore_leaves_a_marked_database(self):
+        # the agent dies while pg_restore fills the new database (simulated: pg_restore fails and the cleanup never runs): the copy must say it is INCOMPLETE
+        from pg_arca.engine import granular
+        from pg_arca.engine.util import EngineError
+        orig_restore, orig_drop = granular._pg_restore, granular._drop_db
+
+        def boom(*a, **k):
+            raise EngineError("PGA-TEST-001", "agent killed")
+        granular._pg_restore, granular._drop_db = boom, (lambda *a, **k: None)
+        try:
+            with self.assertRaises(EngineError):
+                restore_database(F.ctx, "props_db", new_name="props_half")
+        finally:
+            granular._pg_restore, granular._drop_db = orig_restore, orig_drop
+        c = q("postgres", "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = 'props_half'")[0][0]
+        self.assertTrue(c.startswith("pg_arca: restore IN PROGRESS"), c)
+        from pg_arca.db_client import PostgresClient
+        snap = PostgresClient(user="postgres", port=F.port, socket_dir=F.sock).get_snapshot()
+        self.assertTrue([d for d in snap["databases"] if d["name"] == "props_half"][0].get("restoring"), "telemetry flags it")
+        self.assertFalse([d for d in snap["databases"] if d["name"] == "props_back"][0].get("restoring"), "a completed restore carries no marker")
+
 
 if __name__ == "__main__":
     unittest.main()
