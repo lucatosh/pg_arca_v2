@@ -818,7 +818,7 @@ class OperationExecutor:
             need = restored.instance_bytes(ctx, p.get("set"), t)
         except Exception:
             need = 0
-        where = restored.suggest(ctx, need, roots=self.config.get("restore_roots") or ())
+        where = restored.suggest(ctx, need, roots=self.config.get("restore_roots") or (), label=str(p.get("label") or "")[:60] or None)
         dest = p.get("destination") or where.get("recommended")
         if not dest:
             from pg_arca.engine.util import EngineError

@@ -179,7 +179,8 @@ Object.assign(OP_SPECS, {
   // destination optional: the agent proposes one (a volume with room, never production's) and uses it when none is given
   restore_instance: { ...dataOp, validate: (p: any) => p.destination && (!String(p.destination).startsWith('/') || !noCtl(String(p.destination)) || String(p.destination).split('/').includes('..')) ? 'destination must be an absolute path'
                                                        : (targetErr(p) || (p.action && !['promote', 'pause'].includes(p.action) ? 'action must be promote|pause'
-                                                       : (p.start !== undefined && typeof p.start !== 'boolean' ? 'start must be boolean'
+                                                       : (p.label !== undefined && !(typeof p.label === 'string' && p.label.length <= 60 && noCtl(p.label)) ? 'label: up to 60 characters'
+                                                       : p.start !== undefined && typeof p.start !== 'boolean' ? 'start must be boolean'
                                                        : (p.ttl_hours !== undefined && p.ttl_hours !== null && !(Number(p.ttl_hours) >= 0 && Number(p.ttl_hours) <= 8760) ? 'ttl_hours 0..8760 (0 = keep)' : null)))) },
   // restored copies (whole-instance restores the agent started and keeps track of): listed, stopped, started, resumed, kept or deleted on the node that holds them
   restored_list:   { mutating: false, target: 'node', lane: 'control', validate: () => null },

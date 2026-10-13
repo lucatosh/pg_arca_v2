@@ -79,7 +79,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   // the destination: the one the operator picked, else the one the agent proposed in the last check
   const destNow = (): string => dest || (plan.op?.status === 'succeeded' && plan.op.params?.scope === 'instance' ? String(plan.op.result?.destination || '') : '');
   const tparams = (): Record<string, any> => !tgt ? {} : tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : tgt.mode === 'xid' ? { target_xid: tgt.xid, inclusive: false } : {};
-  const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { ...(destNow() ? { destination: destNow() } : {}), action, delta, ttl_hours: ttl, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
+  const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { ...(destNow() ? { destination: destNow() } : {}), label: c.name, action, delta, ttl_hours: ttl, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
     : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...(mkRoles ? { create_missing_roles: true } : {}), ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
 

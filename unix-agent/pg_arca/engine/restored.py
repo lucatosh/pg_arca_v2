@@ -128,14 +128,18 @@ def _system_path(p):
     return any(p == x or p.startswith(x + "/") for x in _SYSTEM)
 
 
-def default_name(stanza):
-    return "pgarca-restore-%s-%s" % (re.sub(r"[^A-Za-z0-9_.-]", "_", stanza or "main")[:40], datetime.now().strftime("%Y%m%d-%H%M"))
+def default_name(label):
+    """pgarca-restore-<cluster name as the operator knows it>-<date-time>; an internal stanza (sysid-...) says nothing to a person: left out."""
+    lab = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "").strip("-.")[:40]
+    if not lab or lab.startswith("sysid-"):
+        return "pgarca-restore-%s" % datetime.now().strftime("%Y%m%d-%H%M")
+    return "pgarca-restore-%s-%s" % (lab, datetime.now().strftime("%Y%m%d-%H%M"))
 
 
-def suggest(ctx, need_bytes, roots=(), name=None):
+def suggest(ctx, need_bytes, roots=(), name=None, label=None):
     """Where a restored copy of `need_bytes` can go on this host: one proposal per volume, best first.
     Each: {path, root, mountpoint, fstype, source, free, total, free_after, fits, shares[], level ok|warn|bad, why, recommended}."""
-    name = name or default_name(ctx.stanza)
+    name = name or default_name(label or ctx.stanza)
     need = int(need_bytes * 1.10) + (512 << 20)               # data + WAL replayed/recycled during recovery + the copy's own log
     cands = []                                                    # (priority, root, origin)
     for r in roots or ():
