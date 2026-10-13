@@ -209,7 +209,7 @@ create_one() {
   pct start "$id"
   for _ in $(seq 60); do [ -n "$(ip_of "$name")" ] && break; sleep 2; done
   [ -n "$(ip_of "$name")" ] || die "$name has no network address"
-  $setup "$name"
+  local fn=${setup%% *} args=${setup#* }; $fn "$name" $args
   echo "   ok: $name at $(ip_of "$name")"
 }
 snapshot_all() {   # after everything is set up (Patroni needs its three nodes), each container is frozen as "virgin"

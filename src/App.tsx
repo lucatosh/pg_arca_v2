@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'rea
 import { AuthGate } from './AuthGate';
 import { useQuery } from './hooks';
 import { Icon, Toasts, Dot, Empty, Skeleton } from './ui';
-import { go, nav, useRoute } from './router';
+import { go, nav as routeNav, useRoute } from './router';
 import { TAB_ITEMS } from './tabs';
 import { TodayPage, useHealth } from './pages/Today';
 import { JoinBanner } from './pages/Join';
@@ -63,7 +63,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
   useEffect(() => { const el = pageRef.current; if (!el) return; let t: any; const f = () => { clearTimeout(t); t = setTimeout(() => scrolls.current.set(location.hash, el.scrollTop), 80); }; el.addEventListener('scroll', f, { passive: true }); return () => el.removeEventListener('scroll', f); }, []);
   useEffect(() => {
     const el = pageRef.current; if (!el) return;
-    const want = nav.fromApp ? undefined : scrolls.current.get(location.hash); nav.fromApp = false;
+    const want = routeNav.fromApp ? undefined : scrolls.current.get(location.hash); routeNav.fromApp = false;
     if (want == null) { if (prevPage.current !== `${route.page}/${route.id}`) el.scrollTo({ top: 0 }); prevPage.current = `${route.page}/${route.id}`; return; }
     prevPage.current = `${route.page}/${route.id}`;
     let n = 0; const step = () => { if (el.scrollHeight - el.clientHeight >= want || n++ > 40) { el.scrollTo({ top: want }); return; } requestAnimationFrame(step); }; step();
