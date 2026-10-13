@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { itCheck, itFix } from '../i18n';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Field, Icon, Modal, Skeleton, Tabs, bytes, ago, num } from '../ui';
-import { Op, isTerminal, revalidate, toast, useOpRunner, useQuery } from '../hooks';
+import { Op, clearDrafts, isTerminal, revalidate, toast, useDraft, useOpRunner, useQuery } from '../hooks';
 import { OpPanel } from './shared';
 import { go } from '../router';
 
@@ -87,15 +87,17 @@ const KINDS: Record<'ephemeral' | 'destination', KindUI> = {
 /** Edit what ONE level sets. Empty fields are not stored: they keep inheriting. */
 function ScopeDialog({ kind, scope, k, label, view, onClose }: { kind: 'ephemeral' | 'destination'; scope: Scope; k: string; label: string; view: SView; onClose: () => void }) {
   const ui = KINDS[kind]; const cur = view.assignments[scopeKey(scope, k)];
-  const [v, setV] = useState<Record<string, any>>(() => ({ ...(cur || {}) }));
+  const DK = `scope:${kind}:${scope}:${k}`;
+  const [v, setV] = useDraft<Record<string, any>>(DK + ':v', () => ({ ...(cur || {}) }));      // kept if the page is left with the dialog open; discarded when it is closed
   const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
+  const close = () => { clearDrafts(DK); onClose(); };
   const set = (key: string, val: any) => setV(x => { const n = { ...x }; if (val === '' || val === undefined) delete n[key]; else n[key] = val; if (key === 'centralInto' && val && !Object.values(val).some(Boolean)) delete n[key]; return n; });
   const save = async (inherit: boolean) => {
     setBusy(true); setErr(null);
-    try { await api('PUT', `/api/scoped/${kind}/assignments`, { scope, key: k, ...(inherit ? { inherit: true } : { value: v }) }); revalidate(`/api/scoped/${kind}`); toast(inherit ? 'Torna a ereditare' : 'Impostazioni salvate', 'ok'); onClose(); }
+    try { await api('PUT', `/api/scoped/${kind}/assignments`, { scope, key: k, ...(inherit ? { inherit: true } : { value: v }) }); revalidate(`/api/scoped/${kind}`); toast(inherit ? 'Torna a ereditare' : 'Impostazioni salvate', 'ok'); close(); }
     catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
   };
-  return <Modal wide title={`${ui.title} — ${label}`} onClose={onClose} footer={<>{cur ? <Button kind="ghost" onClick={() => save(true)} disabled={busy}>Rimuovi: eredita</Button> : null}<div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} disabled={!Object.keys(v).length} onClick={() => save(false)}>Salva</Button></>}>
+  return <Modal wide title={`${ui.title} — ${label}`} onClose={close} footer={<>{cur ? <Button kind="ghost" onClick={() => save(true)} disabled={busy}>Rimuovi: eredita</Button> : null}<div className="grow" /><Button onClick={close}>Annulla</Button><Button kind="primary" busy={busy} disabled={!Object.keys(v).length} onClick={() => save(false)}>Salva</Button></>}>
     <div className="stack"><ui.Form value={v} set={set} view={view} />{err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
 }
 
@@ -107,9 +109,9 @@ export function CheckList({ checks }: { checks: any[] }) {
 }
 
 function PreflightModal({ cluster, onClose }: { cluster: SCluster; onClose: () => void }) {
-  const pre = useOpRunner(cluster.id); const ins = useOpRunner(cluster.id, () => pre.run('ephemeral_preflight', {}));
-  const [mode, setMode] = useState<'private' | 'system'>('private'); const [ask, setAsk] = useState(false);
-  useEffect(() => { pre.run('ephemeral_preflight', {}); }, []);
+  const pre = useOpRunner(cluster.id, undefined, `eph:${cluster.id}:pre`); const ins = useOpRunner(cluster.id, () => pre.run('ephemeral_preflight', {}), `eph:${cluster.id}:ins`);
+  const [mode, setMode] = useDraft<'private' | 'system'>(`eph:${cluster.id}:mode`, 'private'); const [ask, setAsk] = useState(false);
+  useEffect(() => { if (!ins.busy) pre.run('ephemeral_preflight', {}); }, []);   // a fresh check each time it is opened (not while an installation runs)
   const r = pre.op?.status === 'succeeded' ? pre.op.result : null;
   const plan = r?.install_plan; const modes = plan?.modes || {};
   useEffect(() => { if (plan?.recommended) setMode(plan.recommended); }, [plan?.recommended]);
@@ -166,9 +168,10 @@ function Writers({ id }: { id: any }) {
 /** The location the backups and WAL were in before the last change: still read by restores until migrated; migrate in the background or delete. */
 function PreviousLocation({ cluster, d }: { cluster: SCluster; d: any }) {
   const prev = d.previous || {}; const repo: any[] = prev.repo || []; const wal: any[] = prev.wal || [];
-  const plan = useOpRunner(cluster.id); const mig = useOpRunner(cluster.id, () => { revalidate(`/api/clusters/${encodeURIComponent(cluster.id)}/destination`); }); const drop = useOpRunner(cluster.id);
-  const [mb, setMb] = useState(''); const [ask, setAsk] = useState(false); const [askDrop, setAskDrop] = useState(false); const [abandon, setAbandon] = useState(false);
-  const [src0, setSrc0] = useState<any>(null);              // the location being worked on: the agent stops reporting it once migrated or deleted
+  const PL = `prevloc:${cluster.id}`;
+  const plan = useOpRunner(cluster.id, undefined, PL + ':plan'); const mig = useOpRunner(cluster.id, () => { revalidate(`/api/clusters/${encodeURIComponent(cluster.id)}/destination`); }, PL + ':mig'); const drop = useOpRunner(cluster.id, undefined, PL + ':drop');
+  const [mb, setMb] = useDraft(PL + ':mb', ''); const [ask, setAsk] = useState(false); const [askDrop, setAskDrop] = useState(false); const [abandon, setAbandon] = useState(false);
+  const [src0, setSrc0] = useDraft<any>(PL + ':src', null);              // the location being worked on: the agent stops reporting it once migrated or deleted
   const src = src0 || { ...(repo[0] ? { source_repo: repo[0].path } : {}), ...(wal[0] ? { source_wal: wal[0].path } : {}) };
   if (!repo.length && !wal.length && !mig.op && !drop.op) return null;
   const p = plan.op?.status === 'succeeded' ? plan.op.result : null;
@@ -214,7 +217,7 @@ function PreviousLocation({ cluster, d }: { cluster: SCluster; d: any }) {
 function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: () => void }) {
   const url = `/api/clusters/${encodeURIComponent(cluster.id)}/destination`;
   const q = useQuery<any>(url, { interval: 3000 });
-  const [busy, setBusy] = useState(''); const [err, setErr] = useState<string | null>(null); const [bench, setBench] = useState(false); const [ops, setOps] = useState<any[]>([]); const [done, setDone] = useState<any>(null);
+  const [busy, setBusy] = useState(''); const [err, setErr] = useState<string | null>(null); const [bench, setBench] = useDraft(`dest:${cluster.id}:bench`, false); const [ops, setOps] = useDraft<any[]>(`dest:${cluster.id}:ops`, []); const [done, setDone] = useDraft<any>(`dest:${cluster.id}:done`, null);
   const lastD = useRef<any>(null);
   if (q.data) lastD.current = q.data;
   const d = q.data || lastD.current;            // a reload must not unmount the panels below (a running migration and its outcome live in them)
@@ -253,7 +256,7 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
 /* ---------------------------------------------------------------------------------------------------------------------- page */
 function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
   const ui = KINDS[kind]; const q = useQuery<SView>(`/api/scoped/${kind}`, { interval: 8000 });
-  const [dlg, setDlg] = useState<{ scope: Scope; k: string; label: string } | null>(null); const [pre, setPre] = useState<SCluster | null>(null);
+  const [dlg, setDlg] = useDraft<{ scope: Scope; k: string; label: string } | null>(`infra:${kind}:dlg`, null); const [pre, setPre] = useDraft<SCluster | null>(`infra:${kind}:pre`, null);
   const v = q.data;
   const eff = (c: SCluster) => c.effective.value;
   const used = useMemo(() => new Set(Object.values(v?.assignments || {}).flatMap(a => Object.keys(a))), [v]);

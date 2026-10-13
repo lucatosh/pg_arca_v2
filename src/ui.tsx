@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useToasts } from './hooks';
+import { createPortal } from 'react-dom';
+import { dismissToast, useDraft, useToasts } from './hooks';
 
 /* ---------- icons: 24px stroke set, inline (no dependency) ---------- */
 const P: Record<string, string> = {
@@ -55,23 +56,38 @@ export const Skeleton = ({ h = 14, w = '100%' }: { h?: number; w?: number | stri
 
 export function Modal({ title, onClose, children, footer, wide, locked }: { title: React.ReactNode; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; wide?: boolean; locked?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  // something was typed or chosen: a click outside or Esc must not throw it away (closing stays one explicit click away)
+  const dirty = useRef(false); const [ask, setAsk] = useState(false);
+  const tryClose = () => { if (dirty.current) setAsk(true); else onClose(); };
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLElement>('input,select,textarea,button.primary')?.focus();
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && !locked) onClose(); };
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && !locked) { e.stopPropagation(); if (dirty.current) setAsk(a => !a); else onClose(); } };
     document.addEventListener('keydown', k);
     return () => { document.removeEventListener('keydown', k); prev?.focus?.(); };
   }, [onClose, locked]);
-  return <div className="modal-bg" onMouseDown={e => { if (e.target === e.currentTarget && !locked) onClose(); }}>
-    <div className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined} ref={ref}>
+  // rendered on <body>: wherever the dialog is opened from, the backdrop covers the whole window (sidebar included) and nothing behind it is clickable
+  return createPortal(<div className="modal-bg" onMouseDown={e => { if (e.target === e.currentTarget && !locked) tryClose(); }}>
+    <div className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined} ref={ref}
+      onKeyDown={e => { const t = e.target as HTMLInputElement; if (e.key !== 'Enter' || e.shiftKey || t.tagName !== 'INPUT' || ['checkbox', 'radio', 'button'].includes(t.type)) return;
+        const b = ref.current?.querySelectorAll<HTMLButtonElement>('.ft .btn.primary:not(:disabled), .ft .btn.danger:not(:disabled)'); if (b && b.length === 1) { e.preventDefault(); b[0].click(); } }}
+      onInput={e => { if ((e.target as HTMLElement).closest?.('[data-nodirty]') == null) dirty.current = true; }} onChange={e => { if ((e.target as HTMLElement).closest?.('[data-nodirty]') == null) dirty.current = true; }}>
       <div className="hd"><h2>{title}</h2>{!locked && <Button kind="ghost" className="icon" onClick={onClose} aria-label="Chiudi"><Icon n="x" /></Button>}</div>
+      {ask ? <div className="modal-ask" role="alert"><Icon n="alert" s={16} /><span className="grow">Hai inserito dei dati in questa finestra. Chiuderla?</span><Button sm onClick={() => setAsk(false)}>Continua a modificare</Button><Button sm kind="danger" onClick={onClose}>Chiudi</Button></div> : null}
       <div className="bd">{children}</div>{footer ? <div className="ft">{footer}</div> : null}
-    </div></div>;
+    </div>
+  </div>, document.body);
+}
+/** A <details> that stays open (or closed) when the page is left and shown again. */
+export function Details({ k, summary, children, open: init = false }: { k: string; summary: React.ReactNode; children: React.ReactNode; open?: boolean }) {
+  const [open, setOpen] = useDraft('details:' + k, init);
+  // the state drives the element (not the other way round): a re-render racing the native toggle can never close it again
+  return <details open={open}><summary className="small" style={{ cursor: 'pointer' }} onClick={e => { e.preventDefault(); setOpen(o => !o); }}>{summary}</summary>{open ? <div style={{ marginTop: 8 }}>{children}</div> : null}</details>;
 }
 export function Confirm({ title, children, confirmLabel, danger, requireText, onConfirm, onClose, busy }: { title: string; children: React.ReactNode; confirmLabel: string; danger?: boolean; requireText?: string; onConfirm: () => void; onClose: () => void; busy?: boolean }) {
   const [t, setT] = useState('');
   return <Modal title={title} onClose={onClose} footer={<><Button onClick={onClose}>Annulla</Button><Button kind={danger ? 'danger' : 'primary'} busy={busy} disabled={!!requireText && t !== requireText} onClick={onConfirm}>{confirmLabel}</Button></>}>
-    <div className="stack">{children}{requireText ? <Field label={`Per confermare scrivi ${requireText}`}><input className="input" value={t} onChange={e => setT(e.target.value)} autoFocus /></Field> : null}</div>
+    <div className="stack">{children}{requireText ? <div data-nodirty><Field label={`Per confermare scrivi ${requireText}`}><input className="input" value={t} onChange={e => setT(e.target.value)} autoFocus /></Field></div> : null}</div>
   </Modal>;
 }
 export function Tabs<T extends string>({ value, onChange, items }: { value: T; onChange: (v: T) => void; items: { id: T; label: string; icon?: string; preview?: boolean; badge?: React.ReactNode }[] }) {
@@ -79,7 +95,7 @@ export function Tabs<T extends string>({ value, onChange, items }: { value: T; o
 }
 export function Toasts() {
   const ts = useToasts();
-  return <div className="toasts" aria-live="polite">{ts.map(t => <div key={t.id} className={`toast ${t.kind === 'info' ? '' : t.kind}`}><Icon n={t.kind === 'bad' ? 'alert' : t.kind === 'ok' ? 'check' : 'info'} />{t.text}</div>)}</div>;
+  return <div className="toasts" aria-live="polite">{ts.map(t => <div key={t.id} className={`toast ${t.kind === 'info' ? '' : t.kind}`} onClick={() => dismissToast(t.id)} title="Clic per chiudere"><Icon n={t.kind === 'bad' ? 'alert' : t.kind === 'ok' ? 'check' : 'info'} />{t.text}</div>)}</div>;
 }
 export function CopyBlock({ text }: { text: string }) {
   const [ok, setOk] = useState(false);

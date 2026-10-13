@@ -155,7 +155,7 @@ table.t td.num, table.t th.num { text-align: right; }
 .modal { background: var(--surface); border-radius: var(--r-lg); border: 1px solid var(--line); box-shadow: var(--sh-2); width: 100%; max-width: 640px; }
 .modal.wide { max-width: 860px; } .modal > .hd { padding: 16px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; } .modal > .hd h2 { flex: 1; }
 .modal > .bd { padding: 22px; } .modal > .ft { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; gap: 10px; justify-content: flex-end; align-items: center; }
-.toasts { position: fixed; right: 18px; top: 68px; display: flex; flex-direction: column; gap: 8px; z-index: 95; max-width: 380px; }
+.toasts { position: fixed; right: 20px; bottom: 76px; display: flex; flex-direction: column; gap: 8px; z-index: 95; max-width: 380px; }
 .toast { background: var(--ink); color: var(--bg); padding: 11px 15px; border-radius: 10px; box-shadow: var(--sh-2); display: flex; gap: 10px; align-items: flex-start; animation: toastin .18s ease-out; }
 @keyframes toastin { from { transform: translateY(-6px); opacity: 0; } }
 .toast.bad { background: var(--bad); color: #fff; } .toast.ok { background: var(--ok); color: #fff; }
@@ -436,3 +436,8 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .recentrow { display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px 12px; border: 0; border-top: 1px solid var(--line); background: var(--surface); text-align: left; cursor: pointer; font: inherit; color: inherit; }
 .recentrow:hover, .recentrow:focus-visible { background: var(--accent-soft); }
 @media (max-width: 640px) { .recentrow { flex-wrap: wrap; } }
+.modal-ask { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 20px; padding: 10px 12px; border: 1px solid var(--warn, #d9a441); border-radius: var(--r); background: var(--warn-soft, #fff6e0); font-size: 13px; }
+.stale { opacity: .6; transition: opacity .15s; }
+
+.toast { cursor: pointer; } /* toasts sit above the activity dock, never over the page's own buttons; a click dismisses one */
+@media (max-width: 520px) { .toasts { right: 12px; left: 12px; max-width: none; bottom: 70px; } }

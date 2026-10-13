@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Card } from '../ui';
+import { useDraft } from '../hooks';
 
 const SEV: Record<string, number> = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3, FATAL: 4 };
 const KEEP = 600;       // entries held in memory
@@ -15,7 +16,7 @@ const Line = React.memo(function Line({ l }: { l: any }) {
  */
 export function LogsTab({ c }: { c: any }) {
   const [lines, setLines] = useState<any[]>([]); const [state, setState] = useState<'connecting' | 'live' | 'closed'>('connecting');
-  const [level, setLevel] = useState('INFO'); const [search, setSearch] = useState(''); const [paused, setPaused] = useState(false); const [dropped, setDropped] = useState(0);
+  const [level, setLevel] = useDraft(`logs:${c.id}:level`, 'INFO'); const [search, setSearch] = useDraft(`logs:${c.id}:search`, ''); const [paused, setPaused] = useState(false); const [dropped, setDropped] = useState(0);
   const box = useRef<HTMLDivElement>(null); const stick = useRef(true); const wsRef = useRef<WebSocket | null>(null);
   const live = useRef({ paused: false, level: 'INFO' }); live.current = { paused, level };
   const send = (m: any) => { try { if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(m)); } catch { /* reconnecting */ } };

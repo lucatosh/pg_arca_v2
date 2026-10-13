@@ -1,7 +1,7 @@
 import { RecoveryPlacement } from './Placement';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Skeleton, bytes, dt, num, ago } from '../ui';
-import { Op, useOpRunner, useQuery } from '../hooks';
+import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago } from '../ui';
+import { Op, useDraft, useOpRunner, useQuery } from '../hooks';
 import { OpPanel, Result } from './shared';
 import { itCheck, itFix } from '../i18n';
 
@@ -47,15 +47,19 @@ export function RestoreTab({ c }: { c: any }) {
 }
 
 function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
-  const [step, setStep] = useState(0);
-  const [intent, setIntent] = useState<Intent | null>(null);
-  const [scope, setScope] = useState<Scope>('database'); const [objMode, setObjMode] = useState<'table' | 'schema'>('table');
-  const [db, setDb] = useState(''); const [objs, setObjs] = useState<string[]>([]); const obj = objs[0] || ''; const [search, setSearch] = useState('');
-  const [tgt, setTgt] = useState<Target | null>(null);
-  const [dest, setDest] = useState(''); const [newName, setNewName] = useState(''); const [action, setAction] = useState<'promote' | 'pause'>('promote'); const [delta, setDelta] = useState(false); const [keepArch, setKeepArch] = useState(false); const [mkRoles, setMkRoles] = useState(true);
+  // everything chosen here survives leaving the page (another tab, a setting opened from the check step, Back): see useDraft
+  const K = `restore:${c.id}`;
+  const [step, setStep] = useDraft(K + ':step', 0);
+  const [intent, setIntent] = useDraft<Intent | null>(K + ':intent', null);
+  const [scope, setScope] = useDraft<Scope>(K + ':scope', 'database'); const [objMode, setObjMode] = useDraft<'table' | 'schema'>(K + ':objMode', 'table');
+  const [db, setDb] = useDraft(K + ':db', ''); const [objs, setObjs] = useDraft<string[]>(K + ':objs', []); const obj = objs[0] || ''; const [search, setSearch] = useDraft(K + ':search', '');
+  const [tgt, setTgt] = useDraft<Target | null>(K + ':tgt', null);
+  const [dest, setDest] = useDraft(K + ':dest', ''); const [newName, setNewName] = useDraft(K + ':newName', ''); const [action, setAction] = useDraft<'promote' | 'pause'>(K + ':action', 'promote'); const [delta, setDelta] = useDraft(K + ':delta', false); const [keepArch, setKeepArch] = useDraft(K + ':keepArch', false); const [mkRoles, setMkRoles] = useDraft(K + ':mkRoles', true);
   const [ask, setAsk] = useState(false);
-  const prom = useOpRunner(c.id); const prev = useOpRunner(c.id); const [pmode, setPmode] = useState<PMode | null>(null); const [pdrop, setPdrop] = useState(true); const [askPromote, setAskPromote] = useState(false); const [askOrphans, setAskOrphans] = useState(false); const lastPromote = useRef<any>(null); const [pschema, setPschema] = useState('');
-  const dbsR = useOpRunner(c.id); const dropsR = useOpRunner(c.id); const liveR = useOpRunner(c.id); const tdropR = useOpRunner(c.id); const [fxHours, setFxHours] = useState(72); const objR = useOpRunner(c.id); const plan = useOpRunner(c.id); const exec = useOpRunner(c.id); const fx = useOpRunner(c.id); const dml = useOpRunner(c.id); const [dmlMin, setDmlMin] = useState(100);
+  const prom = useOpRunner(c.id, undefined, K + ':prom'); const prev = useOpRunner(c.id, undefined, K + ':prev'); const [pmode, setPmode] = useDraft<PMode | null>(K + ':pmode', null); const [pdrop, setPdrop] = useDraft(K + ':pdrop', true); const [askPromote, setAskPromote] = useState(false); const [askOrphans, setAskOrphans] = useState(false);
+  const [lastPromoteV, setLastPromote] = useDraft<any>(K + ':lastPromote', null); const lastPromote = { current: lastPromoteV }; const [pschema, setPschema] = useDraft(K + ':pschema', '');
+  const dbsR = useOpRunner(c.id, undefined, K + ':dbs'); const dropsR = useOpRunner(c.id, undefined, K + ':drops'); const liveR = useOpRunner(c.id, undefined, K + ':live'); const tdropR = useOpRunner(c.id, undefined, K + ':tdrop'); const [fxHours, setFxHours] = useDraft(K + ':fxHours', 72);
+  const objR = useOpRunner(c.id, undefined, K + ':obj'); const plan = useOpRunner(c.id, undefined, K + ':plan'); const exec = useOpRunner(c.id, undefined, K + ':exec'); const fx = useOpRunner(c.id, undefined, K + ':fx'); const dml = useOpRunner(c.id, undefined, K + ':dml'); const [dmlMin, setDmlMin] = useDraft(K + ':dmlMin', 100);
 
   const from = useMemo(() => Math.min(...sets.map(s => Date.parse(s.stop_time!))), [sets]);
   const to = Math.max(Date.now(), d.archiver?.last_archived_time ? Date.parse(d.archiver.last_archived_time) : 0);
@@ -63,8 +67,9 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
   // catalogue pickers: run once per scope entry, through the agent (the catalogue lives next to the repository)
   useEffect(() => { if ((scope === 'database' || scope === 'object') && intent && !dbsR.op && !dbsR.busy) dbsR.run('backup_catalog', { set: 'all' }); }, [scope, intent]);
-  useEffect(() => { if (scope === 'object' && db && !dbs.find(x => x.name === db)?.late) { const t = setTimeout(() => objR.run('backup_catalog', { set: dbs.find(x => x.name === db)?.last_set || 'latest', database: db, search, limit: 400 }), search ? 350 : 0); return () => clearTimeout(t); } }, [scope, db, search]);
-  useEffect(() => { if (db) setNewName(restoredName(db)); }, [db]);
+  useEffect(() => { if (scope === 'object' && db && !dbs.find(x => x.name === db)?.late && !objR.busy && !(objR.op && objR.op.params?.database === db && (objR.op.params?.search || '') === search && objR.op.status === 'succeeded')) { const t = setTimeout(() => objR.run('backup_catalog', { set: dbs.find(x => x.name === db)?.last_set || 'latest', database: db, search, limit: 400 }), search ? 350 : 0); return () => clearTimeout(t); } }, [scope, db, search, intent, !objR.op && !objR.busy]);
+  const dbSeen = useRef(db);
+  useEffect(() => { if (db && (db !== dbSeen.current || !newName)) setNewName(restoredName(db)); dbSeen.current = db; }, [db]);
   // "a table is gone": look for what happened right away (DROP / TRUNCATE, cached and in its own queue: it never slows a backup or a restore)
   useEffect(() => { if (intent === 'table' && !fx.op && !fx.busy) fx.run('wal_forensics', { mode: 'events', hours: fxHours, limit: 30 }); }, [intent]);
   // "wrong rows": once the table is known, look for the mass DELETE / UPDATE
@@ -89,7 +94,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     dropsR.run('wal_forensics', { background: true, mode: 'databases', since_iso: new Date(since).toISOString(), limit: 100, budget_sec: 300 });
   }, [droppedDbs.length]);
   const selDb = dbs.find(x => x.name === db); const selDropped = !!selDb && droppedDbs.some(x => x.name === db);
-  useEffect(() => { if (scope === 'object' && db && live?.has(db)) liveR.run('list_objects', { database: db, background: true }); }, [scope, db]);
+  useEffect(() => { if (scope === 'object' && db && live?.has(db) && (!liveR.op || liveR.op.params?.database !== db)) liveR.run('list_objects', { database: db, background: true }); }, [scope, db, intent, !liveR.op]);
   const objLive = useMemo(() => {
     if (!db || selDropped) return db && selDropped ? { tables: new Set<string>(), schemas: new Set<string>(), all: true } : null;
     const r = liveR.op?.status === 'succeeded' ? liveR.op.result : null; if (!r) return null;
@@ -128,6 +133,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const okName = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName);
   const okWhere = scope === 'instance' ? dest.startsWith('/') : scope === 'database' ? okName : true;
   const okWhen = !!tgt && (tgt.mode !== 'time' || (tgt.ms >= from && tgt.ms <= to + 60000));
+  const lastPlan = useRef<any>(null); if (plan.op?.status === 'succeeded') lastPlan.current = plan.op.result; else if (!plan.op && !plan.busy) lastPlan.current = null;
+  const pres = plan.op?.status === 'succeeded' ? plan.op.result : plan.busy ? lastPlan.current : null;
   const blocked = plan.op?.status === 'succeeded' && (!!plan.op.result?.missing_wal?.length || plan.op.result?.preflight?.ok === false);
   const baseSet = useMemo(() => {
     const t = tgt?.mode === 'time' ? tgt.ms : Infinity; const ok = sets.filter(s => Date.parse(s.stop_time!) <= t);
@@ -142,7 +149,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     if (i === 'cluster') { setScope('instance'); setStep(2); return; }
     setScope(i === 'database' ? 'database' : 'object'); setObjMode('table'); setStep(1);
   };
-  const restart = () => { exec.reset(); plan.reset(); prom.reset(); prev.reset(); dml.reset(); setObjs([]); setTgt(null); setIntent(null); setPmode(null); setStep(0); };
+  const restart = () => { exec.reset(); plan.reset(); prom.reset(); prev.reset(); dml.reset(); fx.reset(); objR.reset(); liveR.reset(); setObjs([]); setTgt(null); setIntent(null); setPmode(null); setLastPromote(null); setSearch(''); setDest(''); setStep(0); };
   // a quick pick from what the WAL says went wrong recently: selects the table AND the point just before
   const pickEvent = (e: any) => {
     const names: string[] = (e.names || []).filter((n: string) => splitId(n).length === 3); if (!names.length) return;
@@ -200,12 +207,12 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
           </div> : <div className="small muted">Scegli data e ora: puoi tornare a qualsiasi istante dal {fmtWhen(from)} a adesso.</div>}</div></label>
       </div>
       {selDb && !selDb.late && selDb.first_stop && tgt?.mode === 'time' && tgt.ms < Date.parse(selDb.first_stop) ? <Banner kind="warn" title={`${db} compare nei backup solo dal ${fmtWhen(Date.parse(selDb.first_stop))}`}>A questo istante potrebbe non esistere ancora: in quel caso il ripristino si ferma e lo dice.</Banner> : null}
-      <details><summary className="small" style={{ cursor: 'pointer' }}>Linea temporale dei backup e ricerca avanzata nei WAL</summary>
+      <Details k={`${K}:when-adv`} summary="Linea temporale dei backup e ricerca avanzata nei WAL">
         <div className="stack" style={{ marginTop: 10 }}>
           <RecoveryTimeline sets={sets} from={from} to={to} value={tgt?.mode === 'time' ? tgt.ms : null} onChange={ms => setTgt(ms == null ? { mode: 'latest' } : { mode: 'time', ms })} events={events} broken={d.wal?.continuous === false} />
           <div className="small muted">Le tacche sono i backup, l’area colorata è l’intervallo recuperabile. Backup di partenza per la scelta attuale: {baseSet ? <span className="mono">{baseSet.id}</span> : <span style={{ color: 'var(--bad)' }}>nessuno prima di questo istante</span>}</div>
           <ForensicsTools fx={fx} dml={dml} fxHours={fxHours} setFxHours={setFxHours} dmlMin={dmlMin} setDmlMin={setDmlMin} onPick={t => setTgt(t)} />
-        </div></details>
+        </div></Details>
       <div className="row"><Button onClick={() => setStep(intent === 'cluster' ? 0 : 1)}>Indietro</Button><div className="grow" /><Button kind="primary" disabled={!okWhen || (!baseSet && tgt?.mode === 'time')} onClick={goCheck}>Avanti</Button></div></div></Card>}
 
     {step === 3 && <div className="stack-l">
@@ -217,21 +224,21 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
             : intent === 'rows' ? <><li>La tabella viene ricostruita com’era in un database di quarantena separato.</li><li>Confronti riga per riga la versione recuperata con quella di adesso.</li><li>Riporti solo le righe che scegli; prima viene salvata una copia di sicurezza delle righe toccate.</li></>
             : <><li>{objs.length === 1 ? 'Quanto scelto viene ricostruito' : 'Le tabelle scelte vengono ricostruite'}, con ciò da cui dipendono, in un database di quarantena separato.</li><li>Nessuna tabella attuale viene modificata in questa fase.</li><li>Poi la rimetti al suo posto con un clic{goneNow ? '' : ' (quella attuale resta salvata con un altro nome)'}.</li></>}</ol>
         </div>
-        {scope === 'database' ? <Field label="Nome del nuovo database" hint="Non sovrascrive mai un database esistente." error={newName && !okName ? 'Solo lettere, cifre e _ (max 63 caratteri), senza spazi.' : null}><div className="row gap-s"><input className="input" value={newName} onChange={e => setNewName(e.target.value)} onBlur={check} /><Button sm icon="refresh" onClick={check}>Ricontrolla</Button></div></Field> : null}
+        {scope === 'database' ? <Field label="Nome del nuovo database" hint="Non sovrascrive mai un database esistente." error={newName && !okName ? 'Solo lettere, cifre e _ (max 63 caratteri), senza spazi.' : null}><div className="row gap-s"><input className="input" value={newName} onChange={e => setNewName(e.target.value)} onBlur={check} /><Button sm icon="refresh" busy={plan.busy} onClick={check}>Ricontrolla</Button></div></Field> : null}
         {scope === 'instance' ? <>
-          <Field label="Cartella di destinazione sul server" hint="Percorso assoluto, vuoto o inesistente. La cartella dati in uso e quelle di sistema sono rifiutate." error={dest && !dest.startsWith('/') ? 'Deve iniziare con /' : null}><div className="row gap-s"><input className="input mono" value={dest} onChange={e => setDest(e.target.value)} placeholder="/var/lib/postgresql/ripristino" /><Button sm icon="search" disabled={!dest.startsWith('/')} onClick={check}>Verifica</Button></div></Field>
-          <details><summary className="small" style={{ cursor: 'pointer' }}>Opzioni avanzate</summary><div className="stack" style={{ marginTop: 8 }}>
+          <Field label="Cartella di destinazione sul server" hint="Percorso assoluto, vuoto o inesistente. La cartella dati in uso e quelle di sistema sono rifiutate." error={dest && !dest.startsWith('/') ? 'Deve iniziare con /' : null}><div className="row gap-s"><input className="input mono" value={dest} onChange={e => setDest(e.target.value)} placeholder="/var/lib/postgresql/ripristino" /><Button sm icon="search" busy={plan.busy} disabled={!dest.startsWith('/')} onClick={check}>Verifica</Button></div></Field>
+          <Details k={`${K}:inst-adv`} summary="Opzioni avanzate"><div className="stack" style={{ marginTop: 8 }}>
             <Field label="Al termine del recupero"><div className="seg"><button aria-pressed={action === 'promote'} onClick={() => setAction('promote')}>Diventa un’istanza normale</button><button aria-pressed={action === 'pause'} onClick={() => setAction('pause')}>Resta in pausa per controllare</button></div></Field>
             <label className="check"><input type="checkbox" checked={delta} onChange={e => setDelta(e.target.checked)} />Ripristino differenziale su una cartella già ripristinata (copia solo ciò che differisce)</label>
             <label className="check"><input type="checkbox" checked={keepArch} onChange={e => setKeepArch(e.target.checked)} />Questa copia sostituirà il server originale: lascia attiva l’archiviazione WAL</label>
-            <p className="small muted">{keepArch ? 'Avviata, la copia archivierà nello stesso archivio WAL della produzione: fallo solo se il server originale non tornerà.' : 'Di norma la copia parte con l’archiviazione WAL spenta, senza standby da attendere, senza seguire un primario, senza sottoscrizioni di replica logica attive e senza librerie che lavorano da sole su altri server (pg_cron…): puoi avviarla accanto alla produzione senza toccarla.'}</p></div></details></> : null}
+            <p className="small muted">{keepArch ? 'Avviata, la copia archivierà nello stesso archivio WAL della produzione: fallo solo se il server originale non tornerà.' : 'Di norma la copia parte con l’archiviazione WAL spenta, senza standby da attendere, senza seguire un primario, senza sottoscrizioni di replica logica attive e senza librerie che lavorano da sole su altri server (pg_cron…): puoi avviarla accanto alla produzione senza toccarla.'}</p></div></Details></> : null}
         {scope === 'instance' && !dest.startsWith('/') ? <p className="small muted">Indica la cartella per far partire i controlli.</p>
-          : plan.op?.status === 'succeeded' ? <Verdict p={plan.op.result} /> : <OpPanel op={plan.op} error={plan.error} label="Controlli prima di partire" />}
-        {scope === 'database' && plan.op?.status === 'succeeded' && (plan.op.result?.missing_roles || []).length ? <div>
-          <label className="check"><input type="checkbox" checked={mkRoles} onChange={e => setMkRoles(e.target.checked)} />Crea i ruoli mancanti ({(plan.op.result.missing_roles as string[]).slice(0, 6).join(', ')}{plan.op.result.missing_roles.length > 6 ? '…' : ''}) come segnaposto, per tenere proprietari e permessi</label>
+          : pres && (plan.op?.status === 'succeeded' || plan.busy) ? <div className={plan.busy ? 'stale' : ''} aria-busy={plan.busy} title={plan.busy ? 'Ricontrollo in corso…' : undefined}><Verdict p={pres} /></div> : <OpPanel op={plan.op} error={plan.error} label="Controlli prima di partire" />}
+        {scope === 'database' && pres && (pres.missing_roles || []).length ? <div>
+          <label className="check"><input type="checkbox" checked={mkRoles} onChange={e => setMkRoles(e.target.checked)} />Crea i ruoli mancanti ({(pres.missing_roles as string[]).slice(0, 6).join(', ')}{pres.missing_roles.length > 6 ? '…' : ''}) come segnaposto, per tenere proprietari e permessi</label>
           <p className="small muted" style={{ marginTop: -6 }}>{mkRoles ? 'I ruoli vengono creati senza accesso (NOLOGIN), senza password e senza appartenenze ad altri ruoli: un account eliminato non torna mai attivo, i suoi oggetti tengono solo proprietario e permessi.' : 'Senza questi ruoli, gli oggetti del database ripristinato apparterranno all’utente dell’agent e perderanno i permessi concessi.'}</p></div> : null}
-        {plan.op?.status === 'succeeded' ? <details><summary className="small" style={{ cursor: 'pointer' }}>Dettagli tecnici (backup usati, spazio su disco, dove avviene il recupero)</summary><div className="stack" style={{ marginTop: 10 }}>
-          <PlanView p={plan.op.result} scope={scope} />{scope !== 'instance' ? <RecoveryPlacement clusterId={c.id} /> : null}</div></details> : null}
+        {pres ? <Details k={`${K}:tech`} summary="Dettagli tecnici (backup usati, spazio su disco, dove avviene il recupero)"><div className="stack" style={{ marginTop: 10 }}>
+          <PlanView p={pres} scope={scope} />{scope !== 'instance' ? <RecoveryPlacement clusterId={c.id} /> : null}</div></Details> : null}
         {plan.op?.status === 'failed' && scope === 'instance' && /PGA-RST-040/.test(String(plan.op.error || '')) && !exec.op ? <Banner kind="info" title="In quella cartella c’è un ripristino interrotto" actions={<Button sm icon="restore" onClick={() => { setStep(4); exec.run('restore_instance', { ...params().p, resume: true }); }}>Riprendilo</Button>}>Riprendendo, pg_arca completa la copia scrivendo solo ciò che manca o è diverso. Per ricominciare da zero svuota la cartella o scegline un’altra.</Banner> : null}
         <div className="row"><Button onClick={() => setStep(2)}>Indietro</Button><div className="grow" />{blocked ? <span className="small" style={{ color: 'var(--bad)' }}>Risolvi i punti in rosso per procedere</span> : null}
           <Button kind="primary" icon="restore" disabled={blocked || plan.op?.status !== 'succeeded' || !okWhere} onClick={() => setAsk(true)}>Avvia il ripristino</Button></div></div></Card>
@@ -247,10 +254,10 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         <pre className="out">{`ALTER DATABASE "${db}" RENAME TO "${db}_prima";\nALTER DATABASE "${exec.op!.result.result_database}" RENAME TO "${db}";`}</pre></div></details> : null}
       {doneOk && scope === 'object' && exec.op!.result.result_database ? (intent === 'rows' && objs.length === 1 && splitId(obj).length === 3 ? <>
         <RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} auto />
-        <details><summary className="small" style={{ cursor: 'pointer' }}>Oppure riporta l’intera tabella</summary>
-          <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode || 'as_new'} recommended="as_new" anyGone={goneNow} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} allowOrphans={lastPromote.current ? () => setAskOrphans(true) : undefined} schema={pschema} setSchema={v => { setPschema(v); prev.reset(); }} /></details></> : <>
+        <Details k={`${K}:whole`} summary="Oppure riporta l’intera tabella">
+          <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode || 'as_new'} recommended="as_new" anyGone={goneNow} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} allowOrphans={lastPromote.current ? () => setAskOrphans(true) : undefined} schema={pschema} setSchema={v => { setPschema(v); prev.reset(); }} /></Details></> : <>
         <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode || recommendedMode(goneNow)} recommended={recommendedMode(goneNow)} anyGone={goneNow} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} allowOrphans={lastPromote.current ? () => setAskOrphans(true) : undefined} schema={pschema} setSchema={v => { setPschema(v); prev.reset(); }} />
-        {objs.length === 1 && splitId(obj).length === 3 && goneNow !== true ? <details><summary className="small" style={{ cursor: 'pointer' }}>Recupera solo alcune righe</summary><RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /></details> : null}</>) : null}
+        {objs.length === 1 && splitId(obj).length === 3 && goneNow !== true ? <Details k={`${K}:somerows`} summary="Recupera solo alcune righe"><RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /></Details> : null}</>) : null}
       <Result op={exec.op} />
       {scope === 'instance' && exec.op && ['failed', 'cancelled'].includes(exec.op.status) && /PGA-RST-040|cancel|interrott|No space|ENOSPC|PGA-RST-03/i.test(String(exec.op.error || '')) ? <Banner kind="info" title="Ripristino interrotto" actions={<Button sm icon="restore" onClick={() => exec.run('restore_instance', { ...(exec.op!.params || params().p), resume: true })}>Riprendi da dove si è fermato</Button>}>
         La copia parziale in <code>{(exec.op.params || {}).destination || dest}</code> è riconosciuta: riprendendo, pg_arca scrive solo ciò che manca o è diverso (utile dopo un annullamento, un disco pieno liberato o un riavvio dell’agent).</Banner> : null}
@@ -259,7 +266,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
     {askOrphans ? <Confirm title="Procedere lasciando righe orfane?" danger requireText="ORFANE" confirmLabel="Procedi" onClose={() => setAskOrphans(false)} onConfirm={() => { setAskOrphans(false); prom.run('restore_promote', { ...lastPromote.current, allow_orphans: true }); }}>
       <p>Le tabelle vengono sostituite comunque. Le chiavi esterne coinvolte restano <strong>non valide</strong>: le righe orfane rimangono finché non le sistemi a mano, e l’applicazione potrebbe trovarle.</p></Confirm> : null}
-    {askPromote ? (() => { const m = pmode || (intent === 'rows' ? 'as_new' : recommendedMode(goneNow)); return <Confirm title="Riportare nel database?" danger={m === 'replace'} requireText={m === 'replace' ? 'SOSTITUISCI' : undefined} confirmLabel="Riporta" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); lastPromote.current = { stage_db: exec.op!.result.result_database, object: obj, mode: m, drop_stage: pdrop, ...(m === 'replace' ? { confirm: 'SOSTITUISCI' } : {}), ...(m === 'as_new' && pschema ? { target_schema: pschema } : {}) }; prom.run('restore_promote', lastPromote.current); }}>
+    {askPromote ? (() => { const m = pmode || (intent === 'rows' ? 'as_new' : recommendedMode(goneNow)); return <Confirm title="Riportare nel database?" danger={m === 'replace'} requireText={m === 'replace' ? 'SOSTITUISCI' : undefined} confirmLabel="Riporta" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); setLastPromote({ stage_db: exec.op!.result.result_database, object: obj, mode: m, drop_stage: pdrop, ...(m === 'replace' ? { confirm: 'SOSTITUISCI' } : {}), ...(m === 'as_new' && pschema ? { target_schema: pschema } : {}) }); prom.run('restore_promote', { stage_db: exec.op!.result.result_database, object: obj, mode: m, drop_stage: pdrop, ...(m === 'replace' ? { confirm: 'SOSTITUISCI' } : {}), ...(m === 'as_new' && pschema ? { target_schema: pschema } : {}) }); }}>
       <p>{m === 'as_new' ? <>Le tabelle recuperate compaiono accanto alle originali con un nome che termina in <code>_pitr_&lt;data&gt;</code>. Nulla di esistente viene toccato.</> : m === 'missing_only' ? <>Tornano solo le tabelle che oggi non esistono, con il loro nome; quelle presenti restano com’è.</> : <>Le tabelle attuali vengono rinominate <code>_old_&lt;data&gt;</code> (i loro dati restano, puoi tornare indietro) e quelle recuperate prendono il loro posto in un’unica transazione. Chiavi esterne e viste vengono ricollegate.</>}</p>
       <p className="small muted">{pdrop ? 'Il database di quarantena viene eliminato a operazione riuscita.' : 'Il database di quarantena resta disponibile.'}</p></Confirm>; })() : null}
     {ask ? <Confirm title="Avviare il ripristino?" confirmLabel="Avvia" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); setStep(4); exec.run(x.type, x.p); }}>
@@ -481,9 +488,10 @@ function Promote({ stage, what, deps, warnings, mode, recommended, anyGone, setM
 const keyStr = (k: any[]) => JSON.stringify(k);
 const brief = (o: any) => { const t = JSON.stringify(o); return t.length > 140 ? t.slice(0, 140) + '…' : t; };
 function RowRecovery({ clusterId, stage, obj, auto }: { clusterId: string; stage: string; obj: string; auto?: boolean }) {
-  const diff = useOpRunner(clusterId); const apply = useOpRunner(clusterId);
+  const RK = `rows:${clusterId}:${stage}:${obj}`;
+  const diff = useOpRunner(clusterId, undefined, RK + ':diff'); const apply = useOpRunner(clusterId, undefined, RK + ':apply');
   useEffect(() => { if (auto && !diff.op && !diff.busy) diff.run('restore_diff', { stage_db: stage, object: obj, limit: 200 }); }, [auto, stage, obj]);
-  const [pick, setPick] = useState<Record<string, boolean>>({}); const [del, setDel] = useState<Record<string, boolean>>({}); const [ask, setAsk] = useState(false);
+  const [pick, setPick] = useDraft<Record<string, boolean>>(RK + ':pick', {}); const [del, setDel] = useDraft<Record<string, boolean>>(RK + ':del', {}); const [ask, setAsk] = useState(false);
   const d = diff.op?.status === 'succeeded' ? diff.op.result : null;
   const rest = Object.keys(pick).filter(k => pick[k]); const dels = Object.keys(del).filter(k => del[k]);
   const done = apply.op?.status === 'succeeded'; const r = apply.op?.result;

@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Empty, Field, Icon, Modal, Skeleton } from '../ui';
-import { revalidate, toast, useQuery } from '../hooks';
+import { revalidate, toast, useQuery, clearDrafts, useDraft } from '../hooks';
 import { go } from '../router';
 
 interface Policy { enabled: boolean; fullEveryHours: number; incrEveryHours: number; retentionFull: number; verifyEveryHours: number; verifyDeep: boolean; retryAfterMinutes: number }
@@ -46,8 +46,9 @@ function PolicyForm({ p, setP }: { p: Policy; setP: (p: Policy) => void }) {
 export function AssignDialog({ scope, k, label, env, view, onClose, onSaved }: { scope: 'global' | 'env' | 'folder' | 'cluster'; k: string; label: string; env?: string; view: PView; onClose: () => void; onSaved?: () => void }) {
   const cur = view.assignments[scope === 'global' ? 'global' : `${scope}:${k}`];
   const suggestedId = env ? view.suggested[env] : scope === 'env' ? view.suggested[k] : undefined;
-  const [mode, setMode] = useState<string>(!cur ? 'inherit' : cur.disabled ? 'off' : cur.templateId ? `t:${cur.templateId}` : 'custom');
-  const [pol, setPol] = useState<Policy>(cur?.policy || (view.templates.find(t => t.id === suggestedId)?.policy ?? BLANK));
+  const DK = `assign:${scope}:${k}`; const close = () => { clearDrafts(DK); onClose(); };
+  const [mode, setMode] = useDraft<string>(DK + ':mode', !cur ? 'inherit' : cur.disabled ? 'off' : cur.templateId ? `t:${cur.templateId}` : 'custom');
+  const [pol, setPol] = useDraft<Policy>(DK + ':pol', cur?.policy || (view.templates.find(t => t.id === suggestedId)?.policy ?? BLANK));
   const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
   const save = async () => {
     setBusy(true); setErr(null);
@@ -55,11 +56,11 @@ export function AssignDialog({ scope, k, label, env, view, onClose, onSaved }: {
       const body: any = { scope, key: k };
       if (mode === 'inherit') body.inherit = true; else if (mode === 'off') body.disabled = true; else if (mode === 'custom') body.policy = pol; else body.templateId = mode.slice(2);
       await api('PUT', '/api/policies/assignments', body);
-      revalidate('/api/policies'); onSaved?.(); toast('Strategia aggiornata', 'ok'); onClose();
+      revalidate('/api/policies'); onSaved?.(); toast('Strategia aggiornata', 'ok'); close();
     } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
   };
   const opt = (v: string, title: React.ReactNode, sub?: string) => <label key={v} className={`opt ${mode === v ? 'on' : ''}`}><input type="radio" name="asg" checked={mode === v} onChange={() => setMode(v)} /><div><div>{title}</div>{sub ? <div className="small muted">{sub}</div> : null}</div></label>;
-  return <Modal wide title={`Strategia di backup — ${label}`} onClose={onClose} footer={<><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} onClick={save}>Salva</Button></>}>
+  return <Modal wide title={`Strategia di backup — ${label}`} onClose={close} footer={<><Button onClick={close}>Annulla</Button><Button kind="primary" busy={busy} onClick={save}>Salva</Button></>}>
     <div className="stack">
       {scope !== 'global' ? opt('inherit', 'Eredita dal livello superiore', 'Segue la cartella, l’ambiente o il valore globale: cambia da sola se cambiano quelli.') : null}
       {view.templates.map(t => opt(`t:${t.id}`, <span className="row gap-s"><strong>{t.name}</strong>{t.id === suggestedId ? <Badge kind="accent">Consigliato</Badge> : null}{!t.builtin ? <Badge>Tuo</Badge> : null}</span>, summarize(t.policy)))}
@@ -71,7 +72,7 @@ export function AssignDialog({ scope, k, label, env, view, onClose, onSaved }: {
 
 /** Compact card for the Backup tab: what applies to this cluster and where it comes from. */
 export function StrategyCard({ c, policy, source, onSaved }: { c: any; policy: Policy | null; source?: Source; onSaved: () => void }) {
-  const q = useQuery<PView>('/api/policies'); const [open, setOpen] = useState(false);
+  const q = useQuery<PView>('/api/policies'); const [open, setOpen] = useDraft(`strategycard:${c.id}`, false);
   const sug = q.data?.templates.find(t => t.id === q.data?.suggested[c.environment]);
   return <Card title="Strategia di backup" actions={<Button sm icon="settings" onClick={() => setOpen(true)} disabled={!q.data}>Cambia</Button>}>
     <div className="stack">
@@ -85,8 +86,8 @@ export function StrategyCard({ c, policy, source, onSaved }: { c: any; policy: P
 
 export function StrategyPage() {
   const q = useQuery<PView>('/api/policies', { interval: 10000 });
-  const [dlg, setDlg] = useState<{ scope: 'global' | 'env' | 'folder' | 'cluster'; k: string; label: string; env?: string } | null>(null);
-  const [edit, setEdit] = useState<Tpl | 'new' | null>(null); const [folderEdit, setFolderEdit] = useState<string | null>(null);
+  const [dlg, setDlg] = useDraft<{ scope: 'global' | 'env' | 'folder' | 'cluster'; k: string; label: string; env?: string } | null>('strategy:dlg', null);
+  const [edit, setEdit] = useDraft<Tpl | 'new' | null>('strategy:edit', null); const [folderEdit, setFolderEdit] = useDraft<string | null>('strategy:folder', null);
   const v = q.data;
   const uncovered = useMemo(() => (v?.clusters || []).filter(c => !c.effective.policy && c.source !== 'direct'), [v]);
   if (!v) return <div className="stack"><Skeleton h={40} /><Skeleton h={220} /></div>;
@@ -130,22 +131,23 @@ export function StrategyPage() {
 }
 
 function FolderEdit({ c, folders, onDone }: { c: any; folders: string[]; onDone: () => void }) {
-  const [f, setF] = useState(c.folder || '');
+  const [f, setF] = useDraft(`folderedit:${c.id}`, c.folder || '');
   const save = async () => { try { await api('PATCH', `/api/clusters/${encodeURIComponent(c.id)}`, { folder: f }); revalidate('/api/policies'); revalidate('/api/clusters'); onDone(); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } };
   return <span className="row gap-s"><input className="input" style={{ width: 160 }} autoFocus list="folders" value={f} onChange={e => setF(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') onDone(); }} placeholder="es. banca/core" /><datalist id="folders">{folders.map(x => <option key={x} value={x} />)}</datalist>
     <Button sm kind="primary" onClick={save}>Salva</Button></span>;
 }
 
 function TemplateDialog({ t, onClose }: { t: Tpl | null; onClose: () => void }) {
-  const [name, setName] = useState(t?.name || ''); const [desc, setDesc] = useState(t?.description || ''); const [pol, setPol] = useState<Policy>(t?.policy || BLANK);
+  const DK = `tpl:${t?.id || 'new'}`; const close = () => { clearDrafts(DK); onClose(); };
+  const [name, setName] = useDraft(DK + ':name', t?.name || ''); const [desc, setDesc] = useDraft(DK + ':desc', t?.description || ''); const [pol, setPol] = useDraft<Policy>(DK + ':pol', t?.policy || BLANK);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
   const id = t?.id || name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
   const save = async () => {
     setBusy(true); setErr(null);
-    try { await api('PUT', `/api/policies/templates/${id}`, { name, description: desc, policy: pol }); revalidate('/api/policies'); toast('Modello salvato', 'ok'); onClose(); }
+    try { await api('PUT', `/api/policies/templates/${id}`, { name, description: desc, policy: pol }); revalidate('/api/policies'); toast('Modello salvato', 'ok'); close(); }
     catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
   };
-  return <Modal title={t?.id ? 'Modifica modello' : 'Nuovo modello'} onClose={onClose} footer={<><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} disabled={!name.trim() || id.length < 2} onClick={save}>Salva</Button></>}>
+  return <Modal title={t?.id ? 'Modifica modello' : 'Nuovo modello'} onClose={close} footer={<><Button onClick={close}>Annulla</Button><Button kind="primary" busy={busy} disabled={!name.trim() || id.length < 2} onClick={save}>Salva</Button></>}>
     <div className="stack"><Field label="Nome"><input className="input" value={name} onChange={e => setName(e.target.value)} maxLength={60} autoFocus /></Field>
       <Field label="Descrizione"><input className="input" value={desc} onChange={e => setDesc(e.target.value)} maxLength={300} /></Field>
       <PolicyForm p={pol} setP={setPol} />{err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;

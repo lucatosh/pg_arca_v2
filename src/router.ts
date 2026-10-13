@@ -17,7 +17,9 @@ export function parse(h: string): Route {
   return { page: 'clusters' };
 }
 export const href = (r: string) => `#/${r}`;
-export const go = (r: string) => { location.hash = `#/${r}`; };
+/** true when the last navigation came from the app itself (a button, the sidebar); false for the browser's Back/Forward and plain links */
+export const nav = { fromApp: false };
+export const go = (r: string) => { nav.fromApp = true; location.hash = `#/${r}`; };
 export function useRoute(): Route {
   const [r, setR] = useState(() => parse(location.hash));
   useEffect(() => { const f = () => setR(parse(location.hash)); window.addEventListener('hashchange', f); return () => window.removeEventListener('hashchange', f); }, []);

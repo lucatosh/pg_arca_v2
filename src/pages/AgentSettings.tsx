@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Badge, Banner, Button, Card, Field, Skeleton } from '../ui';
-import { revalidate, toast, useOpRunner, useRole } from '../hooks';
+import { revalidate, toast, useDraft, useOpRunner, useRole } from '../hooks';
 
 type Row = { key: string; label: string; kind: string; detected: string | number; override?: string | number | null; effective: string | number; source: string; check?: { ok: boolean; message?: string } | null };
 const HINT: Record<string, string> = {
@@ -14,10 +14,10 @@ const HINT: Record<string, string> = {
 
 /** Per-node "what was detected / what I want instead". Only the agent decides what is valid: it checks every value against the real filesystem. */
 export function AgentSettings({ clusterId, nodes }: { clusterId: string; nodes: any[] }) {
-  const [nodeId, setNodeId] = useState(nodes[0]?.id || '');
-  const [rows, setRows] = useState<Row[] | null>(null); const [draft, setDraft] = useState<Record<string, string>>({}); const [file, setFile] = useState('');
+  const [nodeId, setNodeId] = useDraft(`agentcfg:${clusterId}:node`, nodes[0]?.id || '');
+  const [rows, setRows] = useState<Row[] | null>(null); const [draft, setDraft] = useDraft<Record<string, string>>(`agentcfg:${clusterId}:${nodeId}:draft`, {}); const [file, setFile] = useState('');   // per node: a draft typed for one node is never saved on another
   const [err, setErr] = useState<string | null>(null); const [saving, setSaving] = useState(false);
-  const rd = useOpRunner(clusterId, op => { if (op.status === 'succeeded') { setRows(op.result.settings); setFile(op.result.file || ''); setDraft({}); } });
+  const rd = useOpRunner(clusterId, op => { if (op.status === 'succeeded') { setRows(op.result.settings); setFile(op.result.file || ''); } });
   const wr = useOpRunner(clusterId, op => {
     setSaving(false);
     if (op.status === 'succeeded') { toast('Impostazioni salvate: l’agent le usa già', 'ok'); setRows(op.result.settings); setDraft({}); setErr(null); revalidate('/api/nodes'); }
@@ -26,7 +26,7 @@ export function AgentSettings({ clusterId, nodes }: { clusterId: string; nodes: 
   const role = useRole(); const isAdmin = role === 'admin';
   useEffect(() => { if (!nodes.some(n => n.id === nodeId)) setNodeId(nodes[0]?.id || ''); }, [nodes, nodeId]);
   useEffect(() => { if (wr.error) { setSaving(false); setErr(wr.error); } }, [wr.error]);        // request refused before an operation existed (403, 409...)
-  useEffect(() => { setRows(null); setErr(null); setDraft({}); rd.reset(); if (nodeId) rd.run('agent_config_get', {}, { nodeId }); /* eslint-disable-next-line */ }, [nodeId]);   // a draft typed for one node must never be saved on another
+  useEffect(() => { setRows(null); setErr(null); rd.reset(); if (nodeId) rd.run('agent_config_get', {}, { nodeId }); /* eslint-disable-next-line */ }, [nodeId]);   // a draft typed for one node must never be saved on another
   if (!nodes.length) return null;
   const online = nodes.find(n => n.id === nodeId)?.online;
   const dirty = Object.keys(draft).length > 0; const canEdit = isAdmin && online !== false;

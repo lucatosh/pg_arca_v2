@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Field, Skeleton, ago } from '../ui';
-import { revalidate, toast, useQuery } from '../hooks';
+import { revalidate, toast, useQuery, useDraft } from '../hooks';
 
 const ENV_LABEL: Record<string, string> = { prod: 'Produzione', prep: 'Pre-produzione', int: 'Integrazione', dev: 'Sviluppo', test: 'Test' };
 const SEV_LABEL: Record<string, string> = { critical: 'Solo urgenti', warning: 'Urgenti e da controllare', info: 'Tutto' };
@@ -17,7 +17,7 @@ type Hook = { id?: string; name: string; url?: string; urlMasked?: string; forma
 
 function Notifications() {
   const q = useQuery<{ reminderHours: number; webhooks: Hook[] }>('/api/notifications');
-  const [list, setList] = useState<Hook[] | null>(null); const [rem, setRem] = useState(24); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
+  const [list, setList] = useDraft<Hook[] | null>('settings:notify:list', null, { secret: true }); const [rem, setRem] = useDraft('settings:notify:rem', 24); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);   // webhook URLs can carry tokens: memory only
   useEffect(() => { if (q.data && list === null) { setList(q.data.webhooks); setRem(q.data.reminderHours); } }, [q.data, list]);
   const set = (i: number, p: Partial<Hook>) => setList(l => l!.map((w, j) => (j === i ? { ...w, ...p } : w)));
   const save = async () => { setBusy(true); setErr(null); try {

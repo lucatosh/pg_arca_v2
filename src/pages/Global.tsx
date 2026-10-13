@@ -2,10 +2,10 @@ import React, { useMemo, useState } from 'react';
 import { api, uid } from '../api';
 import { Badge, Banner, Button, Card, Empty, Icon, Skeleton, dt, num } from '../ui';
 import { go } from '../router';
-import { toast, useQuery, revalidate } from '../hooks';
+import { toast, useQuery, revalidate, useDraft } from '../hooks';
 
 export function Audit({ clusters }: { clusters: any[] }) {
-  const [cl, setCl] = useState('all'); const [st, setSt] = useState('all'); const [s, setS] = useState('');
+  const [cl, setCl] = useDraft('audit:cl', 'all'); const [st, setSt] = useDraft('audit:st', 'all'); const [s, setS] = useDraft('audit:s', '');
   const q = useQuery<{ total: number; entries: any[] }>(`/api/audit/history?limit=200&clusterId=${cl}&status=${st}&search=${encodeURIComponent(s)}`, { interval: 10000 });
   return <>
     <div className="pagehead"><div className="grow"><h1>Registro attività</h1><p className="sub">Ogni azione eseguita dalla console, dagli agent e dallo scheduler.</p></div></div>
@@ -27,7 +27,7 @@ const SEV_LABEL: Record<string, string> = { critical: 'Critico', warning: 'Da si
 
 export function Discovery() {
   const q = useQuery<any>('/api/discovery/results', { interval: 10000 });
-  const [busy, setBusy] = useState(false); const [sev, setSev] = useState<string>('all');
+  const [busy, setBusy] = useState(false); const [sev, setSev] = useDraft<string>('discovery:sev', 'all');
   const scan = async () => { setBusy(true); try { const r = await api('POST', '/api/discovery/scan', {}, { key: uid('scan') }); toast(r.requested ? `Rilevamento richiesto a ${r.requested} nodi` : 'Nessun agent online', r.requested ? 'ok' : 'info'); setTimeout(() => revalidate('/api/discovery/results'), 4000); } catch (e: any) { toast(e.message, 'bad'); } finally { setBusy(false); } };
   const d = q.data;
   const findings: any[] = !d ? [] : d.nodes.flatMap((n: any) => (n.findings || []).map((f: any) => ({ ...f, node: n.nodeName, clusterId: n.clusterId, clusterName: n.clusterName }))).sort((a: any, b: any) => (SEV[a.severity] ?? 3) - (SEV[b.severity] ?? 3));

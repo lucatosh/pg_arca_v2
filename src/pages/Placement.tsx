@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Badge, Button, Icon, bytes } from '../ui';
-import { useQuery } from '../hooks';
+import { useDraft, useQuery } from '../hooks';
 import { go } from '../router';
 import { ClusterDestinationCheck, ClusterEphemeralCheck, ClusterScopeEditor, scopeSourceText } from './Infra';
 
@@ -28,7 +28,7 @@ const from = (s: Src, f: string) => { const t = scopeSourceText(s?.[f]); return 
 /** "Where will this recovery happen?" — shown in the restore wizard before the operator starts, with a way to change it on the spot. */
 export function RecoveryPlacement({ clusterId, compact }: { clusterId: string; compact?: boolean }) {
   const q = useQuery<Placement>(`/api/clusters/${encodeURIComponent(clusterId)}/placement`, { interval: 15000 });
-  const [dlg, setDlg] = useState<'' | 'edit' | 'check'>('');
+  const [dlg, setDlg] = useDraft<'' | 'edit' | 'check'>(`placement:${clusterId}:rec`, '');
   const e = q.data?.ephemeral;
   if (!e) return null;
   return <div className={`placement ${compact ? 'compact' : ''}`} role="group" aria-label="Dove avviene il recupero">
@@ -51,7 +51,7 @@ export function RecoveryPlacement({ clusterId, compact }: { clusterId: string; c
 /** "Where do the backups of this cluster go?" — on the backup page, with free space, the pending (configured but not yet applied) change, and the way to change it. */
 export function BackupPlacement({ clusterId }: { clusterId: string }) {
   const q = useQuery<Placement>(`/api/clusters/${encodeURIComponent(clusterId)}/placement`, { interval: 15000 });
-  const [dlg, setDlg] = useState<'' | 'edit' | 'apply'>('');
+  const [dlg, setDlg] = useDraft<'' | 'edit' | 'apply'>(`placement:${clusterId}:bk`, '');
   const b = q.data?.backup;
   if (!b) return null;
   const sameDisk = !!(b.repoDisk && b.dataDisk && b.repoDisk.dev !== undefined && b.repoDisk.dev === b.dataDisk.dev);

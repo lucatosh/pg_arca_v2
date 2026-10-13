@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago, bytes } from '../ui';
-import { revalidate, toast, useOpRunner, useQuery } from '../hooks';
+import { revalidate, toast, useOpRunner, useQuery, useDraft, clearDrafts } from '../hooks';
 import { go } from '../router';
 import { OP_LABEL, OpPanel, statusBadge } from './shared';
 import { CheckList } from './Infra';
@@ -69,8 +69,9 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
   const q = useQuery<WFull>(`/api/workers/${encodeURIComponent(id)}`, { interval: 8000 });
   const cl = useQuery<{ clusters: any[] }>('/api/clusters');
   const w = q.data;
-  const [dlg, setDlg] = useState<'' | 'edit' | 'use' | 'dest' | 'install'>('');
-  const pre = useOpRunner(`worker:${id}`, () => revalidate(`/api/workers/${encodeURIComponent(id)}`));
+  const [dlg, setDlg0] = useDraft<'' | 'edit' | 'use' | 'dest' | 'install'>(`worker:${id}:dlg`, '');
+  const setDlg = (v: '' | 'edit' | 'use' | 'dest' | 'install') => { if (!v) clearDrafts(`worker:${id}:form`); setDlg0(v); };
+  const pre = useOpRunner(`worker:${id}`, () => revalidate(`/api/workers/${encodeURIComponent(id)}`), `worker:${id}:op`);
   const majors = useMemo(() => { const s = new Set<number>(); for (const c of cl.data?.clusters || []) { const m = parseInt(String(c.pgVersion || ''), 10); if (m) s.add(m); } return [...s].sort((a, b) => b - a); }, [cl.data]);
   const [major, setMajor] = useState<number | ''>('');
   const mj = major || majors[0] || w?.pgMajors[0] || 16;
@@ -125,7 +126,7 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
 }
 
 function EditWorker({ w, onClose }: { w: WFull; onClose: () => void }) {
-  const [label, setLabel] = useState(w.label); const [roles, setRoles] = useState<string[]>(w.roles); const [err, setErr] = useState<string | null>(null);
+  const [label, setLabel] = useDraft(`worker:${w.id}:form:label`, w.label); const [roles, setRoles] = useDraft<string[]>(`worker:${w.id}:form:roles`, w.roles); const [err, setErr] = useState<string | null>(null);
   const save = async () => { try { await api('PATCH', `/api/workers/${encodeURIComponent(w.id)}`, { label, roles }); revalidate(`/api/workers/${encodeURIComponent(w.id)}`); revalidate('/api/workers-summary'); revalidate('/api/workers'); onClose(); } catch (e: any) { setErr(e.body?.message || e.message); } };
   return <Modal title={`${w.name}: nome e ruoli`} onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" onClick={save}>Salva</Button></>}>
     <div className="stack"><Field label="Descrizione"><input className="input" value={label} onChange={e => setLabel(e.target.value)} placeholder="Backup server DC1" /></Field>
@@ -136,7 +137,7 @@ function EditWorker({ w, onClose }: { w: WFull; onClose: () => void }) {
 
 /** Make this machine the central recovery node for every cluster, an environment or one cluster: writes placement=central + centralNode into that level, keeping its other fields. */
 function UseForRecovery({ w, clusters, onClose }: { w: WFull; clusters: any[]; onClose: () => void }) {
-  const [scope, setScope] = useState('global'); const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const [scope, setScope] = useDraft(`worker:${w.id}:form:scope`, 'global'); const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const envs = [...new Set(clusters.filter(c => !c.isSandbox).map(c => c.environment))];
   const save = async () => {
     setBusy(true); setErr(null);
@@ -159,7 +160,7 @@ function UseForRecovery({ w, clusters, onClose }: { w: WFull; clusters: any[]; o
 }
 
 function DestCheck({ onRun, onClose }: { onRun: (p: any) => void; onClose: () => void }) {
-  const [type, setType] = useState('local'); const [repo, setRepo] = useState(''); const [wal, setWal] = useState('');
+  const [type, setType] = useDraft('workerdest:type', 'local'); const [repo, setRepo] = useDraft('workerdest:repo', ''); const [wal, setWal] = useDraft('workerdest:wal', '');
   const ok = (p: string) => !p || p.startsWith('/');
   return <Modal title="Controlla una cartella di backup da questa macchina" onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" disabled={!repo || !ok(repo) || !ok(wal)} onClick={() => onRun({ type, repo_path: repo, ...(wal ? { wal_path: wal } : {}), require_mount: type !== 'local' })}>Controlla</Button></>}>
     <div className="stack"><p className="small muted">Verifica reale: tipo di filesystem, scrittura esclusiva con fsync e rinomina atomica, spazio libero. Non sposta nulla.</p>

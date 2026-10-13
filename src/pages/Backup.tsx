@@ -4,7 +4,7 @@ import { RestartPg } from './RestartPg';
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Skeleton, bytes, dt, dur, ago, num } from '../ui';
-import { Op, revalidate, toast, useOpRunner, useQuery } from '../hooks';
+import { Op, revalidate, toast, useOpRunner, useQuery, useDraft } from '../hooks';
 import { OP_LABEL, OpPanel, Result } from './shared';
 
 export const TYPE_LABEL: Record<string, string> = { full: 'Completo', diff: 'Differenziale', incr: 'Incrementale' };
@@ -58,7 +58,7 @@ export function BackupTab({ c }: { c: any }) {
 }
 
 function ArchiveSetup({ c, refresh }: { c: any; refresh: () => void }) {
-  const r = useOpRunner(c.id, refresh); const [ask, setAsk] = useState(false); const [manual, setManual] = useState(false);
+  const r = useOpRunner(c.id, refresh, `archive:${c.id}`); const [ask, setAsk] = useState(false); const [manual, setManual] = useDraft(`archive:${c.id}:manual`, false);
   const res = r.op?.status === 'succeeded' ? r.op.result : null;
   return <Card title="Attiva l’archiviazione WAL"><div className="stack">
     <p>Serve per il ripristino a un istante preciso (PITR) e per backup consistenti. L’agent imposta <code>archive_mode</code>, <code>archive_command</code> e, se servono, <code>wal_level</code> e <code>wal_log_hints</code>{!!c.haState ? ' attraverso la configurazione Patroni (tutti i membri)' : ' con ALTER SYSTEM'}. Il riavvio non viene mai fatto in automatico: lo avvii tu, da qui o come preferisci.</p>
@@ -74,9 +74,9 @@ function ArchiveSetup({ c, refresh }: { c: any; refresh: () => void }) {
 }
 
 function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; running: Op[]; refresh: () => void }) {
-  const [type, setType] = useState<'full' | 'diff' | 'incr'>(hasFull ? 'incr' : 'full'); const [fast, setFast] = useState(true); const [from, setFrom] = useState(''); const reg = useQuery<{ nodes: any[] }>('/api/nodes', { interval: 10000 }); const mine = (reg.data?.nodes || []).filter(n => n.clusterId === c.id && n.online);
+  const [type, setType] = useDraft<'full' | 'diff' | 'incr'>(`backup:${c.id}:type`, hasFull ? 'incr' : 'full'); const [fast, setFast] = useDraft(`backup:${c.id}:fast`, true); const [from, setFrom] = useDraft(`backup:${c.id}:from`, ''); const reg = useQuery<{ nodes: any[] }>('/api/nodes', { interval: 10000 }); const mine = (reg.data?.nodes || []).filter(n => n.clusterId === c.id && n.online);
   useEffect(() => { if (!hasFull) setType('full'); }, [hasFull]);
-  const r = useOpRunner(c.id, () => { refresh(); revalidate(`/api/operations?clusterId=${encodeURIComponent(c.id)}`); });
+  const r = useOpRunner(c.id, () => { refresh(); revalidate(`/api/operations?clusterId=${encodeURIComponent(c.id)}`); }, `backup:${c.id}:run`);
   const other = running.filter(o => o.id !== r.op?.id && o.type !== 'backup_info');
   const cancelOther = async (id: string) => { try { await api('POST', `/api/operations/${id}/cancel`); refresh(); } catch (e: any) { toast(e.message, 'bad'); } };
   const active = r.busy || other.length > 0;
@@ -94,7 +94,7 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
 }
 
 function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) {
-  const r = useOpRunner(c.id, refresh); const [kind, setKind] = useState('');
+  const r = useOpRunner(c.id, refresh, `backup:${c.id}:health`); const [kind, setKind] = useDraft(`backup:${c.id}:health:kind`, '');
   const [ask, setAsk] = useState(false);
   const run = (k: string, type: string, params: any) => { setKind(k); r.run(type, params); };
   const bk = d.backup; const res = r.op?.result;

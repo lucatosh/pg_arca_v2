@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Badge, Banner, Button, Card, Confirm, Empty } from '../ui';
-import { useOpRunner, revalidate } from '../hooks';
+import { useOpRunner, revalidate, useDraft } from '../hooks';
 import { OpPanel, Result } from './shared';
 import { Advice, Workload, advise } from '../tuning';
 import { RestartPg } from './RestartPg';
@@ -9,9 +9,9 @@ const W: [Workload, string, string][] = [['oltp', 'Transazionale (OLTP)', 'Molte
 
 export function TuningTab({ c }: { c: any }) {
   const nodes: any[] = (c.agentNodes || []).filter((n: any) => n.sys?.mem && n.settings);
-  const [w, setW] = useState<Workload>('oltp'); const [nodeId, setNodeId] = useState('');
+  const [w, setW] = useDraft<Workload>(`tuning:${c.id}:w`, 'oltp'); const [nodeId, setNodeId] = useDraft(`tuning:${c.id}:node`, '');
   const [ask, setAsk] = useState<Advice[] | null>(null); const [queue, setQueue] = useState<string[]>([]);
-  const r = useOpRunner(c.id, () => revalidate(`/api/clusters/${encodeURIComponent(c.id)}`));
+  const r = useOpRunner(c.id, () => revalidate(`/api/clusters/${encodeURIComponent(c.id)}`), `tuning:${c.id}:op`);
   if (c.isSandbox) return <Banner kind="info" title="Non disponibile sul cluster demo">Collega un cluster reale con l’agent per ricevere consigli di dimensionamento.</Banner>;
   if (c.source === 'direct') return <Card><Empty icon="settings" title="Serve l’agent">I consigli usano RAM e core del server, che solo l’agent conosce.</Empty></Card>;
   const node = nodes.find(n => n.id === nodeId) || nodes.find(n => n.role === 'primary') || nodes[0];

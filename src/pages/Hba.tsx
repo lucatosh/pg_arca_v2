@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago } from '../ui';
-import { isTerminal, Op, revalidate, toast, useQuery } from '../hooks';
+import { clearDrafts, isTerminal, Op, revalidate, toast, useDraft, useQuery } from '../hooks';
 import { Issue, Rule, analyze, covers, describe, fill, fromEffective, key, sortRules, stripUntil, tag, untilLabel, untilOf, validCidr, withUntil } from '../hbaLogic';
 
 type Row = Rule & { _id: string };
@@ -51,7 +51,7 @@ function advice(r: Rule): { kind: 'bad' | 'warn' | 'info'; text: string }[] {
 
 /** Fetches what the agent sees on every online node (one node for a Patroni cluster: the DCS list is shared). */
 function useHbaState(c: any) {
-  const [reads, setReads] = useState<NodeRead[] | null>(null); const [loading, setLoading] = useState(false); const [err, setErr] = useState<string | null>(null);
+  const [reads, setReads] = useDraft<NodeRead[] | null>(`hba:${c.id}:reads`, null, { secret: true }); const [loading, setLoading] = useState(false); const [err, setErr] = useState<string | null>(null);
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
     try {
@@ -91,11 +91,17 @@ function HbaInner({ c }: { c: any }) {
   const patroni = first?.mode === 'patroni';
 
   // ---- editable managed set ----
-  const [rows, setRows] = useState<Row[]>([]); const [order, setOrder] = useState<Order>('specific'); const [baseSig, setBaseSig] = useState('');
+  // the rules being edited are a draft: leaving the page (another tab, a link, Back) and coming back gives them back as they were
+  const HK = `hba:${c.id}`;
+  const [rows, setRows] = useDraft<Row[]>(HK + ':rows', []); const [order, setOrder] = useDraft<Order>(HK + ':order', 'specific'); const [baseSig, setBaseSig] = useDraft(HK + ':base', '');
+  const [serverMoved, setServerMoved] = useState(false);
   useEffect(() => {
     if (!first) return;
     const m: Rule[] = (first.managed?.rules || []).map((r: any) => ({ type: r.type, database: r.database, user: r.user, address: r.address || '', method: r.method, options: r.options, comment: r.comment }));
-    setRows(m.map(toRow)); setBaseSig(sig(m)); setPlanned(null); setApplyRes(null);
+    const server = sig(m);
+    const edited = !!baseSig && sig(order === 'manual' ? rows : sortRules(rows, order)) !== baseSig;
+    if (edited) { if (server !== baseSig) { setServerMoved(true); setBaseSig(server); setPlanned(null); } return; }    // keep the user's work; say if the server changed meanwhile
+    setRows(m.map(toRow)); setBaseSig(server); setPlanned(null); setApplyRes(null); setServerMoved(false);
     // eslint-disable-next-line
   }, [st.reads]);
 
@@ -135,8 +141,8 @@ function HbaInner({ c }: { c: any }) {
   const setOrderMode = (o: Order) => { if (o === 'manual') setRows(shown); setOrder(o); setPlanned(null); };
 
   // ---- plan / apply ----
-  const [planned, setPlanned] = useState<{ sig: string; reads: { node: string; res?: any; error?: string }[] } | null>(null); const [planning, setPlanning] = useState(false);
-  const [applying, setApplying] = useState(false); const [applyRes, setApplyRes] = useState<{ node: string; ok: boolean; text: string }[] | null>(null); const [force, setForce] = useState(false);
+  const [planned, setPlanned] = useDraft<{ sig: string; reads: { node: string; res?: any; error?: string }[] } | null>(HK + ':planned', null, { secret: true }); const [planning, setPlanning] = useState(false);
+  const [applying, setApplying] = useState(false); const [applyRes, setApplyRes] = useDraft<{ node: string; ok: boolean; text: string }[] | null>(HK + ':applied', null); const [force, setForce] = useState(false);
   const [confirmApply, setConfirmApply] = useState(false);
   const keyRef = useRef<{ sig: string; key: string } | null>(null);
   const curSig = sig(shown);
@@ -161,7 +167,7 @@ function HbaInner({ c }: { c: any }) {
       if (r.approval) { toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); keyRef.current = null; return; }
       const done = await Promise.all((r.operations as any[]).map(async o => { try { const op = await waitOp(o.operation); return { node: o.nodeName, ok: true, text: op.result?.changed === false ? 'già aggiornato' : op.result?.note || 'applicato e verificato' }; } catch (e: any) { return { node: o.nodeName, ok: false, text: e.message }; } }));
       setApplyRes(done); keyRef.current = null; revalidate(`/api/clusters/${encodeURIComponent(c.id)}/hba/history`);
-      if (done.every(d => d.ok)) toast('Regole applicate e verificate', 'ok'); else toast('Alcuni nodi non hanno applicato le regole', 'bad');
+      if (done.every(d => d.ok)) { toast('Regole applicate e verificate', 'ok'); clearDrafts(`hba:add:${c.id}`); clearDrafts(`hba:tpl:${c.id}`); } else toast('Alcuni nodi non hanno applicato le regole', 'bad');
       await st.load();
     } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setApplying(false); }
   };
@@ -212,9 +218,9 @@ function HbaInner({ c }: { c: any }) {
         </tbody></table></div>}
     </Card>
 
-    <AddRule rows={shown} existing={existing} first={first} hosts={hosts} order={order} onAdd={r => add([r])} />
+    <AddRule ck={c.id} rows={shown} existing={existing} first={first} hosts={hosts} order={order} onAdd={r => add([r])} />
 
-    <Templates tpls={tpls.data?.templates || []} sugg={sugg} env={c.environment} all={all} hosts={hosts} onAdd={rs => add(rs)} />
+    <Templates ck={c.id} tpls={tpls.data?.templates || []} sugg={sugg} env={c.environment} all={all} hosts={hosts} onAdd={rs => add(rs)} />
 
     {existing.length ? <Card title={patroni ? `Altre regole della lista nel DCS (${existing.length})` : `Regole già presenti nel file (${existing.length})`} pad={false} actions={!adopt ? <Button sm onClick={() => add(serverUnmanaged)} title="Le sposta nel blocco gestito mantenendo lo stesso ordine di valutazione: potrai modificarle e riordinarle.">Adotta nel blocco gestito</Button> : <span className="small muted">Valgono dopo il blocco gestito · sola lettura</span>}>
       <div className="tablewrap"><table className="t hba"><tbody>{existing.map((r, i) => {
@@ -225,7 +231,9 @@ function HbaInner({ c }: { c: any }) {
 
     <Card title="Verifica e applica">
       <div className="stack">
-        {!dirty ? <p className="muted">Nessuna modifica rispetto a ciò che c’è sul {patroni ? 'cluster' : okReads.length > 1 ? 'cluster' : 'nodo'}.</p> : <p>Hai modifiche non applicate. Prima controlla l’effetto: la simulazione verifica che nessuna connessione esistente (replica e amministrazione locale) venga bloccata.</p>}
+        {!dirty ? <p className="muted">Nessuna modifica rispetto a ciò che c’è sul {patroni ? 'cluster' : okReads.length > 1 ? 'cluster' : 'nodo'}.</p> : <div className="row wrap gap-s"><p className="grow" style={{ margin: 0 }}>Hai modifiche non applicate (restano qui anche se cambi pagina). Prima controlla l’effetto: la simulazione verifica che nessuna connessione esistente (replica e amministrazione locale) venga bloccata.</p>
+          <Button sm kind="ghost" onClick={() => { const m: Rule[] = (first.managed?.rules || []).map((r: any) => ({ type: r.type, database: r.database, user: r.user, address: r.address || '', method: r.method, options: r.options, comment: r.comment })); setRows(m.map(toRow)); setOrder('specific'); setPlanned(null); setApplyRes(null); setServerMoved(false); }}>Scarta le modifiche</Button></div>}
+        {dirty && serverMoved ? <Banner kind="warn" title="Le regole sul server sono cambiate mentre modificavi">Le tue modifiche sono state tenute. Verifica di nuovo l’effetto prima di applicare (o scartale per ripartire da quelle attuali).</Banner> : null}
         <div className="row wrap"><Button icon="eye" busy={planning} disabled={planning || applying || errorsInDraft} onClick={doPlan}>Verifica effetto</Button>
           <Button kind="primary" icon="check" busy={applying} disabled={!plans || invalid || nothing || errorsInDraft || (lock.length > 0 && !force) || applying} onClick={() => setConfirmApply(true)}>{patroni ? 'Applica a tutto il cluster' : okReads.length > 1 ? `Applica a ${okReads.length} nodi` : 'Applica'}</Button>
           {!patroni && first.backups?.length ? <Button icon="restore" disabled={applying} onClick={() => setRb(true)}>Ripristina versione precedente</Button> : null}</div>
@@ -277,10 +285,10 @@ function Suggestions({ rows, existing, first, add, c }: { rows: Rule[]; existing
     <span>{items.map(i => `${i.rule.user} da ${i.rule.address.replace(/\/\d+$/, '')}`).join(', ')}. Si connettono oggi perché una regola più ampia o manuale le copre; con una regola precisa, restano protette anche se quella cambia.</span></Banner></>;
 }
 
-function AddRule({ rows, existing, first, hosts, order, onAdd }: { rows: Row[]; existing: Rule[]; first: any; hosts: string[]; order: Order; onAdd: (r: Rule) => void }) {
-  const [open, setOpen] = useState(false); const [valid, setValid] = useState('0'); const canTemp = true;
+function AddRule({ ck, rows, existing, first, hosts, order, onAdd }: { ck: string; rows: Row[]; existing: Rule[]; first: any; hosts: string[]; order: Order; onAdd: (r: Rule) => void }) {
+  const [open, setOpen] = useDraft(`hba:add:${ck}:open`, false); const [valid, setValid] = useDraft(`hba:add:${ck}:valid`, '0'); const canTemp = true;
   const blank: Rule = { type: 'hostssl', database: 'all', user: '', address: '', method: 'scram-sha-256', comment: '' };
-  const [r, setR] = useState<Rule>(blank);
+  const [r, setR] = useDraft<Rule>(`hba:add:${ck}:rule`, blank);
   const set = (p: Partial<Rule>) => setR(x => {
     const n = { ...x, ...p };
     if (p.type === 'local') { n.address = ''; if (n.method === 'scram-sha-256') n.method = 'peer'; }
@@ -323,8 +331,8 @@ function AddRule({ rows, existing, first, hosts, order, onAdd }: { rows: Row[]; 
     </div></Card>;
 }
 
-function Templates({ tpls, sugg, env, all, hosts, onAdd }: { tpls: Tpl[]; sugg: string[]; env: string; all: Rule[]; hosts: string[]; onAdd: (r: Rule[]) => number }) {
-  const [sel, setSel] = useState<Tpl | null>(null); const [vars, setVars] = useState<Record<string, string>>({});
+function Templates({ ck, tpls, sugg, env, all, hosts, onAdd }: { ck: string; tpls: Tpl[]; sugg: string[]; env: string; all: Rule[]; hosts: string[]; onAdd: (r: Rule[]) => number }) {
+  const [sel, setSel] = useDraft<Tpl | null>(`hba:tpl:${ck}:sel`, null); const [vars, setVars] = useDraft<Record<string, string>>(`hba:tpl:${ck}:vars`, {});
   const ordered = useMemo(() => [...tpls].sort((a, b) => (sugg.includes(a.id) ? sugg.indexOf(a.id) : 99) - (sugg.includes(b.id) ? sugg.indexOf(b.id) : 99)), [tpls, sugg]);
   const present = (t: Tpl) => { const defaults = Object.fromEntries(t.vars.map(v => [v.key, v.def])); const rs = fill(t, defaults); return rs.length > 0 && rs.every(r => all.some(e => key(e) === key(r) || (covers(e, r) && e.method === r.method))); };
   const open = (t: Tpl) => { const v: Record<string, string> = {}; const net = hosts[0]?.replace(/\.\d+$/, '.0/24'); t.vars.forEach(x => { v[x.key] = x.key === 'replNet' && net ? net : x.def; }); setVars(v); setSel(t); };

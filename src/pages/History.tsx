@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { api } from '../api';
 import { Badge, Button, Card, Empty, Skeleton, dt } from '../ui';
 import { go } from '../router';
-import { toast, useQuery, useRole, revalidate } from '../hooks';
+import { toast, useQuery, useRole, revalidate, useDraft } from '../hooks';
 import { OP_LABEL, STATUS_LABEL } from './shared';
 
 /** Fasce orarie offerte nel pannello attività e nello storico (le ore oltre la conservazione impostata non hanno dati). */
@@ -32,7 +32,7 @@ export function RetentionSetting() {
 export function HistoryPage({ clusters }: { clusters: any[] }) {
   const meta = useQuery<{ retentionDays: number }>('/api/activity-settings');
   const days = meta.data?.retentionDays ?? 7;
-  const [hours, setHours] = useState(24); const [st, setSt] = useState('all'); const [cl, setCl] = useState('all'); const [s, setS] = useState(''); const [open, setOpen] = useState<string | null>(null);
+  const [hours, setHours] = useDraft('history:hours', 24); const [st, setSt] = useDraft('history:st', 'all'); const [cl, setCl] = useDraft('history:cl', 'all'); const [s, setS] = useDraft('history:s', ''); const [open, setOpen] = useDraft<string | null>('history:open', null);
   const wins = [...WINDOWS, ...LONG.filter(w => w.h <= days * 24)];
   const q = useQuery<{ total: number; operations: any[] }>(`/api/operations/history?hours=${hours}&status=${st}&clusterId=${encodeURIComponent(cl)}&search=${encodeURIComponent(s)}&limit=200`, { interval: 15000 });
   return <>

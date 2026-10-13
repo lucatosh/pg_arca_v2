@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, CopyBlock, Dot, Empty, Field, Icon, Modal, Skeleton, bytes, num } from '../ui';
-import { revalidate, toast, useQuery, useRole } from '../hooks';
+import { revalidate, toast, useQuery, useRole, clearDrafts, useDraft } from '../hooks';
 import { summarize } from './Strategy';
 import { go } from '../router';
 import { statusKind } from '../App';
@@ -18,7 +18,7 @@ const stratOf = (c: any, pol: any) => {
 const modeOf = (c: any) => c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Solo connessione</Badge> : <Badge kind="accent">Agent</Badge>;
 
 export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]; loading: boolean; demoAvailable: boolean }) {
-  const [wiz, setWiz] = useState(false); const pol = useQuery<any>('/api/policies', { interval: 20000 }).data; const [org, setOrg] = useState<any>(null);
+  const [wiz, setWiz] = useDraft('attach:open', false); const pol = useQuery<any>('/api/policies', { interval: 20000 }).data; const [org, setOrg] = useDraft<any>('organize:open', null);
   const real = clusters.filter(c => !c.isSandbox);
   const down = clusters.filter(c => c.status !== 'healthy').length;
   const restoreDemo = async () => { try { await api('POST', '/api/clusters/demo'); revalidate('/api/clusters'); } catch (e: any) { toast(e.message, 'bad'); } };
@@ -38,8 +38,8 @@ export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]
         <FleetTable clusters={clusters} pol={pol} onOrganize={setOrg} />}
     </Card>
     {real.length === 0 && clusters.length > 0 ? <Banner kind="info" title="Stai guardando il cluster demo">È un esempio: le operazioni non vengono eseguite. Collega un cluster reale e poi elimina la demo dalla sua pagina.</Banner> : null}
-    {wiz ? <AttachWizard onClose={() => setWiz(false)} /> : null}
-    {org ? <Organize c={org} all={clusters} onClose={() => setOrg(null)} /> : null}
+    {wiz ? <AttachWizard onClose={() => { clearDrafts('attach'); setWiz(false); }} /> : null}
+    {org ? <Organize c={org} all={clusters} onClose={() => { clearDrafts(`organize:${org.id}`); setOrg(null); }} /> : null}
   </>;
 }
 
@@ -79,8 +79,9 @@ function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; 
 
 /** Environment and folder of a cluster ("prod" > "fatturazione/api"): what groups it in the console AND what its folder-level strategies and settings inherit. */
 function Organize({ c, all, onClose }: { c: any; all: any[]; onClose: () => void }) {
-  const [env, setEnv] = useState(c.environment || 'prod'); const [folder, setFolder] = useState(c.folder || ''); const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
-  const [lm, setLm] = useState<LinkMode>(linkModeOf(c)); const [lp, setLp] = useState<string>(c.geoLink?.primary || '');
+  const OK = `organize:${c.id}`;
+  const [env, setEnv] = useDraft(OK + ':env', c.environment || 'prod'); const [folder, setFolder] = useDraft(OK + ':folder', c.folder || ''); const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const [lm, setLm] = useDraft<LinkMode>(OK + ':lm', linkModeOf(c)); const [lp, setLp] = useDraft<string>(OK + ':lp', c.geoLink?.primary || '');
   const known = [...new Set(all.filter(x => !x.isSandbox && x.folder).map(x => x.folder as string))].sort();
   const save = async () => { if (lm === 'manual' && !lp) { setErr('Scegli il cluster primario.'); return; } setBusy(true); setErr(null); try { await api('PATCH', `/api/clusters/${encodeURIComponent(c.id)}`, { environment: env, folder }); await saveGeoLink(c, lm, lp); revalidate('/api/clusters'); toast('Salvato', 'ok'); onClose(); } catch (e: any) { setErr(e.body?.message || (e.body?.error === 'invalid_folder' ? 'Nome di cartella non valido.' : e.message)); } finally { setBusy(false); } };
   return <Modal title={`Organizza ${c.name}`} onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} onClick={save}>Salva</Button></>}>
@@ -95,7 +96,7 @@ function Organize({ c, all, onClose }: { c: any; all: any[]; onClose: () => void
 }
 
 function AttachWizard({ onClose }: { onClose: () => void }) {
-  const [mode, setMode] = useState<'agent' | 'direct' | null>(null);
+  const [mode, setMode] = useDraft<'agent' | 'direct' | null>('attach:mode', null);
   return <Modal title="Collega un cluster" onClose={onClose} wide locked={false}>
     {!mode ? <div className="stack">
       <button className="choice" onClick={() => setMode('agent')}><Icon n="shield" s={22} /><div><strong>Con agent (consigliato)</strong><p className="sub">Installi un piccolo agent su un nodo: backup, ripristino a un istante preciso, alta affidabilità e log in tempo reale. L’agent si collega alla console, non il contrario.</p></div></button>
@@ -105,14 +106,14 @@ function AttachWizard({ onClose }: { onClose: () => void }) {
 }
 
 function AgentFlow({ onClose, back }: { onClose: () => void; back: () => void }) {
-  const [env, setEnv] = useState('prod'); const [label, setLabel] = useState(''); const [tok, setTok] = useState<any>(null); const [count, setCount] = useState(1);
-  const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null); const [joinedAll, setJoinedAll] = useState<any[]>([]);
+  const [env, setEnv] = useDraft('attach:agent:env', 'prod'); const [label, setLabel] = useDraft('attach:agent:label', ''); const [tok, setTok] = useDraft<any>('attach:agent:tok', null, { secret: true }); const [count, setCount] = useDraft('attach:agent:count', 1);
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null); const [joinedAll, setJoinedAll] = useDraft<any[]>('attach:agent:joined', []);
   const joined = joinedAll.length >= count ? joinedAll[0] : null;
-  const before = useRef<Set<string> | null>(null); const keyRef = useRef(uid('tok'));
+  const [beforeIds, setBeforeIds] = useDraft<string[] | null>('attach:agent:before', null); const before = { current: beforeIds ? new Set(beforeIds) : null }; const keyRef = useRef(uid('tok'));
   const create = async () => {
     setBusy(true); setErr(null);
     try {
-      const n = await get<{ nodes: any[] }>('/api/nodes'); before.current = new Set(n.nodes.map(x => x.id));
+      const n = await get<{ nodes: any[] }>('/api/nodes'); setBeforeIds(n.nodes.map(x => x.id));
       setTok(await api('POST', '/api/enrollment-tokens', { label: label || 'nodo', environment: env, ttlMinutes: 60, maxUses: count }, { key: keyRef.current }));
     } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
   };
@@ -143,7 +144,7 @@ function AgentFlow({ onClose, back }: { onClose: () => void; back: () => void })
 }
 
 function DirectFlow({ onClose, back }: { onClose: () => void; back: () => void }) {
-  const [f, setF] = useState({ name: '', environment: 'prod', host: '', port: '5432', database: 'postgres', user: '', password: '', sslmode: 'require', caCertPem: '', patroniUrl: '' });
+  const [f, setF] = useDraft('attach:direct:form', { name: '', environment: 'prod', host: '', port: '5432', database: 'postgres', user: '', password: '', sslmode: 'require', caCertPem: '', patroniUrl: '' }, { secret: true });   // holds a password: memory only
   const [test, setTest] = useState<any>(null); const [busy, setBusy] = useState<'t' | 'a' | null>(null); const [err, setErr] = useState<string | null>(null);
   const set = (k: string) => (e: React.ChangeEvent<any>) => { setF({ ...f, [k]: e.target.value }); setTest(null); };
   const body = () => ({ ...f, port: Number(f.port) || 5432, patroniUrl: f.patroniUrl || undefined, caCertPem: f.caCertPem || undefined });

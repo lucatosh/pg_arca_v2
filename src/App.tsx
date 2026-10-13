@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'rea
 import { AuthGate } from './AuthGate';
 import { useQuery } from './hooks';
 import { Icon, Toasts, Dot, Empty, Skeleton } from './ui';
-import { go, useRoute } from './router';
+import { go, nav, useRoute } from './router';
 import { TAB_ITEMS } from './tabs';
 import { TodayPage, useHealth } from './pages/Today';
 import { JoinBanner } from './pages/Join';
@@ -57,9 +57,18 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
     const k = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPal(p => !p); } };
     window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
   }, []);
-  // each page starts at the top; the cluster pages keep their position when only the tab changes
-  const pageRef = useRef<HTMLElement>(null);
-  useEffect(() => { pageRef.current?.scrollTo({ top: 0 }); }, [route.page, route.id]);
+  // a page opened from the app starts at the top (the cluster pages keep their position when only the tab changes); Back/Forward returns
+  // to where you were on that page, also once its data has arrived
+  const pageRef = useRef<HTMLElement>(null); const scrolls = useRef(new Map<string, number>());
+  useEffect(() => { const el = pageRef.current; if (!el) return; let t: any; const f = () => { clearTimeout(t); t = setTimeout(() => scrolls.current.set(location.hash, el.scrollTop), 80); }; el.addEventListener('scroll', f, { passive: true }); return () => el.removeEventListener('scroll', f); }, []);
+  useEffect(() => {
+    const el = pageRef.current; if (!el) return;
+    const want = nav.fromApp ? undefined : scrolls.current.get(location.hash); nav.fromApp = false;
+    if (want == null) { if (prevPage.current !== `${route.page}/${route.id}`) el.scrollTo({ top: 0 }); prevPage.current = `${route.page}/${route.id}`; return; }
+    prevPage.current = `${route.page}/${route.id}`;
+    let n = 0; const step = () => { if (el.scrollHeight - el.clientHeight >= want || n++ > 40) { el.scrollTo({ top: want }); return; } requestAnimationFrame(step); }; step();
+  }, [route.page, route.id, route.tab]);
+  const prevPage = useRef('');
   const cycle = () => { const n = th === 'auto' ? 'dark' : th === 'dark' ? 'light' : 'auto'; applyTheme(n); setTh(n); };
   const toggleRail = () => { const n = !rail; setRail(n); wr('arca.rail', n ? '1' : '0'); };
   const nav = (page: string, to: string, icon: string, text: string, extra?: React.ReactNode) =>
