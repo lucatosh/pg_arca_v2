@@ -282,6 +282,13 @@ def flush_current_wal(ctx, chain, target_time=None, target_lsn=None, target_xid=
                 return None                         # long archived already
         except Exception:
             return None
+    return switch_and_wait(ctx, str(chain[0].get("system_identifier") or "") if chain else None, wait, cancel)
+
+
+def switch_and_wait(ctx, sysid_expected=None, wait=90, cancel=None):
+    """Close the current WAL segment of the LOCAL primary and wait until it is in the archive: what happened in the last seconds becomes visible to a
+    restore or to the WAL analysis. sysid_expected: only when the local server is that cluster (a central host's own PostgreSQL is never touched);
+    None: the local server is this agent's cluster by definition. Never fatal; returns what happened or None."""
     from pg_arca.engine.pgsession import PgSession
     try:
         s = PgSession(ctx.conn.with_db("postgres"))
@@ -289,7 +296,7 @@ def flush_current_wal(ctx, chain, target_time=None, target_lsn=None, target_xid=
         return None
     try:
         sysid = s.scalar("SELECT system_identifier FROM pg_control_system()")
-        if not chain or str(chain[0].get("system_identifier") or "") != str(sysid or "-"):
+        if sysid_expected is not None and str(sysid_expected) != str(sysid or "-"):
             return None                             # another cluster (a central recovery host's own PostgreSQL): never touched
         if s.scalar("SELECT pg_is_in_recovery()") != "f":
             return None

@@ -1042,7 +1042,13 @@ class OperationExecutor:
             hours = float(hours) if hours is not None else (0 if mode == "databases" else 24)
         except (TypeError, ValueError):
             raise OpError("hours must be a number (0 = the whole archive)")
-        return walscan.scan(self._ctx_ro(), mode=mode, hours=max(0, hours), since_backup=bool(p.get("since_backup", mode == "databases")), since_iso=p.get("since_iso"),
+        ctx = self._ctx_ro()
+        if not p.get("no_flush") and not (self.runtime is not None and getattr(self.runtime, "worker", False)):
+            # what was dropped a few seconds ago is still in the CURRENT segment: closed and archived first, so the analysis sees it
+            from pg_arca.engine.restore import switch_and_wait
+            self._progress({"phase": "wal_flush"})
+            switch_and_wait(ctx, None, wait=45, cancel=self._cancelled)
+        return walscan.scan(ctx, mode=mode, hours=max(0, hours), since_backup=bool(p.get("since_backup", mode == "databases")), since_iso=p.get("since_iso"),
                             limit=max(1, min(int(p.get("limit", 20)), 200)), since=p.get("since"), until=p.get("until"),
                             cache_dir=os.path.join(self.config.get("state_dir", "/var/lib/pgarca/state"), "forensics"),
                             progress=self._progress, cancel=self._cancelled, budget_sec=max(30, min(int(p.get("budget_sec", 900)), 7200)), detail=bool(p.get("detail")),
