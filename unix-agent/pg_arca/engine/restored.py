@@ -118,6 +118,16 @@ def _writable_dir(path):
     return bool(p) and os.path.isdir(p) and os.access(p, os.W_OK | os.X_OK)
 
 
+# configuration, programs, logs and runtime state: a writable mount there (a container's /etc/postgresql volume, /var/log) is never a place for data
+_SYSTEM = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/proc", "/sys", "/dev", "/run", "/snap", "/boot", "/var/log", "/var/run", "/var/cache",
+           "/var/spool", "/var/mail", "/var/lib/docker", "/var/lib/containers", "/var/lib/kubelet", "/var/lib/pgarca", "/var/lib/apt", "/var/lib/dpkg", "/var/lib/rpm")
+
+
+def _system_path(p):
+    p = os.path.realpath(p)
+    return any(p == x or p.startswith(x + "/") for x in _SYSTEM)
+
+
 def default_name(stanza):
     return "pgarca-restore-%s-%s" % (re.sub(r"[^A-Za-z0-9_.-]", "_", stanza or "main")[:40], datetime.now().strftime("%Y%m%d-%H%M"))
 
@@ -134,11 +144,14 @@ def suggest(ctx, need_bytes, roots=(), name=None):
         table = mounts()
     except Exception:
         table = []
+    pg_dev = _dev(ctx.pgdata) if ctx.pgdata else None
     for mp, fs, _src in table:
-        if fs in _SKIP_FS or mp in ("/", "/boot", "/boot/efi") or mp.startswith(("/proc", "/sys", "/dev", "/run", "/snap", "/var/lib/docker", "/var/lib/containers")):
+        if fs in _SKIP_FS or mp in ("/", "/boot", "/boot/efi") or _system_path(mp):
             continue
         if os.path.isdir(mp) and os.access(mp, os.W_OK | os.X_OK):
-            cands.append((1, mp, "volume"))                       # a volume the agent may write to at its root: an admin prepared it (e.g. /restore)
+            # a volume the agent may write to at its root: an admin prepared it (e.g. /restore). On the volume of the live data it is not "dedicated":
+            # the directory next to the data directory is the clearer place there
+            cands.append((1 if _dev(mp) != pg_dev else 2.5, mp, "volume"))
     if ctx.pgdata:
         cands.append((2, os.path.dirname(ctx.pgdata.rstrip("/")), "next to the data directory"))
     if ctx.scratch_dir:
@@ -157,6 +170,8 @@ def suggest(ctx, need_bytes, roots=(), name=None):
     seen, out = set(), []
     for prio, root, origin in sorted(cands, key=lambda c: c[0]):
         root = os.path.realpath(root)
+        if origin != "configured" and _system_path(root):
+            continue
         dev = _dev(root)
         if dev is None or dev in seen or not _writable_dir(root):
             continue

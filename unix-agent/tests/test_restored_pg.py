@@ -78,6 +78,8 @@ class Restored(unittest.TestCase):
             self.assertIn(k, c)
         self.assertTrue(c["path"].endswith(w["name"]))
         self.assertFalse(c["path"].startswith(F.src.rstrip("/") + "/"), "never inside the live data directory")
+        self.assertFalse([x for x in w["candidates"] if restored._system_path(x["root"])], "never in configuration, programs or logs (a container's /etc/postgresql volume)")
+        self.assertTrue(restored._system_path("/etc/postgresql") and restored._system_path("/var/log/x") and not restored._system_path("/var/tmp") and not restored._system_path("/srv/restore"))
         huge = restored.suggest(F.ctx, 1 << 60)
         self.assertIsNone(huge["recommended"], "nothing has room for an exabyte")
         self.assertTrue(all(x["level"] == "bad" for x in huge["candidates"]))

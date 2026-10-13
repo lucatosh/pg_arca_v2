@@ -113,7 +113,7 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
     const port = (card.match(/porta (\d+)/) || [])[1]; const dir = (card.match(/Cartella\s+(\S+)/) || [])[1];
     await p.click('.card:has-text("Ripristino") .restored summary:has-text("Dal server stesso")');
     const local = await p.locator('.card:has-text("Ripristino") .restored pre, .card:has-text("Ripristino") .restored .copyblock').allInnerTexts();
-    const sock = ((local.join(' ').match(/psql -h (\S+) -p/) || [])[1]);
+    const sock = ((local.join(' ').match(/sudo -u postgres psql -h (\S+) -p/) || [])[1]);
     log(`   copy on port ${port}, dir ${dir}, socket ${sock}`);
     const c = sqlOn(node, port, sock, DB, 'SELECT count(*) FROM t_orders'); if (c !== '500') throw new Error('the copy has ' + c + ' rows in t_orders, expected 500');
     mark('copy answers');
