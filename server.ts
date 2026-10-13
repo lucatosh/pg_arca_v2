@@ -25,6 +25,7 @@ import { attachLogSocket, broadcastLiveLog, mountLogRoutes } from './server/logs
 import { mountNetscanRoutes } from './server/netscan';
 import { mountWorkerRoutes } from './server/workers';
 import { mountGeoRoutes } from './server/geo';
+import { startGeoMonitor } from './server/geodr';
 import { buildDemoCluster } from './server/demo';
 import { makeAsyncSafe, asyncErrorHandler } from './server/asyncsafe';
 
@@ -122,6 +123,7 @@ initSetupCode(store);
 seedDemoOnFirstRun(store, buildDemoCluster).catch(e => console.error('[pg_arca] demo seed failed', e));
 direct.startPolling();
 startScheduler(store);
+startGeoMonitor(store);
 startNotifier(store);
 
 // Static / Vite

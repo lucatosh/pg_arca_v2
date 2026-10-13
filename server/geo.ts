@@ -15,6 +15,7 @@ import * as ops from './ops';
 import { lsnToBig } from './view';
 import { conflictFor } from './conflicts';
 import { requiresApproval, requestApproval } from './approvals';
+import { startFailover, policyOf, watchOf, snooze, GEO_POLICY_DEFAULT } from './geodr';
 
 const ONLINE_MS = 45_000;
 const MB = 1024 * 1024;
@@ -90,7 +91,9 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
     // (or a link set by an operator).
     const wasSiteC = (x: { clusterId: string }) => { const c = cl.find(k => k.id === x.clusterId); return !!(c?.geoStanza || c?.geoEndpoint) && !c?.geoLink?.none; };
     const splitBrain = list.filter(s => s.role === 'primary' && wasSiteC(s)).length >= 2;
-    if (!declared && !splitBrain && !list.some(s => s.role === 'standby')) continue;
+    // a pair the console already knows (it remembers its primary): kept while a site is down or after a failover left no standby yet
+    const knownPair = (() => { const sid = list.map(s => s._sysid).find(Boolean); return !!sid && list.length > 1 && !!(st.settings?.geoLastPrimary || {})[sid]; })();
+    if (!declared && !splitBrain && !knownPair && !list.some(s => s.role === 'standby')) continue;
     const invalid = new Set<string>();
     for (const s of list) if (manual.has(s.clusterId)) {
       s.link = 'manual';
@@ -102,7 +105,9 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
     const prims = list.filter(s => s.role === 'primary');
     const upHosts = new Set(list.filter(s => s.role === 'standby' && s.upstream).map(s => s.upstream!.host));
     // several writable clusters with the same identifier (e.g. a restored copy): the primary SITE is the one the standby sites point at / were linked to
-    const prim = prims.find(s => list.some(x => x.declaredPrimary === s.clusterId)) || prims.find(s => s.endpoint && upHosts.has(s.endpoint.host))
+    // after a DR failover the promoted site IS the primary, also while the old primary is back and still writable (it is about to be rejoined)
+    const fo = (Object.values(st.settings?.geoFailovers || {}) as any[]).find(f => !f.rejoinedAt && list.some(s => s.clusterId === f.to) && list.some(s => s.clusterId === f.from));
+    const prim = (fo ? prims.find(s => s.clusterId === fo.to) : undefined) || prims.find(s => list.some(x => x.declaredPrimary === s.clusterId)) || prims.find(s => s.endpoint && upHosts.has(s.endpoint.host))
       || prims.find(s => (Object.values(st.nodes) as NodeRecord[]).some(n => n.clusterId === s.clusterId && upHosts.has(String(n.name)))) || prims[0]
       || (declared ? list.find(s => list.some(x => x.declaredPrimary === s.clusterId) && s.role !== 'standby') : undefined);
     const others = prims.filter(s => s !== prim);
@@ -259,6 +264,12 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
     if (spg.hba_patroni_local?.ok === false) add({ id: 'hba_local', level: 'bad', site: s.name, text: at('pg_hba non consente a Patroni la replica locale: dopo un failover il sito resta fermo'), fix: spg.hba_patroni_local.suggest?.[0] });
   }
   if (!prim.endpoint) add({ id: 'endpoint', level: 'warn', site: prim.name, text: `${prim.name}: indirizzo per gli altri siti non noto (serve allo switchover di ritorno)` });
+  const pol = policyOf(st, g.sysid);
+  if (pol.autoFailover) for (const s of g.sites.filter(x => x.role === 'standby')) {
+    // after an automatic failover the old primary must follow THIS site by itself: its address is what makes that possible
+    if (!s.endpoint) add({ id: 'dr_endpoint', level: 'bad', site: s.name, text: `${s.name}: failover automatico attivo ma l’indirizzo con cui gli altri siti lo raggiungono non è indicato: dopo il failover ${prim.name} non potrebbe diventare sua replica da solo`, fix: `indicalo in Georidondanza → «Indirizzo di ${s.name}»` });
+    else add({ id: 'dr_endpoint', level: 'ok', site: s.name, text: `${s.name}: failover automatico attivo (conferma ${pol.confirmSec} s, perdita massima ${pol.maxLossMB} MB)${pol.autoRejoin ? ', vecchio primario riallineato da solo' : ''}` });
+  }
   if (pv.accessible && pv.use_pg_rewind !== true) add({ id: 'rewind', level: 'warn', site: prim.name, clusterId: prim.clusterId, action: 'enable_rewind', text: `${prim.name}: pg_rewind spento: un vecchio primario non potrà diventare sito di replica senza ricostruzione`, fix: 'postgresql.use_pg_rewind: true nel DCS' });
   if (ppg.hba_patroni_local?.ok === false) add({ id: 'hba_local', level: 'bad', site: prim.name, text: `${prim.name}: pg_hba non consente a Patroni la replica locale`, fix: ppg.hba_patroni_local.suggest?.[0] });
   // backups: one catalogue for the database, recent, usable from the DR site too
@@ -279,6 +290,16 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
 /** Health findings for the briefing ("Oggi"): one per standby site in trouble. */
 export function geoIssues(st: any, now = Date.now()) {
   const out: any[] = [];
+  for (const g of geoGroups(st, now)) {
+    const w = watchOf(g.sysid); const f = (st.settings.geoFailovers || {})[g.sysid];
+    const pc = st.clusters.find((c: any) => c.id === (w?.primary || g.primary)); const pol = policyOf(st, g.sysid);
+    if (w?.downSince && pc) out.push({ key: `${pc.id}:geo_primary_lost`, clusterId: pc.id, clusterName: pc.name, environment: pc.environment, severity: 'critical', code: 'geo_primary_lost',
+      title: `Sito primario ${pc.name} non raggiungibile${pol.autoFailover ? ' — failover automatico in preparazione' : ' — serve una decisione'}`,
+      cause: `La console non sente i suoi nodi e ${w.witnesses.standbyName || 'il sito di replica'} non riceve più WAL. ${pol.autoFailover ? `Senza cambiamenti ${w.candidateName} viene promosso tra ${w.actInSec ?? 0} s.` : `Se ${pc.name} è perso, promuovi ${w.candidateName}.`}`, action: { label: 'Apri la georidondanza', page: 'geo' } });
+    if (f && !f.rejoinedAt) { const fc = st.clusters.find((c: any) => c.id === f.from);
+      if (fc) out.push({ key: `${fc.id}:geo_failed_over`, clusterId: fc.id, clusterName: fc.name, environment: fc.environment, severity: 'warning', code: 'geo_failed_over',
+        title: `${f.toName} è primario dopo un disaster recovery: ${f.fromName} non è ancora sua replica`, cause: f.rejoinError ? `Riallineamento non riuscito: ${f.rejoinError}` : `La coppia non è protetta finché ${f.fromName} non torna come sito di replica.`, action: { label: 'Apri la georidondanza', page: 'geo' } }); }
+  }
   for (const g of geoGroups(st, now)) {                  // the pair would not survive the loss of the primary site cleanly: said once, on the primary site
     if (!g.primary) continue;
     const r = geoReadiness(st, g, now); const bad = r.checks.filter(c => c.level === 'bad');
@@ -300,7 +321,7 @@ const pick = (st: any, clusterId: string) => {
   return nodes.find(n => n.snapshot?.patroni?.accessible && (n.snapshot?.postgres?.is_in_recovery === false || n.snapshot?.patroni?.local_node?.role === 'standby_leader')) || nodes.find(n => n.snapshot?.patroni?.accessible);
 };
 
-async function submitTo(store: Store, clusterId: string, type: string, params: any, key: string, actor: string) {
+export async function submitTo(store: Store, clusterId: string, type: string, params: any, key: string, actor: string) {
   const st = store.peek(); const n = pick(st, clusterId);
   if (!n) throw Object.assign(new Error('nessun nodo del sito con Patroni raggiungibile'), { status: 409 });
   const c = conflictFor(st.operations, clusterId, type, params, actor);
@@ -308,7 +329,7 @@ async function submitTo(store: Store, clusterId: string, type: string, params: a
   const { op } = await ops.submit(store, { type, clusterId, nodeId: n.id, params, idempotencyKey: key, createdBy: actor, ttlSeconds: 300 });
   return op;
 }
-async function waitOp(store: Store, id: string, timeoutMs: number) {
+export async function waitOp(store: Store, id: string, timeoutMs: number) {
   const t0 = Date.now();
   for (;;) {
     const o = store.peek().operations.find(x => x.id === id);
@@ -382,7 +403,8 @@ export function mountGeoRoutes(app: any, store: Store) {
   app.get('/api/geo', (_req: Request, res: Response) => {
     const st = store.peek();
     res.json({ rpoTargetSec: Number(st.settings.geoRpoSec) > 0 ? Number(st.settings.geoRpoSec) : GEO_RPO_DEFAULT_SEC,
-      groups: geoGroups(st).map(g => ({ ...g, stanza: g.sites.map(x => st.clusters.find((c: any) => c.id === x.clusterId)?.geoStanza).find(Boolean) || null, readiness: geoReadiness(st, g) })), jobs: Object.values(st.settings.geoJobs || {}).sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 10) });
+      groups: geoGroups(st).map(g => ({ ...g, stanza: g.sites.map(x => st.clusters.find((c: any) => c.id === x.clusterId)?.geoStanza).find(Boolean) || null, readiness: geoReadiness(st, g),
+        policy: policyOf(st, g.sysid), watch: watchOf(g.sysid), failover: (st.settings.geoFailovers || {})[g.sysid] || null, lastPrimary: (st.settings.geoLastPrimary || {})[g.sysid] || null })), jobs: Object.values(st.settings.geoJobs || {}).sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 10) });
   });
   app.get('/api/clusters/:id/geo', (req: Request, res: Response) => res.json({ geo: geoOf(store.peek(), req.params.id) }));
   /** RPO objective of the geo pairs (seconds of transactions it is acceptable to lose if the primary site is lost). */
@@ -392,6 +414,23 @@ export function mountGeoRoutes(app: any, store: Store) {
     await store.mutate(d => { d.settings.geoRpoSec = v; ops.audit(d, { actor: actor(req), action: 'geo.settings', status: 'OK', details: { rpoSec: v } } as any); });
     res.json({ ok: true, rpoSec: v });
   });
+
+  /** DR policy of a pair (key = its system identifier): automatic failover between sites (off by default), how long the primary site must be lost, the most
+   *  data an AUTOMATIC failover may lose, automatic rejoin of the old primary. Admin only. */
+  app.put('/api/geo/policy/:key', async (req: Request, res: Response) => {
+    if ((req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Solo un amministratore cambia la politica di disaster recovery.' });
+    const b = req.body || {}; const key = String(req.params.key);
+    if (!geoGroups(store.peek()).some(g => g.sysid === key)) return res.status(404).json({ error: 'pair_not_found' });
+    const p = { ...GEO_POLICY_DEFAULT, ...(store.peek().settings.geoPolicy?.[key] || {}) };
+    if (b.autoFailover !== undefined) p.autoFailover = !!b.autoFailover;
+    if (b.autoRejoin !== undefined) p.autoRejoin = !!b.autoRejoin;
+    if (b.confirmSec !== undefined) { const v = Number(b.confirmSec); if (!(Number.isInteger(v) && v >= 10 && v <= 3600)) return res.status(400).json({ error: 'invalid', message: 'Attesa di conferma tra 10 secondi e 1 ora.' }); p.confirmSec = v; }
+    if (b.maxLossMB !== undefined) { const v = Number(b.maxLossMB); if (!(v >= 0 && v <= 1_000_000)) return res.status(400).json({ error: 'invalid', message: 'Perdita massima: un numero di MB (0 = nessuna perdita ammessa).' }); p.maxLossMB = v; }
+    await store.mutate(d => { (d.settings.geoPolicy ||= {})[key] = p; ops.audit(d, { actor: actor(req), action: 'geo.policy', status: 'OK', details: { key, ...p } } as any); });
+    res.json({ ok: true, policy: p });
+  });
+  /** "False alarm": no automatic failover for this pair for the next minutes (the operator is looking at it). */
+  app.post('/api/geo/snooze/:key', (req: Request, res: Response) => { const m = Math.max(1, Math.min(240, Number(req.body?.minutes) || 30)); snooze(String(req.params.key), m); res.json({ ok: true, minutes: m }); });
 
   /** Primary / standby relationship set by an operator (when it cannot be detected, or to make intent explicit). primary: cluster id | null (back to
    *  automatic); none: true detaches the cluster from automatic pairing. Refuses self-links and cycles. */
@@ -430,13 +469,18 @@ export function mountGeoRoutes(app: any, store: Store) {
     const alive = me.peers.find(p => p.role === 'primary' && p.online);
     if (alive && primaryLost !== true) return res.status(409).json({ error: 'primary_site_alive', message: `Il sito primario ${alive.name} è ancora attivo e accetta scritture: promuovere ${me.name} ora creerebbe due primari con dati divergenti. Usa lo switchover pianificato, oppure conferma che ${alive.name} è perso.`, primary: alive.name });
     const cluster = st.clusters.find((c: any) => c.id === clusterId);
-    const params = { confirm: 'PROMUOVI', ...(me.peers[0] ? { slot_for_peer: geoSlotFor(me.peers.find(p => p.role === 'primary')?.name || me.peers[0].name) } : {}) };
+    // the site it replicated from: the visible primary, else the last primary the pair knew (the lost one)
+    const grp = geoGroups(st).find(g => g.sites.some(s => s.clusterId === clusterId));
+    const lostId = me.peers.find(p => p.role === 'primary')?.clusterId || (grp ? (st.settings.geoLastPrimary || {})[grp.sysid]?.clusterId : null) || me.peers[0]?.clusterId;
+    if (!grp || !lostId) return res.status(409).json({ error: 'no_peer', message: 'Non so da quale sito replicava: indica la relazione in Georidondanza.' });
+    const params = { from: lostId, to: clusterId, key: grp.sysid };
     if (requiresApproval(st, cluster, 'geo_promote', params)) {
-      const r = await requestApproval(store, ops.audit, { cluster, type: 'geo_promote', params, key, actor: actor(req) } as any);
+      const r = await requestApproval(store, ops.audit, { cluster, type: 'geo_failover', params, key, actor: actor(req) } as any);
       return res.status(202).json({ approval: r, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
     }
-    try { const op = await submitTo(store, clusterId, 'geo_promote', params, key, actor(req)); res.status(202).json({ operation: op }); }
-    catch (e: any) { res.status(e.status || 500).json(e.body || { error: 'failed', message: e.message }); }
+    // same path as the automatic failover: catch-up from the archive, loss estimate, promotion, slot for the old primary, rejoin when it returns
+    const r = await startFailover(store, { key: grp.sysid, from: lostId, to: clusterId, auto: false, actor: actor(req) });
+    res.status(r.code).json(r.body);
   });
 
   /** Split-brain remedy: one of two writable sites becomes a standby site of the other (geo_demote with the other's address). Its writes since the fork are

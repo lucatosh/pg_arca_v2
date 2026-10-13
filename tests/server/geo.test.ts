@@ -5,9 +5,11 @@ import { MiniApp } from './mini-express';
 import { Store } from '../../server/store';
 import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, stanzaOf, geoReadiness } from '../../server/geo';
 import { evaluate } from '../../server/health';
+import { GEO_DR_TIMING, geoMonitorTick, watchOf } from '../../server/geodr';
 import { deriveCluster } from '../../server/view';
 
 (async () => {
+  Object.assign(GEO_DR_TIMING, { stableMs: 300, pollMs: 50, maxCatchupMs: 3000, rejoinPollMs: 50 });
   const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'geo-'))); const app = new MiniApp();
   app.use((req: any, _r: any, next: any) => { req.actor = 'mario'; req.role = 'admin'; return next(); });
   mountGeoRoutes(app, store);
@@ -64,9 +66,18 @@ import { deriveCluster } from '../../server/view';
   const r1 = await app.call('POST', '/api/geo/promote', { body: { clusterId: 'c2', confirm: 'PROMUOVI' }, headers: k('p1') });
   assert.strictEqual(r1.status, 409); assert.strictEqual(r1.body.error, 'primary_site_alive');
   const r2 = await app.call('POST', '/api/geo/promote', { body: { clusterId: 'c2', confirm: 'PROMUOVI', primaryLost: true }, headers: k('p2') });
-  assert.strictEqual(r2.status, 202, JSON.stringify(r2.body)); assert.strictEqual(r2.body.operation.type, 'geo_promote'); assert.strictEqual(r2.body.operation.nodeId, 'b');
-  assert.strictEqual(r2.body.operation.params.slot_for_peer, geoSlotFor('geo-dc1'));
-  await store.mutate(d => { d.operations = []; d.nodes.b.snapshot = snapS('0/9000000'); });
+  assert.strictEqual(r2.status, 202, JSON.stringify(r2.body)); assert.strictEqual(r2.body.job.type, 'failover', 'a manual DR promotion runs the failover procedure (archive catch-up, loss estimate, slot, rejoin)');
+  {
+    const want = async (type: string) => { for (let i = 0; i < 100; i++) { const o = store.peek().operations.find(x => x.type === type && x.status === 'queued'); if (o) return o; await new Promise(r => setTimeout(r, 50)); } throw new Error('no ' + type + ': ' + JSON.stringify(store.peek().settings.geoJobs)); };
+    const fb = await want('geo_archive_fallback'); assert.strictEqual(fb.nodeId, 'b'); assert.strictEqual(fb.params.enable, true);
+    await store.mutate(d => { const x = d.operations.find(y => y.id === fb.id)!; x.status = 'succeeded'; });
+    const pp = await want('geo_promote'); assert.strictEqual(pp.nodeId, 'b'); assert.strictEqual(pp.params.slot_for_peer, geoSlotFor('geo-dc1'));
+    await store.mutate(d => { const x = d.operations.find(y => y.id === pp.id)!; x.status = 'cancelled'; });
+    for (let i = 0; i < 60 && store.peek().settings.geoJobs[r2.body.job.id].status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
+    assert.strictEqual(store.peek().settings.geoJobs[r2.body.job.id].status, 'failed', 'promotion not done: the job says so');
+    assert(!store.peek().settings.geoFailovers?.[geoGroups(store.peek())[0].sysid], 'no failover recorded when the promotion did not happen');
+  }
+  await store.mutate(d => { d.operations = []; d.nodes.b.snapshot = snapS('0/9000000'); d.settings.geoJobs = {}; });
 
   // 4. planned switchover: needs the endpoint of the target site; then demote c1 -> wait -> promote c2
   const nope = await app.call('POST', '/api/geo/switchover', { body: { from: 'c1', to: 'c2', confirm: 'SWITCHOVER' } });
@@ -165,6 +176,64 @@ import { deriveCluster } from '../../server/view';
     assert.strictEqual((await app3.call('PUT', '/api/geo/settings', { body: { rpoSec: 0 } })).status, 400);
     assert.strictEqual((await app3.call('PUT', '/api/geo/settings', { body: { rpoSec: 30 } })).status, 200);
     const gg3 = (await app3.call('GET', '/api/geo')).body; assert.strictEqual(gg3.rpoTargetSec, 30); assert.strictEqual(gg3.groups[0].readiness.rpoTargetSec, 30);
+  }
+  // ---- automatic failover and rejoin (geodr): two witnesses, confirmation window, loss limit, primary back -> standby of the new primary
+  {
+    const st4 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'geodr-')));
+    const app4 = new MiniApp(); app4.use((req: any, _r: any, next: any) => { req.actor = 'mario'; req.role = 'admin'; return next(); }); mountGeoRoutes(app4, st4);
+    await st4.mutate(d => {
+      d.clusters.push({ id: 'm', name: 'hy-mi', environment: 'prod', source: 'agent', geoEndpoint: { host: '192.168.1.179', port: 15432 } } as any, { id: 'r', name: 'hy-rm', environment: 'prod', source: 'agent', geoEndpoint: { host: '192.168.1.232', port: 5000 } } as any);
+      d.nodes.m1 = { id: 'm1', name: 'hy1', clusterId: 'm', lastSeen: now(), snapshot: snapP('0/7000000') } as any;
+      d.nodes.r1 = { id: 'r1', name: 'hyb1', clusterId: 'r', lastSeen: now(), snapshot: snapS('0/7000000') } as any;
+    });
+    const key = geoGroups(st4.peek())[0].sysid; const T0 = Date.now();
+    // simulated clock: the nodes that are "up" heard from just now (in simulated time), the others 2 minutes ago
+    const up: Record<string, boolean> = { m1: true, r1: true };
+    const tick = async (dt = 0) => { await st4.mutate(d => { for (const id of ['m1', 'r1']) d.nodes[id].lastSeen = new Date(T0 + dt - (up[id] ? 1000 : 120_000)).toISOString(); }); return geoMonitorTick(st4, T0 + dt); };
+    const jobs = () => Object.values(st4.peek().settings.geoJobs || {}) as any[];
+    await tick(); assert.strictEqual(st4.peek().settings.geoLastPrimary[key].clusterId, 'm', 'the pair remembers its primary and its position');
+    // policy: off by default; admin sets it
+    assert.strictEqual((await app4.call('GET', '/api/geo')).body.groups[0].policy.autoFailover, false);
+    assert.strictEqual((await app4.call('PUT', `/api/geo/policy/${key}`, { body: { confirmSec: 5 } })).status, 400);
+    assert.strictEqual((await app4.call('PUT', `/api/geo/policy/${key}`, { body: { autoFailover: true, confirmSec: 20, maxLossMB: 16 } })).status, 200);
+    // a) WAN cut: the standby site is blind, the console still hears the primary -> nothing
+    await st4.mutate(d => { d.nodes.r1.snapshot = snapS('0/7000000', 'waiting', 200); });
+    await tick(30_000); assert.strictEqual(jobs().length, 0); assert(/non è un disastro/.test(watchOf(key)?.note || '') || !watchOf(key), JSON.stringify(watchOf(key)));
+    // b) the console loses the primary but the standby site still streams from it -> nothing
+    up.m1 = false; await st4.mutate(d => { d.nodes.r1.snapshot = snapS('0/7000000', 'streaming', 1); });
+    await tick(60_000); await tick(120_000); assert.strictEqual(jobs().length, 0, 'one witness only: no failover');
+    // c) both witnesses: waits the confirmation window, then fails over to the standby site
+    await st4.mutate(d => { d.nodes.r1.snapshot = snapS('0/7000000', 'waiting', 60); });
+    await tick(130_000); assert.strictEqual(jobs().length, 0); const w = watchOf(key)!; assert(w.downSince && w.witnesses.console && w.witnesses.standby, JSON.stringify(w)); assert(w.actInSec! > 0);
+    await tick(152_000); assert.strictEqual(jobs().length, 1); const fj = jobs()[0]; assert.strictEqual(fj.type, 'failover_auto'); assert.strictEqual(fj.to, 'r');
+    const answer4 = async (type: string, then?: (d: any) => void) => { for (let i = 0; i < 100; i++) { const o = st4.peek().operations.find(x => x.type === type && x.status === 'queued');
+      if (o) { await st4.mutate(d => { const x = d.operations.find(y => y.id === o.id)!; x.status = 'succeeded'; x.result = { timeline: 2 }; then?.(d); }); return o; } await new Promise(r => setTimeout(r, 50)); } throw new Error('no ' + type + ' ' + JSON.stringify(jobs())); };
+    await answer4('geo_archive_fallback', d => { d.nodes.r1.snapshot.patroni.standby_cluster.restore_command = 'pg-arca-wal get %f %p'; });
+    const pr = await answer4('geo_promote', d => { d.nodes.r1.snapshot = snapP('0/7000100'); d.nodes.r1.snapshot.patroni.scope = 'hy-rm'; });
+    assert.strictEqual(pr.params.slot_for_peer, 'geo_hy_mi');
+    for (let i = 0; i < 80 && jobs()[0].status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
+    assert.strictEqual(jobs()[0].status, 'succeeded', JSON.stringify(jobs()[0].steps)); assert.strictEqual(jobs()[0].lossBytes, 0);
+    const fo = st4.peek().settings.geoFailovers[key]; assert.deepStrictEqual([fo.from, fo.to, fo.auto], ['m', 'r', true]);
+    await tick(160_000); assert.strictEqual(st4.peek().settings.geoLastPrimary[key].clusterId, 'r', 'the promoted site is now the primary of the pair');
+    // d) the old primary comes back WRITABLE (split-brain) -> becomes a standby site of the new primary by itself, divergence reported
+    up.m1 = true; await st4.mutate(d => { d.nodes.m1.lastSeen = now(); d.nodes.m1.snapshot = snapP('0/7400000'); });
+    assert.strictEqual(geoGroups(st4.peek())[0].primary, 'r', 'the promoted site stays the primary while the old one is back');
+    await tick(170_000);
+    const dm = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/7000100', 'streaming', 1), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
+    assert.strictEqual(dm.nodeId, 'm1'); assert.deepStrictEqual([dm.params.host, dm.params.port, dm.params.primary_slot_name], ['192.168.1.232', 5000, 'geo_hy_mi']);
+    const rj = () => jobs().find(j => j.type === 'rejoin');
+    for (let i = 0; i < 80 && rj()?.status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
+    assert.strictEqual(rj()!.status, 'succeeded', JSON.stringify(rj()!.steps)); assert(rj()!.divergedBytes > 0 && /scartati/.test(rj()!.steps[0].text));
+    assert(st4.peek().settings.geoFailovers[key].rejoinedAt);
+    // e) loss above the limit: an AUTOMATIC failover stops and asks a person
+    await st4.mutate(d => { d.settings.geoJobs = {}; delete d.settings.geoFailovers; d.settings.geoLastPrimary[key] = { clusterId: 'r', name: 'hy-rm', lsn: '0/9000000', at: now() };
+      d.nodes.m1.snapshot = { ...d.nodes.m1.snapshot, postgres: { ...d.nodes.m1.snapshot.postgres, current_lsn: '0/7000100', wal_receiver: { status: 'waiting', sender_host: '192.168.1.232', sender_port: 5000, silent_sec: 90 } } }; });
+    up.r1 = false; up.m1 = true; await tick(200_000); await tick(230_000);
+    const held = jobs()[0]; assert(held, 'failover started');
+    await answer4('geo_archive_fallback');
+    for (let i = 0; i < 80 && jobs()[0].status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
+    assert.strictEqual(jobs()[0].status, 'held', JSON.stringify(jobs()[0].steps)); assert(/oltre il limite/.test(jobs()[0].error));
+    assert(!st4.peek().operations.some(o => o.type === 'geo_promote' && o.status === 'queued'), 'nothing promoted');
   }
   console.log('geo tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

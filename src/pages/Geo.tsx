@@ -12,8 +12,13 @@ interface Site { clusterId: string; name: string; environment: string; role: 'pr
   endpoint: { host: string; port: number } | null; upstream?: { host: string; port: number; slot?: string } | null; receiver?: { status: string; sender: string; silentSec: number | null } | null;
   lagBytes?: number | null; replayDelaySec?: number | null; slot?: { name: string; active: boolean; retainedBytes: number | null } | null; health: 'ok' | 'warn' | 'bad'; problems: string[] }
 interface Ready { checks: { id: string; level: 'ok' | 'warn' | 'bad' | 'info'; text: string; fix?: string; site?: string; clusterId?: string; action?: 'archive_fallback' | 'enable_rewind' }[]; status: 'ready' | 'degraded' | 'not_ready'; rpoSec: number | null; rpoTargetSec: number; lastTest: { at: string; seconds: number | null; from: string; to: string } | null }
-interface Group { sysid: string; sites: Site[]; primary: string | null; readiness?: Ready }
-interface Job { id: string; fromName: string; toName: string; status: string; createdBy: string; createdAt: string; steps: { at: string; text: string }[]; error?: string }
+interface Policy { autoFailover: boolean; confirmSec: number; maxLossMB: number; autoRejoin: boolean }
+interface Watch { primaryName?: string; downSince: number | null; witnesses: { console: boolean; standby: boolean; standbyName?: string }; lastSeenSec: number | null; candidate?: string | null; candidateName?: string; actInSec: number | null; snoozedUntil?: number | null; note?: string }
+interface Failover { from: string; to: string; fromName: string; toName: string; at: string; lossBytes: number | null; auto: boolean; rejoinedAt?: string; rejoinError?: string }
+interface Group { sysid: string; sites: Site[]; primary: string | null; readiness?: Ready; policy?: Policy; watch?: Watch | null; failover?: Failover | null }
+interface Job { id: string; type?: string; fromName: string; toName: string; status: string; createdBy: string; createdAt: string; steps: { at: string; text: string }[]; error?: string }
+const JOB_IT: Record<string, string> = { switchover: 'Switchover pianificato', failover: 'Disaster recovery (promozione manuale)', failover_auto: 'Disaster recovery automatico', rejoin: 'Riallineamento del vecchio primario' };
+const JOB_ST: Record<string, [string, 'ok' | 'bad' | 'warn' | 'accent']> = { running: ['in corso', 'accent'], succeeded: ['completato', 'ok'], failed: ['interrotto', 'bad'], held: ['in attesa di una decisione', 'warn'] };
 
 const ROLE_IT = { primary: 'Sito primario', standby: 'Sito di replica (DR)', unknown: 'Ruolo non determinato' };
 
@@ -29,7 +34,7 @@ export function GeoPage({ role }: { role: string }) {
     {!d ? <Skeleton h={220} /> : !d.groups.length ? <Empty icon="swap" title="Nessuna coppia di siti">Quando un cluster in modalità <code>standby_cluster</code> (o uno standby fisico registrato come cluster) replica da un altro cluster collegato, la coppia compare qui da sola. Per un cluster senza agent, o per dichiarare la relazione prima di attivare la replica, usa «Indica un sito di replica».</Empty> :
       d.groups.map(g => <GroupCard key={g.sysid} g={g} role={role} running={d.jobs.some(j => j.status === 'running')} />)}
     {d?.jobs?.length ? <Card title="Passaggi tra siti"><div className="stack">{d.jobs.map(j => <div key={j.id} className="geojob">
-      <div className="row"><strong>{j.fromName} → {j.toName}</strong><Badge kind={j.status === 'succeeded' ? 'ok' : j.status === 'failed' ? 'bad' : 'accent'}>{j.status === 'running' ? 'in corso' : j.status === 'succeeded' ? 'completato' : 'interrotto'}</Badge><div className="grow" /><span className="small faint">{j.createdBy}, {ago(j.createdAt)}</span></div>
+      <div className="row wrap gap-s"><strong>{JOB_IT[j.type || 'switchover'] || j.type}: {j.fromName} → {j.toName}</strong><Badge kind={(JOB_ST[j.status] || [j.status, 'accent'])[1]}>{(JOB_ST[j.status] || [j.status])[0]}</Badge><div className="grow" /><span className="small faint">{j.createdBy}, {ago(j.createdAt)}</span></div>
       <ol className="small">{j.steps.map((s, i) => <li key={i}>{s.text} <span className="faint">({new Date(s.at).toLocaleTimeString('it-IT')})</span></li>)}</ol></div>)}</div></Card> : null}
   </>;
 }
@@ -66,6 +71,7 @@ function GroupCard({ g, role, running }: { g: Group; role: string; running: bool
       </div>)}</div>
       <div className="stack">{[...extra, ...stand].map(s => <SiteCard key={s.clusterId} s={s} onOpen={() => go(`c/${encodeURIComponent(s.clusterId)}`)} />)}</div>
     </div>
+    <DrPanel g={g} role={role} prim={prim} onPromote={s => setDlg({ kind: 'promote', site: s })} />
     {g.readiness ? <Readiness r={g.readiness} role={role} /> : null}
     {role === 'admin' ? <div className="row wrap" style={{ marginTop: 14 }}>
       {prim && stand.map(s => <Button key={'sw' + s.clusterId} icon="swap" disabled={running || s.health === 'bad'} title={s.health === 'bad' ? 'Il sito di replica non è in salute' : undefined} onClick={() => setDlg(s.endpoint ? { kind: 'switch', site: s } : { kind: 'endpoint', site: s, next: 'switch' })}>Switchover pianificato verso {s.name}</Button>)}
@@ -159,4 +165,46 @@ function Readiness({ r, role }: { r: Ready; role: string }) {
       <Field label="Secondi di transazioni che è accettabile perdere se il sito primario sparisce" hint="Oltre l’obiettivo la coppia è «con riserve»; oltre dieci volte «non pronta». Vale per tutte le coppie di siti.">
         <input className="input" type="number" min={1} max={86400} value={rpo} onChange={e => setRpo(e.target.value)} /></Field></Modal> : null}
   </div>;
+}
+
+/** Disaster recovery of the pair: the policy (automatic failover / rejoin), what the monitor sees right now, and the last failover with what is left to do. */
+function DrPanel({ g, role, prim, onPromote }: { g: Group; role: string; prim?: Site; onPromote: (s: Site) => void }) {
+  const p = g.policy; const w = g.watch; const f = g.failover; const [edit, setEdit] = useState(false);
+  if (!p) return null;
+  const cand = w?.candidate ? g.sites.find(s => s.clusterId === w.candidate) : undefined;
+  const snoozeIt = async () => { try { await api('POST', `/api/geo/snooze/${encodeURIComponent(g.sysid)}`, { minutes: 30 }); toast('Failover automatico sospeso per 30 minuti per questa coppia', 'ok'); revalidate('/api/geo'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } };
+  const down = w && w.downSince ? Math.round((Date.now() - w.downSince) / 1000) : null;
+  return <div className="stack" style={{ marginTop: 12 }}>
+    {w && w.downSince ? <Banner kind="bad" title={`Il sito primario ${w.primaryName} non risponde da ${down} s`}
+      actions={role === 'admin' && cand ? <><Button sm kind="danger" onClick={() => onPromote(cand)}>Promuovi {cand.name} ora…</Button>{p.autoFailover && !w.snoozedUntil ? <Button sm onClick={snoozeIt}>Falso allarme: aspetta 30 min</Button> : null}</> : null}>
+      <div>La console non lo sente {w.lastSeenSec != null ? `da ${w.lastSeenSec} s` : ''} e {w.witnesses.standbyName} non riceve più WAL da lui: due conferme indipendenti.</div>
+      <div className="small" style={{ marginTop: 4 }}>{w.snoozedUntil ? `Failover automatico sospeso fino alle ${new Date(w.snoozedUntil).toLocaleTimeString('it-IT')}.` : p.autoFailover ? (w.actInSec ? `Failover automatico verso ${w.candidateName} tra ${w.actInSec} s, se la situazione non cambia.` : `Failover automatico verso ${w.candidateName} in corso o appena deciso.`) : 'Failover automatico spento: la promozione la decidi tu.'}</div></Banner>
+      : w?.note && !f ? <div className="small muted"><Icon n="info" s={13} /> {w.note}</div> : null}
+    {f && !f.rejoinedAt ? <Banner kind="warn" title={`${f.toName} è il sito primario dal ${new Date(f.at).toLocaleString('it-IT')} (${f.auto ? 'failover automatico' : 'promozione manuale'})`}>
+      {f.lossBytes != null ? <div>Dati persi stimati: {f.lossBytes === 0 ? 'nessuno' : `circa ${bytes(f.lossBytes)} di WAL`} rispetto all’ultima posizione nota di {f.fromName}.</div> : null}
+      <div>{g.sites.find(s => s.clusterId === f.from)?.online ? `${f.fromName} è tornato: ${p.autoRejoin ? 'pg_arca lo sta riallineando come sito di replica' : 'declassalo a sito di replica (non deve accettare scritture)'}.` : `${f.fromName} è ancora irraggiungibile: ${p.autoRejoin ? `quando torna pg_arca lo trasforma da solo in sito di replica di ${f.toName}` : 'quando torna va declassato a sito di replica'}.`}</div>
+      {f.rejoinError ? <div className="small" style={{ color: 'var(--bad)' }}>Ultimo tentativo di riallineamento: {f.rejoinError}</div> : null}</Banner> : null}
+    <div className="row wrap gap-s small">
+      <Icon n="shield" s={14} /><span><strong>Failover automatico tra siti:</strong> {p.autoFailover ? <>attivo — dopo {p.confirmSec} s di conferma, se la perdita stimata non supera {p.maxLossMB} MB</> : 'spento (la promozione del sito di replica la decide una persona)'}</span>
+      <span className="faint">·</span><span><strong>Vecchio primario al ritorno:</strong> {p.autoRejoin ? 'diventa da solo sito di replica del nuovo primario' : 'resta fermo finché non lo declassi tu'}</span>
+      <div className="grow" />{role === 'admin' ? <Button sm kind="ghost" onClick={() => setEdit(true)}>Modifica…</Button> : null}</div>
+    {edit ? <PolicyDialog g={g} p={p} prim={prim} onClose={() => setEdit(false)} /> : null}
+  </div>;
+}
+
+function PolicyDialog({ g, p, prim, onClose }: { g: Group; p: Policy; prim?: Site; onClose: () => void }) {
+  const [v, setV] = useState<Policy>(p); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
+  const stand = g.sites.filter(s => s.role === 'standby');
+  const save = async () => { setBusy(true); setErr(null); try { await api('PUT', `/api/geo/policy/${encodeURIComponent(g.sysid)}`, v); revalidate('/api/geo'); toast('Politica di disaster recovery salvata', 'ok'); onClose(); } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); } };
+  return <Modal title="Disaster recovery tra i siti" onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} onClick={save}>Salva</Button></>}>
+    <div className="stack">
+      <label className="check"><input type="checkbox" checked={v.autoFailover} onChange={e => setV({ ...v, autoFailover: e.target.checked })} /><span><strong>Failover automatico</strong>: se {prim?.name || 'il sito primario'} si perde, {stand.map(s => s.name).join(' / ') || 'il sito di replica'} viene promosso senza attendere una persona.</span></label>
+      <p className="small muted" style={{ marginTop: -6 }}>Scatta solo con due conferme indipendenti per tutto il tempo indicato: la console non sente nessun nodo del sito primario <em>e</em> il sito di replica non riceve più WAL da lui. Una rete interrotta tra i soli siti, o la sola console isolata, non promuovono nulla. Prima della promozione il sito di replica recupera anche dall’archivio WAL condiviso ciò che lo streaming non ha portato.</p>
+      <div className="grid g2">
+        <Field label="Conferma per (secondi)" hint="Da 10 s a 1 ora. Più è lungo, meno falsi allarmi; più è corto, meno fermo."><input className="input" type="number" min={10} max={3600} value={v.confirmSec} onChange={e => setV({ ...v, confirmSec: Number(e.target.value) })} /></Field>
+        <Field label="Perdita massima ammessa (MB di WAL)" hint="Oltre questa stima il failover automatico si ferma e chiede una decisione."><input className="input" type="number" min={0} value={v.maxLossMB} onChange={e => setV({ ...v, maxLossMB: Number(e.target.value) })} /></Field>
+      </div>
+      <label className="check"><input type="checkbox" checked={v.autoRejoin} onChange={e => setV({ ...v, autoRejoin: e.target.checked })} /><span><strong>Riallineamento automatico</strong>: quando il vecchio primario torna, diventa subito sito di replica del nuovo (niente due primari). Quello che aveva scritto dopo il punto di promozione viene scartato e indicato.</span></label>
+      <p className="small muted">Le applicazioni devono raggiungere il nuovo primario da sole (DNS, VIP o HAProxy che seguono il leader): pg_arca non cambia la rete.</p>
+      {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
 }

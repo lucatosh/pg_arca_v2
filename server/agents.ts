@@ -20,6 +20,7 @@ import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
 import { conflictFor, activityOf } from './conflicts';
 import { agentOutdated, consoleAgentBuild } from './agentbuild';
+import { startFailover } from './geodr';
 import { startSwitchover, geoParamGuard, geoStanzaPlan, geoOf } from './geo';
 const geoStanzaChecked = new Map<string, number>();
 
@@ -457,6 +458,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (!cluster) return res.status(404).json({ error: 'cluster_not_found' });
     const r = rec.type === 'hba_cluster_apply' ? await hbaFanout(store, cluster, rec.params, 'appr:' + id, rec.requestedBy)
       : rec.type === 'geo_switchover' ? await startSwitchover(store, rec.params.from, rec.params.to, rec.requestedBy)
+      : rec.type === 'geo_failover' ? await startFailover(store, { key: rec.params.key, from: rec.params.from, to: rec.params.to, auto: false, actor: rec.requestedBy })
       : rec.type === 'destination_apply' ? await applyDestination(store, cluster, 'appr:' + id, rec.requestedBy)
       : await execute(cluster, rec.type, rec.params, rec.type === 'hba_restore' ? hbaTarget(store.peek(), cluster.id)?.id : rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
     if (r.code >= 400) return res.status(r.code).json(r.body);                    // not consumed: the approver can retry when the node is back
