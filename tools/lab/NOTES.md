@@ -60,3 +60,17 @@
 | 56 | 11/10 sera | Big scenario: backup durante il carico rifiutato «nessun nodo con PostgreSQL attivo»; restore_instance su /srv «internal error: [Errno 13]» | Telemetria robusta sotto carico (query leggera + dimensioni in background); PGA-RST-033 con il comando di correzione, errori di permesso/spazio chiari. |
 | 57 | 11/10 notte | Matrice PG14: ripristino parziale bloccato 15 min («could not open file base/13780/1259»); database eliminato non recuperabile; test_objects_v2 mai eseguito nella matrice; pull dell'immagine PG16 bloccato | OID del database `postgres` dal catalogo (fisso solo dalla 15) + uscita immediata PGA-PITR-014; marcatura «invalido» cercata anche nel segmento precedente; matrice copia testdb.sql; pull con timeout e tentativi. Esito: **PG15 PASS, PG16 PASS** (172 test reali ciascuna), PG14 1 fallimento di tempistica del test (corretto), 17/18 in corso. |
 | 58 | 11/10 notte | VM: «soft lockup», «rcu_preempt stall» frequenti | Causa: VirtualBox sopra Hyper-V attivo (WSL2) + 4 vCPU su 4 core fisici + I/O. Scelta dell'utente: lasciare così; il lab evita carichi paralleli pesanti. |
+
+## Server vergini su Proxmox (miniserver di casa) — `tools/lab/proxmox/virgin.sh`
+Dal 13/10 sera: container LXC creati sul Proxmox con PostgreSQL installato **come lo installa ogni distribuzione o fornitore**, dati di esempio (`app`: pgbench + schema `sales` con FK e vista) e **niente di pg_arca**. Si collegano alla console come farebbe un cliente: «Genera comando» nella console → `./virgin.sh agent '<comando>' all` (o un nodo alla volta). Ogni container ha uno snapshot `virgin` preso subito dopo l'installazione: `./virgin.sh reset all` riporta tutto allo stato vergine in pochi secondi (agent, archiviazione, backup: spariti). L'orologio è quello dell'host Proxmox (NTP): niente più deriva come sulla VM.
+
+| Profilo | Cosa mette alla prova |
+|---|---|
+| `deb12-pg15` | Debian 12 con il PostgreSQL di Debian: layout `/var/lib/postgresql/15/main` + `/etc/postgresql`, servizio `postgresql@15-main`; attivazione archiviazione + riavvio (polkit), primo backup, ripristini |
+| `ubu24-pg16` | lo stesso su Ubuntu 24.04 |
+| `deb12-pg17-custom` | PGDG 17 in `/srv/pgdata/17`, porta 5544, tablespace `/srv/ts/fast` con una tabella, log in `/var/log/pg17`: rilevamento senza assunzioni, backup/restore con tablespace |
+| `rocky9-pg14` | Rocky 9 + RPM PGDG: `/var/lib/pgsql/14/data`, configurazione dentro PGDATA, servizio `postgresql-14`, binari in `/usr/pgsql-14/bin` |
+| `deb12-pg18-two` | DUE cluster PostgreSQL 18 sullo stesso server (5432 e 5433): quale prende l'agent, e come lo si cambia da «Percorsi e rilevamento» |
+| `pat1`–`pat3` | Patroni (pacchetti PGDG) + etcd su 3 nodi, PostgreSQL 16: parametri e pg_hba SOLO via DCS, switchover, backup da replica, un token per 3 server |
+
+Uso (sull'host Proxmox, root): `./virgin.sh list`, `./virgin.sh create all` (o i nomi), `./virgin.sh status`, `./virgin.sh reset all`, `./virgin.sh destroy all`. Variabili: `STORAGE` (deve supportare gli snapshot: lvm-thin/zfs), `BRIDGE`, `IPBASE`+`GW` per indirizzi fissi (consigliati per Patroni), `CTID0` (id del primo container, 410). Memoria: circa 9 GB se si creano tutti; si possono creare a gruppi. **Scritto senza un Proxmox a disposizione: non ancora eseguito** — al primo giro aspettarsi piccole correzioni.
