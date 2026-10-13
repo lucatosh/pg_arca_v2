@@ -157,6 +157,26 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### Sessione 14/10 notte (2): georidondanza, disaster recovery automatico, lab ibrido Docker+Proxmox su Rocky
+- **Failover automatico tra siti** (`server/geodr.ts`). È spento per default e si attiva per coppia: Georidondanza → «Modifica…».
+  - **Quando scatta:** servono due testimoni indipendenti per tutto il tempo di conferma: la console non sente alcun nodo del primario e il sito di replica non riceve più WAL.
+  - **Cosa fa:** recupera dall'archivio condiviso (`geo_archive_fallback`), stima la perdita rispetto all'ultima posizione nota del primario e la confronta con un limite (oltre il limite il job va in «in attesa di decisione»). Se il primario torna durante l'attesa annulla, altrimenti promuove con slot permanente per il vecchio primario.
+  - **Promozione manuale:** stessa procedura.
+  - **Riallineamento automatico:** il vecchio primario, quando torna, diventa replica del nuovo (`geo_demote` verso l'indirizzo del nuovo primario). Il WAL divergente viene riportato.
+  - **Visibilità:** la coppia resta visibile anche con un sito giù; la situazione compare nella pagina Georidondanza e nel briefing «Oggi».
+  - **Test:** `tests/server/geo.test.ts` copre WAN tagliata, console cieca, entrambi i testimoni, perdita oltre il limite e riallineamento. **Non ancora provato su siti reali.**
+- **Altro fatto e provato:**
+  - Analisi WAL che archivia prima il segmento corrente (trovato dal test UI su pg-solo1).
+  - Base del ripristino «subito prima della transazione X» scelta con l'LSN di X (`xid_lsn`) invece dell'ultimo full: su solo1 il replay da un full di due giorni durava più di 30 minuti.
+- **Lab `hy`** (`tools/lab/hy.sh`, `tools/lab/hy/`), Rocky Linux 9, PG16 PGDG + Patroni rpm, come lo costruirebbe un DBA:
+  - Primario hy-mi su Docker nella VM: HAProxy su `192.168.1.179:15432`.
+  - Standby hy-rm su Proxmox: CT 420-422, IP .230-.232; HAProxy `192.168.1.232:5000`.
+  - Archivio condiviso NFS `192.168.1.5:/srv/arca-hy` montato in `/mnt/arca`.
+  - La build era **in corso** al momento della consegna (log `/tmp/hy-up.log`). La rete della VM scarica a circa 100 kB/s, quindi i pacchetti sono nell'immagine.
+  - Poi, tutto dalla console: indirizzo della console `http://192.168.1.179:3000`, agent con il comando (`hy.sh agent-a/agent-b '<cmd>'`), archiviazione, destinazione NFS, coppia, indirizzi (hy-mi `192.168.1.179:15432`, hy-rm `192.168.1.232:5000`).
+  - Prove: switchover andata e ritorno; `hy.sh kill-a` con failover automatico, poi `start-a` con riallineamento; `hy.sh wan-cut` senza falso failover.
+- **Sospesi:** suite UI di restore su pg-solo1 (fermata: VM con load 16), vers18, arca-lab; onboarding dei CT Proxmox vergini dalla UI. La chiave ssh VM→Proxmox funziona (`ssh root@192.168.1.5` dalla VM).
+
 ### Sessione 13→14/10 notte: restore via web UI, copia d'istanza avviata, agent aggiornabili
 - **Fatto e provato**:
   - **Operazioni con avanzamento uniforme** (inviata → presa in carico → in esecuzione → esito, tempo, nodo, Log, fase del fallimento) e **console non raggiungibile** gestita (timeout, ritentativi con la stessa chiave, barra unica).
