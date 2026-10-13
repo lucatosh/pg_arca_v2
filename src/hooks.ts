@@ -70,6 +70,16 @@ const ssSet = (k: string, v: any) => { try { if (v === undefined) sessionStorage
 export function readDraft<T>(key: string): T | undefined { return drafts.has(key) ? drafts.get(key) : ssGet(key); }
 export function writeDraft(key: string, v: any, session = true) { drafts.set(key, v); if (session) ssSet(key, v); }
 const draftResets = new Set<(prefix: string) => void>();
+/** Logout, or another user signing in on this browser: nothing typed by the previous user may be shown. */
+export function clearAllDrafts() {
+  drafts.clear();
+  try { for (let i = sessionStorage.length - 1; i >= 0; i--) { const k = sessionStorage.key(i) || ''; if (k.startsWith(SS)) sessionStorage.removeItem(k); } } catch { /* ignore */ }
+}
+export function draftsOwner(user: string) {
+  let prev: string | null = null; try { prev = sessionStorage.getItem('pgarca.draft-owner'); } catch { /* ignore */ }
+  if (prev !== null && prev !== user) clearAllDrafts();
+  try { sessionStorage.setItem('pgarca.draft-owner', user); } catch { /* ignore */ }
+}
 export function clearDrafts(prefix: string) {
   draftResets.forEach(f => f(prefix));
   for (const k of [...drafts.keys()]) if (k === prefix || k.startsWith(prefix + ':')) drafts.delete(k);

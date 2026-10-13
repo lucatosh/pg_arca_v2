@@ -56,6 +56,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   const pg = p.locator('main.page'); await pg.evaluate(e => e.scrollTo({ top: 400 })); await p.waitForTimeout(200); const y = await pg.evaluate(e => e.scrollTop);
   await p.click('.navbtn:has-text("Oggi")'); await p.waitForTimeout(300); await p.goBack(); await p.waitForTimeout(600);
   if (y > 0) assert(Math.abs((await pg.evaluate(e => e.scrollTop)) - y) < 30, `scroll position restored (${y})`);
+  // 8. logout forgets every draft (another person may sign in on this browser)
+  await p.goto(base + '/#/'); await p.click('button[aria-label="Esci"]'); await p.waitForSelector('text=Accedi');
+  await p.fill('input[type=password]', 'correct-horse-battery'); await p.click('button[type=submit]'); await p.waitForSelector('a:has-text("prodpg")');
+  await p.click('a:has-text("prodpg")'); await tab('Operatività', 'Parametri');
+  assert.equal(await p.locator('input[placeholder="64MB"]').inputValue(), '', 'drafts cleared at logout');
+  const left = await p.evaluate(() => Object.keys(sessionStorage).filter(k => k.startsWith('pgarca.draft.') && /128MB|appdb_ieri|reporting/.test(sessionStorage.getItem(k) || ''))); assert.deepEqual(left, [], 'nothing typed before the logout is left in sessionStorage');
   if (errs.length) throw new Error(errs.join('\n'));
   console.log('fluidity OK'); await b.close();
 })().catch(async e => { console.error('FAIL', e.message); try { await global.__p.screenshot({ path: `${out}/fail.png` }); } catch { /* */ } process.exit(1); });
