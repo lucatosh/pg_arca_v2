@@ -1,0 +1,47 @@
+# Lab "hy": a geo-redundant pair across two platforms, like two data centres of a customer running RHEL-like servers.
+#   site hy-mi (PRIMARY, here on Docker): etcd + hy1/hy2 (Rocky Linux 9, PostgreSQL 16 PGDG + Patroni rpm, systemd) + HAProxy published on the
+#                                          lab VM as :15432 (follows the site's leader: what the other site replicates from)
+#   site hy-rm (STANDBY, on the Proxmox host): tools/lab/proxmox/hy.sh (hyb1/hyb2 + hybx with etcd and HAProxy :5000)
+#   shared WAL archive / backups: NFS export of the Proxmox host (192.168.1.5:/srv/arca-hy), mounted by the admin on every node at /mnt/arca
+# Nothing of pg_arca is preconfigured: agents from the console's command, archiving / destination / geo from the console.  Driven by ../hy.sh
+name: arca-hy
+x-srv: &srv
+  build: .
+  image: pg-arca-lab-rocky:9
+  privileged: true
+  tmpfs: ["/run", "/run/lock", "/tmp"]
+  extra_hosts: ["host.docker.internal:host-gateway"]
+  networks: [hy]
+  restart: unless-stopped
+services:
+  hy-etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    hostname: hy-etcd
+    container_name: hy-etcd
+    command: >
+      etcd --name hy-etcd --data-dir /data --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://hy-etcd:2379
+      --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://hy-etcd:2380 --initial-cluster hy-etcd=http://hy-etcd:2380 --enable-v2=true
+    volumes: ["hy-etcd:/data"]
+    networks: [hy]
+    restart: unless-stopped
+  hy1:
+    <<: *srv
+    hostname: hy1
+    container_name: hy1
+    volumes: ["hy1var:/var/lib/pgsql"]
+  hy2:
+    <<: *srv
+    hostname: hy2
+    container_name: hy2
+    volumes: ["hy2var:/var/lib/pgsql"]
+  hy-haproxy:
+    image: haproxy:2.9-alpine
+    hostname: hy-haproxy
+    container_name: hy-haproxy
+    volumes: ["./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro,z"]
+    ports: ["15432:5000"]
+    networks: [hy]
+    restart: unless-stopped
+networks:
+  hy: { ipam: { config: [{ subnet: 172.30.40.0/24 }] } }
+volumes: { hy-etcd: {}, hy1var: {}, hy2var: {} }
