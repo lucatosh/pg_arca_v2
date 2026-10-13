@@ -13,6 +13,7 @@
 #       PG_ARCA_INSTANCE=<name> PG_ARCA_PGDATA=<data dir>   one more agent for ANOTHER PostgreSQL instance on the same server (several clusters on one host):
 #                             own config /etc/pg-arca/<name>, state /var/lib/pgarca/<name>, service pg-arca-agent-<name>, node name <host>-<name>
 #       PG_ARCA_ALLOW_PG_RESTART=0   do not let the agent restart PostgreSQL's systemd unit (default: allowed through a polkit rule limited to postgresql units)
+#       PG_ARCA_UNINSTALL=1  remove the agent (keeps backups/WAL; PG_ARCA_PURGE=1 deletes them too; refused while PostgreSQL archives through pg_arca)
 #       PG_ARCA_ROLE=worker   operational machine (backup server, host for the recovery instances): no database is searched; runs as postgres if present, else as a
 #                             dedicated system user "pgarca" created here
 # ==============================================================================
@@ -48,6 +49,33 @@ if [[ -n "$INST" ]]; then
   : "${PG_ARCA_NODE_NAME:=$(hostname -s)-$INST}"; export PG_ARCA_NODE_NAME
 fi
 REPO_DIR="${PG_ARCA_REPO:-$STATE_ROOT/repo}"; WAL_DIR="${PG_ARCA_WAL:-$STATE_ROOT/wal}"; LOG_DIR=/var/log/pgarca; SCRATCH="${PG_ARCA_SCRATCH:-/var/tmp/pg_arca_scratch}"
+
+# --- uninstall ------------------------------------------------------------------
+# PG_ARCA_UNINSTALL=1: removes the agent (service, code, commands, polkit rule, configuration and console credentials) and KEEPS the backups and the WAL
+# archive ($STATE_ROOT) unless PG_ARCA_PURGE=1. Refused while PostgreSQL still archives through pg-arca-wal: removing the command would make every
+# archive attempt fail and pg_wal would grow until the disk is full. Switch archiving off (or to another tool) first, or PG_ARCA_FORCE=1.
+if [[ "${PG_ARCA_UNINSTALL:-}" == 1 ]]; then
+  ac=""
+  if command -v psql >/dev/null || ls /usr/lib/postgresql/*/bin/psql /usr/pgsql-*/bin/psql >/dev/null 2>&1; then
+    PSQL=$(command -v psql || ls /usr/lib/postgresql/*/bin/psql /usr/pgsql-*/bin/psql 2>/dev/null | tail -1)
+    ac=$(su - "$PGUSER_OS" -c "$PSQL -XAtc 'SHOW archive_command' 2>/dev/null" 2>/dev/null || true)
+  fi
+  if [[ "$ac" == *pg-arca-wal* && "${PG_ARCA_FORCE:-}" != 1 ]]; then
+    die "PostgreSQL still archives WAL through pg_arca (archive_command = $ac). Switch archiving off or to another tool first (then reload), or set PG_ARCA_FORCE=1."
+  fi
+  systemctl disable --now "$UNIT.service" >/dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/$UNIT.service"; systemctl daemon-reload 2>/dev/null || true
+  rm -rf "$CONF_DIR"
+  if [[ -z "$INST" ]]; then            # the shared parts go only with the main agent (other instances may still use them)
+    ls /etc/systemd/system/pg-arca-agent-*.service >/dev/null 2>&1 && echo "NOTE: other pg_arca agents on this server (pg-arca-agent-*) are left in place, and so is the shared code"
+    if ! ls /etc/systemd/system/pg-arca-agent-*.service >/dev/null 2>&1; then
+      rm -rf "$INSTALL_DIR" /usr/local/bin/pg-arca-cli /usr/local/bin/pg-arca-wal /etc/polkit-1/rules.d/50-pg-arca-restart.rules
+    fi
+  fi
+  if [[ "${PG_ARCA_PURGE:-}" == 1 ]]; then rm -rf "$STATE_ROOT"; echo "pg_arca removed, backups and WAL archive in $STATE_ROOT DELETED."
+  else echo "pg_arca agent removed. Backups and WAL archive are kept in $STATE_ROOT (PG_ARCA_PURGE=1 to delete them too). Remove the node from the console as well."; fi
+  exit 0
+fi
 
 # --- python + tools ------------------------------------------------------------
 if ! command -v python3 >/dev/null; then
