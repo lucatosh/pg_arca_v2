@@ -1,0 +1,31 @@
+#!/bin/bash
+# Lab: run SQL on the PRIMARY of a cluster of the console, found by its name in the console (whatever machine runs it):
+#   tools/lab/ui/sql.sh <cluster name> <database> '<sql>'        (or the SQL on stdin)
+#   tools/lab/ui/sql.sh <cluster name> --node                     prints "<node> <port>" of the primary
+#   tools/lab/ui/sql.sh <cluster name> --on <node> <port> <db> '<sql>'   on that node / port (e.g. a restored copy)
+# Docker containers on this VM: docker exec as the postgres OS user (or the lab superuser password). Output: psql -At (one row per line, | between columns).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+name=$1; shift
+if [ "${1:-}" = --on ]; then node=$2; port=$3; shift 3
+else
+  read -r node port < <(./api.sh GET /api/clusters | python3 -c '
+import json, sys
+name = sys.argv[1]
+for c in json.load(sys.stdin)["clusters"]:
+    if c["name"] == name:
+        p = [n for n in c.get("nodes", []) if n.get("role") == "primary" and n.get("online", True)] or c.get("nodes", [])
+        print(p[0]["name"], p[0].get("port") or 5432); break
+else:
+    sys.exit("no cluster named %s in the console" % name)' "$name")
+fi
+if [ "${1:-}" = --node ]; then echo "$node $port"; exit 0; fi
+db=$1; sql=${2:-$(cat)}
+set -a; [ -f .env ] && . ./.env; set +a
+docker inspect "$node" >/dev/null 2>&1 || { echo "node $node is not a container on this VM" >&2; exit 2; }
+psql_peer="psql -X -At -q -v ON_ERROR_STOP=1 -p $port${SOCK:+ -h $SOCK}"     # SOCK=<socket dir>: a restored copy listens on its private socket
+if docker exec "$node" su postgres -s /bin/bash -c "$psql_peer -d postgres -c 'select 1'" >/dev/null 2>&1; then
+  printf '%s\n' "$sql" | docker exec -i "$node" su postgres -s /bin/bash -c "$psql_peer -d '$db'"
+else
+  printf '%s\n' "$sql" | docker exec -i -e PGPASSWORD="${PG_SUPER_PASSWORD:-}" "$node" psql -X -At -q -v ON_ERROR_STOP=1 -h localhost -U postgres -p "$port" -d "$db"
+fi

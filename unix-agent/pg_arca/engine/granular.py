@@ -1326,10 +1326,15 @@ def diff_object(ctx, stage_db, spec, into=None, limit=200):
         lv.close()
 
 
-def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, dry_run=False):
+APPLY_ROWS_MAX = 200000
+
+
+def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, dry_run=False, restore_all=(), delete_all_added=False):
     """Put selected rows from the quarantine copy back into the live table, in ONE transaction.
       restore_keys : primary keys (JSON arrays) to insert if missing or overwrite with the recovered version
       delete_keys  : primary keys (JSON arrays) of rows added after the restore point that should be removed
+      restore_all  : whole categories computed here, whatever their size - "missing" (deleted since the restore point), "changed"
+      delete_all_added : every row added since the restore point is removed
     Before touching anything the current version of every affected row is saved in pgarca_rowsafe_<ts>_<table>.
     Nothing is applied if any key cannot be found or the table definitions differ in a way that makes the copy unsafe."""
     import json
@@ -1341,10 +1346,11 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
         raise EngineError("PGA-GEN-081", "only quarantine databases created by pg_arca can be used as source")
     _check_name(stage_db, "quarantine database")
     restore_keys, delete_keys = list(restore_keys or []), list(delete_keys or [])
-    if not restore_keys and not delete_keys:
+    restore_all = [x for x in (restore_all or []) if x in ("missing", "changed")]
+    if not restore_keys and not delete_keys and not restore_all and not delete_all_added:
         raise EngineError("PGA-GEN-088", "no rows selected")
-    if len(restore_keys) + len(delete_keys) > 50000:
-        raise EngineError("PGA-GEN-089", "too many rows for one transaction (max 50000): use promote for large recoveries")
+    if len(restore_keys) + len(delete_keys) > APPLY_ROWS_MAX:
+        raise EngineError("PGA-GEN-089", "too many rows for one transaction (max %d): use promote for large recoveries" % APPLY_ROWS_MAX)
     for k in restore_keys + delete_keys:
         try:
             if not isinstance(json.loads(k), list):
@@ -1363,6 +1369,24 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
             raise EngineError("PGA-GEN-083", "table %s must exist both in the quarantine database and in %s" % (fq, dbname))
         if not li["pk"] or si["pk"] != li["pk"]:
             raise EngineError("PGA-GEN-086", "primary key differs or is missing (restored: %s, live: %s)" % (si["pk"] or "none", li["pk"] or "none"))
+        if restore_all or delete_all_added:
+            # whole categories: the same comparison as diff_object, done here so that no key list has to travel through the console
+            common = [c for c in si["cols"] if c in li["cols"]]
+            a = _keyhash(st, fq, si["pk"], {"drop": [c for c in si["cols"] if c not in common]})
+            b = _keyhash(tg, fq, li["pk"], {"drop": [c for c in li["cols"] if c not in common]})
+            seen = set(restore_keys)
+            if "missing" in restore_all:
+                restore_keys += [k for k in sorted(a) if k not in b and k not in seen]
+            if "changed" in restore_all:
+                restore_keys += [k for k in sorted(a) if k in b and a[k] != b[k] and k not in seen]
+            if delete_all_added:
+                dseen = set(delete_keys)
+                delete_keys += [k for k in sorted(b) if k not in a and k not in dseen]
+            if not restore_keys and not delete_keys:
+                return {"object": spec, "inserted": 0, "updated": 0, "deleted": 0, "ignored_delete_keys": 0, "dry_run": bool(dry_run), "note": "nothing differs: no row to apply"}
+            if len(restore_keys) + len(delete_keys) > APPLY_ROWS_MAX:
+                raise EngineError("PGA-GEN-089", "%d rows differ: too many for one transaction (max %d)" % (len(restore_keys) + len(delete_keys), APPLY_ROWS_MAX),
+                                  "bring the table back as a whole (promote, next to the original or in its place)")
         writable = [c for c in li["cols"] if c in si["cols"] and c not in li["generated"]]
         missing = [c for c in li["cols"] if c not in si["cols"] and c not in li["generated"]]
         # columns added after the restore point (a migration): only the columns both sides have are written - an updated row keeps its current

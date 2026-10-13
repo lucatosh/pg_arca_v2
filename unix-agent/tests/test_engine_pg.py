@@ -383,6 +383,16 @@ class EngineTests(unittest.TestCase):
             with self.assertRaises(EngineError):
                 apply_rows(F.ctx, "somedb", "app.public.customers", restore_keys=["[2]"])
             q("app", "DROP TABLE %s" % r["safety_copy"])
+            # whole categories, whatever their size (the UI shows 200 rows at most): every deleted row back, every changed row restored, the added one removed
+            q("app", "INSERT INTO customers VALUES (901,'new2')")
+            r2 = apply_rows(F.ctx, "pgarca_stage_customers", "app.public.customers", restore_all=["missing", "changed"], delete_all_added=True)
+            self.assertEqual((r2["inserted"], r2["updated"], r2["deleted"]), (494, 4, 1), r2)
+            self.assertEqual(int(q("app", "SELECT count(*) FROM customers")[0][0]), 500)
+            d2 = diff_object(F.ctx, "pgarca_stage_customers", "app.public.customers")
+            self.assertEqual(d2["counts"], {"missing_now": 0, "added_since": 0, "changed": 0})
+            r3 = apply_rows(F.ctx, "pgarca_stage_customers", "app.public.customers", restore_all=["missing"])
+            self.assertEqual(r3["inserted"] + r3["updated"], 0)
+            q("app", "DROP TABLE %s" % r2["safety_copy"])
         finally:
             q("app", "DROP TABLE IF EXISTS customers")
 

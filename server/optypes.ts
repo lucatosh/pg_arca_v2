@@ -141,7 +141,10 @@ const keysErr = (p: any) => {
     const v = p[f]; if (v === undefined) continue;
     if (!Array.isArray(v) || v.length > 50000 || v.some((k: any) => typeof k !== 'string' || k.length > 2000 || !k.startsWith('['))) return f + ' must be a list of JSON-array primary keys (max 50000)';
   }
-  return (p.restore_keys?.length || p.delete_keys?.length) ? null : 'select at least one row';
+  if (p.restore_all !== undefined && !(Array.isArray(p.restore_all) && p.restore_all.every((x: any) => ['missing', 'changed'].includes(x)))) return 'restore_all must list missing and/or changed';
+  if (p.delete_all_added !== undefined && typeof p.delete_all_added !== 'boolean') return 'delete_all_added must be boolean';
+  // a whole category ("every deleted row") is computed by the agent: thousands of rows need no key list
+  return (p.restore_keys?.length || p.delete_keys?.length || p.restore_all?.length || p.delete_all_added) ? null : 'select at least one row';
 };
 const rstId = (p: Record<string, any>) => (/^rst-[0-9a-f]{8}$/.test(String(p.id ?? '')) ? null : 'id must be a restored instance id (rst-xxxxxxxx)');
 const dataOp = { mutating: true, target: 'any_node' as const, lane: 'data' as const, cancellable: true };

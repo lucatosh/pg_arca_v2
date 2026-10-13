@@ -1031,7 +1031,8 @@ class OperationExecutor:
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
         return granular.apply_rows(ctx, str(p.get("stage_db")), str(p.get("object")), restore_keys=p.get("restore_keys") or [], delete_keys=p.get("delete_keys") or [],
-                                   into=p.get("into"), dry_run=bool(p.get("dry_run")))
+                                   into=p.get("into"), dry_run=bool(p.get("dry_run")), restore_all=[x for x in (p.get("restore_all") or []) if x in ("missing", "changed")],
+                                   delete_all_added=bool(p.get("delete_all_added")))
 
     def h_forensics(self, p):
         from pg_arca.engine import walscan
