@@ -157,6 +157,21 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### Sessione 13→14/10 notte: restore via web UI, copia d'istanza avviata, agent aggiornabili
+- **Fatto e provato**:
+  - **Operazioni con avanzamento uniforme** (inviata → presa in carico → in esecuzione → esito, tempo, nodo, Log, fase del fallimento) e **console non raggiungibile** gestita (timeout, ritentativi con la stessa chiave, barra unica).
+  - **Ripristino d'istanza completo**: destinazione proposta per volume, copia avviata, registro con scadenza, azioni dalla console, nome `pgarca-restore-<cluster>-<data>`. PG16 locale `test_restored_pg` (10 test).
+  - **Righe**: «Riporta tutte le righe com'erano» per qualunque numero di righe (`restore_all`/`delete_all_added`). PG16 locale `test_engine_pg` (35 test).
+  - **Impronta del codice dell'agent** (`pg_arca/build.py` = `server/agentbuild.ts`, verificata uguale su 12 agent reali) con banner «agent da aggiornare» + comando. Impostazione **Indirizzo della console**.
+- **Web UI sul lab** (`tools/lab/ui/restore-ui.cjs`, playwright, dati rovinati in SQL e verificati in SQL): **pg-s14 (PG14) tutto OK**, cioè backup, tabella eliminata (42 s), righe (662 su 3000, 45 s), database eliminato e istanza (avviata su 5434, interrogata, eliminata dall'interfaccia; 66 s).
+  - In corso in background sulla VM, al momento della consegna: pg-solo1 (PG15), vers18 (PG18 Patroni), arca-lab (PG16 Patroni). Risultati in `/tmp/rui-all.log`, log in `/tmp/rui-<cluster>.log`, screenshot in `/tmp/restore-ui/`.
+- **Da fare dopo**:
+  1. Leggere quei risultati e correggere.
+  2. Chiave ssh VM→Proxmox: comando lanciato ma non verificato (`ssh lab@192.168.1.179 "ssh root@192.168.1.5 hostname"`).
+  3. Onboarding dei CT Proxmox dalla UI con l'indirizzo della console impostato (`http://192.168.1.179:3000`), poi restore-ui.cjs anche su quei cluster (`sql.sh` va esteso a `pct exec`).
+  4. Scenari di guasto via UI: agent offline, disco pieno, WAL mancante, target prima del backup.
+  5. Messaggio dell'installer «Next: WAL archiving…» mostrato anche quando l'archiviazione è già attiva.
+
 ### Sessione 11/10 giorno: analisi completa del prodotto, scala, più DBA, macchine operative (commit a3eead9 … ccf4709)
 - **Console — store** (`server/store.ts`): prima ogni mutazione faceva `structuredClone` di tutto lo stato; **misurato** 165 ms di event loop bloccato per mutazione con 4 MB di stato (ogni heartbeat è una mutazione: con decine di nodi la console si sarebbe fermata). Ora: mutazione sul posto con **undo journal** via Proxy (rollback esatto se la funzione lancia), **group commit** asincrono (la promessa si risolve dopo fsync; le mutazioni arrivate nel frattempo vanno nella stessa scrittura), nessuna scrittura se nulla cambia, telemetria `lazy` (heartbeat e keep-alive di progresso scritti entro 5 s), `.bak` per rename, flush allo spegnimento. Misurato: 0,01 ms per piccola mutazione su 17 MB. Test `tests/server/store.test.ts`. Attenzione: `store.peek()` ora restituisce oggetti vivi (non più fotografie).
 - **Risultati grandi** delle operazioni (>192 KB) in `data/results/<op>.json`, nello stato solo un riassunto con i campi scalari; `GET /api/operations/:id` restituisce il risultato completo; la conservazione cancella i file.
