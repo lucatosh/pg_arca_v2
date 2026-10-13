@@ -9,15 +9,16 @@ cd "$(dirname "$0")/.."
 name=$1; shift
 if [ "${1:-}" = --on ]; then node=$2; port=$3; shift 3
 else
-  read -r node port < <(./api.sh GET /api/clusters | python3 -c '
+  id=$(./api.sh GET /api/clusters | python3 -c '
 import json, sys
-name = sys.argv[1]
-for c in json.load(sys.stdin)["clusters"]:
-    if c["name"] == name:
-        p = [n for n in c.get("nodes", []) if n.get("role") == "primary" and n.get("online", True)] or c.get("nodes", [])
-        print(p[0]["name"], p[0].get("port") or 5432); break
-else:
-    sys.exit("no cluster named %s in the console" % name)' "$name")
+m = [c["id"] for c in json.load(sys.stdin)["clusters"] if c["name"] == sys.argv[1]]
+print(m[0]) if m else sys.exit("no cluster named %s in the console" % sys.argv[1])' "$name")
+  read -r node port < <(./api.sh GET "/api/clusters/$id" | python3 -c '
+import json, sys
+c = json.load(sys.stdin)["cluster"]
+nodes = c.get("nodes") or []
+p = [n for n in nodes if n.get("role") == "primary" and n.get("online", True)] or nodes
+print(p[0]["name"], p[0].get("port") or 5432) if p else sys.exit("cluster %s: no node known" % c.get("name"))')
 fi
 if [ "${1:-}" = --node ]; then echo "$node $port"; exit 0; fi
 db=$1; sql=${2:-$(cat)}
