@@ -25,7 +25,7 @@ export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]
   return <>
     <div className="pagehead"><div className="grow"><h1>Cluster</h1><p className="sub">Tutti i cluster PostgreSQL gestiti da questa console.</p></div>
       <Button kind="primary" icon="plus" onClick={() => setWiz(true)}>Collega cluster</Button></div>
-    {clusters.length ? <div className="grid g4">
+    {clusters.length ? <div className="grid g4 kpis">
       <Card><div className="kpi"><span className="v">{clusters.length}</span><span className="l">Cluster collegati</span></div></Card>
       <Card><div className="kpi"><span className="v">{clusters.length - down}<span className="faint" style={{ fontSize: 14 }}> / {clusters.length}</span></span><span className="l">In salute</span></div></Card>
       <Card><div className="kpi"><span className="v">{clusters.reduce((a, c) => a + (c.haState?.nodes?.length || 0), 0)}</span><span className="l">Nodi</span></div></Card>

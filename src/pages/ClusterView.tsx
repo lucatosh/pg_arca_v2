@@ -79,7 +79,7 @@ function Overview({ c, agentic }: { c: any; agentic: boolean }) {
   const b = useQuery<any>(agentic ? `/api/clusters/${encodeURIComponent(c.id)}/backups` : null, { interval: 15000 });
   const bk = b.data?.backup;
   return <div className="stack-l">
-    <div className="grid g4"><Kpi v={c.haState?.nodes?.length ?? 0} l="Nodi" /><Kpi v={bytes(c.totalSizeBytes)} l="Dimensione dati" /><Kpi v={num(c.tps)} l="Transazioni al secondo" /><Kpi v={c.currentLSN || '—'} l="LSN corrente" /></div>
+    <div className="grid g4 kpis"><Kpi v={c.haState?.nodes?.length ?? 0} l="Nodi" /><Kpi v={bytes(c.totalSizeBytes)} l="Dimensione dati" /><Kpi v={num(c.tps)} l="Transazioni al secondo" /><Kpi v={c.currentLSN || '—'} l="LSN corrente" /></div>
     {agentic ? <Card title="Protezione dei dati">
       {b.loading ? <Skeleton h={40} /> : !b.data?.agent ? <p className="muted">Nessun agent collegato.</p> : !bk?.configured ? <Banner kind="warn" title="Backup non ancora configurati">Apri la scheda Backup per attivare l’archiviazione WAL ed eseguire il primo backup.</Banner> :
         <div className="row wrap gap-l"><div><div className="kpi"><span className="v">{bk.last_backup ? ago(bk.last_backup.stop_time) : 'mai'}</span><span className="l">Ultimo backup</span></div></div>

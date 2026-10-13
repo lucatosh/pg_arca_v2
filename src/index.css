@@ -441,3 +441,13 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 
 .toast { cursor: pointer; } /* toasts sit above the activity dock, never over the page's own buttons; a click dismisses one */
 @media (max-width: 520px) { .toasts { right: 12px; left: 12px; max-width: none; bottom: 70px; } }
+/* phone widths: the four cluster areas always visible (no hidden scrolling), headers wrap, label/value lists stack */
+.geochecks li > span, .geochecks li > div { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 520px) {
+  .gnav { width: 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .gnav button { padding: 7px 2px; justify-content: center; font-size: 13px; gap: 4px; min-width: 0; } .gnav button svg { display: none; }
+  .tabs { flex-wrap: wrap; overflow-x: visible; }
+  .card > .hd { flex-wrap: wrap; } .card > .hd h2 .row, .card > .hd h3 .row { flex-wrap: wrap; }
+  .kv { grid-template-columns: minmax(0, 1fr); gap: 0; } .kv dt { font-size: 12px; } .kv dd { margin-bottom: 8px; }
+}
+@media (max-width: 700px) { .grid.kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .grid.kpis .kpi .v { font-size: 22px; } }
