@@ -143,6 +143,10 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const running = exec.busy;
   const doneOk = exec.op?.status === 'succeeded';
   const check = () => { if (okWhere) plan.run('restore_plan', planParams()); else plan.reset(); };
+  // where the recovery runs changed (from the dialog opened in the check step, or by a colleague): the verdict shown is stale, check again
+  const placement = useQuery<any>(scope !== 'instance' ? `/api/clusters/${encodeURIComponent(c.id)}/placement` : null);
+  const plSig = placement.data ? JSON.stringify(placement.data.ephemeral || {}) : ''; const plSeen = useRef(plSig);
+  useEffect(() => { if (!plSig || plSig === plSeen.current) return; const had = !!plSeen.current; plSeen.current = plSig; if (had && step === 3 && !exec.op && okWhere) check(); }, [plSig]);
   const goCheck = () => { setStep(3); if (scope !== 'instance' || dest.startsWith('/')) plan.run('restore_plan', planParams()); else plan.reset(); };
   const choose = (i: Intent) => {
     setIntent(i); setObjs([]); setTgt(null); plan.reset(); dml.reset(); prev.reset();
