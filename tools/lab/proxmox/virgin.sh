@@ -113,7 +113,9 @@ setup_custom_layout() {
   in_ct "$1" "su - postgres -c \"psql -p 5544 -d app -c 'CREATE TABLE sales.big_fast TABLESPACE fast AS SELECT g, md5(g::text) FROM generate_series(1,200000) g'\""
 }
 setup_rhel_pgdg() {
-  in_ct "$1" "dnf -q -y install https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm >/dev/null
+  # an up-to-date point release first: PGDG publishes only for current minors (rhel-9.4 is gone: 404 on its metadata)
+  in_ct "$1" "set -e; dnf -q -y upgrade --refresh >/dev/null
+    dnf -q -y install https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm >/dev/null
     dnf -q -y module disable postgresql >/dev/null 2>&1 || true
     dnf -q -y --disablerepo='pgdg*' --enablerepo=pgdg$2 --enablerepo=pgdg-common install postgresql$2-server postgresql$2-contrib procps-ng sudo glibc-langpack-it python3 >/dev/null
     /usr/pgsql-$2/bin/postgresql-$2-setup initdb && systemctl enable --now postgresql-$2"
