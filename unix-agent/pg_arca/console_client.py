@@ -21,6 +21,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 from pg_arca.config import atomic_write_json, load_credentials, save_credentials
+from pg_arca.build import AGENT_BUILD
 from pg_arca.runtime import AGENT_VERSION
 
 logger = logging.getLogger("pg_arca.console")
@@ -94,7 +95,7 @@ class ConsoleClient(threading.Thread):
         token = self.config.get("enrollment_token")
         if not token:
             raise RuntimeError("not enrolled and no enrollment_token configured (set PG_ARCA_ENROLL_TOKEN)")
-        r = self._post("/api/agent/enroll", {"enrollment_token": token, "node_name": self.config["node_name"], "agent_version": AGENT_VERSION,
+        r = self._post("/api/agent/enroll", {"enrollment_token": token, "node_name": self.config["node_name"], "agent_version": AGENT_VERSION, "agent_build": AGENT_BUILD,
                                              "discovery": self.rt.report, "node_role": self.config.get("node_role") or "auto"}, auth=False)
         save_credentials(self.config, r["node_id"], r["agent_token"], r.get("cluster_id"), r.get("node_kind"))
         self.rt.set_worker(r.get("node_kind") == "worker")
@@ -133,7 +134,7 @@ class ConsoleClient(threading.Thread):
             except Exception as e:
                 logger.warning("discovery refresh failed: %s", e)
         body = {"fingerprint": j["fingerprint"], "secret_hash": hashlib.sha256(j["secret"].encode("utf-8")).hexdigest(), "node_name": self.config["node_name"],
-                "agent_version": AGENT_VERSION, "discovery": self.rt.report, "node_role": self.config.get("node_role") or "auto"}
+                "agent_version": AGENT_VERSION, "agent_build": AGENT_BUILD, "discovery": self.rt.report, "node_role": self.config.get("node_role") or "auto"}
         self._post("/api/agent/request-join", body, auth=False)
         st = self._post("/api/agent/join-status", {"fingerprint": j["fingerprint"], "secret": j["secret"]}, auth=False)
         if st.get("status") == "approved":
@@ -256,7 +257,7 @@ class ConsoleClient(threading.Thread):
 
         free_slots = max(0, WORKERS - len(self.inflight))
         wait = 0 if self.inflight or not free_slots else min(8, int(self.config.get("heartbeat_interval_seconds", 10)))
-        resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "max_ops": free_slots, "agent_started": _STARTED,
+        resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "agent_build": AGENT_BUILD, "console_url": self.base, "max_ops": free_slots, "agent_started": _STARTED,
                                                    "discovery": full_discovery, "wait_seconds": wait}, timeout=wait + 15)
         if self.logs:
             self.logs.set_mode(resp.get("log_mode"))

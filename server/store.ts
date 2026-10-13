@@ -49,6 +49,8 @@ export interface NodeRecord {
   clusterId?: string;
   clusterKey?: string;        // "patroni:<scope>" | "sysid:<id>" computed by agent discovery
   agentVersion?: string;
+  agentBuild?: string;        // fingerprint of the agent code it runs (pg_arca/build.py); differs from the console's -> outdated
+  consoleUrl?: string;        // the console address this agent uses (upgrade command)
   agentStarted?: number;     // start time of the agent process (a change = restart: what the old process had leased is handed back)
   remoteIp?: string;
   /** inbound URL, only if the operator chose inbound mode */

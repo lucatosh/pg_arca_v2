@@ -9,7 +9,7 @@ const SEV_LABEL: Record<string, string> = { critical: 'Solo urgenti', warning: '
 export function SettingsPage() {
   return <>
     <div className="pagehead"><div className="grow"><h1>Impostazioni</h1><p className="sub">Avvisi e controlli di sicurezza della console. Le impostazioni predefinite non cambiano il comportamento: attiva solo ciò che ti serve.</p></div></div>
-    <Notifications /><Enrollment /><Approvals />
+    <ConsoleAddress /><Notifications /><Enrollment /><Approvals />
   </>;
 }
 
@@ -66,5 +66,18 @@ function Approvals() {
       <p className="small muted">Sono rischiose: modifica delle regole di accesso, cambio dei parametri, switchover e failover, sostituzione di una tabella, recupero di righe. Backup, verifiche e ripristini in cartelle separate non richiedono approvazione. La richiesta scade dopo 24 ore.</p>
       {d.activeAdmins < 2 ? <Banner kind="warn" title="Serve un secondo amministratore">Con un solo amministratore attivo non è possibile attivare le approvazioni: nessuno potrebbe concederle. Crea un altro amministratore nella pagina Utenti.</Banner> : null}
       <div className="stack">{d.environments.map(env => <label key={env} className="check"><input type="checkbox" disabled={busy || (!d.approvals[env] && d.activeAdmins < 2)} checked={!!d.approvals[env]} onChange={e => toggle(env, e.target.checked)} />{ENV_LABEL[env] || env}{env === 'prod' ? <span className="small muted"> (consigliato)</span> : null}</label>)}</div></div>}
+  </Card>;
+}
+
+/** The address the database servers use to reach the console: in every install / upgrade command (the browser's own address can be localhost or a proxy name). */
+function ConsoleAddress() {
+  const q = useQuery<{ publicUrl: string; effective: string; configured: boolean; warning?: string }>('/api/console-address');
+  const [v, setV] = useDraft<string | null>('settings:console-address', null); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { if (q.data && v === null) setV(q.data.publicUrl || ''); }, [q.data, v]);
+  const save = async () => { setBusy(true); setErr(null); try { await api('PUT', '/api/console-address', { publicUrl: v || '' }); await revalidate('/api/console-address'); toast('Indirizzo della console salvato', 'ok'); } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); } };
+  return <Card title="Indirizzo della console">
+    <p className="small muted" style={{ marginTop: 0 }}>L’indirizzo con cui i server dei database raggiungono questa console: compare nei comandi di installazione e di aggiornamento dell’agent. Se resta vuoto si usa quello con cui hai aperto la console nel browser.</p>
+    {q.data?.warning && !q.data.configured ? <Banner kind="warn">{q.data.warning}</Banner> : null}
+    <Field label="Indirizzo raggiungibile dai server" hint={q.data ? `Ora in uso: ${q.data.effective}` : undefined} error={err}><div className="row gap-s"><input className="input mono" value={v ?? ''} onChange={e => setV(e.target.value)} placeholder="https://pgarca.azienda.it" /><Button kind="primary" busy={busy} disabled={v === null || v === (q.data?.publicUrl || '')} onClick={save}>Salva</Button></div></Field>
   </Card>;
 }

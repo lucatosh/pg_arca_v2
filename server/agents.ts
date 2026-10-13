@@ -19,6 +19,7 @@ import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
 import { conflictFor, activityOf } from './conflicts';
+import { agentOutdated, consoleAgentBuild } from './agentbuild';
 import { startSwitchover, geoParamGuard, geoStanzaPlan, geoOf } from './geo';
 const geoStanzaChecked = new Map<string, number>();
 
@@ -193,6 +194,8 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       n.lastSeen = new Date(nowMs).toISOString();
       n.remoteIp = req.socket.remoteAddress || n.remoteIp;
       if (b.agent_version) n.agentVersion = String(b.agent_version);
+      if (typeof b.agent_build === 'string' && /^[0-9a-f]{12}$/.test(b.agent_build)) n.agentBuild = b.agent_build;
+      if (typeof b.console_url === 'string' && /^https?:\/\/[^\s'"`$;|&<>]{1,200}$/.test(b.console_url)) n.consoleUrl = b.console_url.replace(/\/+$/, '');
       const started = Number(b.agent_started);
       if (Number.isFinite(started) && started > 0 && n.agentStarted !== started) { if (n.agentStarted) ops.requeueOnRestart(d, n.id); n.agentStarted = started; }
       if (snap) {
@@ -258,6 +261,17 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
 
 // =============================================================================
 // Operator API: enrollment tokens, nodes, operations
+
+const LOCALHOST = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?|0\.0\.0\.0)(:\d+)?$/i;
+/** The address servers use to reach this console: the one set by an administrator, else the one this browser used (a warning when that is localhost). */
+export function consoleBase(req: Request, st: any): { base: string; configured: boolean; warning?: string } {
+  const set = String(st.settings?.publicUrl || '').replace(/\/+$/, '');
+  if (set) return { base: set, configured: true };
+  const host = String(req.headers.host || '');
+  const base = `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${host}`;
+  return { base, configured: false, warning: LOCALHOST.test(host) ? `Stai usando la console da ${host}: i server non possono raggiungere questo indirizzo. Imposta l’indirizzo della console raggiungibile dai server (Impostazioni → Indirizzo della console) o apri la console con quell’indirizzo.` : undefined };
+}
+
 // =============================================================================
 export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
   const actorOf = (req: Request) => (req as any).actor || 'admin';
@@ -275,9 +289,9 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     const rec = { id: newId('tok'), hash: sha256(token), label: String(label).slice(0, 80), createdAt: nowIso(),
                   expiresAt: new Date(Date.now() + ttl * 60000).toISOString(), clusterId, environment, ...(kind === 'worker' ? { kind: 'worker' as const } : {}), ...(uses > 1 ? { maxUses: uses } : {}) };
     await store.mutate(d => { d.enrollmentTokens.push(rec); ops.audit(d, { actor: actorOf(req), action: 'token.create', status: 'OK', details: { id: rec.id, label: rec.label } }); });
-    const base = `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${req.headers.host}`;
+    const cb = consoleBase(req, store.peek()); const base = cb.base;
     res.status(201).json({
-      id: rec.id, token, expiresAt: rec.expiresAt,
+      id: rec.id, token, expiresAt: rec.expiresAt, consoleUrl: base, consoleUrlConfigured: cb.configured, addressWarning: cb.warning,
       installCommand: `curl -fsSL ${base}/agent/install.sh | sudo PG_ARCA_URL=${base} PG_ARCA_ENROLL_TOKEN=${token}${kind === 'worker' ? ' PG_ARCA_ROLE=worker' : ''} bash`,
       maxUses: uses,
       note: uses > 1 ? `The token is shown once and can enroll up to ${uses} servers.` : 'The token is shown once and can enroll exactly one node.',
@@ -296,13 +310,24 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     res.status(n ? 200 : 404).json({ ok: !!n });
   });
 
-  app.get('/api/nodes', (_req: Request, res: Response) => {
-    const now = Date.now();
-    res.json({ nodes: Object.values(store.peek().nodes).map(n => ({
-      id: n.id, name: n.name, clusterId: n.clusterId, agentVersion: n.agentVersion, lastSeen: n.lastSeen, remoteIp: n.remoteIp,
+  app.get('/api/nodes', (req: Request, res: Response) => {
+    const now = Date.now(); const st = store.peek(); const cb = consoleBase(req, st);
+    res.json({ consoleBuild: consoleAgentBuild(), nodes: Object.values(st.nodes).map(n => ({
+      id: n.id, name: n.name, clusterId: n.clusterId, agentVersion: n.agentVersion, lastSeen: n.lastSeen, remoteIp: n.remoteIp, agentBuild: n.agentBuild || null, agentOutdated: agentOutdated(n),
+      // re-running the installer is the upgrade (config and credentials kept), from the address THIS node already uses to reach the console
+      upgradeCommand: agentOutdated(n) ? `curl -fsSL ${n.consoleUrl || cb.base}/agent/install.sh | sudo PG_ARCA_URL=${n.consoleUrl || cb.base} bash` : undefined,
       online: !!n.lastSeen && now - Date.parse(n.lastSeen) < 45000, tps: n.tps,
       role: n.snapshot?.postgres?.role, pgVersion: n.snapshot?.postgres?.version,
     })) });
+  });
+
+  app.get('/api/console-address', (req: Request, res: Response) => { const cb = consoleBase(req, store.peek()); res.json({ publicUrl: store.peek().settings.publicUrl || '', effective: cb.base, configured: cb.configured, warning: cb.warning }); });
+  app.put('/api/console-address', async (req: Request, res: Response) => {
+    if ((req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Solo un amministratore può cambiare l’indirizzo della console.' });
+    const v = String(req.body?.publicUrl ?? '').trim().replace(/\/+$/, '');
+    if (v && !/^https?:\/\/[A-Za-z0-9.\-\[\]:]+(:\d+)?(\/[\w\-./]*)?$/.test(v)) return res.status(400).json({ error: 'invalid_url', message: 'Indirizzo non valido: es. https://pgarca.azienda.it o http://10.0.0.5:3000' });
+    await store.mutate(d => { d.settings.publicUrl = v || undefined; ops.audit(d, { actor: actorOf(req), action: 'settings.console_address', status: 'OK', details: { publicUrl: v } }); });
+    const cb = consoleBase(req, store.peek()); res.json({ publicUrl: v, effective: cb.base, configured: cb.configured, warning: cb.warning });
   });
 
   app.delete('/api/nodes/:id', async (req: Request, res: Response) => {      // revoke: secret becomes invalid immediately

@@ -4,6 +4,7 @@
  *  - Attach with agent:    create an enrollment token (agents.ts) -> install agent -> cluster appears by itself.
  *  - Attach without agent: POST /api/clusters/attach-direct (direct.ts).
  */
+import { agentOutdated } from './agentbuild';
 import { geoOf } from './geo';
 import type { Request, Response } from 'express';
 import { Store, nowIso } from './store';
@@ -35,7 +36,7 @@ export function publicCluster(c: any, st: { nodes: Record<string, any>; directCo
   return {
     ...rest,
     connection: dc ? { host: dc.host, port: dc.port, database: dc.database, user: dc.user, sslmode: dc.sslmode, patroniUrl: dc.patroniUrl, lastOk: dc.lastOk, lastError: dc.lastError } : undefined,
-    agentNodes: Object.values(st.nodes).filter((n: any) => n.clusterId === c.id).map((n: any) => ({ id: n.id, name: n.name, lastSeen: n.lastSeen, agentVersion: n.agentVersion, role: n.snapshot?.postgres?.role, sys: n.snapshot?.system ? { cpu: n.snapshot.system.cpu_count, mem: n.snapshot.system.memory_total_bytes } : undefined, settings: n.snapshot?.postgres?.settings, pendingRestart: n.snapshot?.postgres?.pending_restart })),
+    agentNodes: Object.values(st.nodes).filter((n: any) => n.clusterId === c.id).map((n: any) => ({ id: n.id, name: n.name, lastSeen: n.lastSeen, agentVersion: n.agentVersion, agentOutdated: agentOutdated(n), role: n.snapshot?.postgres?.role, sys: n.snapshot?.system ? { cpu: n.snapshot.system.cpu_count, mem: n.snapshot.system.memory_total_bytes } : undefined, settings: n.snapshot?.postgres?.settings, pendingRestart: n.snapshot?.postgres?.pending_restart })),
     capabilities: c.isSandbox ? { demo: true } : capabilitiesOf(c, st),
     geo: c.isSandbox ? null : geoSummary(st, c.id),
   };

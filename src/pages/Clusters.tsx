@@ -107,6 +107,7 @@ function AttachWizard({ onClose }: { onClose: () => void }) {
 
 function AgentFlow({ onClose, back }: { onClose: () => void; back: () => void }) {
   const [env, setEnv] = useDraft('attach:agent:env', 'prod'); const [label, setLabel] = useDraft('attach:agent:label', ''); const [tok, setTok] = useDraft<any>('attach:agent:tok', null, { secret: true }); const [count, setCount] = useDraft('attach:agent:count', 1);
+  const addr = useQuery<{ effective: string; warning?: string }>('/api/console-address');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null); const [joinedAll, setJoinedAll] = useDraft<any[]>('attach:agent:joined', []);
   const joined = joinedAll.length >= count ? joinedAll[0] : null;
   const [beforeIds, setBeforeIds] = useDraft<string[] | null>('attach:agent:before', null); const before = { current: beforeIds ? new Set(beforeIds) : null }; const keyRef = useRef(uid('tok'));
@@ -134,11 +135,13 @@ function AgentFlow({ onClose, back }: { onClose: () => void; back: () => void })
     <div className="row"><Button onClick={back}>Indietro</Button><Button kind="primary" busy={busy} onClick={create}>Genera comando di installazione</Button></div>
     <div className="hr" /><details><summary className="small" style={{ cursor: 'pointer' }}>Preferisci senza token? Il server si annuncia da solo</summary>
       <div className="stack" style={{ marginTop: 8 }}><p className="small muted">Esegui questo comando come root sul server: l’agent si annuncia alla console e qui compare «Nuovo server rilevato». Lo approvi tu, scegliendo l’ambiente.</p>
-        <CopyBlock text={`curl -fsSL ${location.origin}/agent/install.sh | sudo PG_ARCA_URL=${location.origin} bash`} /></div></details></div>;
+        <CopyBlock text={`curl -fsSL ${addr.data?.effective || location.origin}/agent/install.sh | sudo PG_ARCA_URL=${addr.data?.effective || location.origin} bash`} />
+        {addr.data?.warning ? <p className="small" style={{ color: 'var(--warn)' }}>{addr.data.warning}</p> : null}</div></details></div>;
   return <div className="stack">
     <p>Esegui questo comando <strong>come root</strong> {count > 1 ? <>su ognuno dei {count} server</> : <>sul server del database</>}. {count > 1 ? `Il token vale per ${count} server` : 'Il token vale per un solo server'} e scade tra un’ora.</p>
+    {tok.addressWarning ? <Banner kind="warn" title="I server non raggiungeranno questo indirizzo">{tok.addressWarning}</Banner> : null}
     <CopyBlock text={tok.installCommand} />
-    <p className="small muted">Serve: Linux con systemd, Python 3.6 o successivo, accesso di questo server alla console ({location.origin}). L’installazione impiega pochi secondi e al termine dice se il server è stato registrato.</p>
+    <p className="small muted">Serve: Linux con systemd, Python 3.6 o successivo, accesso di questo server alla console ({tok.consoleUrl || location.origin}{tok.consoleUrlConfigured ? ', indirizzo impostato in Impostazioni' : ''}). L’installazione impiega pochi secondi e al termine dice se il server è stato registrato.</p>
     <Banner kind="info"><span className="row gap-s"><Icon n="refresh" spin />{joinedAll.length ? `Collegati ${joinedAll.length} di ${count}: ${joinedAll.map(j => j.name).join(', ')}. In attesa degli altri…` : 'In attesa che l’agent si colleghi…'}</span></Banner>
     <div className="row"><Button onClick={onClose}>Chiudi</Button><span className="faint small">Puoi chiudere: il nodo comparirà comunque nell’elenco.</span></div></div>;
 }

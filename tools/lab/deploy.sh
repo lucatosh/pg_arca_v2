@@ -7,4 +7,5 @@ sudo systemctl restart pg-arca-console
 cd tools/lab; ./lab.sh agent-update 2>&1 | tail -1
 [ -n "$(docker ps -q -f name=solo1)" ] && ./lab.sh solo-agent-update 2>&1 | tail -2 || true
 [ -n "$(docker ps -q -f name=dc1-pg1)" ] && ./geo.sh agent-update 2>&1 | grep -E "^==|FAILED|ERROR" || true
+[ -n "$(docker ps -q -f name=s14)" ] && ./vers.sh agent-update 2>&1 | grep -E "^==|OK|PROBLEM|ERROR" || true
 echo deployed

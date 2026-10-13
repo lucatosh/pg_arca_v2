@@ -44,6 +44,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
       <Button icon="refresh" busy={spin} title="Rilegge subito lo stato del cluster, dei nodi, dei backup e delle operazioni" onClick={async () => { setSpin(true); const k = encodeURIComponent(id); await Promise.all([revalidate(`/api/clusters/${k}`), revalidate('/api/clusters'), revalidate('/api/nodes'), revalidate(`/api/clusters/${k}/backups`), revalidate(`/api/operations?clusterId=${k}`)]); setSpin(false); toast('Stato aggiornato', 'ok'); }}>Aggiorna</Button>
       <Button icon="trash" onClick={() => setDetach(true)}>Scollega</Button></div>
     {c.isSandbox ? <Banner kind="info" title="Cluster demo">Dati di esempio: le operazioni non vengono eseguite. Puoi eliminarlo quando hai collegato un cluster reale.</Banner> : null}
+    {agentic ? <AgentUpdateBanner clusterId={c.id} /> : null}
     {agentic ? <ProtectionRibbon c={c} /> : null}
     {agentic ? <ActivityStrip id={c.id} /> : null}
     {c.geo ? <div className={`geostrip ${c.geo.health}`}><Icon n="swap" s={14} /><span className="small">{c.geo.role === 'standby'
@@ -229,4 +230,15 @@ function ActivityStrip({ id }: { id: string }) {
   if (!a.length) return null;
   return <div className="activitystrip" role="status"><Icon n="activity" s={14} /><span className="small"><strong>In corso su questo cluster:</strong> {a.map((x, i) => <span key={x.id}>{i ? ' · ' : ''}{x.what} <span className="faint">({x.status === 'queued' ? 'in coda' : x.progress || 'in esecuzione'}, {x.createdBy}, {ago(x.createdAt)})</span></span>)}</span>
     <button className="btn ghost sm" onClick={() => window.dispatchEvent(new Event('arca:dock'))}>Dettagli</button></div>;
+}
+
+/** Agents of this cluster running other code than the console serves: console features may be missing there (an old agent ignores what it does not know). */
+function AgentUpdateBanner({ clusterId }: { clusterId: string }) {
+  const q = useQuery<{ nodes: any[] }>('/api/nodes', { interval: 30000 });
+  const old = (q.data?.nodes || []).filter(n => n.clusterId === clusterId && n.agentOutdated);
+  if (!old.length) return null;
+  const cmds = Array.from(new Set(old.map(n => n.upgradeCommand).filter(Boolean)));
+  return <Banner kind="warn" title={old.length === 1 ? `L’agent di ${old[0].name} va aggiornato` : `Gli agent di ${old.map(n => n.name).join(', ')} vanno aggiornati`}>
+    <p style={{ marginTop: 0 }}>Eseguono una versione diversa da quella della console: alcune funzioni (ripristini compresi) potrebbero mancare o comportarsi come prima. Aggiornare non tocca PostgreSQL, i backup né la configurazione dell’agent; l’agent riparte in pochi secondi.</p>
+    <p className="small">Esegui come root {old.length > 1 ? 'su ognuno di questi server' : `su ${old[0].name}`}:</p>{cmds.map(c => <CopyBlock key={c} text={c} />)}</Banner>;
 }

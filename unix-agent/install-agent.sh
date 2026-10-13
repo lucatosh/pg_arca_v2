@@ -210,6 +210,10 @@ UNIT
 systemctl daemon-reload
 systemctl enable $UNIT.service >/dev/null
 systemctl restart $UNIT.service      # restart (not just start): re-running the installer is the upgrade path, the old code must not keep running
+# the code in $INSTALL_DIR is shared by every agent of this host (one per PostgreSQL instance): they all restart on the new code
+for u in $(systemctl list-units --plain --no-legend --type=service 'pg-arca-agent*' 2>/dev/null | awk '{print $1}'); do
+  [[ "$u" == "$UNIT.service" ]] || systemctl restart "$u" || true
+done
 sleep 2
 systemctl is-active --quiet $UNIT.service && echo "pg_arca agent is running ($UNIT)." || { echo "agent failed to start:"; journalctl -u $UNIT -n 20 --no-pager; exit 1; }
 # wait (max ~40 s) for the agent to tell how its registration went, so the person at the terminal knows right away whether to look at the console or fix something here
