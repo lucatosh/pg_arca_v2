@@ -457,6 +457,9 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       backup: src?.snapshot?.backup || null, wal: src?.snapshot?.wal || null,
       archiver: src?.snapshot?.postgres?.archiver || null, archiveMode: src?.snapshot?.postgres?.settings?.archive_mode || null,
       policy: resolvePolicy(st, cluster).policy || { ...DEFAULT_POLICY }, policySource: resolvePolicy(st, cluster).source, running,
+      // whole-instance restores started by an agent of this cluster (each node keeps its own registry): where they run and how to reach them
+      restored: nodes.flatMap(n => (Array.isArray((n.snapshot as any)?.restored) ? (n.snapshot as any).restored : []).map((r: any) => ({ ...r, nodeId: n.id, nodeName: n.name, host: n.remoteIp || n.name,
+        online: !!n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000 }))),
     });
   });
 

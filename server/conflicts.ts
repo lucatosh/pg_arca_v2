@@ -23,7 +23,7 @@ export const OP_IT: Record<string, string> = {
   restore_instance: 'un ripristino dell’istanza', restore_database: 'un ripristino di database', restore_object: 'un ripristino di oggetti', restore_promote: 'una promozione dalla quarantena',
   restore_drill: 'una prova di ripristino', restore_apply_rows: 'un recupero di righe', patroni_switchover: 'uno switchover', patroni_failover: 'un failover', patroni_restart: 'un riavvio', pg_restart: 'un riavvio di PostgreSQL',
   patroni_reinit: 'la ricostruzione di una replica', patroni_pause: 'la pausa di Patroni', patroni_config_patch: 'una modifica della configurazione Patroni', hba_apply: 'una modifica di pg_hba', hba_restore: 'il ripristino di una versione di pg_hba', hba_expire: 'la rimozione delle regole pg_hba scadute', hba_rollback: 'il ripristino del pg_hba precedente', geo_archive_fallback: 'la configurazione della riserva dall’archivio',
-  ephemeral_install: 'un’installazione di PostgreSQL', geo_promote: 'la promozione del sito', geo_demote: 'il passaggio del sito a standby', restore_plan: 'la verifica di un piano di ripristino', backup_catalog: 'la lettura del catalogo',
+  ephemeral_install: 'un’installazione di PostgreSQL', restored_stop: 'l’arresto di una copia ripristinata', restored_start: 'l’avvio di una copia ripristinata', restored_resume: 'la conclusione del recupero di una copia', restored_drop: 'l’eliminazione di una copia ripristinata', geo_promote: 'la promozione del sito', geo_demote: 'il passaggio del sito a standby', restore_plan: 'la verifica di un piano di ripristino', backup_catalog: 'la lettura del catalogo',
 };
 const it = (t: string) => OP_IT[t] || t;
 

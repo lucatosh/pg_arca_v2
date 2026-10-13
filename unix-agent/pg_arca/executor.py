@@ -97,6 +97,12 @@ class OperationExecutor:
         r("backup_catalog", self.h_backup_catalog, True)
         r("restore_plan", self.h_restore_plan, True)
         r("restore_instance", self.h_restore_instance, False)
+        r("restored_list", self.h_restored_list, True)
+        r("restored_stop", self.h_restored_stop, True)
+        r("restored_start", self.h_restored_start, True)
+        r("restored_resume", self.h_restored_resume, True)
+        r("restored_keep", self.h_restored_keep, True)
+        r("restored_drop", self.h_restored_drop, True)
         r("restore_database", self.h_restore_database, False)
         r("restore_object", self.h_restore_object, False)
         r("restore_promote", self.h_restore_promote, False)
@@ -789,7 +795,11 @@ class OperationExecutor:
         scope = p.get("scope")
         if scope == "instance":
             from pg_arca.engine.restore import restore_instance
-            return restore_instance(ctx, p.get("set"), p.get("destination") or "/nonexistent-plan-only", dry_run=True, **{k: v for k, v in t.items()})
+            dest, where = self._instance_dest(ctx, p, t)
+            plan = restore_instance(ctx, p.get("set"), dest, dry_run=True, **{k: v for k, v in t.items()})
+            plan["destinations"] = where
+            plan["destination_auto"] = not p.get("destination")
+            return plan
         from pg_arca.engine import granular
         into = p.get("into") if isinstance(p.get("into"), dict) else None      # central recovery host: the plan is checked where the instance will really run
         if scope == "database":
@@ -798,11 +808,72 @@ class OperationExecutor:
         objs = [str(x) for x in p.get("objects")] if isinstance(p.get("objects"), list) and p.get("objects") else None
         return granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), dry_run=True, stage_db=p.get("stage_db"), objects=objs, into=into, **t)
 
+    def _state_dir(self):
+        return self.config.get("state_dir", "/var/lib/pgarca/state")
+
+    def _instance_dest(self, ctx, p, t):
+        """The destination of a whole-instance restore: the operator's, or the best volume this host offers (with every candidate, for the console)."""
+        from pg_arca.engine import restored
+        try:
+            need = restored.instance_bytes(ctx, p.get("set"), t)
+        except Exception:
+            need = 0
+        where = restored.suggest(ctx, need, roots=self.config.get("restore_roots") or ())
+        dest = p.get("destination") or where.get("recommended")
+        if not dest:
+            from pg_arca.engine.util import EngineError
+            raise EngineError("PGA-RST-031", "no volume on this host has room for the restored copy (about %s needed)" % restored.human(where.get("need") or need),
+                              "free space, mount a volume the agent user can write to (e.g. /restore), or restore just a database or a table")
+        return dest, where
+
     def h_restore_instance(self, p):
         from pg_arca.engine.restore import restore_instance
+        from pg_arca.engine import restored
         ctx = self._ctx_ro()
-        return restore_instance(ctx, p.get("set"), p.get("destination"), action=p.get("action", "promote"), delta=bool(p.get("delta")), keep_archiving=bool(p.get("keep_archiving")),
-                                tablespace_remap=p.get("tablespace_remap"), progress=self._progress, cancel=self._cancelled, resume=bool(p.get("resume")), **self._targets(p))
+        t = self._targets(p)
+        dest, where = (p.get("destination"), None) if p.get("destination") else self._instance_dest(ctx, p, t)
+        start = p.get("start", True) is not False and not p.get("keep_archiving")       # a copy that REPLACES the original is started by the operator, in its final place
+        plan = restore_instance(ctx, p.get("set"), dest, action=p.get("action", "promote"), delta=bool(p.get("delta")), keep_archiving=bool(p.get("keep_archiving")),
+                                tablespace_remap=p.get("tablespace_remap"), progress=self._progress, cancel=self._cancelled, resume=bool(p.get("resume")), **t)
+        if where:
+            plan["destination_auto"] = True
+        if not start or plan.get("dry_run"):
+            return plan
+        plan.pop("start_hint", None)
+        self._progress({"phase": "starting", "msg": "starting the restored copy"})
+        ttl = p.get("ttl_hours")
+        plan["instance"] = restored.register_and_start(ctx, self._state_dir(), plan["destination"], plan, action=p.get("action", "promote"),
+                                                       ttl_hours=restored.DEFAULT_TTL_H if ttl is None else float(ttl), op_id=getattr(self._tl, "op_id", ""),
+                                                       progress=self._progress, cancel=self._cancelled)
+        return plan
+
+    def h_restored_list(self, p):
+        from pg_arca.engine import restored
+        return {"instances": restored.list_all(self._state_dir())}
+
+    def h_restored_stop(self, p):
+        from pg_arca.engine import restored
+        return restored.op_stop(self._state_dir(), str(p.get("id")))
+
+    def h_restored_start(self, p):
+        from pg_arca.engine import restored
+        return restored.op_start(self._state_dir(), str(p.get("id")), progress=self._progress, cancel=self._cancelled)
+
+    def h_restored_resume(self, p):
+        from pg_arca.engine import restored
+        return restored.op_resume(self._state_dir(), str(p.get("id")), progress=self._progress)
+
+    def h_restored_keep(self, p):
+        from pg_arca.engine import restored
+        return restored.op_keep(self._state_dir(), str(p.get("id")), p.get("hours"))
+
+    def h_restored_drop(self, p):
+        from pg_arca.engine import restored
+        try:
+            ctx = self._ctx_ro()
+        except Exception:
+            ctx = None
+        return restored.op_drop(ctx, self._state_dir(), str(p.get("id")), confirm=p.get("confirm"))
 
     def h_restore_database(self, p):
         from pg_arca.engine import granular

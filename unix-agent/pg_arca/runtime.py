@@ -168,9 +168,20 @@ class Runtime(object):
             out["wal_path"] = self.config.get("wal_archive_dir")
         return out
 
+    def _restored(self):
+        """Whole-instance restores this agent started: expired ones are deleted, the ones that should run are started again (agent restart, reboot)."""
+        try:
+            from pg_arca.engine import restored
+            from pg_arca.engine.ctx import Ctx
+            lg = lambda lv, m: logger.log(logging.WARNING if lv.startswith("warn") else logging.INFO, "[restored] %s", m)
+            return restored.housekeeping(self.config.get("state_dir", "/var/lib/pgarca/state"), lambda: Ctx.from_config(self.config, self), lg) or None
+        except Exception:
+            logger.debug("restored instances housekeeping failed", exc_info=True)
+            return None
+
     def build_snapshot(self, wal, cas):
         if self.worker:
-            return {"node_name": self.config["node_name"], "agent_version": AGENT_VERSION, "node_kind": "worker", "worker": self.inventory.get(),
+            return {"node_name": self.config["node_name"], "agent_version": AGENT_VERSION, "node_kind": "worker", "worker": self.inventory.get(), "restored": self._restored(),
                     "backup": cas.get_stats() if cas else None,
                     "system": self.system_metrics({"repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir"), "scratch": self.config.get("scratch_dir")}),
                     "storage": {"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))}}
@@ -216,7 +227,9 @@ class Runtime(object):
         ae = _archive_error(self.config.get("wal_archive_dir"))
         if ae:
             pg["archive_error"] = ae
+        restored = self._restored()
         return {
+            "restored": restored,
             "node_name": self.config["node_name"], "agent_version": AGENT_VERSION,
             "postgres": pg, "patroni": self.patroni_view(),
             "wal": wal.verify_continuity() if wal else None,

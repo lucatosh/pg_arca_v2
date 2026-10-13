@@ -35,7 +35,7 @@ class ConsoleError(Exception):
         self.body = body
 
 
-WORKERS = 3                  # operations in flight at once: control lane + data lane + analysis lane (the server leases at most one per lane)
+WORKERS = 4                  # operations in flight at once: control lane + data lane + analysis lane + restored copies (the server leases at most one per lane)
 
 class ConsoleClient(threading.Thread):
     def __init__(self, config, runtime, executor, wal, cas, logshipper=None):
@@ -46,7 +46,7 @@ class ConsoleClient(threading.Thread):
         self.creds = load_credentials(config)
         if self.creds and self.creds.get("node_kind") == "worker":
             runtime.set_worker(True)                                 # remembered from the console: an operational machine
-        self.pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="op")   # control lane + data lane + analysis lane
+        self.pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="op")   # control + data + analysis + restored copies
         self.inflight = {}           # op_id -> future
         self.unreported = {}         # op_id -> (status, result, error)
         self.last_discovery = 0

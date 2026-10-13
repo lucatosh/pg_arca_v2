@@ -143,6 +143,7 @@ const keysErr = (p: any) => {
   }
   return (p.restore_keys?.length || p.delete_keys?.length) ? null : 'select at least one row';
 };
+const rstId = (p: Record<string, any>) => (/^rst-[0-9a-f]{8}$/.test(String(p.id ?? '')) ? null : 'id must be a restored instance id (rst-xxxxxxxx)');
 const dataOp = { mutating: true, target: 'any_node' as const, lane: 'data' as const, cancellable: true };
 const intoErr = (p: Record<string, any>) => {
   if (p.into === undefined || p.into === null) return null;
@@ -172,8 +173,18 @@ Object.assign(OP_SPECS, {
   backup_expire: { ...dataOp, cancellable: false, validate: (p: any) => p.retention_full !== undefined && !(Number(p.retention_full) >= 1 && Number(p.retention_full) <= 365) ? 'retention_full 1..365' : null },
   backup_catalog: { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => (p.set && p.set !== 'latest' && p.set !== 'all' && !setId.test(String(p.set))) ? 'invalid backup set id' : (p.database && !pgName(p.database) ? 'invalid database' : null) },
   restore_plan:  { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => ['instance', 'database', 'object'].includes(p.scope) ? targetErr(p) : 'scope must be instance|database|object' },
-  restore_instance: { ...dataOp, validate: (p: any) => !p.destination || !String(p.destination).startsWith('/') || !noCtl(String(p.destination)) ? 'destination must be an absolute path'
-                                                       : (targetErr(p) || (p.action && !['promote', 'pause'].includes(p.action) ? 'action must be promote|pause' : null)) },
+  // destination optional: the agent proposes one (a volume with room, never production's) and uses it when none is given
+  restore_instance: { ...dataOp, validate: (p: any) => p.destination && (!String(p.destination).startsWith('/') || !noCtl(String(p.destination)) || String(p.destination).split('/').includes('..')) ? 'destination must be an absolute path'
+                                                       : (targetErr(p) || (p.action && !['promote', 'pause'].includes(p.action) ? 'action must be promote|pause'
+                                                       : (p.start !== undefined && typeof p.start !== 'boolean' ? 'start must be boolean'
+                                                       : (p.ttl_hours !== undefined && p.ttl_hours !== null && !(Number(p.ttl_hours) >= 0 && Number(p.ttl_hours) <= 8760) ? 'ttl_hours 0..8760 (0 = keep)' : null)))) },
+  // restored copies (whole-instance restores the agent started and keeps track of): listed, stopped, started, resumed, kept or deleted on the node that holds them
+  restored_list:   { mutating: false, target: 'node', lane: 'control', validate: () => null },
+  restored_stop:   { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => rstId(p) },
+  restored_start:  { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: true, validate: (p: any) => rstId(p) },
+  restored_resume: { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => rstId(p) },
+  restored_keep:   { mutating: true, target: 'node', lane: 'control', validate: (p: any) => rstId(p) || (p.hours !== undefined && p.hours !== null && !(Number(p.hours) >= 0 && Number(p.hours) <= 8760) ? 'hours 0..8760 (0 = keep until deleted)' : null) },
+  restored_drop:   { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => rstId(p) || (typeof p.confirm !== 'string' || !p.confirm ? 'confirm must be the name of the copy' : null) },
   restore_database: { ...dataOp, validate: (p: any) => !pgName(p.database) ? 'database required' : (p.new_name && !dbName.test(String(p.new_name)) ? 'invalid new_name' : (targetErr(p) || intoErr(p))) },
   restore_object:   { ...dataOp, validate: (p: any) => objectsErr(p) || (p.stage_db && !dbName.test(String(p.stage_db)) ? 'invalid stage_db' : (targetErr(p) || intoErr(p))) },
   hba_read:     { mutating: false, target: 'node', lane: 'control', validate: () => null },

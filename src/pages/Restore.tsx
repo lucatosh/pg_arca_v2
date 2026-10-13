@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago } from '../ui';
 import { Op, useDraft, useOpRunner, useQuery } from '../hooks';
 import { OpPanel, Result } from './shared';
+import { DestPicker, RestoredCard, RestoredList, TTL_CHOICES } from './Restored';
 import { itCheck, itFix } from '../i18n';
 
 /** <db>_restored as a plain identifier (the engine's rule): 'Vendite Q1-2026' -> Vendite_Q1_2026_restored. */
@@ -43,7 +44,7 @@ export function RestoreTab({ c }: { c: any }) {
   const sets: SetRow[] = (q.data.backup?.recent_sets || []).filter((s: SetRow) => s.status === 'COMPLETE');
   if (!q.data.agent) return <Card><Empty icon="restore" title="Nessun agent su questo cluster" /></Card>;
   if (!sets.length) return <Card><Empty icon="restore" title="Nessun backup da cui ripristinare">Esegui prima un backup completo dalla scheda Backup.</Empty></Card>;
-  return <Wizard c={c} d={q.data} sets={sets} />;
+  return <div className="stack-l"><RestoredList list={q.data.restored || []} clusterId={c.id} /><Wizard c={c} d={q.data} sets={sets} /></div>;
 }
 
 function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
@@ -54,7 +55,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [scope, setScope] = useDraft<Scope>(K + ':scope', 'database'); const [objMode, setObjMode] = useDraft<'table' | 'schema'>(K + ':objMode', 'table');
   const [db, setDb] = useDraft(K + ':db', ''); const [objs, setObjs] = useDraft<string[]>(K + ':objs', []); const obj = objs[0] || ''; const [search, setSearch] = useDraft(K + ':search', '');
   const [tgt, setTgt] = useDraft<Target | null>(K + ':tgt', null);
-  const [dest, setDest] = useDraft(K + ':dest', ''); const [newName, setNewName] = useDraft(K + ':newName', ''); const [action, setAction] = useDraft<'promote' | 'pause'>(K + ':action', 'promote'); const [delta, setDelta] = useDraft(K + ':delta', false); const [keepArch, setKeepArch] = useDraft(K + ':keepArch', false); const [mkRoles, setMkRoles] = useDraft(K + ':mkRoles', true);
+  const [dest, setDest] = useDraft(K + ':dest', ''); const [newName, setNewName] = useDraft(K + ':newName', ''); const [action, setAction] = useDraft<'promote' | 'pause'>(K + ':action', 'promote'); const [delta, setDelta] = useDraft(K + ':delta', false); const [keepArch, setKeepArch] = useDraft(K + ':keepArch', false); const [mkRoles, setMkRoles] = useDraft(K + ':mkRoles', true); const [ttl, setTtl] = useDraft(K + ':ttl', 24);
   const [ask, setAsk] = useState(false);
   const prom = useOpRunner(c.id, undefined, K + ':prom'); const prev = useOpRunner(c.id, undefined, K + ':prev'); const [pmode, setPmode] = useDraft<PMode | null>(K + ':pmode', null); const [pdrop, setPdrop] = useDraft(K + ':pdrop', true); const [askPromote, setAskPromote] = useState(false); const [askOrphans, setAskOrphans] = useState(false);
   const [lastPromoteV, setLastPromote] = useDraft<any>(K + ':lastPromote', null); const lastPromote = { current: lastPromoteV }; const [pschema, setPschema] = useDraft(K + ':pschema', '');
@@ -75,8 +76,10 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   // "wrong rows": once the table is known, look for the mass DELETE / UPDATE
   useEffect(() => { if (intent === 'rows' && step === 2 && obj && !dml.op && !dml.busy) dml.run('wal_forensics', { mode: 'dml', hours: 24, min_rows: dmlMin, limit: 30 }); }, [intent, step, obj]);
 
+  // the destination: the one the operator picked, else the one the agent proposed in the last check
+  const destNow = (): string => dest || (plan.op?.status === 'succeeded' && plan.op.params?.scope === 'instance' ? String(plan.op.result?.destination || '') : '');
   const tparams = (): Record<string, any> => !tgt ? {} : tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : tgt.mode === 'xid' ? { target_xid: tgt.xid, inclusive: false } : {};
-  const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { destination: dest, action, delta, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
+  const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { ...(destNow() ? { destination: destNow() } : {}), action, delta, ttl_hours: ttl, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
     : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...(mkRoles ? { create_missing_roles: true } : {}), ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
 
@@ -131,7 +134,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
   const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && objs.length > 0 && (intent !== 'rows' || (objs.length === 1 && splitId(obj).length === 3)));
   const okName = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName);
-  const okWhere = scope === 'instance' ? dest.startsWith('/') : scope === 'database' ? okName : true;
+  const okWhere = scope === 'instance' ? destNow().startsWith('/') : scope === 'database' ? okName : true;
   const okWhen = !!tgt && (tgt.mode !== 'time' || (tgt.ms >= from && tgt.ms <= to + 60000));
   const lastPlan = useRef<any>(null); if (plan.op?.status === 'succeeded') lastPlan.current = plan.op.result; else if (!plan.op && !plan.busy) lastPlan.current = null;
   const pres = plan.op?.status === 'succeeded' ? plan.op.result : plan.busy ? lastPlan.current : null;
@@ -142,12 +145,14 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   }, [sets, tgt]);
   const running = exec.busy;
   const doneOk = exec.op?.status === 'succeeded';
-  const check = () => { if (okWhere) plan.run('restore_plan', planParams()); else plan.reset(); };
+  const check = () => { if (okWhere || scope === 'instance') plan.run('restore_plan', planParams()); else plan.reset(); };
+  const pickDest = (p: string) => { setDest(p); setTimeout(() => plan.run('restore_plan', { scope: 'instance', ...params().p, destination: p }), 0); };
   // where the recovery runs changed (from the dialog opened in the check step, or by a colleague): the verdict shown is stale, check again
   const placement = useQuery<any>(scope !== 'instance' ? `/api/clusters/${encodeURIComponent(c.id)}/placement` : null);
   const plSig = placement.data ? JSON.stringify(placement.data.ephemeral || {}) : ''; const plSeen = useRef(plSig);
   useEffect(() => { if (!plSig || plSig === plSeen.current) return; const had = !!plSeen.current; plSeen.current = plSig; if (had && step === 3 && !exec.op && okWhere) check(); }, [plSig]);
-  const goCheck = () => { setStep(3); if (scope !== 'instance' || dest.startsWith('/')) plan.run('restore_plan', planParams()); else plan.reset(); };
+  // a whole instance needs no destination to be checked: the agent proposes one (and every other volume it could use) and the check runs on it
+  const goCheck = () => { setStep(3); plan.run('restore_plan', planParams()); };
   const choose = (i: Intent) => {
     setIntent(i); setObjs([]); setTgt(null); plan.reset(); dml.reset(); prev.reset();
     if (i === 'cluster') { setScope('instance'); setStep(2); return; }
@@ -223,21 +228,22 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       <Card title="Controlla e conferma"><div className="stack">
         <div className="rplan">
           <p>Recuperi {whatTxt}, {whenTxt}.</p>
-          <ol className="small">{scope === 'instance' ? <><li>Una copia completa del server viene ricostruita nella cartella che indichi qui sotto.</li><li>Il server in esecuzione e i suoi dati non vengono toccati.</li><li>Alla fine ti diamo il comando per avviare la copia (parte senza archiviare nell’archivio della produzione).</li></>
+          <ol className="small">{scope === 'instance' ? <><li>Una copia completa del server viene ricostruita nella cartella scelta qui sotto (pg_arca propone il disco più adatto).</li><li>La copia viene <strong>avviata</strong> da pg_arca su una porta libera, isolata dalla produzione: non archivia, non replica, non esegue job. Il server in esecuzione non viene toccato.</li><li>{ttl ? <>Resta disponibile per {TTL_CHOICES.find(x => x[0] === ttl)?.[1] || `${ttl} ore`}, poi pg_arca la ferma e la cancella da solo (puoi tenerla più a lungo in qualsiasi momento).</> : <>Resta finché non la elimini tu.</>}</li></>
             : scope === 'database' ? <><li>pg_arca crea il nuovo database <strong>{newName || '…'}</strong> con il contenuto recuperato.</li><li>{live?.has(db) ? <>Il database {db} attuale resta com’è.</> : <>Nessun database esistente viene toccato.</>}</li><li>Lo controlli e, se va bene, decidi tu come usarlo (anche al posto dell’originale).</li></>
             : intent === 'rows' ? <><li>La tabella viene ricostruita com’era in un database di quarantena separato.</li><li>Confronti riga per riga la versione recuperata con quella di adesso.</li><li>Riporti solo le righe che scegli; prima viene salvata una copia di sicurezza delle righe toccate.</li></>
             : <><li>{objs.length === 1 ? 'Quanto scelto viene ricostruito' : 'Le tabelle scelte vengono ricostruite'}, con ciò da cui dipendono, in un database di quarantena separato.</li><li>Nessuna tabella attuale viene modificata in questa fase.</li><li>Poi la rimetti al suo posto con un clic{goneNow ? '' : ' (quella attuale resta salvata con un altro nome)'}.</li></>}</ol>
         </div>
         {scope === 'database' ? <Field label="Nome del nuovo database" hint="Non sovrascrive mai un database esistente." error={newName && !okName ? 'Solo lettere, cifre e _ (max 63 caratteri), senza spazi.' : null}><div className="row gap-s"><input className="input" value={newName} onChange={e => setNewName(e.target.value)} onBlur={check} /><Button sm icon="refresh" busy={plan.busy} onClick={check}>Ricontrolla</Button></div></Field> : null}
         {scope === 'instance' ? <>
-          <Field label="Cartella di destinazione sul server" hint="Percorso assoluto, vuoto o inesistente. La cartella dati in uso e quelle di sistema sono rifiutate." error={dest && !dest.startsWith('/') ? 'Deve iniziare con /' : null}><div className="row gap-s"><input className="input mono" value={dest} onChange={e => setDest(e.target.value)} placeholder="/var/lib/postgresql/ripristino" /><Button sm icon="search" busy={plan.busy} disabled={!dest.startsWith('/')} onClick={check}>Verifica</Button></div></Field>
+          <Field label="Dove mettere la copia">{pres?.destinations ? <DestPicker where={pres.destinations} value={destNow()} onPick={pickDest} busy={plan.busy} /> : plan.busy || !plan.op ? <p className="small muted">Cerco sul server i dischi con spazio sufficiente…</p> : null}</Field>
+          <Field label="Cosa fare con la copia"><div className="seg"><button aria-pressed={action === 'promote'} onClick={() => setAction('promote')}>Usarla subito</button><button aria-pressed={action === 'pause'} onClick={() => setAction('pause')}>Controllarla prima (resta in pausa)</button></div></Field>
+          <p className="small muted" style={{ marginTop: -6 }}>{action === 'promote' ? 'Arrivata al momento scelto diventa un server normale, leggibile e scrivibile.' : 'Si ferma al momento scelto in sola lettura: controlli i dati e poi decidi se concludere il recupero.'}</p>
+          <Field label="Per quanto tenerla"><div className="seg">{TTL_CHOICES.map(([h, t]) => <button key={h} aria-pressed={ttl === h} onClick={() => setTtl(h)}>{t}</button>)}</div></Field>
           <Details k={`${K}:inst-adv`} summary="Opzioni avanzate"><div className="stack" style={{ marginTop: 8 }}>
-            <Field label="Al termine del recupero"><div className="seg"><button aria-pressed={action === 'promote'} onClick={() => setAction('promote')}>Diventa un’istanza normale</button><button aria-pressed={action === 'pause'} onClick={() => setAction('pause')}>Resta in pausa per controllare</button></div></Field>
             <label className="check"><input type="checkbox" checked={delta} onChange={e => setDelta(e.target.checked)} />Ripristino differenziale su una cartella già ripristinata (copia solo ciò che differisce)</label>
-            <label className="check"><input type="checkbox" checked={keepArch} onChange={e => setKeepArch(e.target.checked)} />Questa copia sostituirà il server originale: lascia attiva l’archiviazione WAL</label>
+            <label className="check"><input type="checkbox" checked={keepArch} onChange={e => setKeepArch(e.target.checked)} />Questa copia sostituirà il server originale: lascia attiva l’archiviazione WAL (non viene avviata da pg_arca: la avvii tu al suo posto definitivo)</label>
             <p className="small muted">{keepArch ? 'Avviata, la copia archivierà nello stesso archivio WAL della produzione: fallo solo se il server originale non tornerà.' : 'Di norma la copia parte con l’archiviazione WAL spenta, senza standby da attendere, senza seguire un primario, senza sottoscrizioni di replica logica attive e senza librerie che lavorano da sole su altri server (pg_cron…): puoi avviarla accanto alla produzione senza toccarla.'}</p></div></Details></> : null}
-        {scope === 'instance' && !dest.startsWith('/') ? <p className="small muted">Indica la cartella per far partire i controlli.</p>
-          : pres && (plan.op?.status === 'succeeded' || plan.busy) ? <div className={plan.busy ? 'stale' : ''} aria-busy={plan.busy} title={plan.busy ? 'Ricontrollo in corso…' : undefined}><Verdict p={pres} /></div> : <OpPanel op={plan.op} error={plan.error} label="Controlli prima di partire" />}
+        {pres && (plan.op?.status === 'succeeded' || plan.busy) ? <div className={plan.busy ? 'stale' : ''} aria-busy={plan.busy} title={plan.busy ? 'Ricontrollo in corso…' : undefined}><Verdict p={pres} /></div> : <OpPanel op={plan.op} error={plan.error} label="Controlli prima di partire" />}
         {scope === 'database' && pres && (pres.missing_roles || []).length ? <div>
           <label className="check"><input type="checkbox" checked={mkRoles} onChange={e => setMkRoles(e.target.checked)} />Crea i ruoli mancanti ({(pres.missing_roles as string[]).slice(0, 6).join(', ')}{pres.missing_roles.length > 6 ? '…' : ''}) come segnaposto, per tenere proprietari e permessi</label>
           <p className="small muted" style={{ marginTop: -6 }}>{mkRoles ? 'I ruoli vengono creati senza accesso (NOLOGIN), senza password e senza appartenenze ad altri ruoli: un account eliminato non torna mai attivo, i suoi oggetti tengono solo proprietario e permessi.' : 'Senza questi ruoli, gli oggetti del database ripristinato apparterranno all’utente dell’agent e perderanno i permessi concessi.'}</p></div> : null}
@@ -249,9 +255,10 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     </div>}
 
     {step === 4 && <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
-      {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' ? <>Copia pronta in <code>{exec.op!.result.destination}</code>. Per avviarla: <code>{exec.op!.result.start_hint}</code></>
+      {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' ? (exec.op!.result.instance ? <>La copia del server è <strong>{exec.op!.result.instance.state === 'paused' ? 'in pausa al momento scelto' : 'avviata'}</strong>: i dati per collegarti sono qui sotto.</> : <>Copia pronta in <code>{exec.op!.result.destination}</code>{exec.op!.result.start_hint ? <>: avviala al suo posto definitivo (<code>{exec.op!.result.start_hint}</code>).</> : '.'}</>)
         : scope === 'database' ? <>Il database <code>{exec.op!.result.result_database}</code> è pronto: collegati e controllalo. {live?.has(db) ? <>L’originale <code>{db}</code> non è stato toccato.</> : null}</>
         : <>Recuperato nel database di quarantena <code>{exec.op!.result.result_database}</code>. Ora scegli come rimetterlo a posto, qui sotto.</>}</Banner> : null}
+      {doneOk && scope === 'instance' && exec.op!.result.instance ? <RestoredCard clusterId={c.id} r={{ ...exec.op!.result.instance, ...((d.restored || []).find((x: any) => x.id === exec.op!.result.instance.id) || { nodeId: exec.op!.nodeId, nodeName: '', online: true }) }} /> : null}
       {doneOk ? <Notices r={exec.op!.result} /> : null}
       {doneOk && scope === 'database' && live?.has(db) ? <details><summary className="small" style={{ cursor: 'pointer' }}>Voglio che prenda il posto di {db}</summary><div className="stack-s small" style={{ marginTop: 8 }}>
         <p>Ferma prima le applicazioni che usano {db}, poi esegui sul server (l’originale resta come <code>{db}_prima</code> finché non lo elimini tu):</p>
@@ -274,7 +281,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       <p>{m === 'as_new' ? <>Le tabelle recuperate compaiono accanto alle originali con un nome che termina in <code>_pitr_&lt;data&gt;</code>. Nulla di esistente viene toccato.</> : m === 'missing_only' ? <>Tornano solo le tabelle che oggi non esistono, con il loro nome; quelle presenti restano com’è.</> : <>Le tabelle attuali vengono rinominate <code>_old_&lt;data&gt;</code> (i loro dati restano, puoi tornare indietro) e quelle recuperate prendono il loro posto in un’unica transazione. Chiavi esterne e viste vengono ricollegate.</>}</p>
       <p className="small muted">{pdrop ? 'Il database di quarantena viene eliminato a operazione riuscita.' : 'Il database di quarantena resta disponibile.'}</p></Confirm>; })() : null}
     {ask ? <Confirm title="Avviare il ripristino?" confirmLabel="Avvia" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); setStep(4); exec.run(x.type, x.p); }}>
-      <p>{scope === 'instance' ? <>Ricostruisce il server in <code>{dest}</code>.</> : scope === 'database' ? <>Crea il database <code>{newName}</code> da <code>{db}</code>.</> : <>Ricostruisce {objs.length === 1 ? <code>{shortName(obj)}</code> : <>{objs.length} elementi</>} in un database di quarantena.</>} I dati attuali non vengono modificati. Se qualcosa fallisce, ciò che è stato creato viene rimosso.</p></Confirm> : null}
+      <p>{scope === 'instance' ? <>Ricostruisce il server in <code>{destNow()}</code> e lo avvia{keepArch ? ' (no: con l’archiviazione attiva lo avvii tu)' : ''}.</> : scope === 'database' ? <>Crea il database <code>{newName}</code> da <code>{db}</code>.</> : <>Ricostruisce {objs.length === 1 ? <code>{shortName(obj)}</code> : <>{objs.length} elementi</>} in un database di quarantena.</>} I dati attuali non vengono modificati. Se qualcosa fallisce, ciò che è stato creato viene rimosso.</p></Confirm> : null}
   </div>;
 }
 

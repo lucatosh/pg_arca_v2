@@ -467,3 +467,12 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 /* the console cannot be reached: one bar for the whole app */
 .netbar { position: sticky; top: 0; z-index: 30; display: flex; gap: 10px; align-items: center; padding: 8px 16px; background: var(--bad-soft); color: var(--bad); border-bottom: 1px solid var(--bad); font-size: 13px; }
 .netbar strong { color: var(--ink); }
+
+/* where to put a restored copy: one row per volume, with how full it is today and after the restore */
+.opt.dest.off { opacity: .75; }
+.usebar { position: relative; height: 6px; border-radius: 3px; background: var(--surface-3); margin: 6px 0 4px; overflow: hidden; max-width: 420px; }
+.usebar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ink-3); opacity: .55; }
+.usebar b { position: absolute; top: 0; bottom: 0; background: var(--ok); }
+.usebar b.warn { background: var(--warn); } .usebar b.bad { background: var(--bad); }
+.restored { border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; background: var(--surface); }
+.restored + .restored { margin-top: 2px; }
