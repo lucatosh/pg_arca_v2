@@ -30,7 +30,11 @@ case "${1:-help}" in
     docker exec hy2 bash /root/prep-rocky.sh pg hy-mi hy-etcd:2379 | tail -3
     l=$(leader a); docker exec "$l" bash /root/prep-rocky.sh seed
     for n in hy1 hy2; do docker exec $n bash /root/prep-rocky.sh nfs "$NFS"; done
-    echo "== site hy-rm (Proxmox)"
+    "$0" prep-b
+    for i in 0 1; do inct ${CT[$i]} "/root/prep-rocky.sh pg hy-rm ${IPB[2]}:2379 $VMIP 15432 geo_hy_rm" | tail -3; done
+    "$0" status ;;
+  prep-b)   # the standby site's machines, ready but without Patroni started (can run while the Docker site is still being built)
+    echo "== site hy-rm (Proxmox): containers, packages, etcd + HAProxy, NFS"
     t=$(pve "pveam list local | awk '{print \$1}' | grep rockylinux-9 | sort | tail -1"); [ -n "$t" ] || { echo "no Rocky 9 template on Proxmox"; exit 1; }
     for i in 0 1 2; do
       if ! pve "pct status ${CT[$i]}" >/dev/null 2>&1; then
@@ -42,8 +46,7 @@ case "${1:-help}" in
       fi
     done
     pushct ${CT[2]} hy/hybx.sh; inct ${CT[2]} "/root/hybx.sh ${IPB[0]} ${IPB[1]}"
-    for i in 0 1; do pushct ${CT[$i]} hy/prep-rocky.sh; inct ${CT[$i]} "/root/prep-rocky.sh nfs $NFS; /root/prep-rocky.sh pg hy-rm ${IPB[2]}:2379 $VMIP 15432 geo_hy_rm" | tail -3; done
-    "$0" status ;;
+    for i in 0 1; do pushct ${CT[$i]} hy/prep-rocky.sh; inct ${CT[$i]} "/root/prep-rocky.sh nfs $NFS; /root/prep-rocky.sh pkgs"; done ;;
   status)
     echo "== hy-mi (Docker)"; l=$(leader a || echo hy1); docker exec "$l" patronictl -c /etc/patroni/patroni.yml list 2>&1 | tail -n +1
     echo "== hy-rm (Proxmox)"; l=$(leader b || echo ${CT[0]}); inct "$l" "patronictl -c /etc/patroni/patroni.yml list" 2>&1

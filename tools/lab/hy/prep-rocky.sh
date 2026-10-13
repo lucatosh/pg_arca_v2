@@ -67,6 +67,7 @@ YML
     systemctl enable --now patroni >/dev/null 2>&1
     for i in $(seq 60); do s=$(curl -s localhost:8008/patroni 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("role"), d.get("state"))' 2>/dev/null || true); case "$s" in *running*|*streaming*) break;; esac; sleep 5; done
     echo "$me: $s"; patronictl -c /etc/patroni/patroni.yml list 2>/dev/null | tail -n +1 ;;
+  pkgs) pkgs; rpm -q postgresql16-server patroni | tr '\n' ' '; echo ;;
   nfs)
     src=$1; install -d /mnt/arca
     grep -q " /mnt/arca " /etc/fstab || echo "$src /mnt/arca nfs4 rw,hard,noatime,_netdev 0 0" >> /etc/fstab
