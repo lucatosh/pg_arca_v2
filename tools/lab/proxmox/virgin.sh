@@ -64,7 +64,9 @@ net_for() {
   if [ -n "$IPBASE" ]; then
     [ -n "$GW" ] || die "IPBASE needs GW"
     local last=${IPBASE##*.} pre=${IPBASE%.*}
-    echo "name=eth0,bridge=$BRIDGE,ip=$pre.$(( last + off ))/24,gw=$GW"
+    local ip="$pre.$(( last + off ))"
+    if ping -c1 -W1 "$ip" >/dev/null 2>&1; then die "$ip is already in use on the network (choose another IPBASE)"; fi
+    echo "name=eth0,bridge=$BRIDGE,ip=$ip/24,gw=$GW"
   else echo "name=eth0,bridge=$BRIDGE,ip=dhcp"; fi
 }
 
@@ -203,7 +205,7 @@ create_one() {
   tpl=$(template "$(echo "$r" | cut -d'|' -f3)"); mem=$(echo "$r" | cut -d'|' -f4); disk=$(echo "$r" | cut -d'|' -f5); setup=$(echo "$r" | cut -d'|' -f6)
   echo "== $name ($id): $(echo "$r" | cut -d'|' -f7)"
   pct create "$id" "$tpl" --hostname "$name" --memory "$mem" --swap 512 --cores 2 --rootfs "$STORAGE:$disk" --net0 "$(net_for "$name")" \
-    --unprivileged 1 --features nesting=1 --onboot 0 --password "$PW" --description "pg_arca virgin test server: $(echo "$r" | cut -d'|' -f7)" >/dev/null
+    ${IPBASE:+--nameserver "${DNS:-$GW}"} --unprivileged 1 --features nesting=1 --onboot 0 --password "$PW" --description "pg_arca virgin test server: $(echo "$r" | cut -d'|' -f7)" >/dev/null
   pct start "$id"
   for _ in $(seq 60); do [ -n "$(ip_of "$name")" ] && break; sleep 2; done
   [ -n "$(ip_of "$name")" ] || die "$name has no network address"
