@@ -605,15 +605,29 @@ def count_targets(target_time, target_lsn, target_xid, target_name, immediate=Fa
 
 
 # --------------------------------------------------------------------------- choosing the base backup and checking WAL
+_hint = threading.local()
+
+
+def set_xid_lsn_hint(lsn):
+    """For the operation running in this thread: a transaction-id target whose position is known (an LSN at or before its commit, from the WAL analysis)."""
+    _hint.lsn = lsn
+
+
 def choose_set(repo, spec=None, target_time=None, target_lsn=None, target_xid=None, target_name=None):
     """Explicit set wins. Otherwise the newest COMPLETE set that ends BEFORE the target (a set cannot recover to earlier than its stop)."""
+    hint = getattr(_hint, "lsn", None) if target_xid else None
+    if hint and spec in (None, "", "latest"):
+        # the transaction commits at or after `hint`: every set that stops before it can reach the point just before the transaction
+        ok = [s for s in repo.complete_sets() if lsn_to_int(s["stop_lsn"]) <= lsn_to_int(hint)]
+        if ok:
+            return ok[-1]
     done = repo.complete_sets()
     if not done:
         raise EngineError("PGA-REPO-020", "no complete backup available", "run a full backup first")
     if spec not in (None, "", "latest"):
         s = repo.resolve_set(spec)
         _check_target_after_set(s, target_time, target_lsn)
-        if (target_xid or target_name) and s.get("type") != "full":
+        if (target_xid or target_name) and s.get("type") != "full" and not (hint and lsn_to_int(s["stop_lsn"]) <= lsn_to_int(hint)):
             raise EngineError("PGA-PITR-004", "a transaction-id / restore-point target cannot be ordered against an incremental or differential backup (%s)" % s["id"],
                               "choose a FULL backup as the base, or use a time / LSN target")
         return s

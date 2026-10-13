@@ -176,6 +176,11 @@ class OperationExecutor:
         # an operational machine (backup server / recovery host) serves many clusters: the console says whose backup catalogue (stanza) an operation is about
         st_ = params.get("stanza")
         self._tl.stanza = st_ if isinstance(st_, str) and re.match(r"^[A-Za-z0-9_.-]{1,60}$", st_) else None
+        # "just before transaction X": the WAL analysis also knows WHERE X is (an LSN at or before its commit) - any backup ending before that point can
+        # be the base, not only the last FULL one (with a two-day-old full the replay took 30+ minutes on the lab)
+        from pg_arca.engine import restore as _rst
+        _xl = params.get("xid_lsn")
+        _rst.set_xid_lsn_hint(_xl if isinstance(_xl, str) and re.match(r"^[0-9A-Fa-f]{1,8}/[0-9A-Fa-f]{1,8}$", _xl) and params.get("target_xid") else None)
         try:
             result = fn(params)
             return self._finish(op_id, op_type, "succeeded", result, None)
@@ -207,6 +212,7 @@ class OperationExecutor:
             self._live.pop(op_id, None)
             self._cancel.discard(op_id)
             self._tl.op_id = None
+            _rst.set_xid_lsn_hint(None)
 
     # ------------------------------------------------------------------ progress / cancel (used by the console client)
     def progress_of(self, op_id):

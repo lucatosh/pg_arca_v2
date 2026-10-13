@@ -18,7 +18,7 @@ import { CatDb, DbPicker, DroppedNote, DropInfo, kindOf, parseWalTime, fmtWhen, 
 
 type Scope = 'instance' | 'database' | 'object';
 type Intent = 'table' | 'rows' | 'database' | 'cluster';
-type Target = { mode: 'latest' } | { mode: 'time'; ms: number } | { mode: 'lsn'; lsn: string; label: string } | { mode: 'xid'; xid: string; label: string };
+type Target = { mode: 'latest' } | { mode: 'time'; ms: number } | { mode: 'lsn'; lsn: string; label: string } | { mode: 'xid'; xid: string; label: string; lsn?: string };
 const STEPS = ['Situazione', 'Cosa', 'Quando', 'Controllo', 'Ripristino'];
 const KIND_LABEL: Record<string, string> = { DROP: 'Oggetto eliminato o riscritto', TRUNCATE: 'Tabella svuotata', 'DROP DATABASE': 'Database eliminato' };
 const tzName = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return 'locale'; } };
@@ -78,7 +78,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
   // the destination: the one the operator picked, else the one the agent proposed in the last check
   const destNow = (): string => dest || (plan.op?.status === 'succeeded' && plan.op.params?.scope === 'instance' ? String(plan.op.result?.destination || '') : '');
-  const tparams = (): Record<string, any> => !tgt ? {} : tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : tgt.mode === 'xid' ? { target_xid: tgt.xid, inclusive: false } : {};
+  const tparams = (): Record<string, any> => !tgt ? {} : tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : tgt.mode === 'xid' ? { target_xid: tgt.xid, inclusive: false, ...(tgt.lsn ? { xid_lsn: tgt.lsn } : {}) } : {};
   const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { ...(destNow() ? { destination: destNow() } : {}), label: c.name, action, delta, ttl_hours: ttl, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
     : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...(mkRoles ? { create_missing_roles: true } : {}), ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
@@ -124,7 +124,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     if (intent === 'rows') for (const e of dml.op?.result?.events || []) {
       if (!touches(e.names || [])) continue; const at = parseWalTime(e.time);
       const what = e.kind === 'DELETE' ? `${num(e.deleted)} righe eliminate` : e.kind === 'UPDATE' ? `${num(e.updated)} righe modificate` : `${num(e.deleted)} eliminate e ${num(e.updated)} modificate`;
-      out.push({ key: 'xid:' + e.xid, title: `${what} in ${shortName(e.names[0])}`, at, exact: e.time_exact !== false, tgt: { mode: 'xid', xid: String(e.xid), label: `${what} in ${shortName(e.names[0])} (${Number.isFinite(at) ? fmtWhen(at) : 'xid ' + e.xid})` } });
+      out.push({ key: 'xid:' + e.xid, title: `${what} in ${shortName(e.names[0])}`, at, exact: e.time_exact !== false, tgt: { mode: 'xid', xid: String(e.xid), lsn: e.lsn, label: `${what} in ${shortName(e.names[0])} (${Number.isFinite(at) ? fmtWhen(at) : 'xid ' + e.xid})` } });
     }
     return out.sort((a, b) => (b.at || 0) - (a.at || 0));
   }, [intent, fx.op, tdropR.op, dml.op, objs, db, scope]);
@@ -332,7 +332,7 @@ function ForensicsTools({ fx, dml, fxHours, setFxHours, dmlMin, setDmlMin, onPic
     {dml.op?.status === 'succeeded' ? (dml.op.result.events.length ? <table className="t"><thead><tr><th>Cosa</th><th>Tabella</th><th>Quando</th><th /></tr></thead><tbody>
       {[...dml.op.result.events].reverse().map((e: any, i: number) => { const t = parseWalTime(e.time); const what = e.kind === 'DELETE' ? `${num(e.deleted)} righe eliminate` : e.kind === 'UPDATE' ? `${num(e.updated)} righe modificate` : `${num(e.deleted)} eliminate, ${num(e.updated)} modificate`;
         return <tr key={i}><td><Badge kind="bad">{what}</Badge>{e.committed === false ? <div className="small faint">conferma non trovata nei WAL vicini</div> : null}</td><td className="small">{(e.names || []).join(', ')}</td><td className="small nowrap">{Number.isFinite(t) ? `${e.time_exact === false ? 'circa ' : ''}${fmtWhen(t)}` : e.time}</td>
-          <td className="num"><Button sm onClick={() => onPick({ mode: 'xid', xid: String(e.xid), label: `${what} in ${(e.names || [])[0] || ''} (${Number.isFinite(t) ? fmtWhen(t) : 'xid ' + e.xid})` })}>Ripristina subito prima</Button></td></tr>; })}</tbody></table>
+          <td className="num"><Button sm onClick={() => onPick({ mode: 'xid', xid: String(e.xid), lsn: e.lsn, label: `${what} in ${(e.names || [])[0] || ''} (${Number.isFinite(t) ? fmtWhen(t) : 'xid ' + e.xid})` })}>Ripristina subito prima</Button></td></tr>; })}</tbody></table>
       : <p className="muted small">Nessuna transazione con almeno {num(dml.op.result.min_rows)} righe eliminate o modificate nel periodo ({num(dml.op.result.segments_scanned)} segmenti analizzati).</p>) : null}
   </div>;
 }
