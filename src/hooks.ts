@@ -55,7 +55,7 @@ export function useToasts() { return useSyncExternalStore(cb => { tsubs.add(cb);
 /* ---------------- operation runner ----------------
  * One user intent = one Idempotency-Key. Double clicks / retries / flaky networks re-use the key, so the console never runs it twice.
  * The key is renewed only when the intent finishes (or the params change). */
-export interface Op { id: string; type: string; status: string; params: any; result?: any; error?: string; progress?: any; attempts: number; createdAt: string; updatedAt: string; history: any[]; clusterId: string; createdBy: string; cancelRequested?: boolean; }
+export interface Op { id: string; nodeId?: string; type: string; status: string; params: any; result?: any; error?: string; progress?: any; attempts: number; createdAt: string; updatedAt: string; history: any[]; clusterId: string; createdBy: string; cancelRequested?: boolean; }
 const TERMINAL = ['succeeded', 'failed', 'expired', 'cancelled'];
 export const isTerminal = (s?: string) => !!s && TERMINAL.includes(s);
 
@@ -104,7 +104,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
   // persist: the operation this runner started is remembered under that key; coming back to the page shows it again (and follows it if still running)
   const pk = persist ? `op:${persist}` : null;
   const [op, setOp0] = useState<Op | null>(() => (pk ? readDraft<Op>(pk) ?? null : null));
-  const setOp = useCallback((o: Op | null) => { setOp0(o); if (pk) writeDraft(pk, o || undefined); }, [pk]);
+  const setOp = useCallback((o: Op | null) => { setOp0(o); if (pk) writeDraft(pk, o && o.id ? o : undefined); }, [pk]);   // the 'sending' placeholder is never remembered
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(() => !!(pk && readDraft<Op>(pk) && !isTerminal(readDraft<Op>(pk)!.status)));
   const [conflict, setConflict] = useState<any>(null);          // 409 from the console: a colleague's operation collides with this one (who, what, since)
@@ -118,9 +118,9 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
     try {
       const r = await get<{ operation: Op }>(`/api/operations/${id}`);
       if (!alive.current) return;
-      setOp(r.operation);
+      setOp(r.operation); setError(null);
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; revalidateOps(); onDone?.(r.operation); return; }
-    } catch (e: any) { if (!alive.current) return; setError(e.message); }
+    } catch (e: any) { if (!alive.current) return; setError(e.body?.error === 'console_unreachable' ? 'Non riesco ad aggiornare lo stato: la console non risponde. L’operazione continua sul server; lo stato si aggiorna appena la console torna raggiungibile.' : e.message); }
     timer.current = setTimeout(() => poll(id), 1000);
   }, [onDone, setOp]);
 
@@ -129,20 +129,26 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
   const run = useCallback(async (type: string, params: Record<string, any> = {}, extra: { nodeId?: string } = {}) => {
     const sig = type + JSON.stringify(params) + (extra.nodeId || '');
     if (!keyRef.current || keyRef.current.sig !== sig) keyRef.current = { sig, key: uid('op') };
-    setBusy(true); setError(null); setOp(null); setConflict(null); last.current = { type, params, extra };
+    setBusy(true); setError(null); setConflict(null); last.current = { type, params, extra };
+    // shown at once by every OpPanel: the request is on its way to the console (status 'sending', no id yet)
+    const now = new Date().toISOString();
+    setOp({ id: '', type, status: 'sending', params, attempts: 0, createdAt: now, updatedAt: now, history: [], clusterId, createdBy: '' });
     try {
       const url = clusterId.startsWith('worker:') ? `/api/workers/${encodeURIComponent(clusterId.slice(7))}/operations` : `/api/clusters/${clusterId}/operations`;   // operational machines have their own endpoint
       const r = await api<{ operation: Op; approval?: any }>('POST', url, { type, params, nodeId: extra.nodeId }, { key: keyRef.current.key });
-      if (r.approval) { setBusy(false); keyRef.current = null; revalidate('/api/approvals'); toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); return null; }
+      if (r.approval) { setOp(null); setBusy(false); keyRef.current = null; revalidate('/api/approvals'); toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); return null; }
       setOp(r.operation); revalidateOps();
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); } else poll(r.operation.id);
       return r.operation;
-    } catch (e: any) { setBusy(false); setError(e.body?.message || e.message); if (e.body?.error === 'conflict' || e.body?.overridable) { setConflict(e.body); keyRef.current = null; } return null; }
+    } catch (e: any) {
+      // console unreachable: the key is kept, so pressing the same button again can never start the operation twice
+      setOp(null); setBusy(false); setError(e.body?.message || e.message); if (e.body?.error === 'conflict' || e.body?.overridable) { setConflict(e.body); keyRef.current = null; } return null;
+    }
   }, [clusterId, poll, onDone, setOp]);
   /** after an overridable conflict (an HA action while data work runs), the operator confirmed: same request with force */
   const runForced = useCallback(() => { const l = last.current; if (l) return run(l.type, { ...l.params, force: true }, l.extra); return Promise.resolve(null); }, [run]);
 
-  const cancel = useCallback(async () => { if (op) { try { await api('POST', `/api/operations/${op.id}/cancel`); } catch (e: any) { setError(e.message); } } }, [op]);
+  const cancel = useCallback(async () => { if (op?.id) { try { await api('POST', `/api/operations/${op.id}/cancel`); } catch (e: any) { setError(e.message); } } }, [op]);
   const reset = useCallback(() => { setOp(null); setError(null); setConflict(null); setBusy(false); keyRef.current = null; clearTimeout(timer.current); }, [setOp]);
   return { op, error, busy, run, cancel, reset, conflict, runForced };
 }

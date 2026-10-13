@@ -451,3 +451,19 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
   .kv { grid-template-columns: minmax(0, 1fr); gap: 0; } .kv dt { font-size: 12px; } .kv dd { margin-bottom: 8px; }
 }
 @media (max-width: 700px) { .grid.kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .grid.kpis .kpi .v { font-size: 22px; } }
+
+/* uniform progress of any operation: sent → taken by the agent → running → outcome */
+.opsteps { display: flex; flex-wrap: wrap; gap: 4px 0; margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--ink-3); }
+.opsteps li { display: flex; align-items: center; gap: 6px; }
+.opsteps li + li::before { order: -2; content: ''; width: 18px; height: 1px; background: var(--line-strong); margin: 0 6px; }
+.opsteps li::after { order: -1; content: ''; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--line-strong); box-sizing: border-box; }
+.opsteps li.done { color: var(--ink-2); } .opsteps li.done::after { background: var(--ok); border-color: var(--ok); }
+.opsteps li.now { color: var(--ink); font-weight: 600; } .opsteps li.now::after { border-color: var(--accent); background: var(--accent-soft); animation: oppulse 1.4s ease-in-out infinite; }
+.opsteps li.bad { color: var(--bad); font-weight: 600; } .opsteps li.bad::after { background: var(--bad); border-color: var(--bad); }
+.opsteps li.skip { opacity: .45; }
+@keyframes oppulse { 50% { box-shadow: 0 0 0 4px var(--accent-soft); } }
+@media (prefers-reduced-motion: reduce) { .opsteps li.now::after { animation: none; } }
+
+/* the console cannot be reached: one bar for the whole app */
+.netbar { position: sticky; top: 0; z-index: 30; display: flex; gap: 10px; align-items: center; padding: 8px 16px; background: var(--bad-soft); color: var(--bad); border-bottom: 1px solid var(--bad); font-size: 13px; }
+.netbar strong { color: var(--ink); }

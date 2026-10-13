@@ -8,6 +8,8 @@ import { TodayPage, useHealth } from './pages/Today';
 import { JoinBanner } from './pages/Join';
 import { ActivityDock } from './Dock';
 import { OpLogHost } from './OpLog';
+import { netState, onNet } from './api';
+import { toast } from './hooks';
 import { FleetTree, toneOf, primaryOf } from './Fleet';
 
 // Everything but the shell, "Oggi" and the first page is loaded on demand: a first paint of a few tens of KB, not the whole console.
@@ -122,6 +124,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
       </div>
     </aside>
     <div className="main">
+      <NetBar />
       <div className="topbar">
         <select className="input mobnav" aria-label="Vai a" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
           <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Oggi</option><option value="strategy">Strategie di backup</option><option value="infra">Ripristino e archivi</option><option value="discovery">Rilevamento</option><option value="workers">Macchine operative</option><option value="geo">Georidondanza</option><option value="history">Storico operazioni</option><option value="audit">Registro attività</option></select>
@@ -182,4 +185,14 @@ function Palette({ onClose, clusters, route, cycle }: { onClose: () => void; clu
       <ul ref={ref}>{items.map((it, n) => <li key={n}><button aria-selected={n === i} onMouseEnter={() => setI(n)} onClick={() => pick(n)}><Icon n={it.icon} /><span className="grow">{it.label}</span>{it.hint ? <span className="faint small">{it.hint}</span> : null}</button></li>)}
         {!items.length ? <li className="faint" style={{ padding: 14 }}>Nessun risultato.</li> : null}</ul>
     </div></div>;
+}
+
+/** One bar for the whole app while the console cannot be reached; it probes by itself and disappears when the console answers again. */
+function NetBar() {
+  const [n, setN] = useState(netState()); const [, tick] = useState(0); const prev = useRef(netState().down);
+  useEffect(() => onNet(() => { const cur = netState(); if (prev.current && !cur.down) toast('Connessione con la console ripristinata', 'ok'); prev.current = cur.down; setN(cur); }), []);
+  useEffect(() => { if (!n.down) return; const t = setInterval(() => tick(x => x + 1), 1000); return () => clearInterval(t); }, [n.down]);
+  if (!n.down) return null;
+  const s = Math.round((Date.now() - (n.since || Date.now())) / 1000);
+  return <div className="netbar" role="alert"><Icon n="alert" /><div className="grow"><strong>La console non risponde</strong> da {s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}: i dati a schermo possono essere vecchi e le azioni non partono. Riprovo da solo ogni pochi secondi; nulla di quello che hai inserito va perso.</div></div>;
 }
