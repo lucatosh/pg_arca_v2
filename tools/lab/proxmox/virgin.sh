@@ -79,7 +79,7 @@ INSERT INTO sales.orders SELECT g, 1 + g % 2000, now() - g * interval '1 minute'
 CREATE OR REPLACE VIEW sales.v_city AS SELECT city, count(*) FROM sales.customers GROUP BY 1;"
 
 base_debian() {
-  in_ct "$1" 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq curl ca-certificates gnupg locales sudo procps less python3 >/dev/null
+  in_ct "$1" 'export DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8; apt-get update -qq && apt-get install -y -qq curl ca-certificates gnupg locales sudo procps less python3 >/dev/null
     sed -i "s/^# *it_IT.UTF-8/it_IT.UTF-8/; s/^# *en_US.UTF-8/en_US.UTF-8/" /etc/locale.gen && locale-gen >/dev/null'
 }
 pgdg_debian() {
@@ -115,7 +115,7 @@ setup_custom_layout() {
 setup_rhel_pgdg() {
   in_ct "$1" "dnf -q -y install https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm >/dev/null
     dnf -q -y module disable postgresql >/dev/null 2>&1 || true
-    dnf -q -y install postgresql$2-server postgresql$2-contrib procps-ng sudo glibc-langpack-it python3 >/dev/null
+    dnf -q -y --disablerepo='pgdg*' --enablerepo=pgdg$2 --enablerepo=pgdg-common install postgresql$2-server postgresql$2-contrib procps-ng sudo glibc-langpack-it python3 >/dev/null
     /usr/pgsql-$2/bin/postgresql-$2-setup initdb && systemctl enable --now postgresql-$2"
   seed "$1" 5432 "/usr/pgsql-$2/bin"
 }
@@ -224,8 +224,8 @@ case "$cmd" in
     command -v pct >/dev/null || die "run this on the Proxmox host"
     list=$(expand "$@")
     if echo "$list" | grep -q '^pat'; then list=$(echo "$list" | grep -v '^pat'; echo pat1; echo pat2; echo pat3); fi   # Patroni: always the three, in order
-    for n in $list; do create_one "$n"; done
-    snapshot_all $list ;;
+    ok=""; for n in $list; do if ( create_one "$n" ); then ok="$ok $n"; else echo "   FAILED: $n (the others go on; fix and run create $n again after ./virgin.sh destroy $n)"; fi; done
+    snapshot_all $ok ;;
   status)
     for n in $(names); do id=$(ctid "$n")
       if ! pct status "$id" >/dev/null 2>&1; then printf '%-20s %-4s %s\n' "$n" "$id" "-"; continue; fi
