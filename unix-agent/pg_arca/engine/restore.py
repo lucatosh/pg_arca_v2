@@ -498,6 +498,98 @@ def _last_record_start(ctx, tli, segno, seg):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _recovery_path(ctx, start_tli, timeline):
+    """[(timeline, end LSN or None)], newest first: the timelines a recovery from `start_tli` with recovery_target_timeline=`timeline` replays,
+    each up to where it ended."""
+    tl = str(timeline or "latest").strip().lower()
+    if tl == "current":
+        target = start_tli
+    elif tl == "latest":
+        target = start_tli
+        for n in ctx.wal.list_histories():
+            try:
+                t = int(n[:8], 16)
+            except ValueError:
+                continue
+            if t > target and start_tli in (ctx.wal._history_forks(t) or {}):
+                target = t
+    else:
+        target = int(tl, 16) if tl.startswith("0x") else int(tl)
+    forks = (ctx.wal._history_forks(target) or {}) if target != start_tli else {}
+    return [(target, None)] + [(t, forks[t]) for t in sorted(forks, reverse=True) if t >= start_tli]
+
+
+def clamp_time_target(ctx, chain, target_time, timeline="latest", max_segments=6):
+    """PostgreSQL stops at a TIME only on a commit/abort record later than it; with none in the archive (an idle database, the end of an abandoned
+    timeline) it replays everything and then refuses to start ('recovery ended before configured recovery target was reached'). The state at that
+    time is the end of the archive: return {"lsn": start of the last archived record, "last_xact": time of the last transaction} to stop there instead,
+    or None when a later transaction exists (the time target works) or it cannot be told (no pg_waldump, unreadable segments: left as asked)."""
+    import subprocess
+    import tempfile
+    from pg_arca.engine.walscan import TS_RE, _ENV, _parse_iso
+    try:
+        want = target_time_to_dt(parse_target_time(target_time)).timestamp()
+    except Exception:
+        return None
+    exe = ctx.conn.exe("pg_waldump")
+    if os.path.sep in exe and not os.path.exists(exe):
+        return None
+    seg = int(chain[-1].get("wal_segment_size") or ctx.seg_size)
+    try:
+        path = _recovery_path(ctx, int(chain[-1]["timeline"]), timeline)
+        names = ctx.wal.list_segments(anywhere=True)
+    except Exception as e:
+        ctx.log("warning", "cannot tell the end of the archive for the time target: %s" % e)
+        return None
+    todo = []
+    for tli, end in path:
+        mine = []
+        for nm in names:
+            pr = parse_wal_name(nm, seg)
+            if pr and pr[0] == tli and (end is None or pr[1] <= (end - 1) // seg):
+                mine.append((pr[1], nm, end))
+        todo += sorted(mine, reverse=True)
+    last_lsn = None
+    tmp = tempfile.mkdtemp(prefix="pgarca-tt-", dir=ctx.scratch_dir if os.path.isdir(ctx.scratch_dir) else None)
+    try:
+        for _segno, nm, end in todo[:max_segments]:
+            f = os.path.join(tmp, nm)
+            if ctx.wal.retrieve_segment(nm, f)[0] != 0:
+                return None
+            args = [exe, f] + (["-e", "%X/%X" % (end >> 32, end & 0xFFFFFFFF)] if end else [])
+            with tempfile.TemporaryFile() as errf:
+                p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=errf, env=_ENV)
+                out = p.stdout.read()
+                p.stdout.close()
+                p.wait()
+            os.unlink(f)
+            newest, recs, lsn = None, 0, None
+            for line in out.splitlines():
+                m = re.search(rb"\blsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)", line)
+                if not m:
+                    continue
+                recs += 1
+                lsn = m.group(1).decode()
+                if b"rmgr: Transaction" in line and b"desc: " in line:
+                    d = line.split(b"desc: ", 1)[1]
+                    if d.startswith((b"COMMIT", b"ABORT")):
+                        t = TS_RE.search(d)
+                        v = _parse_iso(t.group(1).decode()) if t else None
+                        if v is not None and (newest is None or v > newest[0]):
+                            newest = (v, t.group(1).decode())
+            if last_lsn is None:
+                if not recs:
+                    return None                                  # pg_waldump could not read it (another major version): leave the target as asked
+                last_lsn = lsn                                   # the newest segment's last record: where the archive ends
+            if newest:
+                if newest[0] > want:
+                    return None                                  # a transaction ends after the target: PostgreSQL stops there by itself
+                return {"lsn": last_lsn, "last_xact": newest[1]}
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def count_targets(target_time, target_lsn, target_xid, target_name, immediate=False):
     n = sum(1 for x in (target_time, target_lsn, target_xid, target_name) if x) + (1 if immediate else 0)
     if n > 1:
@@ -802,6 +894,16 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     fl = flush_current_wal(ctx, chain, target_time, target_lsn, target_xid, target_name, cancel=cancel)     # the copy recovers up to 'now' when the source is alive
     if fl:
         plan["wal_flushed"] = fl
+    if target_time:
+        cl = clamp_time_target(ctx, chain, target_time, timeline)
+        if cl:
+            # nothing was committed or rolled back between the last transaction and the requested time: that state is the end of the archive, and a
+            # time target would make PostgreSQL refuse to start. Stop after the last archived record instead (honours action=pause as well)
+            plan["target_clamped"] = {"requested": target_time, "last_transaction": cl["last_xact"], "lsn": cl["lsn"]}
+            plan.setdefault("notes", []).append("no transaction in the archive after %s (the last one ended at %s): the copy recovers to the end of the archive "
+                                                "(LSN %s), which is the state at the requested time" % (target_time, cl["last_xact"], cl["lsn"]))
+            target_time, target_lsn, inclusive = None, cl["lsn"], True
+            plan["target"] = "end of the archive (LSN %s; nothing changed after %s)" % (cl["lsn"], cl["last_xact"])
     link_tablespaces(dest, tbs, remap)
     stats = materialize(ctx, merged, dest, delta, progress, cancel)
     try:
