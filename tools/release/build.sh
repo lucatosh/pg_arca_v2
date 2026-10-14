@@ -26,7 +26,7 @@ log() { echo "== $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 [[ -x node_modules/.bin/vite && -x node_modules/.bin/esbuild && -x node_modules/.bin/tsc ]] || die "dependencies missing: run npm ci first"
 DEB_V="${V/-/\~}"; RPM_V="${V/-/\~}"
-COMMIT="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"; DIRTY=""; [[ -z "$(git status --porcelain 2>/dev/null)" ]] || DIRTY="-dirty"
+COMMIT="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"; DIRTY=""; [[ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]] || DIRTY="-dirty"
 rm -rf "$OUT"; mkdir -p "$OUT"; WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
 # --- 1. checks ---------------------------------------------------------------------------------------------------

@@ -80,7 +80,11 @@ Browser ──HTTPS──> Console (server.ts) <──HTTPS (outbound only)─�
 - **PITR**: `target_time` requires a time zone; the base backup is the most recent one finished before the chosen point; WAL coverage is checked *before* starting.
 - **Operations**: every action has an Idempotency-Key; backup and restore are never repeated automatically after a crash; the *control* lane (HA, parameters) is separate from the *data* lane (backup, restore), so an hours-long backup never blocks a switchover.
 
-## Quick start
+## Installation
+
+Packaged releases (console tarball with its own Node.js runtime and installer, container image, agent tarball/.deb/.rpm): see [INSTALL.md](INSTALL.md) for installation and administration and [RELEASE.md](RELEASE.md) for the artifacts, the versioning and the release gate. Current version: `1.0.0-rc.1` (release candidate).
+
+## Quick start (development)
 
 Console (needs Node 20+):
 
@@ -93,7 +97,7 @@ npm run dev              # http://localhost:3000 — the first sign-in creates t
 
 > How backup and restore work (format, algorithms, limits, an honest comparison with pgBackRest): see [ARCHITETTURA-BACKUP-RESTORE.md](ARCHITETTURA-BACKUP-RESTORE.md) — updated with every engine change.
 
-Variables: `PORT`, `PG_ARCA_DATA_DIR` (persistent state, default `./data`), `PG_ARCA_ADMIN_USER` / `PG_ARCA_ADMIN_PASSWORD` (non-interactive creation of the administrator). Put the console behind a TLS reverse proxy.
+Variables: `PORT`, `PG_ARCA_DATA_DIR` (persistent state, default `./data`), `PG_ARCA_ADMIN_USER` / `PG_ARCA_ADMIN_PASSWORD` (non-interactive creation of the administrator). TLS: `PG_ARCA_TLS_CERT` + `PG_ARCA_TLS_KEY` (native), or a TLS reverse proxy; all settings in [INSTALL.md](INSTALL.md).
 
 Agent: in the console, **Clusters → Connect cluster → With agent**, copy the command and run it as root on the server. The installer detects PostgreSQL/Patroni and creates the user, directories and systemd service. Then enable WAL archiving from the Backup tab (“Enable WAL archiving”; on Patroni it goes through the DCS), or by hand on the primary:
 
@@ -327,6 +331,8 @@ sudo patronictl -c /etc/patroni/patroni.yml list
 ---
 
 ## Related documents
+- [INSTALL.md](./INSTALL.md): installation, upgrades, backup of the console, operations.
+- [RELEASE.md](./RELEASE.md): release artifacts, versioning, release gate, release notes.
 - [HANDOFF.md](./HANDOFF.md): work status and how to pick it up (internal, Italian).
 - [PROJECT_TRACKER.md](./PROJECT_TRACKER.md): register of components, tests and decisions (internal, Italian).
 - [COMPAT.md](./COMPAT.md): PostgreSQL / OS compatibility.

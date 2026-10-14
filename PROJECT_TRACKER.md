@@ -50,6 +50,7 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 - Ripristino che finisce nell’originale (tabella, righe, database, server standalone) partendo sempre da una copia: l’originale viene sostituito solo alla fine, con conferma, e resta conservato; rollback automatico per il server.
 - UI riscritta da zero in moduli (CSS semplice, nessuna dipendenza oltre React); il vecchio monolite da 4247 righe, Tailwind e lucide sono stati rimossi.
 - Prodotto in inglese tecnico (14/10): interfaccia, messaggi di server e agent, parole di conferma (le italiane restano accettate); guardia `tests/ui/i18n.test.ts`; README e COMPAT in inglese, documenti interni in italiano.
+- Prima versione ufficiale (14/10): **1.0.0-rc.1, release candidate, non GA**. Due prodotti con una sola versione (`VERSION`): console (tarball con runtime Node incluso + `install-console.sh` + immagine container) e agent (tarball offline, .deb, .rpm, oltre al `curl | bash` dalla console). Nessuna riscrittura in Go: l'agent Python 3.6 solo stdlib è voluto (gira ovunque senza dipendenze). Criteri per la GA in RELEASE.md.
 - `server.ts` ridotto da ~2700 a ~90 righe: le rotte simulate (HA, HBA, LDAP, RBAC, PITR, stanze, politiche, parametri, tuning) sono state eliminate; HA e parametri passano dal motore operazioni.
 
 ## Da fare
