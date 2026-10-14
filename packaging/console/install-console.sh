@@ -179,7 +179,10 @@ if [[ $SELF_SIGNED == 1 ]]; then
   command -v openssl >/dev/null || die "--tls-self-signed needs openssl"
   install -d -m 0750 -o root -g "$SVC_USER" "$CONF_DIR/tls"
   h="$(hostname -f 2>/dev/null || hostname)"
-  openssl req -x509 -newkey rsa:3072 -sha256 -days 825 -nodes -subj "/CN=$h" -addext "subjectAltName=DNS:$h,DNS:$(hostname -s),DNS:localhost,IP:127.0.0.1" \
+  # names AND addresses of this host: agents that reach the console by IP must find it in the certificate too
+  san="DNS:$h,DNS:$(hostname -s),DNS:localhost,IP:127.0.0.1"
+  for ip in $(hostname -I 2>/dev/null); do [[ "$ip" == *:* || "$ip" == 127.* ]] || san="$san,IP:$ip"; done
+  openssl req -x509 -newkey rsa:3072 -sha256 -days 825 -nodes -subj "/CN=$h" -addext "subjectAltName=$san" \
     -keyout "$CONF_DIR/tls/console.key" -out "$CONF_DIR/tls/console.crt" 2>/dev/null || die "openssl could not create the certificate"
   OPT_CERT="$CONF_DIR/tls/console.crt"; OPT_KEY="$CONF_DIR/tls/console.key"
   note "self-signed certificate for $h in $CONF_DIR/tls (agents: PG_ARCA_TLS_CA=<copy of console.crt>)"
