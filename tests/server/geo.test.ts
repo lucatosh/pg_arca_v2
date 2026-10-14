@@ -3,6 +3,7 @@
 import assert from 'assert'; import fs from 'fs'; import os from 'os'; import path from 'path';
 import { MiniApp } from './mini-express';
 import { Store } from '../../server/store';
+import { sameTimelineDiverged, parseHistory } from '../../server/geodr';
 import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, stanzaOf, geoReadiness } from '../../server/geo';
 import { evaluate } from '../../server/health';
 import { GEO_DR_TIMING, geoMonitorTick, watchOf } from '../../server/geodr';
@@ -225,11 +226,19 @@ import { deriveCluster } from '../../server/view';
     up.m1 = true; await st4.mutate(d => { d.nodes.m1.lastSeen = now(); d.nodes.m1.snapshot = snapP('0/7400000'); });
     assert.strictEqual(geoGroups(st4.peek())[0].primary, 'r', 'the promoted site stays the primary while the old one is back');
     await tick(170_000);
+    // it promoted itself on coming back: SAME timeline number as hy-rm (3) but another history -> the demotion forces pg_rewind
+    const answerTl = async (cid: string, result: any) => { for (let i = 0; i < 200; i++) { const o = st4.peek().operations.find(x => x.type === 'pg_timeline' && x.clusterId === cid && x.status === 'queued');
+      if (o) { await st4.mutate(d => { const x = d.operations.find(y => y.id === o.id)!; x.status = 'succeeded'; x.result = result; }); return o; } await new Promise(r => setTimeout(r, 50)); } throw new Error('no pg_timeline on ' + cid); };
+    const histNew = '1\t0/5000000\tno recovery target specified\n2\t0/7000100\tno recovery target specified\n', histOld = '1\t0/5000000\tno recovery target specified\n2\t0/7400000\tno recovery target specified\n';
+    await answerTl('m', { timeline: 3, history: histOld, lsn: '0/7400100' }); await answerTl('r', { timeline: 3, history: histNew, lsn: '0/7100000' });
     const dm = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/7000100', 'streaming', 1), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
     assert.strictEqual(dm.nodeId, 'm1'); assert.deepStrictEqual([dm.params.host, dm.params.port, dm.params.primary_slot_name], ['192.168.1.232', 5000, 'geo_hy_mi']);
+    assert.strictEqual(dm.params.force_rewind, true, 'same timeline number, different history: pg_rewind forced');
+    // after the demotion it must follow hy-rm's history (the post check): answered as identical
+    await answerTl('m', { timeline: 3, history: histNew, lsn: '0/7100000' }); await answerTl('r', { timeline: 3, history: histNew, lsn: '0/7100000' });
     const rj = () => jobs().find(j => j.type === 'rejoin');
     for (let i = 0; i < 80 && rj()?.status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
-    assert.strictEqual(rj()!.status, 'succeeded', JSON.stringify(rj()!.steps)); assert(rj()!.divergedBytes > 0 && /scartati/.test(rj()!.steps[0].text));
+    assert.strictEqual(rj()!.status, 'succeeded', JSON.stringify(rj()!.steps)); assert(rj()!.divergedBytes > 0 && /scartati/.test(rj()!.steps[0].text)); assert(rj()!.steps.some((x: any) => /STESSA timeline/.test(x.text)), 'the forced rewind is said');
     assert(st4.peek().settings.geoFailovers[key].rejoinedAt);
     // e) loss above the limit: an AUTOMATIC failover stops and asks a person
     await st4.mutate(d => { d.settings.geoJobs = {}; delete d.settings.geoFailovers; d.settings.geoLastPrimary[key] = { clusterId: 'r', name: 'hy-rm', lsn: '0/9000000', at: now() };
@@ -243,3 +252,13 @@ import { deriveCluster } from '../../server/view';
   }
   console.log('geo tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });
+// same timeline number, different history (the old primary promoted itself on coming back)
+{
+  const h1 = '1\t0/3000000\tno recovery target specified\n2\t0/5000060\tno recovery target specified\n', h2 = '1\t0/3000000\tx\n2\t0/50000A0\tx\n';
+  assert.deepStrictEqual(parseHistory(h1), [[1, '0/3000000'], [2, '0/5000060']]);
+  assert.strictEqual(sameTimelineDiverged({ timeline: 3, history: h1 }, { timeline: 3, history: h2 }), true);
+  assert.strictEqual(sameTimelineDiverged({ timeline: 3, history: h1 }, { timeline: 3, history: h1.replace(/no recovery target specified/g, 'y') }), false, 'reasons do not matter');
+  assert.strictEqual(sameTimelineDiverged({ timeline: 4, history: h1 }, { timeline: 3, history: h2 }), false, 'different numbers: Patroni rewinds by itself');
+  assert.strictEqual(sameTimelineDiverged({ timeline: 3, history: null }, { timeline: 3, history: h2 }), false, 'unknown: not concluded');
+  console.log('geo timeline divergence OK');
+}

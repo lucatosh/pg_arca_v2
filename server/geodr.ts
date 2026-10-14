@@ -172,18 +172,40 @@ async function rejoinIfBack(store: Store, g: GeoGroup, pol: GeoPolicy) {
   runRejoin(store, g, id, f, old, neu, ep).catch(() => undefined);           // in the background: the monitor keeps watching the other pairs meanwhile
 }
 
+/** Timeline history entries [(parent timeline, switch point)] of a history file's text. */
+export function parseHistory(text: string | null | undefined): [number, string][] {
+  return String(text || '').split('\n').map(l => /^\s*(\d+)\s+([0-9A-Fa-f]+\/[0-9A-Fa-f]+)/.exec(l)).filter(Boolean).map(m => [Number(m![1]), m![2].toUpperCase()] as [number, string]);
+}
+/** Same timeline NUMBER, different history: the old primary promoted itself while it could not see the new primary's history file. Patroni compares
+ *  only the numbers (same number = no rewind), so the old site would follow the new primary with a hole in its data. Unknown history = not concluded. */
+export function sameTimelineDiverged(a: any, b: any): boolean {
+  if (!a || !b || !(Number(a.timeline) > 1) || Number(a.timeline) !== Number(b.timeline) || a.history == null || b.history == null) return false;
+  return JSON.stringify(parseHistory(a.history)) !== JSON.stringify(parseHistory(b.history));
+}
+async function timelines(store: Store, id: string, tag: string, oldId: string, nid: string) {
+  const one = async (cid: string, k: string) => { try { const o = await submitTo(store, cid, 'pg_timeline', {}, `geo:${id}:tl-${tag}-${k}`, 'pg_arca'); const r = await waitOp(store, o.id, 60_000); return r.status === 'succeeded' ? r.result : null; } catch { return null; } };
+  return { o: await one(oldId, 'old'), n: await one(nid, 'new') };
+}
+
 async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Site, neu: Site, ep: { host: string; port: number } | null | undefined) {
   try {
     const div = old.lsn && f.forkLsn ? (() => { const a = lsnToBig(old.lsn), b = lsnToBig(f.forkLsn); return a !== null && b !== null && a > b ? Number(a - b) : 0; })() : null;
     await step(store, id, `1/3 ${old.name} è tornato e accetta scritture, ma il primario ora è ${neu.name}: diventa subito suo sito di replica${div ? ` (aveva scritto circa ${(div / MB).toFixed(1)} MB di WAL oltre il punto di promozione: quei dati non sono in ${neu.name} e vengono scartati da pg_rewind; restano nell’archivio WAL per un’eventuale analisi)` : ''}`, 'running', { divergedBytes: div });
     if (!ep) throw new Error(`indirizzo di ${neu.name} per gli altri siti non indicato: impostalo in Georidondanza, poi «Declassa ${old.name}»`);
-    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DECLASSA' }, `geo:${id}:demote`, 'pg_arca (riallineamento automatico)');
+    // the old site may have promoted itself to the SAME timeline number when it came back: then Patroni would not rewind it (see sameTimelineDiverged)
+    const t1 = await timelines(store, id, 'pre', f.from, f.to);
+    const force = sameTimelineDiverged(t1.o, t1.n);
+    if (force) await step(store, id, `1b ${old.name} si è promosso da solo al ritorno, sulla STESSA timeline ${t1.o.timeline} di ${neu.name} ma con una storia diversa: Patroni non lo riavvolgerebbe e seguirebbe ${neu.name} con un buco nei dati. pg_rewind forzato (Patroni in manutenzione per la durata)`);
+    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DECLASSA', ...(force ? { force_rewind: true } : {}) }, `geo:${id}:demote`, 'pg_arca (riallineamento automatico)');
     const r = await waitOp(store, o.id, 300_000);
     if (r.status !== 'succeeded') throw new Error(`declassamento di ${old.name} non riuscito: ${r.error || r.status}`);
     await step(store, id, `2/3 ${old.name} è sito di replica di ${neu.name} (${ep.host}:${ep.port}): attesa che riceva i WAL`);
     const t0 = Date.now(); let ok = false;
     while (Date.now() - t0 < 300_000) { const s = siteNow(store, f.from); if (s?.role === 'standby' && s.receiver?.status === 'streaming') { ok = true; break; } await new Promise(r2 => setTimeout(r2, GEO_DR_TIMING.rejoinPollMs)); }
     if (!ok) throw new Error(`${old.name} non riceve WAL da ${neu.name} dopo 5 minuti: probabilmente pg_rewind non è riuscito (controlla use_pg_rewind e la regola pg_hba di replica locale) e i membri vanno ricostruiti`);
+    // streaming is not enough: it must follow the new primary's HISTORY (same timeline, same switch points), or it is replaying from the wrong place
+    const t2 = await timelines(store, id, 'post', f.from, f.to);
+    if (sameTimelineDiverged(t2.o, t2.n)) throw new Error(`${old.name} riceve WAL da ${neu.name} ma la sua storia della timeline ${t2.o.timeline} è diversa: i dati scritti da ${neu.name} dopo il failover non gli arrivano. Va ricostruito (patronictl reinit dei membri) o riallineato con pg_rewind`);
     await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinedAt = nowIso(); ops.audit(d, { clusterId: f.from, actor: 'pg_arca', action: 'geo.rejoin', status: 'OK', details: { to: neu.name } }); });
     await step(store, id, `3/3 ${old.name} riceve i WAL da ${neu.name}: la coppia è di nuovo protetta (lo switchover pianificato può riportare il primario su ${old.name})`, 'succeeded', { finishedAt: nowIso() });
   } catch (e: any) {

@@ -109,6 +109,7 @@ class OperationExecutor:
         r("restore_db_swap", self.h_restore_db_swap, False)
         r("restore_kept_drop", self.h_restore_kept_drop, False)
         r("restore_kept_list", self.h_restore_kept_list, True)
+        r("pg_timeline", self.h_pg_timeline, True)
         r("hba_expire", self.h_hba_expire, False)
         r("agent_config_get", self.h_cfg_get, True)
         r("agent_config_set", self.h_cfg_set, True)       # same input -> same file: idempotent
@@ -700,6 +701,14 @@ class OperationExecutor:
                 raise OpError("invalid slot name")
             sc["primary_slot_name"] = str(p["primary_slot_name"])
         patch = {"standby_cluster": sc}
+        rewind = bool(p.get("force_rewind"))
+        if rewind:
+            # same timeline number as the new primary, different history (see geo_rewind.py): Patroni would not rewind. Paused while pg_rewind runs here.
+            me = (self.runtime.patroni_info or {}) if self.runtime else {}
+            lead, _members = self.patroni.leader()
+            if lead and me.get("node_name") and lead != me.get("node_name"):
+                raise OpError("the forced rewind must run on the leader of this site (%s), not on %s" % (lead, me.get("node_name")))
+            patch["pause"] = True
         drop = [str(x) for x in (p.get("drop_slots") or [])]
         if any(not re.match(r"^[a-z0-9_]{1,63}$", x) for x in drop):
             raise OpError("invalid slot name in drop_slots")
@@ -709,10 +718,38 @@ class OperationExecutor:
         st, d = self.patroni.patch_config(patch)
         if st >= 300:
             raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
-        ok, leader, members = self._wait_role(("standby_leader",), int(p.get("timeout", 120)))
+        rewound = None
+        if rewind:
+            from pg_arca import geo_rewind
+            me = self.runtime.patroni_info or {}
+            try:
+                user, pw = geo_rewind.patroni_auth(me.get("config_path") or "")
+                rewound = geo_rewind.force_rewind(me.get("data_dir") or (self.runtime.instance or {}).get("data_directory"), me.get("bin_dir") or "", host, port, user, pw,
+                                                  self.config.get("state_dir"), self._progress)
+            finally:
+                self.patroni.patch_config({"pause": False})            # Patroni starts it again as the standby leader of the new primary
+            # the other members of this site carry the same wrong history: rebuilt from their (now rewound) leader
+            for m in [x for x in (self.patroni.get_cluster_topology()[1] or {}).get("members", []) if x.get("name") != me.get("node_name")]:
+                if m.get("api_url"):
+                    self.patroni.for_member(m["api_url"]).reinitialize(True)
+        ok, leader, members = self._wait_role(("standby_leader",), int(p.get("timeout", 300 if rewind else 120)))
         if not ok:
             raise OpError("no standby leader within %ss (members: %s)" % (p.get("timeout", 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
-        return {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port), "dropped_slots": drop}
+        return {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port), "dropped_slots": drop, "rewound": rewound}
+
+    def h_pg_timeline(self, p):
+        """Timeline of this server and its history file (ancestors and switch points): how the console tells two servers on the same timeline NUMBER apart."""
+        from pg_arca import geo_rewind
+        self._require_pg()
+        r, err = self.db.query_json("SELECT json_build_object('in_recovery', pg_is_in_recovery(), 'lsn', CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn()::text ELSE pg_current_wal_lsn()::text END,"
+                                    " 'tl_wal', CASE WHEN pg_is_in_recovery() THEN NULL ELSE pg_walfile_name(pg_current_wal_lsn()) END,"
+                                    " 'tl_ckpt', (SELECT timeline_id FROM pg_control_checkpoint()),"
+                                    " 'tl_recv', (SELECT received_tli FROM pg_stat_wal_receiver LIMIT 1))")
+        if not isinstance(r, dict):
+            raise OpError("cannot read the timeline: %s" % err)
+        tl = int(r["tl_wal"][:8], 16) if r.get("tl_wal") else max(int(r.get("tl_ckpt") or 0), int(r.get("tl_recv") or 0))
+        pgdata = ((self.runtime.instance or {}).get("data_directory") if self.runtime else None) or self.config.get("pg_data")
+        return {"timeline": tl, "lsn": r.get("lsn"), "in_recovery": bool(r.get("in_recovery")), "history": geo_rewind.read_history(pgdata, tl) if pgdata else None}
 
     # ------------------------------------------------------------------ handlers: backup / restore (engine)
     def _ctx(self):
