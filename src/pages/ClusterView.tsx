@@ -4,6 +4,7 @@ import { Modal, Badge, Banner, Button, Card, Confirm, Dot, Empty, Field, Icon, S
 import { Op, readDraft, revalidate, toast, useDraft, useOpRunner, useQuery, isTerminal, useRole, writeDraft } from '../hooks';
 import { go } from '../router';
 import { statusKind } from '../App';
+import { useHealth } from './Today';
 import { OP_LABEL, OpPanel, Result, statusBadge } from './shared';
 const BackupTab = lazy(() => import('./Backup').then(m => ({ default: m.BackupTab })));
 const RestoreTab = lazy(() => import('./Restore').then(m => ({ default: m.RestoreTab })));
@@ -36,9 +37,12 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
     catch (e: any) { toast(e.message, 'bad'); setBusy(false); }
   };
   const agentic = c.source !== 'direct' && !c.isSandbox;
+  // the header badge must agree with the health findings (the sidebar already does): a cluster whose WAL archiving is failing is not "Healthy"
+  const hw = useHealth(30000).data?.clusters?.find((x: any) => x.id === c.id)?.worst as string | undefined;
+  const eff = hw === 'critical' ? 'critical' : hw === 'warning' && c.status === 'healthy' ? 'degraded' : c.status;
   return <>
     <div className="pagehead">
-      <div className="grow"><div className="row wrap"><h1>{c.name}</h1><Badge kind={statusKind(c.status)}>{c.status === 'healthy' ? 'Healthy' : c.status === 'degraded' ? 'Degraded' : c.status}</Badge>
+      <div className="grow"><div className="row wrap"><h1>{c.name}</h1><Badge kind={statusKind(eff)} title={hw === 'critical' || hw === 'warning' ? 'There are open findings for this cluster: see Today, or the banners below' : undefined}>{eff === 'healthy' ? 'Healthy' : eff === 'degraded' ? 'Degraded' : eff === 'critical' ? 'Critical problems' : eff}</Badge>
         {c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Connection only</Badge> : <Badge kind="accent">Agent</Badge>}</div>
         <p className="sub">{c.environment} · PostgreSQL {c.pgVersion || '—'} · timeline {c.activeTimeline || '—'}</p></div>
       <Button icon="refresh" busy={spin} title="Reloads the status of the cluster, nodes, backups and operations right away" onClick={async () => { setSpin(true); const k = encodeURIComponent(id); await Promise.all([revalidate(`/api/clusters/${k}`), revalidate('/api/clusters'), revalidate('/api/nodes'), revalidate(`/api/clusters/${k}/backups`), revalidate(`/api/operations?clusterId=${k}`)]); setSpin(false); toast('Status refreshed', 'ok'); }}>Refresh</Button>
