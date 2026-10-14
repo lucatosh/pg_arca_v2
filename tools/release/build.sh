@@ -76,9 +76,10 @@ PORT_T=$(( 20000 + RANDOM % 20000 )); D="$WORK/data"; mkdir -p "$D"
 SP=$!; ok=0
 for _ in $(seq 1 40); do curl -fsS "http://127.0.0.1:$PORT_T/api/health" 2>/dev/null | grep -q "\"version\":\"$V\"" && { ok=1; break; }; sleep 0.5; done
 if [[ $ok == 1 ]]; then
-  curl -fsS "http://127.0.0.1:$PORT_T/" | grep -qi '<div id="root"' || ok=0
-  curl -fsS "http://127.0.0.1:$PORT_T/agent/pg-arca-agent.tar.gz" | tar tzf - | grep -q 'pg_arca/__init__.py' || ok=0
-  curl -fsS "http://127.0.0.1:$PORT_T/agent/install.sh" | head -1 | grep -q bash || ok=0
+  # (into files first: with pipefail, grep -q closing the pipe early would fail the check)
+  curl -fsS -o "$WORK/smoke-index.html" "http://127.0.0.1:$PORT_T/" && grep -qi '<div id="root"' "$WORK/smoke-index.html" || { echo "smoke: UI not served"; ok=0; }
+  curl -fsS -o "$WORK/smoke-agent.tgz" "http://127.0.0.1:$PORT_T/agent/pg-arca-agent.tar.gz" && tar tzf "$WORK/smoke-agent.tgz" > "$WORK/smoke-agent.lst" && grep -q 'pg_arca/__init__.py' "$WORK/smoke-agent.lst" || { echo "smoke: agent bundle not served"; ok=0; }
+  curl -fsS -o "$WORK/smoke-install.sh" "http://127.0.0.1:$PORT_T/agent/install.sh" && head -1 "$WORK/smoke-install.sh" | grep -q bash || { echo "smoke: agent installer not served"; ok=0; }
 fi
 kill "$SP" 2>/dev/null; wait "$SP" 2>/dev/null || true
 [[ $ok == 1 ]] || { cat "$WORK/smoke.log"; die "the packaged console does not start or does not serve the UI/agent"; }
