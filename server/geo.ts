@@ -396,7 +396,7 @@ export async function runSwitchover(store: Store, job: { id: string; from: strin
     await step(`4/4 completed: ${to.name} is the primary site, ${from.name} replicates from it`, 'succeeded', { finishedAt: nowIso() });
     await store.mutate(d2 => ops.audit(d2, { clusterId: job.to, actor: job.actor, action: 'geo.switchover', status: 'OK', details: { from: job.from, to: job.to } }));
   } catch (e: any) {
-    await step(`interrotto: ${e.message}`, 'failed', { finishedAt: nowIso(), error: e.message });
+    await step(`stopped: ${e.message}`, "failed", { finishedAt: nowIso(), error: e.message });
     await store.mutate(d2 => ops.audit(d2, { clusterId: job.to, actor: job.actor, action: 'geo.switchover', status: 'FAILED', details: { from: job.from, to: job.to, error: e.message } }));
   }
 }

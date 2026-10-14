@@ -240,7 +240,7 @@ import { deriveCluster } from '../../server/view';
     await answerTl('m', { timeline: 3, history: histNew, lsn: '0/7100000' }); await answerTl('r', { timeline: 3, history: histNew, lsn: '0/7100000' });
     const rj = () => jobs().find(j => j.type === 'rejoin');
     for (let i = 0; i < 80 && rj()?.status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
-    assert.strictEqual(rj()!.status, 'succeeded', JSON.stringify(rj()!.steps)); assert(rj()!.divergedBytes > 0 && /discarded/.test(rj()!.steps[0].text)); assert(rj()!.steps.some((x: any) => /SAME timeline/.test(x.text)), 'the forced rewind is said');
+    assert.strictEqual(rj()!.status, "succeeded", JSON.stringify(rj()!.steps)); assert(rj()!.divergedBytes > 0 && /discarded/.test(rj()!.steps[0].text), JSON.stringify(rj()!.steps)); assert(rj()!.steps.some((x: any) => /SAME timeline/.test(x.text)), 'the forced rewind is said');
     assert(st4.peek().settings.geoFailovers[key].rejoinedAt);
     // e) loss above the limit: an AUTOMATIC failover stops and asks a person
     // the promoted site was also asked to keep seeing the shared archive (restore_command in its DCS, fire-and-forget)
@@ -254,6 +254,22 @@ import { deriveCluster } from '../../server/view';
     for (let i = 0; i < 80 && jobs()[0].status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
     assert.strictEqual(jobs()[0].status, 'held', JSON.stringify(jobs()[0].steps)); assert(/exceeds the automatic failover limit/.test(jobs()[0].error));
     assert(!st4.peek().operations.some(o => o.type === 'geo_promote' && o.status === 'queued'), 'nothing promoted');
+    // f) FENCING: after a failover the old site answers again with Patroni up but PostgreSQL still starting (site role unknown):
+    //    it is demoted NOW, not once it is primary and writable (that wait was the split-brain window)
+    await st4.mutate(d => { d.settings.geoJobs = {}; for (const o of d.operations) if (o.status === 'queued') o.status = 'cancelled';
+      d.settings.geoFailovers = { [key]: { from: 'm', to: 'r', fromName: 'hy-mi', toName: 'hy-rm', at: now(), forkLsn: '0/9000000', lossBytes: 0, auto: true, timeline: 3 } };
+      d.nodes.r1.snapshot = snapP('0/9100000'); d.nodes.r1.snapshot.patroni.scope = 'hy-rm';
+      d.nodes.m1.snapshot = { postgres: { alive: false, system_identifier: '7695' }, patroni: { accessible: true, scope: 'hy-mi', local_node: { role: null, state: 'starting' }, standby_cluster: null } }; });
+    up.m1 = true; up.r1 = true; await tick(400_000);
+    const fence = jobs().find(j => j.type === 'rejoin'); assert(fence, 'rejoin (fence) started at the first sign of life');
+    for (let i = 0; i < 40 && !fence.steps.length; i++) await new Promise(r => setTimeout(r, 50));
+    assert(/fenced as a standby site/.test(jobs().find(j => j.type === 'rejoin')!.steps[0].text), JSON.stringify(jobs()));
+    const dq = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/9100000', 'streaming', 1), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
+    assert.strictEqual(dq.clusterId, 'm'); assert.strictEqual(dq.params.confirm, 'DEMOTE'); assert(!dq.params.force_rewind, 'no self-promotion happened: plain demotion');
+    const hist = '1\t0/5000000\tno recovery target specified\n2\t0/9000000\tno recovery target specified\n';
+    await answerTl('m', { timeline: 3, history: hist, lsn: '0/9100000' }); await answerTl('r', { timeline: 3, history: hist, lsn: '0/9100000' });
+    for (let i = 0; i < 80 && jobs().find(j => j.type === 'rejoin')!.status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
+    assert.strictEqual(jobs().find(j => j.type === 'rejoin')!.status, 'succeeded', JSON.stringify(jobs()));
   }
   console.log('geo tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

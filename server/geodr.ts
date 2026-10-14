@@ -62,7 +62,7 @@ export async function geoMonitorTick(store: Store, now = Date.now()) {
     const want = fo && !fo.rejoinedAt ? fo.to : g.primary;
     const prim = g.sites.find(s => s.clusterId === want && s.role === 'primary' && s.online);
     if (prim) await remember(store, key, prim);
-    await rejoinIfBack(store, g, pol);
+    await rejoinIfBack(store, g, pol, now);
     const last = (store.peek().settings.geoLastPrimary || {})[key];
     if (!last || prim) { watches.delete(key); continue; }
     // the primary site of this pair is not visible as a writable site: is it LOST, or is only one view of it gone?
@@ -87,7 +87,7 @@ export async function geoMonitorTick(store: Store, now = Date.now()) {
     if (now - w.downSince! < pol.confirmSec * 1000) continue;
     const done = (store.peek().settings.geoFailovers || {})[key];
     if (done && done.from === last.clusterId && !done.rejoinedAt && Date.now() - Date.parse(done.at) < 3600_000) continue;   // already failed over away from it
-    await startFailover(store, { key, from: last.clusterId, to: best!.clusterId, auto: true, actor: 'pg_arca (failover automatico)' });
+    await startFailover(store, { key, from: last.clusterId, to: best!.clusterId, auto: true, actor: 'pg_arca (automatic failover)' });
   }
 }
 
@@ -157,20 +157,24 @@ async function runFailover(store: Store, id: string, a: { key: string; from: str
 }
 
 /** The old primary site is back after a failover (writable: a second primary) -> it becomes a standby site of the new primary, through its own DCS. */
-async function rejoinIfBack(store: Store, g: GeoGroup, pol: GeoPolicy) {
+async function rejoinIfBack(store: Store, g: GeoGroup, pol: GeoPolicy, now = Date.now()) {
   const st = store.peek(); const f = (st.settings.geoFailovers || {})[groupKey(g)];
   if (!f || f.rejoinedAt || f.rejoinJob || (f.rejoinFailedAt && Date.now() - Date.parse(f.rejoinFailedAt) < 300_000)) return;   // a failed attempt is retried after 5 minutes
   const old = g.sites.find(s => s.clusterId === f.from); const neu = g.sites.find(s => s.clusterId === f.to);
-  if (!old || !neu || !old.online) return;
+  // FENCING: the moment any node of the old site answers again with its Patroni API reachable, it is demoted - also while its PostgreSQL is
+  // still starting (site role unknown). Waiting for it to be "primary and writable" first is exactly the split-brain window seen on the lab
+  // (hy-mi back at 13:12:10, promoted itself at 13:12:42, demoted by the console only at 13:13:47).
+  const back = nodesOf(st, f.from).some(n => online(n, now) && n.snapshot?.patroni?.accessible);
+  if (!old || !neu || !(old.online || back)) return;
   if (old.role === 'standby') {                  // already following someone (rejoined by hand, or by an earlier pass): done
     if (old.receiver?.status === 'streaming') await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinedAt = nowIso(); });
     return;
   }
-  if (old.role !== 'primary' || !pol.autoRejoin || running(st)) return;
+  if (!pol.autoRejoin || running(st)) return;
   const ep = st.clusters.find((c: any) => c.id === f.to)?.geoEndpoint || neu.endpoint;
   const id = newId('geo');
   await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinJob = id;
-    (d.settings.geoJobs ||= {})[id] = { id, type: 'rejoin', from: f.from, to: f.to, fromName: old.name, toName: neu.name, createdBy: 'pg_arca (riallineamento automatico)', createdAt: nowIso(), status: 'running', steps: [] }; });
+    (d.settings.geoJobs ||= {})[id] = { id, type: 'rejoin', from: f.from, to: f.to, fromName: old.name, toName: neu.name, createdBy: 'pg_arca (automatic rejoin)', createdAt: nowIso(), status: 'running', steps: [] }; });
   runRejoin(store, g, id, f, old, neu, ep).catch(() => undefined);           // in the background: the monitor keeps watching the other pairs meanwhile
 }
 
@@ -192,13 +196,16 @@ async function timelines(store: Store, id: string, tag: string, oldId: string, n
 async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Site, neu: Site, ep: { host: string; port: number } | null | undefined) {
   try {
     const div = old.lsn && f.forkLsn ? (() => { const a = lsnToBig(old.lsn), b = lsnToBig(f.forkLsn); return a !== null && b !== null && a > b ? Number(a - b) : 0; })() : null;
-    await step(store, id, `1/3 ${old.name} is back and accepts writes, but the primary is now ${neu.name}: it becomes its standby site right away${div ? ` (it had written about ${(div / MB).toFixed(1)} MB of WAL past the promotion point: that data is not in ${neu.name} and is discarded by pg_rewind; it stays in the WAL archive for analysis)` : ''}`, 'running', { divergedBytes: div });
+    await step(store, id, old.role === 'primary'
+      ? `1/3 ${old.name} is back and accepts writes, but the primary is now ${neu.name}: it becomes its standby site right away${div ? ` (it had written about ${(div / MB).toFixed(1)} MB of WAL past the promotion point: that data is not in ${neu.name} and is discarded by pg_rewind; it stays in the WAL archive for analysis)` : ''}`
+      : `1/3 ${old.name} is back (its PostgreSQL is not up yet): fenced as a standby site of ${neu.name} now, before Patroni there can promote it`, 'running', { divergedBytes: div });
     if (!ep) throw new Error(`address of ${neu.name} for the other sites not set: set it in Geo-redundancy, then “Demote ${old.name}”`);
     // the old site may have promoted itself to the SAME timeline number when it came back: then Patroni would not rewind it (see sameTimelineDiverged)
-    const t1 = await timelines(store, id, 'pre', f.from, f.to);
+    // (only when it IS primary: a site whose PostgreSQL is not up cannot have promoted itself yet, and a fence must not wait a minute for pg_controldata)
+    const t1 = old.role === 'primary' ? await timelines(store, id, 'pre', f.from, f.to) : { o: null, n: null };
     const force = sameTimelineDiverged(t1.o, t1.n);
     if (force) await step(store, id, `1b ${old.name} promoted itself when it came back, on the SAME timeline ${t1.o.timeline} as ${neu.name} but with a different history: Patroni (and pg_rewind) compare only the number and it would follow ${neu.name} with a hole in the data. It is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`);
-    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force ? { force_rewind: true } : {}) }, `geo:${id}:demote`, 'pg_arca (riallineamento automatico)');
+    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force ? { force_rewind: true } : {}) }, `geo:${id}:demote`, 'pg_arca (automatic rejoin)');
     const r = await waitOp(store, o.id, 300_000);
     if (r.status !== 'succeeded') throw new Error(`demotion of ${old.name} failed: ${r.error || r.status}`);
     await step(store, id, `2/3 ${old.name} is a standby site of ${neu.name} (${ep.host}:${ep.port}): waiting for it to receive WAL`);
@@ -211,7 +218,7 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinedAt = nowIso(); ops.audit(d, { clusterId: f.from, actor: 'pg_arca', action: 'geo.rejoin', status: 'OK', details: { to: neu.name } }); });
     await step(store, id, `3/3 ${old.name} receives WAL from ${neu.name}: the pair is protected again (a planned switchover can bring the primary back to ${old.name})`, 'succeeded', { finishedAt: nowIso() });
   } catch (e: any) {
-    await step(store, id, `interrotto: ${e.message}`, 'failed', { finishedAt: nowIso(), error: e.message });
+    await step(store, id, `stopped: ${e.message}`, 'failed', { finishedAt: nowIso(), error: e.message });
     await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) { delete x.rejoinJob; x.rejoinFailedAt = nowIso(); x.rejoinError = e.message; } });
   }
 }
