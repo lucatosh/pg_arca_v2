@@ -66,7 +66,7 @@ pg_arca console $V
 
 Install or upgrade (Linux x86_64 with systemd, as root):   ./install-console.sh          (--help for TLS, port, rollback, uninstall)
 Container image:                                            docker build -t pg-arca-console:$V .   (see the Dockerfile)
-Agents: installed from the console (Clusters > Add a server), or offline with the pg-arca-agent packages of the same release.
+Agents: installed from the console (Clusters > Connect cluster), or offline with the pg-arca-agent packages of the same release.
 TXT
 
 log "smoke test of the packaged console"

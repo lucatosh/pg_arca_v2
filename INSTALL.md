@@ -1,0 +1,126 @@
+# Installation and administration
+
+This guide covers the packaged releases (see [RELEASE.md](RELEASE.md)). For development from the repository, see the Quick start in [README.md](README.md).
+
+## 1. What runs where
+
+```
+Browser ──HTTPS──> Console host ──(optional, "direct" clusters)──> PostgreSQL :5432
+                      ^
+                      └──HTTPS, outbound from each node── Agent on every PostgreSQL server and worker host
+```
+
+| Component | Where | Network |
+|---|---|---|
+| Console | one Linux x86_64 host with systemd (or a container) | listens on one port (default 3000); agents and browsers connect to it |
+| Agent | every PostgreSQL server (same host as the data directory), and every worker host (backup server, recovery host) | outbound only, to the console's port; no inbound port |
+
+Firewall: open the console port from the administrators' networks and from every node. Nothing has to be opened towards the nodes, except the PostgreSQL port for clusters connected without an agent ("direct").
+
+## 2. Requirements
+
+**Console host**: Linux x86_64 with systemd (RHEL/Rocky/Alma 8-10, Debian 11-13, Ubuntu 20.04-24.04 have been the targets; the lab runs Debian 12), 2 CPU, 2 GB RAM, 10 GB for the state (operation history and results grow with use). The release package carries its own Node.js runtime; `tar` and, for `--tls-self-signed`, `openssl`.
+
+**Database servers**: Linux with PostgreSQL 14-18 (see [COMPAT.md](COMPAT.md) for what is verified), Python 3.6 or newer, systemd (without it the agent runs, but you start it yourself). Recommended: `python3-zstandard` and `zstd` (backups are 5-10x slower without them), `polkit` (restart of a standalone PostgreSQL from the console). Disk for the repository and the WAL archive, local or on a mounted network share.
+
+## 3. Install the console
+
+```bash
+tar xzf pg-arca-console-1.0.0-rc.1-linux-x64.tar.gz
+cd pg-arca-console-1.0.0-rc.1-linux-x64
+sha256sum -c ../SHA256SUMS --ignore-missing      # from the release directory
+sudo ./install-console.sh --tls-cert /path/console.crt --tls-key /path/console.key --port 8443
+```
+
+The installer creates the system user `pgarca-console`, puts the release in `/opt/pg-arca-console/releases/<version>` (`current` points to it), writes the settings to `/etc/pg-arca-console/console.env`, keeps the state in `/var/lib/pg-arca-console` and starts the hardened `pg-arca-console` systemd service. At the end it prints the address and the **setup code**: open the address and create the administrator account with it (the code is also in `/var/lib/pg-arca-console/setup-code` and in `journalctl -u pg-arca-console` until the account exists).
+
+TLS choices:
+- your certificate: `--tls-cert`/`--tls-key` (PEM; copied to `/etc/pg-arca-console/tls/`). Renewal: replace the two files there, then `systemctl reload pg-arca-console`.
+- trial: `--tls-self-signed` (agents then need `PG_ARCA_TLS_CA=<copy of console.crt>`).
+- a reverse proxy that terminates TLS: install without TLS, listen on loopback (`--listen 127.0.0.1`), and set `PG_ARCA_TRUST_PROXY=1` and `PG_ARCA_COOKIE_SECURE=1` in `console.env`. The proxy must pass websockets on `/ws/logs`.
+
+Plain http is accepted, and the installer says so: use it only on a lab network.
+
+### Settings (`/etc/pg-arca-console/console.env`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | 3000 | listening port (below 1024 the unit gets `CAP_NET_BIND_SERVICE`) |
+| `PG_ARCA_LISTEN` | 0.0.0.0 | listening address |
+| `PG_ARCA_TLS_CERT`, `PG_ARCA_TLS_KEY` | — | native TLS (both or neither) |
+| `PG_ARCA_TRUST_PROXY` | — | behind a reverse proxy: number of hops or a subnet, so the audit and the login back-off see the real client address |
+| `PG_ARCA_COOKIE_SECURE` | — | `1`: session cookie only over https (set it behind a TLS proxy) |
+| `PG_ARCA_ALLOWED_ORIGINS` | — | other browser origins allowed on the live-log websocket |
+| `PG_ARCA_SECRET_KEY` | generated in the state directory | key that encrypts stored credentials (direct clusters, notification channels) |
+| `PG_ARCA_ADMIN_USER`, `PG_ARCA_ADMIN_PASSWORD` | — | create the administrator without the setup code (automation; 12 characters minimum) |
+
+After a change: `systemctl restart pg-arca-console`. The installer never overwrites this file; options given to a later run (`--port`, `--listen`, `--tls-cert`) change only their own line.
+
+### Container
+
+```bash
+cd pg-arca-console-1.0.0-rc.1-linux-x64
+docker build -t pg-arca-console:1.0.0-rc.1 .
+docker run -d --name pg-arca-console -p 3000:3000 -v pg-arca-console:/var/lib/pg-arca-console pg-arca-console:1.0.0-rc.1
+docker logs pg-arca-console          # setup code on first start
+```
+
+The image runs as an unprivileged user (uid 10001), keeps the state in the volume and has a health check. Settings are the same environment variables.
+
+## 4. Install the agents
+
+**From the console** (recommended): Clusters → Connect cluster → With agent, copy the command and run it as root on the server. The server appears in the console; with a token it is registered at once, without one an administrator approves it ("New server detected").
+
+**Offline** (no access to the console's download URL from the server, or an approved-software process):
+
+```bash
+tar xzf pg-arca-agent-1.0.0-rc.1.tar.gz && cd pg-arca-agent-1.0.0-rc.1
+sudo PG_ARCA_URL=https://console.example:8443 PG_ARCA_ENROLL_TOKEN=<token> ./install-agent.sh
+```
+
+**Packages**: `apt install ./pg-arca-agent_1.0.0~rc.1_all.deb` or `dnf install ./pg-arca-agent-1.0.0~rc.1-1.noarch.rpm`, then register once:
+
+```bash
+sudo PG_ARCA_URL=https://console.example:8443 PG_ARCA_ENROLL_TOKEN=<token> /usr/share/pg-arca-agent/install-agent.sh
+```
+
+Later package upgrades (`apt upgrade`, `dnf upgrade`) upgrade the agent in service by themselves, keeping configuration and credentials. Removing the package removes the agent but keeps backups and the WAL archive, and is **refused while PostgreSQL archives WAL through pg_arca** (switch archiving off first, otherwise every archive attempt would fail and pg_wal would fill the disk).
+
+Installer options (environment variables): `PG_ARCA_TLS_CA` (CA of the console certificate), `PG_ARCA_NODE_NAME`, `PG_ARCA_REPO`, `PG_ARCA_WAL`, `PG_ARCA_SCRATCH`, `PG_ARCA_USER` (OS user owning PostgreSQL, detected by default), `PG_ARCA_ROLE=worker` (worker host), `PG_ARCA_INSTANCE` + `PG_ARCA_PGDATA` (a second PostgreSQL instance on the same host), `PG_ARCA_ALLOW_PG_RESTART=0`. The full list is at the top of `install-agent.sh`.
+
+After registration: enable WAL archiving from the cluster's Backup tab, take the first full backup, then assign a backup policy.
+
+## 5. Upgrades
+
+**Console**: extract the new release and run its `install-console.sh` (same command as the first install). The installer saves the state to `/var/lib/pg-arca-console/backups/`, switches the code, starts the service and waits for the new version to answer. If it does not, it puts back the previous release and the saved state by itself. Agents keep working during the upgrade (they retry), and the console then lists the agents of the older release as outdated, with the upgrade command.
+
+**Rollback** after a successful upgrade: `sudo /opt/pg-arca-console/current/install-console.sh --rollback --yes`. It restores the state saved before the upgrade: changes made in the console since then (users, policies, operation history) are lost; backups on the servers are not affected.
+
+**Agents**: the command shown by the console for outdated agents, the package manager, or the offline tarball's `install-agent.sh` again. Upgrade the console first: a newer console works with older agents (it says what they lack), not the other way round.
+
+## 6. Back up the console
+
+```bash
+sudo /opt/pg-arca-console/current/install-console.sh --backup-state /srv/backup/pg-arca
+```
+
+The archive holds users, clusters, policies, schedules, history and the secret key (which decrypts stored credentials): protect it like the console. Schedule it daily (cron or a systemd timer). The database backups themselves are not in it: they live in the repositories on the nodes and worker hosts.
+
+To restore on a new host: install the same release, `systemctl stop pg-arca-console`, extract the archive into `/var/lib/pg-arca-console` (owner `pgarca-console`), start the service.
+
+## 7. Operations
+
+| Task | Command |
+|---|---|
+| Status, versions, address | `sudo /opt/pg-arca-console/current/install-console.sh --status` |
+| Logs | `journalctl -u pg-arca-console -f`; on a node `journalctl -u pg-arca-agent -f` |
+| Health check for monitoring | `GET /api/health` → `{"ok":true,"version":"…"}` (no authentication) |
+| Uninstall the console | `install-console.sh --uninstall` (keeps the state); `--uninstall --purge --yes` deletes it |
+| Uninstall an agent | `sudo PG_ARCA_UNINSTALL=1 /usr/share/pg-arca-agent/install-agent.sh` (or the console's `install.sh`); keeps backups unless `PG_ARCA_PURGE=1` |
+
+## 8. Security notes
+
+- The console unit runs as `pgarca-console` with `ProtectSystem=strict`, no capabilities (except to bind a port below 1024), private `/tmp`, no access to `/home`, writable only in its state directory.
+- The agent runs as the PostgreSQL OS user, never as root; its unit forbids privilege escalation and keeps `/usr`, `/boot` and `/etc` read-only except the PostgreSQL configuration directories. The optional polkit rule lets it start/restart only the PostgreSQL units.
+- Agents authenticate with a per-node credential obtained at enrollment (single-use tokens that expire in one hour, or administrator approval). Operations on nodes go through typed operations; destructive ones need a typed confirmation and are recorded in the audit log.
+- Roles: administrator, operator, read-only. Every API route is checked against the role.
