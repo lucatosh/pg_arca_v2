@@ -99,9 +99,15 @@ def wait_job(jid, wait=900):
     return j, round(time.time() - t0)
 
 
-def primary_site():
-    g = group(); p = g.get("primary")
-    return "a" if p == C["a"]["id"] else "b" if p == C["b"]["id"] else None
+def primary_site(wait=60):
+    """The site the console sees as primary (right after a switch it can take a few heartbeats to be known again)."""
+    t0 = time.time()
+    while True:
+        g = group(); p = g.get("primary")
+        r = "a" if p == C["a"]["id"] else "b" if p == C["b"]["id"] else None
+        if r or time.time() - t0 > wait:
+            return r
+        time.sleep(3)
 
 
 call("POST", "/api/auth/login", {"username": U, "password": P})
