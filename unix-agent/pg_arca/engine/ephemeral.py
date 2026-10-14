@@ -24,7 +24,7 @@ from pg_arca.pgcompat import Profile, binary_profile, require_same_major, requir
 from pg_arca.engine.restore import (check_wal_for_chain, choose_set, count_targets, estimate, install_external_conf, materialize, merge_chain,
                                     prepare_skeleton, recovery_lines, sparse_filter)
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
-from pg_arca.engine.util import EngineError, human, iso, parse_target_time, tail_file, read_file
+from pg_arca.engine.util import EngineError, human, iso, lsn_to_int, parse_target_time, parse_wal_name, tail_file, read_file
 
 GUC_REMOVE = ["data_directory", "hba_file", "ident_file", "config_file", "external_pid_file", "archive_cleanup_command", "recovery_end_command",
               "primary_conninfo", "primary_slot_name", "recovery_min_apply_delay", "ssl_cert_file", "ssl_key_file", "ssl_ca_file", "ssl_crl_file",
@@ -249,6 +249,7 @@ class Ephemeral(object):
         from pg_arca.engine.restore import effective_targets
         t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, self.ctx)
         prof.install_recovery(self.dir, recovery_lines(self.ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm, "pause", inclusive))
+        self._replay_window(chain, t_lsn)
         # recovery_lines wrote restore_command again into auto.conf: harmless and identical, but keep the quarantine invariant
         bad = [b for b in audit_symlinks(self.dir)]
         if bad:
@@ -259,8 +260,31 @@ class Ephemeral(object):
         stats["guc_removed"], stats["guc_forced"] = len(removed), len(forced)
         return stats
 
+    def _replay_window(self, chain, t_lsn):
+        """How much WAL the recovery has to apply (start of the base backup -> the target LSN, or the end of the archive): the longest phase of a
+        restore shows a percentage and a time left instead of the same word every 15 seconds."""
+        try:
+            seg = int(getattr(self.ctx, "seg_size", 0) or 16 * 1024 * 1024)
+            self._seg = seg
+            self._from = lsn_to_int(chain[0].get("start_lsn") or "0/0")
+            to = lsn_to_int(t_lsn) if t_lsn else 0
+            if not to:
+                segs = self.ctx.wal.list_segments(anywhere=True)
+                last = parse_wal_name(segs[-1], seg) if segs else None
+                to = (last[1] + 1) * seg if last else 0
+            self._to = to if to > self._from else None
+        except Exception:
+            self._to = None
+
+    def _replay_progress(self, at_lsn, what):
+        out = {"phase": "recovery", "msg": what}
+        to = getattr(self, "_to", None)
+        if to and at_lsn:
+            out.update(bytes=max(0, min(at_lsn, to) - self._from), bytes_total=to - self._from)
+        return out
+
     # ------------------------------------------------------------------ run
-    def start(self, wait=900, cancel=None):
+    def start(self, wait=900, cancel=None, progress=None):
         logfile = os.path.join(self.dir, "pg_arca-ephemeral.log")
         self.logf = open(logfile, "ab")
         cmd = [os.path.join(self.bindir, "postgres") if self.bindir else "postgres", "-D", self.dir]
@@ -277,6 +301,12 @@ class Ephemeral(object):
                 err = death_error(logfile, "during recovery")
                 self.cleanup()
                 raise err
+            if progress and time.time() - getattr(self, "_last_p", 0) > 5:
+                self._last_p = time.time()
+                m = re.findall(r'restored log file "([0-9A-F]{24})"', tail_file(logfile, 30))
+                seg = parse_wal_name(m[-1], getattr(self, "_seg", 16 * 1024 * 1024)) if m else None
+                progress(self._replay_progress(seg[1] * self._seg if seg and getattr(self, "_seg", None) else None,
+                                               "applying WAL up to consistency%s" % (" (segment %s)" % m[-1] if m else "")))
             if os.path.exists(sockpath):
                 try:
                     s = PgSession(self.conn("postgres"), read_only=True)
@@ -313,7 +343,9 @@ class Ephemeral(object):
                         continue
                     raise
                 if progress:
-                    progress({"phase": "recovery", "replay_lsn": lsn})
+                    pr = self._replay_progress(lsn_to_int(lsn) if lsn and lsn != "-" else None, "WAL applied up to %s" % lsn)
+                    pr["replay_lsn"] = lsn
+                    progress(pr)
                 if paused or inrec == "f":
                     last_xact = s.scalar("SELECT COALESCE(pg_last_xact_replay_timestamp()::text,'')")
                     if paused and inrec != "f":

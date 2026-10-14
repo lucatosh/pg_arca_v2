@@ -347,7 +347,7 @@ def _recover_once(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name
         stats = eph.build(chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, immediate, progress, cancel)
         if progress:
             progress({"phase": "starting"})
-        boot = eph.start(cancel=cancel)
+        boot = eph.start(cancel=cancel, progress=progress)
         rec_s, lsn, last_xact = eph.wait_target(cancel=cancel, progress=progress)
         info = {"extracted_bytes": stats["selected_bytes"], "cluster_bytes": stats["cluster_bytes"], "extract_seconds": stats["seconds"],
                 "boot_seconds": round(boot, 1), "recovery_seconds": round(rec_s, 1), "reached_lsn": lsn, "last_replayed_xact_time": last_xact,
