@@ -205,7 +205,8 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     const t1 = old.role === 'primary' ? await timelines(store, id, 'pre', f.from, f.to) : { o: null, n: null };
     const force = sameTimelineDiverged(t1.o, t1.n);
     if (force) await step(store, id, `1b ${old.name} promoted itself when it came back, on the SAME timeline ${t1.o.timeline} as ${neu.name} but with a different history: Patroni (and pg_rewind) compare only the number and it would follow ${neu.name} with a hole in the data. It is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`);
-    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force ? { force_rewind: true } : {}) }, `geo:${id}:demote`, 'pg_arca (automatic rejoin)');
+    // a fenced site is still starting PostgreSQL: give Patroni more time to bring up the standby leader (the DCS write itself is immediate)
+    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force ? { force_rewind: true } : {}), ...(old.role !== 'primary' ? { timeout: 600 } : {}) }, `geo:${id}:demote`, 'pg_arca (automatic rejoin)');
     const r = await waitOp(store, o.id, 300_000);
     if (r.status !== 'succeeded') throw new Error(`demotion of ${old.name} failed: ${r.error || r.status}`);
     await step(store, id, `2/3 ${old.name} is a standby site of ${neu.name} (${ep.host}:${ep.port}): waiting for it to receive WAL`);
