@@ -215,6 +215,45 @@ Da fare (ipotesi, **non** ancora implementate né misurate): estrazione per rela
 - **Archiviazione**: l'`archive_command` legge la configurazione dell'agent, quindi il cambio vale dal segmento successivo senza toccare PostgreSQL né il DCS; la verifica del primo segmento decide se tenere il cambio o tornare indietro.
 - **Migrazione**: solo i set e i WAL dello stanza del cluster (una radice può ospitare più cluster); blocchi prima, poi la cartella del set rinominata in un colpo; ogni file riletto e confrontato (sha256); blocchi con data di modifica nuova (la tolleranza del garbage collector li protegge finché il loro set non arriva); riprendibile; la sorgente non si cancella mai qui.
 
+## 7f. Riesame dell'architettura (15/10 notte, richiesta utente: «più velocità e intelligenza, norme enterprise, best practice DBA»)
+
+Metodo: lettura completa del percorso dati (backup → archivio WAL → restore), confronto con quello che fanno pgBackRest, Barman e WAL-G, e con ciò che un DBA senior si aspetta. Per ogni punto: **che cosa c'è**, **che cosa manca**, **che cosa è stato fatto stanotte**, **che cosa resta** (con come misurarlo). Niente numeri inventati: dove non c'è una misura è scritto «da misurare».
+
+### Dove va davvero il tempo (modello)
+Un backup pg_arca è: lettura sequenziale del datadir (I/O) → hash blake2b per chunk (CPU) → compressione zstd (CPU) → scrittura nel CAS (I/O, molti file piccoli) → `sync` globale → **attesa WAL**. Un restore è: lettura CAS → decompressione → scrittura (I/O) → **recovery di PostgreSQL** (replay WAL, seriale per natura) → dump/restore per i ripristini granulari.
+- Le fasi CPU scalano con i thread (`process_max`, default 4): zstd e blake2b rilasciano il GIL.
+- L'attesa WAL era un **buco funzionale**, non di prestazioni: su standby nessuno chiudeva il segmento (→ 120 s poi fallimento), e con archivi locali per nodo il backup da standby era impossibile senza che nessuno lo dicesse. **Fatto stanotte**: switch orchestrato dal primario, diagnosi `PGA-WAL-021` in meno di un minuto, progresso visibile.
+- La barriera a lotti di 512 file teneva fermi i thread alla coda di ogni lotto, sia in backup sia in restore. **Fatto stanotte**: finestra scorrevole. Guadagno **da misurare** sul lab con `bench_backup.py` (atteso: visibile su cluster con poche relazioni grandi e molte piccole, nullo su un datadir uniforme).
+
+### Confronto onesto con lo stato dell'arte
+| Aspetto | pgBackRest / Barman / WAL-G | pg_arca oggi | Giudizio |
+|---|---|---|---|
+| Incrementale | pgBackRest: block incremental (mappa di blocchi), delta per file su timestamp/checksum; PG17 WAL summaries | per pagina (pd_lsn) ma **legge tutto il datadir** | il risparmio è su scrittura/spazio, non su I/O di lettura: su istanze da terabyte è il limite più serio |
+| Parallelismo | processi multipli, pipeline per file | thread, pipeline per chunk | adeguato fino a qualche centinaio di GB; **da misurare** oltre |
+| Destinazioni | locale, S3/Azure/GCS nativi, SFTP (Barman), cifratura in repo | locale, NFS/SMB montate, cifratura opzionale | **S3 nativo è table stakes**: primo investimento post-RC (backend `engine/storage/` a oggetti, upload multipart, retry, verifica ETag/sha; il CAS a chunk si presta bene) |
+| Repository remoto | pgBackRest: host di repository dedicato via SSH/TLS | il «backup server» è una share montata sui nodi | funziona ed è spiegato (stanotte: export/mount guidati); un **trasporto diretto agent→worker** (HTTPS, chunk) eviterebbe NFS: progetto, non urgente |
+| Verifica | `verify`, checksum dei file | quick/deep verify, catena chunk, restore drill con RTO | alla pari o meglio (il drill con RTO misurato è un punto di forza) |
+| Retention | per quantità/tempo di full, archivio WAL coerente | policy per ambiente/cartella/cluster, GC con grazia 48 h | alla pari; manca la **retention basata su «ultimo restore verificato»** (idea) |
+| Restore granulare | nessuno (pgBackRest ripristina il cluster; il DBA fa il resto) | tabella/righe/database/schema con dipendenze, quarantena, promozione | **il vantaggio competitivo**: nessuno dei tre lo ha |
+| Standby | backup da standby supportato con archivio condiviso | idem, ora con lo switch orchestrato e la diagnosi | alla pari |
+| Osservabilità | log, `info`, metriche esterne | console, briefing, audit, timeline | meglio |
+
+### Difetti strutturali trovati stanotte (tutti corretti, con test)
+1. Backup su standby: switch WAL mai richiesto al primario; archivio non condiviso mai diagnosticato.
+2. Nome membro Patroni ≠ hostname: righe doppie, switchover che fallisce con «not a member».
+3. Fencing geo: il vecchio sito veniva declassato solo quando era già tornato primario (finestra di split-brain ≈ 65 s sul lab).
+4. Ramo morto di timeline: nessuna azione di prodotto, archiviazione bloccata per ore.
+5. UI: focus rubato a ogni poll (cursore che salta, copia/incolla che si perde).
+6. Backup server: esito del check senza motivi né rimedi.
+
+### Piano (ordine di valore, con criterio di misura)
+1. **Bench sul lab** della finestra scorrevole (prima/dopo, `bench_backup.py` e `bench_restore.py`, datadir 10 GB misto): numeri in questo documento.
+2. **Incrementale senza leggere tutto**: su PG ≥ 17 usare i WAL summaries (`summarize_wal=on`, `pg_wal_summary_contents`) per saltare i file senza blocchi cambiati; sulle versioni precedenti un pre-filtro per relazione da `pg_stat_*`? no: non affidabile. Criterio: byte letti dal datadir per un incrementale su cluster scarico ≈ byte dei file cambiati.
+3. **S3/MinIO nativo** (`engine/storage/` con interfaccia locale/S3; stesso CAS; test con MinIO sul lab). Criterio: backup+restore+verify+GC verdi su MinIO; cifratura lato client invariata.
+4. **Pre-flight del backup da standby** lato console: se la destinazione è «locale» e il nodo scelto è una replica, dirlo *prima* di partire (oggi si scopre in < 1 min con `PGA-WAL-021`).
+5. **Restore di oggetti per relazione** (già in piano, §7): estrarre solo i file della tabella + TOAST + catalogo; criterio: tempo di «tabella da 1 GB in un database da 500 GB» indipendente dalla taglia del database.
+6. **Trasporto diretto agent→worker** (sostituisce NFS per chi non può montarlo): progetto dopo S3.
+
 ## 8. Registro delle modifiche
 
 | Data | Modifica | Provato |
