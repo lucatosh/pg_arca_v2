@@ -7,6 +7,9 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   const tick = async (t: number) => { await st.mutate(d => { d.nodes['n1'].lastSeen = new Date(t).toISOString(); }); return schedulerTick(st, t); };
   st = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'sch-')));
   const now = Date.now(); const iso = (t: number) => new Date(t).toISOString();
+  // operations stamp themselves with the real clock, so `now` must be the real clock; the weekly full bucket is 168 h from the epoch (Thursday
+  // 00:00 UTC) and a run minutes before that boundary sees 'now + 31 min' in the NEXT bucket (attempt counter back to 0): expected, not a bug
+  const WEEK = 168 * 3600_000; const sameBucket = Math.floor(now / WEEK) === Math.floor((now + 31 * 60_000) / WEEK);
   assert(!validatePolicy({ ...DEFAULT_POLICY, fullEveryHours: 1 }).ok);
   assert(!validatePolicy({ ...DEFAULT_POLICY, incrEveryHours: 200 }).ok);
   const pol = validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 168, incrEveryHours: 24 }) as any;
@@ -21,7 +24,7 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   // fail it -> back-off, no immediate retry
   await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', op.id, 'failed', undefined, 'boom');
   assert.strictEqual((await tick(now + 60_000)).length, 0, 'back-off window');
-  const s2 = await tick(now + 31 * 60_000); assert.strictEqual(s2.length, 1); assert(s2[0].endsWith(':1'), 'new attempt key');
+  const s2 = await tick(now + 31 * 60_000); assert.strictEqual(s2.length, 1); assert(s2[0].endsWith(sameBucket ? ':1' : ':0'), 'new attempt key: ' + JSON.stringify(s2));
   const op2 = st.peek().operations.find(o => o.idempotencyKey === s2[0])!; await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', op2.id, 'succeeded', {});
   // stale snapshot: the full just succeeded but the agent has not reported it yet -> NO second full (lab: two fulls 10 s apart + retention wiped PITR history)
   const sx = await tick(now + 31 * 60_000 + 10_000); assert(!sx.some(k => k.includes(':full:')), 'duplicate full on stale snapshot: ' + JSON.stringify(sx));
