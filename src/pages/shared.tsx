@@ -5,7 +5,7 @@ import { Badge, Banner, Button, Progress, ago, bytes, dur, num } from '../ui';
 import { itCheck } from '../i18n';
 
 export const OP_LABEL: Record<string, string> = {
-  pg_reload: 'Configuration reload', wal_switch: 'WAL segment switch', checkpoint: 'Checkpoint', discovery_scan: 'Discovery', compat_check: 'PostgreSQL compatibility check', agent_config_get: 'Read agent settings', agent_config_set: 'Agent settings', list_objects: 'Object list',
+  pg_reload: 'Configuration reload', wal_switch: 'WAL segment switch', wal_retire_branch: 'Dead WAL branch retirement', checkpoint: 'Checkpoint', discovery_scan: 'Discovery', compat_check: 'PostgreSQL compatibility check', agent_config_get: 'Read agent settings', agent_config_set: 'Agent settings', list_objects: 'Object list',
   pg_set_param: 'Parameter change', patroni_switchover: 'Switchover', patroni_failover: 'Failover', patroni_restart: 'Member restart', patroni_reinit: 'Replica reinitialization', archive_enable: 'Enable WAL archiving', patroni_reload: 'Patroni reload',
   patroni_pause: 'Maintenance mode', patroni_config_patch: 'Patroni configuration change', backup_run: 'Backup', backup_info: 'Repository info', backup_verify: 'Backup verification',
   backup_expire: 'Retention cleanup', backup_catalog: 'Backup catalog', restore_plan: 'Restore plan', restore_instance: 'Instance restore', restore_database: 'Database restore',

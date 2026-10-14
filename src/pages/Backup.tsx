@@ -97,13 +97,22 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
 function WalConflicts({ c, count, refresh }: { c: any; count: number; refresh: () => void }) {
   const ls = useOpRunner(c.id, undefined, `walconf:${c.id}`); const ack = useOpRunner(c.id, () => { refresh(); ls.run('wal_conflicts', {}); }); const [ask, setAsk] = useState(false);
   const list: any[] = ls.op?.status === 'succeeded' ? ls.op.result.conflicts || [] : [];
+  const ret = useOpRunner(c.id, () => { refresh(); ls.run('wal_conflicts', {}); }); const [retire, setRetire] = useState<number | null>(null);
+  const tls = [...new Set(list.map(x => x.timeline).filter((t: any) => Number.isInteger(t)))] as number[];
+  const primaryTl = c.activeTimeline || c.haState?.activeTimeline;
   return <Banner kind="bad" title={`${count} ${count === 1 ? 'divergent WAL copy' : 'divergent WAL copies'} in quarantine`}>
     <p className="small">Two servers archived different content under the same name: the archive kept the first copy and set the others aside. This happens with two primaries at once or with two promotions to the same timeline number (split-brain between sites).</p>
     {list.length ? <div className="tablewrap"><table className="t small"><thead><tr><th>Segment / history</th><th>Copy set aside</th><th>When</th></tr></thead><tbody>
       {list.map(x => <tr key={x.file}><td className="mono">{x.name}</td><td className="mono">{x.file}</td><td>{ago(new Date(x.at * 1000).toISOString())}</td></tr>)}</tbody></table></div> : null}
+    {tls.length ? <p className="small" style={{ marginTop: 6 }}>If the current primary{primaryTl ? ` (timeline ${primaryTl})` : ''} is the right server, retire the dead branch: the archive’s copies of that timeline that differ from the primary’s are set aside in <code>conflicts/dead-branch-…/</code> (nothing is deleted), the primary’s copies take their place and WAL archiving resumes by itself.</p> : null}
     <div className="row wrap gap-s" style={{ marginTop: 6 }}>{!list.length ? <Button sm busy={ls.busy} onClick={() => ls.run('wal_conflicts', {})}>Show the copies</Button> : null}
+      {tls.map(t => <Button key={t} sm kind="danger" busy={ret.busy} onClick={() => setRetire(t)}>Retire the dead branch of timeline {t}</Button>)}
       <Button sm busy={ack.busy} onClick={() => setAsk(true)}>Mark as reviewed</Button></div>
-    {(ls.op?.status === 'failed' || ack.op?.status === 'failed') ? <OpPanel op={ls.op?.status === 'failed' ? ls.op : ack.op} /> : null}
+    {ret.op?.status === 'succeeded' ? <Banner kind="ok" title={`Timeline ${ret.op.result?.timeline}: ${(ret.op.result?.retired || []).length} object(s) set aside, ${(ret.op.result?.promoted || []).length} promoted`}>{ret.op.result?.verified_against_primary ? 'Each promoted copy was byte-identical to the primary’s own WAL file.' : 'Run on a node that is not the primary: the newest quarantined copy was promoted without a byte-level proof.'}{(ret.op.result?.skipped || []).length ? ` Skipped: ${ret.op.result.skipped.map((x: any) => `${x.name} (${x.why})`).join('; ')}` : ''}</Banner> : null}
+    {(ls.op?.status === 'failed' || ack.op?.status === 'failed' || ret.op?.status === 'failed') ? <OpPanel op={ls.op?.status === 'failed' ? ls.op : ack.op?.status === 'failed' ? ack.op : ret.op} /> : null}
+    {retire !== null ? <Confirm title={`Retire the dead branch of timeline ${retire}?`} confirmLabel="Retire" danger requireText="RETIRE" onClose={() => setRetire(null)} onConfirm={() => { const t = retire; setRetire(null); ret.run('wal_retire_branch', { timeline: t, confirm: 'RETIRE' }); }}>
+      <p>Only do this if the <strong>current primary</strong> is the server whose history must survive. Its refused copies (in quarantine) replace the stored ones that differ; the stored ones are kept in <code>conflicts/dead-branch-{String(retire).padStart(8, '0').toUpperCase()}/</code>. Objects both servers wrote identically stay as they are.</p>
+      {primaryTl && primaryTl < retire ? <Banner kind="warn" title={`The primary is on timeline ${primaryTl}, older than ${retire}`}>Retiring a branch newer than the primary’s own timeline means the other server went further: make sure this is really the server to keep.</Banner> : null}</Confirm> : null}
     {ask ? <Confirm title="Mark the copies as reviewed?" confirmLabel="Mark" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); ack.run('wal_conflicts', { reviewed: true }); }}>
       <p>The copies stay in <code>conflicts/reviewed/</code> in the archive; the warning goes away. Do this after verifying which server was the right primary.</p></Confirm> : null}
   </Banner>;

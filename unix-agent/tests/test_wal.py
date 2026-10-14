@@ -78,6 +78,37 @@ class WalTests(unittest.TestCase):
         out = os.path.join(self.t, "r"); self.wm.retrieve_segment(n, out)
         self.assertEqual(open(out, "rb").read(), b"a" * MB)           # original untouched
 
+    def test_retire_dead_branch(self):
+        """Two servers used timeline 7: the dead one archived first. Retiring the branch sets its copies aside and promotes the survivor's
+        quarantined copies; shared (pre-fork) objects of the same timeline stay; nothing is deleted; the alarm goes away."""
+        shared = seg(7, 0, 1); dead_seg = seg(7, 0, 2); hist = "00000007.history"
+        self.wm.archive_segment(self.mk(shared, b"s"), shared)                       # both branches have it: no conflict
+        self.wm.archive_segment(self.mk(dead_seg, b"d"), dead_seg)                   # dead branch's content
+        hp = os.path.join(self.src, hist); open(hp, "w").write("6\t0/1000000\tdead\n"); self.wm.archive_segment(hp, hist)
+        for name, fill in ((dead_seg, b"a"), (dead_seg, b"b")):                      # the survivor retried with two different contents over time
+            with self.assertRaises(WalArchiveError): self.wm.archive_segment(self.mk(name, fill), name)
+        open(hp, "w").write("6\t0/2000000\tsurvivor\n")
+        with self.assertRaises(WalArchiveError): self.wm.archive_segment(hp, hist)
+        self.assertEqual(len(self.wm.conflicts()), 3)
+        # the survivor's pg_wal still holds the segment with content "b": only THAT quarantined copy may be promoted
+        pgdata = os.path.join(self.t, "pgdata"); os.makedirs(os.path.join(pgdata, "pg_wal"))
+        open(os.path.join(pgdata, "pg_wal", dead_seg), "wb").write(b"b" * MB)
+        dry = self.wm.retire_branch(7, survivor_pgdata=pgdata, dry_run=True)
+        self.assertEqual(sorted(dry["retired"]), sorted([dead_seg, hist])); self.assertTrue(dry["dry_run"])
+        self.assertEqual(len(self.wm.conflicts()), 3, "dry run changes nothing")
+        rep = self.wm.retire_branch(7, survivor_pgdata=pgdata)
+        self.assertEqual(sorted(rep["retired"]), sorted([dead_seg, hist])); self.assertEqual(sorted(rep["promoted"]), sorted([dead_seg, hist]))
+        out = os.path.join(self.t, "r"); self.wm.retrieve_segment(dead_seg, out)
+        self.assertEqual(open(out, "rb").read(), b"b" * MB, "the survivor's copy is in the archive now")
+        self.wm.retrieve_segment(shared, out); self.assertEqual(open(out, "rb").read(), b"s" * MB, "shared object untouched")
+        self.assertIn("survivor", open(os.path.join(self.wm.wal_dir, hist)).read())
+        dd = os.path.join(self.wm.wal_dir, "conflicts", "dead-branch-00000007")
+        self.assertTrue(any(f.startswith(dead_seg) for f in os.listdir(dd)) and hist in os.listdir(dd), "dead copies kept aside, not deleted")
+        self.assertEqual(self.wm.conflicts(), [], "no alarm left")
+        ok, _, _, msg = self.wm.archive_segment(self.mk(dead_seg, b"b"), dead_seg)   # the primary's archiver retries: accepted
+        self.assertTrue(ok); self.assertIn("identical", msg)
+        self.assertEqual(self.wm.retire_branch(7, survivor_pgdata=pgdata)["retired"], [], "second run: nothing left to do")
+
     def test_corruption_aborts_recovery_not_end_of_archive(self):
         n = seg(1, 0, 3); _, dest, _, _ = self.wm.archive_segment(self.mk(n), n)
         data = bytearray(open(dest, "rb").read()); data[len(data) // 2] ^= 0xFF; open(dest, "wb").write(bytes(data))

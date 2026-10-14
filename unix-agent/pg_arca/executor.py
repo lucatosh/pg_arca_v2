@@ -75,6 +75,7 @@ class OperationExecutor:
         r("pg_restart", self.h_pg_restart, False)          # never repeated blindly after an agent restart
         r("checkpoint", self.h_checkpoint, True)
         r("wal_switch", self.h_wal_switch, False)           # switching twice would create two segments
+        r("wal_retire_branch", self.h_wal_retire_branch, True)   # idempotent: already-retired names are simply absent the second time
         r("discovery_scan", self.h_discovery, True)
         r("compat_check", self.h_compat_check, True)
         r("list_objects", self.h_list_objects, True)
@@ -783,6 +784,38 @@ class OperationExecutor:
         wm = WalManager(wal_dir)
         moved = wm.conflicts_reviewed(p.get("files") if isinstance(p.get("files"), list) else None) if p.get("reviewed") else []
         return {"conflicts": wm.conflicts(), "reviewed": moved, "wal_dir": wal_dir}
+
+    def h_wal_retire_branch(self, p):
+        """Retire the DEAD branch of a timeline number two servers used: its stored copies go to conflicts/dead-branch-<tli>/ and the
+        quarantined copies of the survivor (this cluster's current primary) take their place, so the archiver resumes. Nothing is deleted."""
+        from pg_arca.wal_manager import WalManager
+        wal_dir = self.config.get("wal_archive_dir")
+        if not wal_dir or not os.path.isdir(wal_dir):
+            raise OpError("no WAL archive configured on this node")
+        try:
+            tli = int(p.get("timeline"))
+        except (TypeError, ValueError):
+            raise OpError("timeline (number) required")
+        if tli < 1 or tli > 0xFFFFFFFF:
+            raise OpError("timeline out of range")
+        dry = bool(p.get("dry_run"))
+        if not dry and p.get("confirm") != "RETIRE":
+            raise OpError("retiring a branch needs confirm=\"RETIRE\"")
+        # the survivor's own WAL (when this node is the primary) proves which quarantined copy is the right one
+        pgdata = None
+        try:
+            if self.db and self.db.ping():
+                ok, out, _ = self.db.run_psql("SELECT CASE WHEN pg_is_in_recovery() THEN '' ELSE current_setting('data_directory') END")
+                if ok and out.strip():
+                    pgdata = out.strip()
+        except Exception:
+            pgdata = None
+        wm = WalManager(wal_dir)
+        rep = wm.retire_branch(tli, survivor_pgdata=pgdata, dry_run=dry)
+        rep["wal_dir"] = wal_dir
+        rep["verified_against_primary"] = bool(pgdata)
+        rep["conflicts_left"] = len(wm.conflicts())
+        return rep
 
     def h_pg_timeline(self, p):
         """Timeline of this server and its history file (ancestors and switch points): how the console tells two servers on the same timeline NUMBER apart."""

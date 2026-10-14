@@ -207,17 +207,92 @@ class WalManager:
         out = []
         for f in (sorted(os.listdir(qdir)) if os.path.isdir(qdir) else []):
             p = os.path.join(qdir, f)
-            if not os.path.isfile(p):
+            if not os.path.isfile(p) or f.endswith(".dead-branch"):
                 continue
             parts = f.split(".")
             name = ".".join(parts[:2]) if len(parts) > 1 and parts[1] in ("history", "partial") else parts[0]
             try:
                 st = os.stat(p)
                 out.append({"file": f, "name": name, "sha": parts[2] if name.endswith(".history") and len(parts) > 2 else (parts[1] if len(parts) > 1 else ""),
-                            "at": st.st_mtime, "size": st.st_size})
+                            "at": st.st_mtime, "size": st.st_size, "timeline": int(name[:8], 16) if re.match(r"^[0-9A-F]{8}", name) else None})
             except OSError:
                 pass
         return out
+
+    def retire_branch(self, timeline, survivor_pgdata=None, dry_run=False):
+        """Two servers used the SAME timeline number (split-brain, or a promotion without access to the archive): the archive holds the
+        first writer's copies and refused the other's (conflicts/). When the operator says which server is the right one - the current
+        primary, whose refused copies are in quarantine - every stored object of that timeline that has a divergent quarantined copy is
+        the DEAD branch: it moves to conflicts/dead-branch-<tli>/ (nothing is deleted) and the quarantined copy takes its place, so the
+        primary's archiver resumes at once. Objects of that timeline WITHOUT a quarantined copy are shared by both branches (before the
+        fork) and stay. survivor_pgdata: when the primary's pg_wal still holds the file, the quarantined copy is promoted only if its
+        content is byte-identical to it (proof it is the survivor's copy). Returns a report; dry_run only reports."""
+        tli = int(timeline)
+        prefix = "%08X" % tli
+        qdir = os.path.join(self.wal_dir, "conflicts")
+        ddir = os.path.join(qdir, "dead-branch-%s" % prefix)
+        cands = {}
+        for sub in ("", "reviewed"):
+            d = os.path.join(qdir, sub)
+            for f in (sorted(os.listdir(d)) if os.path.isdir(d) else []):
+                if not f.startswith(prefix) or f.endswith(".dead-branch"):
+                    continue
+                parts = f.split(".")
+                name = ".".join(parts[:2]) if len(parts) > 1 and parts[1] in ("history", "partial") else parts[0]
+                p = os.path.join(d, f)
+                if os.path.isfile(p):
+                    cands.setdefault(name, []).append(p)           # newest quarantined copy last (sorted by name = by sha then time)
+        report = {"timeline": tli, "retired": [], "promoted": [], "kept": [], "skipped": [], "dead_branch_dir": ddir, "dry_run": bool(dry_run)}
+        for name in sorted(cands):
+            stored, codec = self._find(name)
+            if not stored:
+                report["skipped"].append({"name": name, "why": "nothing stored under this name any more"})
+                continue
+            copies = sorted(cands[name], key=lambda x: os.stat(x).st_mtime)
+            chosen = copies[-1]
+            if survivor_pgdata:
+                live = os.path.join(survivor_pgdata, "pg_wal", name)
+                if os.path.isfile(live):
+                    live_sha = _sha256_file(live)
+                    same = [c for c in copies if _sha256_file(c) == live_sha]
+                    if not same:
+                        report["skipped"].append({"name": name, "why": "no quarantined copy matches the primary's own file in pg_wal: the archiver will archive the primary's file itself once the stored one is retired"})
+                        chosen = None
+                    else:
+                        chosen = same[-1]
+            if dry_run:
+                report["retired"].append(name)
+                if chosen:
+                    report["promoted"].append(name)
+                continue
+            os.makedirs(ddir, mode=0o750, exist_ok=True)
+            # 1) the dead copy (+ its meta) goes aside, atomically renamed inside the same filesystem
+            os.rename(stored, os.path.join(ddir, os.path.basename(stored)))
+            mp = os.path.join(self.wal_dir, name + ".meta")
+            if os.path.exists(mp):
+                os.rename(mp, os.path.join(ddir, name + ".meta"))
+            report["retired"].append(name)
+            # 2) the survivor's copy takes its place through the normal write-once path (compression, meta, fsync)
+            if chosen:
+                try:
+                    self.archive_segment(chosen, name)
+                    os.rename(chosen, chosen + ".dead-branch")       # consumed: it is in the archive now (kept as a trace, excluded from the alarm)
+                    report["promoted"].append(name)
+                except WalArchiveError as e:
+                    report["skipped"].append({"name": name, "why": "quarantined copy not promoted: %s" % e})
+            for c in copies:
+                if c != chosen and os.path.exists(c) and not c.endswith(".dead-branch"):
+                    os.rename(c, c + ".dead-branch")
+        dfd = None
+        try:
+            dfd = os.open(self.wal_dir, os.O_RDONLY)
+            os.fsync(dfd)
+        except OSError:
+            pass
+        finally:
+            if dfd is not None:
+                os.close(dfd)
+        return report
 
     def conflicts_reviewed(self, files=None):
         """A person looked at them: moved to conflicts/reviewed/ (kept), so they stop raising an alarm. files=None: all of them."""
