@@ -31,9 +31,17 @@ detect_pg_user() {
   [[ -n "$u" && "$u" != "root" ]] && id "$u" &>/dev/null && { echo "$u"; return; }
   echo postgres
 }
-ROLE="${PG_ARCA_ROLE:-auto}"
+# Re-run (upgrade, package upgrade, uninstall) on a host where the agent is already set up: the existing service user and role are the defaults,
+# so a worker host running as "pgarca" (no postgres account) is not mistaken for a database server.
+EXIST_UNIT=/etc/systemd/system/pg-arca-agent${PG_ARCA_INSTANCE:+-$PG_ARCA_INSTANCE}.service
+EXIST_CONF=/etc/pg-arca${PG_ARCA_INSTANCE:+/$PG_ARCA_INSTANCE}/agent.conf
+EXIST_ROLE=""; [[ -f "$EXIST_CONF" ]] && EXIST_ROLE="$(sed -n 's/.*"node_role": *"\([a-z]*\)".*/\1/p' "$EXIST_CONF" | head -1)"
+EXIST_USER=""; [[ -f "$EXIST_UNIT" ]] && EXIST_USER="$(sed -n 's/^User=//p' "$EXIST_UNIT" | head -1)"
+ROLE="${PG_ARCA_ROLE:-${EXIST_ROLE:-auto}}"
 [[ "$ROLE" =~ ^(auto|database|worker)$ ]] || die "PG_ARCA_ROLE must be auto, database or worker"
-PGUSER_OS="${PG_ARCA_USER:-$(detect_pg_user)}"
+if [[ -n "${PG_ARCA_USER:-}" ]]; then PGUSER_OS="$PG_ARCA_USER"
+elif [[ -n "$EXIST_USER" ]] && id "$EXIST_USER" &>/dev/null; then PGUSER_OS="$EXIST_USER"; PG_ARCA_USER="$EXIST_USER"
+else PGUSER_OS="$(detect_pg_user)"; fi
 if [[ "$ROLE" == worker && -z "${PG_ARCA_USER:-}" ]] && ! id "$PGUSER_OS" &>/dev/null; then
   # a backup server / recovery host usually has no postgres account: a dedicated unprivileged system user
   PGUSER_OS=pgarca
