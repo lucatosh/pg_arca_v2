@@ -24,8 +24,9 @@ db=$1; sql=${2:-$(cat)}
 set -a; [ -f .env ] && . ./.env; set +a
 psql_peer="psql -X -At -q -v ON_ERROR_STOP=1 -p $port${SOCK:+ -h $SOCK}"     # SOCK=<socket dir>: a restored copy listens on its private socket
 N="$HERE/node.sh"
+b64=$(printf '%s\n' "$sql" | base64 -w0)      # the SQL travels inside the command: stdin does not survive ssh + pct exec
 if "$N" "$node" "su postgres -s /bin/bash -c \"$psql_peer -d postgres -c 'select 1'\"" >/dev/null 2>&1 </dev/null; then
-  printf '%s\n' "$sql" | "$N" "$node" "cd / && su postgres -s /bin/bash -c \"$psql_peer -d '$db'\""
+  "$N" "$node" "cd / && echo $b64 | base64 -d | su postgres -s /bin/bash -c \"$psql_peer -d '$db'\"" </dev/null
 else
-  printf '%s\n' "$sql" | "$N" "$node" "PGPASSWORD='${PG_SUPER_PASSWORD:-}' psql -X -At -q -v ON_ERROR_STOP=1 -h localhost -U postgres -p $port -d '$db'"
+  "$N" "$node" "echo $b64 | base64 -d | PGPASSWORD='${PG_SUPER_PASSWORD:-}' psql -X -At -q -v ON_ERROR_STOP=1 -h localhost -U postgres -p $port -d '$db'" </dev/null
 fi
