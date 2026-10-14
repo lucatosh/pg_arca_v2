@@ -5,9 +5,11 @@ access to the new primary's history file it picks the next free number - the ver
 timeline numbers ("same timeline: no rewind needed"), so the old site then streams from the new primary from ITS OWN position: everything the new
 primary wrote between the failover and that position never reaches it - a replica with a hole in its data that looks healthy.
 
-Detected from the timeline history files (each lists the ancestors and the exact switch points), fixed with pg_rewind under Patroni maintenance mode
-(pg_rewind compares the histories entry by entry, so it finds the real divergence point). Nothing here changes Patroni parameters: only the pause flag
-and standby_cluster go through the DCS, the rest is the server's own data directory."""
+Detected from the timeline history files (each lists the ancestors and the exact switch points). pg_rewind cannot repair it: it too compares only the
+numbers ("source and target cluster are on the same timeline - no rewind required", seen on the lab). The old site is therefore REBUILT from the new
+primary: under Patroni maintenance its data directory is moved aside (kept: <pgdata>.pgarca-diverged-<ts>) and Patroni clones the standby leader from
+the new primary (standby_cluster), then the other members from it. Nothing here changes Patroni parameters: only the pause flag and standby_cluster go
+through the DCS, the rest is the server's own data directory."""
 import os
 import re
 import subprocess
@@ -104,3 +106,23 @@ def force_rewind(pgdata, bindir, host, port, user, password, state_dir, progress
         raise EngineError("PGA-GEO-023", "pg_rewind failed (exit %d): %s" % (r.returncode, out[-600:]),
                           "the old site's members must be rebuilt from the new primary (patronictl reinit, or remove the data directory and let Patroni clone it)")
     return out.splitlines()[-3:]
+
+
+def rebuild_aside(pgdata, bindir, progress=None):
+    """Stop the local PostgreSQL (the caller paused Patroni) and move its data directory aside, leaving an empty one: Patroni clones it again from the
+    new primary when maintenance ends. Returns the path the old data directory was kept under."""
+    import time as _t
+    ctl = os.path.join(bindir, "pg_ctl") if bindir else "pg_ctl"
+    if progress:
+        progress({"phase": "geo-rebuild", "msg": "stopping PostgreSQL of the old primary (Patroni paused)"})
+    r = subprocess.run([ctl, "stop", "-D", pgdata, "-m", "fast", "-w", "-t", "300"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=360)
+    pid = os.path.join(pgdata, "postmaster.pid")
+    if r.returncode != 0 and os.path.exists(pid) and "not running" not in (r.stdout or "") and "No such file" not in (r.stdout or ""):
+        raise EngineError("PGA-GEO-022", "pg_ctl stop failed: %s" % (r.stdout or "")[-300:])
+    real = os.path.realpath(pgdata).rstrip("/")
+    kept = "%s.pgarca-diverged-%s" % (real, _t.strftime("%Y%m%d%H%M%S"))
+    os.rename(real, kept)
+    os.mkdir(real, 0o700)
+    if progress:
+        progress({"phase": "geo-rebuild", "msg": "data directory kept as %s; Patroni clones the site again from the new primary" % kept})
+    return kept

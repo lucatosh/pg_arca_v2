@@ -195,7 +195,7 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     // the old site may have promoted itself to the SAME timeline number when it came back: then Patroni would not rewind it (see sameTimelineDiverged)
     const t1 = await timelines(store, id, 'pre', f.from, f.to);
     const force = sameTimelineDiverged(t1.o, t1.n);
-    if (force) await step(store, id, `1b ${old.name} si è promosso da solo al ritorno, sulla STESSA timeline ${t1.o.timeline} di ${neu.name} ma con una storia diversa: Patroni non lo riavvolgerebbe e seguirebbe ${neu.name} con un buco nei dati. pg_rewind forzato (Patroni in manutenzione per la durata)`);
+    if (force) await step(store, id, `1b ${old.name} si è promosso da solo al ritorno, sulla STESSA timeline ${t1.o.timeline} di ${neu.name} ma con una storia diversa: Patroni (e pg_rewind) confrontano solo il numero e seguirebbe ${neu.name} con un buco nei dati. Viene ricostruito da ${neu.name}: Patroni in manutenzione, la sua cartella dati resta da parte (.pgarca-diverged-…), poi Patroni lo clona di nuovo`);
     const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DECLASSA', ...(force ? { force_rewind: true } : {}) }, `geo:${id}:demote`, 'pg_arca (riallineamento automatico)');
     const r = await waitOp(store, o.id, 300_000);
     if (r.status !== 'succeeded') throw new Error(`declassamento di ${old.name} non riuscito: ${r.error || r.status}`);
@@ -205,7 +205,7 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     if (!ok) throw new Error(`${old.name} non riceve WAL da ${neu.name} dopo 5 minuti: probabilmente pg_rewind non è riuscito (controlla use_pg_rewind e la regola pg_hba di replica locale) e i membri vanno ricostruiti`);
     // streaming is not enough: it must follow the new primary's HISTORY (same timeline, same switch points), or it is replaying from the wrong place
     const t2 = await timelines(store, id, 'post', f.from, f.to);
-    if (sameTimelineDiverged(t2.o, t2.n)) throw new Error(`${old.name} riceve WAL da ${neu.name} ma la sua storia della timeline ${t2.o.timeline} è diversa: i dati scritti da ${neu.name} dopo il failover non gli arrivano. Va ricostruito (patronictl reinit dei membri) o riallineato con pg_rewind`);
+    if (sameTimelineDiverged(t2.o, t2.n)) throw new Error(`${old.name} riceve WAL da ${neu.name} ma la sua storia della timeline ${t2.o.timeline} è diversa: i dati scritti da ${neu.name} dopo il failover non gli arrivano. Va ricostruito da ${neu.name} (Declassa con ricostruzione, o patronictl reinit dei membri)`);
     await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinedAt = nowIso(); ops.audit(d, { clusterId: f.from, actor: 'pg_arca', action: 'geo.rejoin', status: 'OK', details: { to: neu.name } }); });
     await step(store, id, `3/3 ${old.name} riceve i WAL da ${neu.name}: la coppia è di nuovo protetta (lo switchover pianificato può riportare il primario su ${old.name})`, 'succeeded', { finishedAt: nowIso() });
   } catch (e: any) {

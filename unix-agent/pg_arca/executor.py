@@ -718,24 +718,31 @@ class OperationExecutor:
         st, d = self.patroni.patch_config(patch)
         if st >= 300:
             raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
-        rewound = None
+        rebuilt = None
         if rewind:
+            # pg_rewind cannot help (it also says 'same timeline: no rewind required'): the site is cloned again from the new primary
             from pg_arca import geo_rewind
             me = self.runtime.patroni_info or {}
             try:
-                user, pw = geo_rewind.patroni_auth(me.get("config_path") or "")
-                rewound = geo_rewind.force_rewind(me.get("data_dir") or (self.runtime.instance or {}).get("data_directory"), me.get("bin_dir") or "", host, port, user, pw,
-                                                  self.config.get("state_dir"), self._progress)
+                rebuilt = geo_rewind.rebuild_aside(me.get("data_dir") or (self.runtime.instance or {}).get("data_directory"), me.get("bin_dir") or "", self._progress)
             finally:
-                self.patroni.patch_config({"pause": False})            # Patroni starts it again as the standby leader of the new primary
+                self.patroni.patch_config({"pause": False})            # Patroni clones the standby leader from standby_cluster and starts it
             # the other members of this site carry the same wrong history: rebuilt from their (now rewound) leader
             for m in [x for x in (self.patroni.get_cluster_topology()[1] or {}).get("members", []) if x.get("name") != me.get("node_name")]:
                 if m.get("api_url"):
                     self.patroni.for_member(m["api_url"]).reinitialize(True)
-        ok, leader, members = self._wait_role(("standby_leader",), int(p.get("timeout", 300 if rewind else 120)))
+        if rewind:
+            # a clone takes time and the member list can still show the old standby leader for a moment: wait for one that STREAMS
+            time.sleep(15)
+            ok, lead2, members = self.patroni.wait_for(lambda l, m: any(x.get("role") == "standby_leader" and x.get("state") == "streaming" for x in m),
+                                                       timeout=int(p.get("timeout", 3600)), interval=5)
+            leader = next((x for x in members if x.get("role") == "standby_leader"), None) or {}
+        else:
+            ok, leader, members = self._wait_role(("standby_leader",), int(p.get("timeout", 120)))
         if not ok:
             raise OpError("no standby leader within %ss (members: %s)" % (p.get("timeout", 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
-        return {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port), "dropped_slots": drop, "rewound": rewound}
+        return {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port), "dropped_slots": drop, "rebuilt_from_new_primary": bool(rebuilt),
+                "old_data_kept_as": rebuilt}
 
     def h_pg_timeline(self, p):
         """Timeline of this server and its history file (ancestors and switch points): how the console tells two servers on the same timeline NUMBER apart."""
