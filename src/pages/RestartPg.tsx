@@ -9,7 +9,7 @@ import { itCheck } from '../i18n';
 export function RestartPg({ c, label = 'Riavvia PostgreSQL', onDone }: { c: any; label?: string; onDone?: () => void }) {
   const [ask, setAsk] = useState(false);
   // the plan runs on the agent: the confirmation opens when it has ANSWERED (run() returns the submitted operation, not its outcome)
-  const plan = useOpRunner(c.id, o => { if (o.status === 'succeeded' && o.result?.plan?.method !== 'refuse' && o.result?.plan?.allowed !== false) setAsk(true); }); const run = useOpRunner(c.id, o => { if (o.status === 'succeeded') toast(`PostgreSQL riavviato${o.result?.unit ? ` (${o.result.unit})` : ''}`, 'ok'); onDone?.(o); });   // the card that asked may disappear at once: the toast stays
+  const plan = useOpRunner(c.id, o => { if (o.status === 'succeeded' && o.result?.plan?.method !== 'refuse' && o.result?.plan?.allowed !== false) setAsk(true); }); const run = useOpRunner(c.id, o => { if (o.status === 'succeeded') toast(`PostgreSQL riavviato${o.result?.unit ? ` (${o.result.unit})` : ''}`, 'ok'); onDone?.(); });   // the card that asked may disappear at once: the toast stays
   if (c.haState?.managedByPatroni || c.source === 'direct' || c.isSandbox) return null;
   const p = plan.op?.status === 'succeeded' ? plan.op.result?.plan : null;
   const how = p ? (p.method === 'systemd' ? <>con il servizio del server: <code>systemctl restart {p.unit}</code></> : p.method === 'pg_ctl' ? <>con <code>pg_ctl restart -m fast</code> (nessun servizio systemd lo gestisce)</> : null) : null;
