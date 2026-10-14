@@ -56,4 +56,14 @@ First packaged release. Changes since the development builds:
 - Agent packages: offline tarball, `.deb`, `.rpm`; the installer has a no-package mode for them (`PG_ARCA_NO_PKG=1`).
 - The whole interface, server messages and agent messages in English (guard tests on all three).
 
+Fixed during the rc.1 test round (15/10):
+- Backups taken on a standby: the console asks the primary to switch its WAL segment when the backup reaches the WAL phase; an archive that receives nothing is diagnosed as not shared within a minute (`PGA-WAL-021`, with the remedy) instead of a blind two-minute timeout; the Backup page warns before starting when the cluster has no shared destination.
+- Patroni member names: a node whose hostname differs from its Patroni member name was listed twice and switchover/failover/restart/reinit failed with "not a member of this cluster"; the agent now reports its member name and every Patroni action uses it.
+- Access (HBA): new cluster access matrix, every node → every node, for the replication user and the superuser, with one click to add the missing explicit rules (through the DCS on Patroni, per node otherwise).
+- Geo-redundancy: a site that comes back after a failover is fenced (demoted) at its first sign of life, before Patroni there can promote it; the dead WAL branch of a timeline two servers used can be retired from the Backup tab (nothing is deleted).
+- Backup server with a folder: the directory check shows every problem with its remedy and, when it passes, the exact NFS export, mount line and destination to set.
+- Dialogs no longer steal the cursor while typing (polling pages re-focused the first field; copy/paste lost its selection).
+- Cluster header badge agrees with the health findings.
+- Backup copy and restore extraction run with a sliding window over the worker threads instead of batches with a barrier.
+
 Known limits: see the release gate above and [COMPAT.md](COMPAT.md).
