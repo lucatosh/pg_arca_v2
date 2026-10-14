@@ -29,6 +29,8 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const [detach, setDetach] = useState(false); const [busy, setBusy] = useState(false); const [spin, setSpin] = useState(false);
   const [gl, setGl] = useState(false); const allClusters: any[] = useQuery<any>('/api/clusters').data?.clusters || []; const useRoleIsAdmin = useRole() === 'admin';
   const c = q.data?.cluster; const cur = TAB_ITEMS.some(t => t.id === tab) ? tab! : 'overview'; const grp = groupOf(cur);
+  // the header badge must agree with the health findings (the sidebar already does): a cluster whose WAL archiving is failing is not "Healthy"
+  const hw = useHealth(30000).data?.clusters?.find((x: any) => x.id === id)?.worst as string | undefined;
   if (q.error?.status === 404) return <Empty icon="db" title="Cluster not found" action={<Button onClick={() => go('')}>Back to the list</Button>}>It may have been detached.</Empty>;
   if (!c) return <div className="stack"><Skeleton h={30} w={260} /><Skeleton h={120} /></div>;
   const doDetach = async () => {
@@ -37,8 +39,6 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
     catch (e: any) { toast(e.message, 'bad'); setBusy(false); }
   };
   const agentic = c.source !== 'direct' && !c.isSandbox;
-  // the header badge must agree with the health findings (the sidebar already does): a cluster whose WAL archiving is failing is not "Healthy"
-  const hw = useHealth(30000).data?.clusters?.find((x: any) => x.id === c.id)?.worst as string | undefined;
   const eff = hw === 'critical' ? 'critical' : hw === 'warning' && c.status === 'healthy' ? 'degraded' : c.status;
   return <>
     <div className="pagehead">

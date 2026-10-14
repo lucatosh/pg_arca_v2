@@ -136,3 +136,36 @@ export const untilOf = (comment?: string): number | null => { const m = UNTIL.ex
 export const stripUntil = (comment?: string) => (comment || '').replace(UNTIL, '').trim();
 export const withUntil = (comment: string | undefined, ms: number | null) => { const base = stripUntil(comment); return ms == null ? base : `${base} [until=${new Date(ms).toISOString().slice(0, 16)}Z]`.trim(); };
 export const untilLabel = (ms: number, now = Date.now()) => { const d = ms - now; if (d <= 0) return 'expired'; const m = Math.round(d / 60000); return m < 60 ? `expires in ${m} min` : m < 2880 ? `expires in ${Math.round(m / 60)} h` : `expires in ${Math.round(m / 1440)} days`; };
+
+// ---------- cluster access matrix: every node must be able to reach every node ----------
+/** What a cluster needs in pg_hba so that any member can become the primary: the replication user from every node (streaming replication,
+ *  pg_rewind, pg_basebackup when a replica is re-cloned) and the superuser from every node (Patroni / the console administering members).
+ *  One /32 per node: narrow, explicit, and it keeps working when the wider rule someone wrote by hand is changed. */
+export interface AccessNeed { kind: 'replication' | 'admin'; from: string; rule: Rule }
+export interface AccessOpts { replUser: string; superuser: string; ssl: boolean; method: string; extraNets?: string[] }
+const hostNet = (h: string): string | null => {
+  const ip = h.split('/')[0];
+  if (!ip || ip === 'localhost') return null;
+  if (parseNet(ip) && /[.:]/.test(ip)) return ip.includes(':') ? `${ip}/128` : `${ip}/32`;
+  return null;                                                   // a host name: PostgreSQL would resolve it, but a rule by name hides which address is allowed
+};
+export function clusterNeeds(nodes: { name: string; host?: string }[], o: AccessOpts): AccessNeed[] {
+  const type = o.ssl ? 'hostssl' : 'host';
+  const out: AccessNeed[] = [];
+  const seen = new Set<string>();
+  const push = (from: string, net: string) => {
+    if (seen.has(net)) return; seen.add(net);
+    if (o.replUser) out.push({ kind: 'replication', from, rule: { type, database: 'replication', user: o.replUser, address: net, method: o.method, comment: `Replication from ${from}` } });
+    if (o.superuser) out.push({ kind: 'admin', from, rule: { type, database: 'all', user: o.superuser, address: net, method: o.method, comment: `Administration from ${from}` } });
+  };
+  for (const n of nodes) { const net = hostNet(String(n.host || '')); if (net) push(n.name, net); }
+  for (const x of o.extraNets || []) if (validCidr(x)) push(x, x);
+  return out;
+}
+/** First-match semantics, like PostgreSQL: the first rule whose scope contains the need decides. */
+export function accessCoverage(all: Rule[], needs: AccessNeed[]): { need: AccessNeed; by: number | null; blocked: boolean }[] {
+  return needs.map(need => {
+    const i = all.findIndex(r => covers(r, need.rule));
+    return { need, by: i >= 0 ? i : null, blocked: i >= 0 && all[i].method === 'reject' };
+  });
+}

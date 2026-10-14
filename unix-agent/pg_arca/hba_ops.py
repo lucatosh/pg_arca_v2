@@ -17,6 +17,9 @@ SQL_REPL = ("SELECT COALESCE(json_agg(x),'[]'::json) FROM (SELECT r.usename AS \
             "FROM pg_stat_replication r LEFT JOIN pg_stat_ssl s USING (pid) WHERE r.client_addr IS NOT NULL) x;")
 SQL_ROLES = "SELECT COALESCE(json_agg(rolname ORDER BY rolname),'[]'::json) FROM pg_roles WHERE rolcanlogin AND rolname !~ '^pg_';"
 SQL_DBS = "SELECT COALESCE(json_agg(datname ORDER BY datname),'[]'::json) FROM pg_database WHERE datallowconn;"
+SQL_SUPER = "SELECT COALESCE(json_agg(rolname ORDER BY rolname),'[]'::json) FROM pg_roles WHERE rolsuper AND rolcanlogin;"
+SQL_FACTS = ("SELECT json_build_object('password_encryption', current_setting('password_encryption'), 'ssl', current_setting('ssl'), "
+             "'server_version_num', current_setting('server_version_num')::int);")
 
 
 SOFT = ("cannot match because SSL is disabled", "cannot match because GSSAPI is disabled")
@@ -247,6 +250,9 @@ def read(ex, p, err):
             "managed": {"present": managed is not None, "rules": managed or [], "rev": hba.rules_rev(managed) if managed else None},
             "effective": eff, "errors": hard_errors(eff), "ssl": _ssl_on(ex), "has_includes": includes, "rule_count": len(rules),
             "suggest": {"replication_clients": _json(ex, SQL_REPL, err, []), "roles": _json(ex, SQL_ROLES, err, []), "databases": _json(ex, SQL_DBS, err, [])},
+            # what the cluster access matrix (every node -> every node) needs to propose the right rules: the users really used for
+            # replication (streaming clients, and the WAL receiver's user on a standby), the superusers, and how passwords are hashed
+            "facts": dict(_json(ex, SQL_FACTS, err, {}) or {}, replication_users=_json(ex, SQL_REPL_USERS, err, []), superusers=_json(ex, SQL_SUPER, err, [])),
             "backups": [] if src.patroni else sorted(os.path.basename(x) for x in glob.glob(src.path + ".pgarca-*"))[-KEEP_BACKUPS:]}
 
 

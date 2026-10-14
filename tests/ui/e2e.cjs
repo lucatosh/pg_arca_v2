@@ -177,7 +177,11 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('tr:has-text("work_mem") button:has-text("Apply")'); await p.click('.modal button:has-text("Apply")'); await p.waitForSelector('text=Succeeded', { timeout: 10000 });
   await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console');
   // HBA assistant: suggestion, duplicate refusal, shadow warning, plan, apply
-  await p.click('.banner.warn button:has-text("Add")'); await p.waitForSelector('text=Replication from 10.0.2.7');
+  await p.waitForSelector('text=Cluster access (every node → every node)'); await shot('14f-hba-access');
+  // one click adds the node->node rules that are missing; the matrix then points at the new rule
+  await p.waitForSelector('td:has-text("missing")'); await p.click('button:has-text("missing rule")'); await p.waitForSelector('td:has-text("Replication from db1")');
+  await p.waitForSelector('text=Every node can replicate from and administer every other node'); assert((await p.locator('td:has-text("missing")').count()) === 0, 'no cell left missing');
+  await p.click('.banner.warn:has-text("Active replicas") button:has-text("Add")'); await p.waitForSelector('text=Replication from 10.0.2.7');
   await p.click('button:has-text("Add a rule")');
   await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/33'); await p.waitForSelector('text=CIDR notation');
   await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/24'); await p.waitForSelector('text=can use every database from network 10.0.20.0/24');

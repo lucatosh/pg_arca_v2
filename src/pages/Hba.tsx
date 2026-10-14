@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago } from '../ui';
 import { clearDrafts, isTerminal, Op, revalidate, toast, useDraft, useQuery } from '../hooks';
-import { Issue, Rule, analyze, covers, describe, fill, fromEffective, key, sortRules, stripUntil, tag, untilLabel, untilOf, validCidr, withUntil } from '../hbaLogic';
+import { Issue, Rule, accessCoverage, analyze, clusterNeeds, covers, describe, fill, fromEffective, key, sortRules, stripUntil, tag, untilLabel, untilOf, validCidr, withUntil } from '../hbaLogic';
 
 type Row = Rule & { _id: string };
 type Tpl = { id: string; name: string; description: string; envs: string[]; vars: { key: string; label: string; def: string; hint?: string }[]; rules: Rule[] };
@@ -205,6 +205,7 @@ function HbaInner({ c }: { c: any }) {
     {probs.length ? <Banner kind="bad" title="PostgreSQL reports errors in the current file">{probs.slice(0, 3).map((p: any) => `line ${p.line_number}: ${p.error}`).join(' · ')}</Banner> : null}
     {first.has_includes ? <Banner kind="info" title="The file uses include">Rules imported with include are not analyzed here: the order shown may not reflect the whole file.</Banner> : null}
 
+    <ClusterAccess c={c} all={all} first={first} add={add} patroni={patroni} />
     <Suggestions rows={shown} existing={existing} first={first} add={add} c={c} />
 
     <Card title="Rules managed by the console" actions={<div className="row">
@@ -268,6 +269,53 @@ function RuleLine({ r, n, issues, manual, onMove, onRemove }: { r: Row; n: numbe
 }
 
 /** Suggestions derived from live data: replication clients that no rule would currently allow. */
+/** Every node -> every node: the replication user and the superuser must be accepted from each member's address, otherwise a failover,
+ *  a re-clone (pg_basebackup) or a pg_rewind towards THAT member fails. Shown as a matrix with one click to add what is missing. */
+function ClusterAccess({ c, all, first, add, patroni }: { c: any; all: Rule[]; first: any; add: (r: Rule[]) => number; patroni: boolean }) {
+  const nodes: { name: string; host?: string }[] = (c.haState?.nodes || []).map((n: any) => ({ name: n.name, host: String(n.host || '') }));
+  const facts = first?.facts || {};
+  const learnt: string = (facts.replication_users || [])[0] || (first?.suggest?.replication_clients || [])[0]?.user || '';
+  const CK = `hba:access:${c.id}`;
+  const [replUser, setReplUser] = useDraft(CK + ':repl', learnt || 'replicator');
+  const [superuser, setSuperuser] = useDraft(CK + ':su', (facts.superusers || []).includes('postgres') || !(facts.superusers || []).length ? 'postgres' : facts.superusers[0]);
+  const [ssl, setSsl] = useDraft(CK + ':ssl', first?.ssl === true);
+  const [extra, setExtra] = useDraft(CK + ':extra', '');
+  const [open, setOpen] = useDraft(CK + ':open', false);
+  const method = facts.password_encryption === 'md5' ? 'md5' : 'scram-sha-256';
+  const extraNets = extra.split(/[\s,]+/).filter(Boolean);
+  const needs = useMemo(() => clusterNeeds(nodes, { replUser: replUser.trim(), superuser: superuser.trim(), ssl, method, extraNets }), [JSON.stringify(nodes), replUser, superuser, ssl, method, extra]);
+  const cov = useMemo(() => accessCoverage(all, needs), [all, needs]);
+  const missing = cov.filter(x => x.by === null).map(x => x.need.rule);
+  const blocked = cov.filter(x => x.blocked);
+  const froms = [...new Set(needs.map(n => n.from))];
+  const cell = (from: string, kind: 'replication' | 'admin') => {
+    const x = cov.find(y => y.need.from === from && y.need.kind === kind); if (!x) return <span className="faint">—</span>;
+    if (x.blocked) return <Badge kind="bad" title={`Rule #${x.by! + 1} rejects it: ${describe(all[x.by!])}`}>blocked by #{x.by! + 1}</Badge>;
+    if (x.by === null) return <Badge kind="warn">missing</Badge>;
+    return <Badge kind="ok" title={describe(all[x.by])}>rule #{x.by + 1}</Badge>;
+  };
+  const noAddr = nodes.filter(n => !n.host || !/^[0-9a-fA-F.:]+$/.test(String(n.host).split('/')[0]));
+  if (!nodes.length) return null;
+  const kind = blocked.length ? 'bad' : missing.length ? 'warn' : 'ok';
+  const title = blocked.length ? `${blocked.length} cluster-internal connection(s) are rejected by a rule above them` : missing.length ? `${missing.length} rule(s) missing for the nodes to reach each other` : 'Every node can replicate from and administer every other node';
+  return <Card title="Cluster access (every node → every node)" actions={<Button sm kind="ghost" onClick={() => setOpen(!open)}>{open ? 'Hide settings' : 'Settings'}</Button>}>
+    <div className="stack">
+      <Banner kind={kind} title={title} actions={missing.length ? <Button sm kind="primary" icon="plus" onClick={() => { const n = add(missing); if (n) toast(`${n} rule(s) added to the managed block: check the effect, then apply`, 'ok'); }}>Add the {missing.length} missing rule(s)</Button> : undefined}>
+        <span>Any member can become the primary, be re-cloned or re-aligned with pg_rewind: the replication user <strong>{replUser || '?'}</strong>{superuser ? <> and the superuser <strong>{superuser}</strong></> : null} must be accepted from the address of every member, with one explicit /32 per node ({ssl ? 'TLS only, ' : ''}{method}).{patroni ? ' Under Patroni the list is one for the whole cluster, written to the DCS.' : ' Without Patroni the managed block is applied to every node.'}</span>
+      </Banner>
+      {open ? <div className="grid g3">
+        <Field label="Replication user" hint={learnt ? `Seen replicating today: ${(facts.replication_users || []).join(', ')}` : 'The user in primary_conninfo (Patroni: postgresql.authentication.replication.username)'}><input className="input mono" value={replUser} onChange={e => setReplUser(e.target.value)} /></Field>
+        <Field label="Superuser (empty = none)" hint={(facts.superusers || []).length ? `Superusers on the cluster: ${facts.superusers.join(', ')}` : undefined}><input className="input mono" value={superuser} onChange={e => setSuperuser(e.target.value)} /></Field>
+        <Field label="Extra networks (CIDR, optional)" hint="For nodes that reach the cluster through another address (NAT, a second interface)"><input className="input mono" value={extra} onChange={e => setExtra(e.target.value)} placeholder="10.0.5.0/24" /></Field>
+        <label className="check"><input type="checkbox" checked={ssl} onChange={e => setSsl(e.target.checked)} /><span>TLS only (hostssl){first?.ssl === false ? <span className="small muted"> — ssl is off on the server: hostssl rules would not match until it is enabled</span> : null}</span></label>
+      </div> : null}
+      <div className="tablewrap"><table className="t small"><thead><tr><th>From node</th><th>Address</th><th>Replication ({replUser || '—'})</th><th>Administration ({superuser || '—'})</th></tr></thead><tbody>
+        {froms.map(f => { const n = nodes.find(x => x.name === f); return <tr key={f}><td><strong>{f}</strong></td><td className="mono">{n ? n.host : f}</td><td>{cell(f, 'replication')}</td><td>{superuser ? cell(f, 'admin') : <span className="faint">—</span>}</td></tr>; })}
+        {noAddr.map(n => <tr key={n.name}><td><strong>{n.name}</strong></td><td className="mono muted">{n.host || 'address unknown'}</td><td colSpan={2}><span className="small muted">{n.host ? 'a host name: add its address under Extra networks to get an explicit rule' : 'the console does not know this node’s address yet'}</span></td></tr>)}
+      </tbody></table></div>
+    </div></Card>;
+}
+
 function Suggestions({ rows, existing, first, add, c }: { rows: Rule[]; existing: Rule[]; first: any; add: (r: Rule[]) => number; c: any }) {
   const cur = [...rows, ...existing];
   const plc = first.patroni_local;
