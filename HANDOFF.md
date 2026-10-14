@@ -157,6 +157,27 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### Sessione 14/10 pomeriggio: lab ripartito, server vergini collegati dalla console, ripristini via web UI su systemd reale
+- **VM ripartita** (era spenta: avviata headless da VirtualBox, `ubuntu26`). Console aggiornata con `deploy.sh`; i log dei lavori di lab ora stanno in `~/lablogs` (persistono al reboot).
+- **Server vergini Proxmox 410-414 collegati come un cliente**: «Collega cluster» nella console (`onboard.cjs`) → comando → `virgin.sh agent`. Indirizzo della console impostato a `http://192.168.1.179:3000`.
+- **Correzioni dall'uso reale**:
+  - Installer senza `tar` (Rocky minimale): ora usa il `tarfile` di python.
+  - Installer: aggiunge **polkit** su un server standalone sotto systemd. Senza polkit l'agent non poteva né riavviare dopo l'archiviazione né rimettere a posto il server.
+  - Installer: «Next: WAL archiving» solo se serve davvero.
+  - **«Riavvia ora» nella scheda Backup non apriva mai la conferma con un agent vero.** `run()` restituisce l'operazione inviata, non l'esito; ora la conferma si apre quando il piano ha risposto. Nuovo test UI `tests/ui/archive.cjs` con un agent che risponde in ritardo.
+  - Testi Patroni («prima le repliche») non più mostrati su server standalone.
+  - Georidondanza: i due siti dello stesso database possono condividere l'archivio WAL (non è una collisione). La prontezza controlla l'archiviazione del sito di replica, attivabile dalla console anche su uno standby cluster. Nessun avviso «percorso WAL condiviso» per un valore impostato su un solo cluster.
+  - Strumenti di lab: `sql.sh`/`node.sh` funzionano anche sui CT Proxmox (l'SQL viaggia nel comando perché lo stdin si perde con ssh + pct exec); `restore-ui.cjs` attiva l'archiviazione dalla UI.
+- **Risultati via web UI** (`restore-ui.cjs`: backup con archiviazione + riavvio dalla UI, tabella rimessa a posto, tabella in quarantena, righe, database eliminato riportato col suo nome, copia d'istanza avviata, **server di produzione sostituito**):
+  - **pg-deb12-pg15** (Debian 12, `postgresql@15-main`): tutto OK in 299 s; server sostituito in circa 10 s, righe appena confermate presenti, stessa porta.
+  - **pg-ubu24-pg16** (Ubuntu 24.04, PG16): tutto OK in 310 s.
+  - **Ancora in corso** al momento della consegna: rocky9-pg14, deb12-pg17-custom (ha un tablespace, quindi la sostituzione deve essere rifiutata con PGA-RST-083), deb12-pg18-two. Risultati in `~/lablogs/rui-all.log` e `~/lablogs/rui-<cluster>.log`.
+- **Lab hy (georidondanza Docker + Proxmox)**:
+  - Costruito: hy-rm è standby cluster in streaming. Agent installati dalla console su entrambi i siti.
+  - `scenario-hy.py setup` riuscito 21/22: destinazione NFS comune, archiviazione su entrambi i siti via DCS, riavvii Patroni, indirizzi dei siti, prontezza, full backup in 34 s.
+  - Il controllo fallito: **hy2 non si ricostruisce** perché dopo il reboot della VM hy1 e hy2 si sono scambiati gli IP Docker (il `connect_address` di Patroni è fisso).
+  - Correzione pronta: IP fissi nel compose e `hy.sh fixip`, **da eseguire**; poi `scenario-hy.py switch,dr,wan`.
+
 ### Sessione 14/10: il ripristino finisce il lavoro nell'originale (richiesta utente: «non creano solo un db o istanza effimera… serve che sia il tool a completare l'operazione»)
 - **Fatto e provato su PG16 locale** (commit 9daf232 e successivo):
   - Nel passo «Controlla e conferma» c'è **«Alla fine»**, scelto prima di partire. Il predefinito rimette a posto l'originale: tabella (solo ciò che manca / sostituisci / accanto), tutte le righe com'erano, database al posto dell'originale (l'attuale resta come `<db>_before_<ts>`). In alternativa «solo una copia da controllare», con un pulsante per metterla al posto dell'originale (`restore_db_swap`).

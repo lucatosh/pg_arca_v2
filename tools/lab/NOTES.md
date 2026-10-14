@@ -74,3 +74,9 @@ Dal 13/10 sera: container LXC creati sul Proxmox con PostgreSQL installato **com
 | `pat1`–`pat3` | Patroni (pacchetti PGDG) + etcd su 3 nodi, PostgreSQL 16: parametri e pg_hba SOLO via DCS, switchover, backup da replica, un token per 3 server |
 
 Uso (sull'host Proxmox, root): `./virgin.sh list`, `./virgin.sh create all` (o i nomi), `./virgin.sh status`, `./virgin.sh reset all`, `./virgin.sh destroy all`. Variabili: `STORAGE` (deve supportare gli snapshot: lvm-thin/zfs), `BRIDGE`, `IPBASE`+`GW` per indirizzi fissi (consigliati per Patroni), `CTID0` (id del primo container, 410). Memoria: circa 9 GB se si creano tutti; si possono creare a gruppi. **Scritto senza un Proxmox a disposizione: non ancora eseguito** — al primo giro aspettarsi piccole correzioni.
+
+## 14/10 — log persistenti e strumenti per i CT Proxmox
+- I lavori lunghi girano con `nohup` e scrivono in `~/lablogs/` sulla VM (non in `/tmp`, che un reboot svuota).
+- `tools/lab/ui/node.sh <nodo> '<comando>'` esegue un comando come root su un nodo della console, sia container Docker della VM sia CT Proxmox (per hostname, via `pct exec`). `sql.sh` lo usa, e l'SQL viaggia dentro il comando: lo stdin non passa attraverso ssh + `pct exec`.
+- `restore-ui.cjs` attiva da sé l'archiviazione WAL dalla UI (con il riavvio dalla scheda Backup) sui server appena collegati. Lo scenario `server` sostituisce la produzione: va bene solo su standalone e viene rifiutato con un motivo su Patroni, tablespace e container.
+- `hy.sh fixip`: IP fissi per hy1/hy2/etcd/HAProxy senza ricreare i container (dopo un reboot si erano scambiati). `scenario-hy.py setup,switch,dr,wan`: tutta la coppia geo dalla console.
