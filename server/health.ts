@@ -123,7 +123,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         // two servers promoted themselves to the same timeline number: the archiver waits forever on this history file
         add({ severity: 'critical', code: 'archiver_history_conflict', title: `Archiving stuck: timeline history ${arch.last_failed_wal} already exists with different content`,
           cause: `Two servers promoted themselves to the same timeline number (split-brain between sites, or a promotion without access to the shared archive). PostgreSQL archives nothing after this file: WAL piles up and point-in-time restores stop here. The current primary is the right one: move the archive’s ${arch.last_failed_wal} file into the conflicts/ directory (it stays there for analysis) and archiving resumes by itself. To prevent it: “Recovery from the archive” (restore_command) on both sites, in Geo-redundancy.`,
-          action: { label: 'Vedi i backup', page: 'backup' } });
+          action: { label: 'See the backups', page: 'backup' } });
       else add({ severity: 'critical', code: 'archiver_failing', title: 'WAL archiving is failing', cause: `Last failed segment: ${arch.last_failed_wal || '?'}${pg.archive_error?.error ? ` — reason: ${pg.archive_error.error}` : ''}. Until this is fixed, WAL piles up on the server and the disk fills up.`, action: { label: 'See the backups', page: 'backup' } });
     if (pol?.enabled && pg.settings && pg.settings.archive_mode === 'off') add({ severity: 'warning', code: 'archive_off', title: 'archive_mode is off', cause: 'The backup policy is active but PostgreSQL does not archive WAL: no point-in-time recovery.', action: { label: 'See the backups', page: 'backup' } });
 

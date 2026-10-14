@@ -103,7 +103,7 @@ export function mountPolicyRoutes(app: any, store: Store) {
 
   app.put('/api/policies/templates/:id', async (req: Request, res: Response) => {
     const id = req.params.id;
-    if (!/^[a-z0-9][a-z0-9-]{1,40}$/.test(id) || ['constructor', 'prototype', 'tostring', 'valueof'].includes(id) || BUILTIN_TEMPLATES.some(t => t.id === id)) return res.status(400).json({ error: 'invalid_template_id', message: 'Id minuscolo (a-z, 0-9, -), diverso dai modelli predefiniti.' });
+    if (!/^[a-z0-9][a-z0-9-]{1,40}$/.test(id) || ['constructor', 'prototype', 'tostring', 'valueof'].includes(id) || BUILTIN_TEMPLATES.some(t => t.id === id)) return res.status(400).json({ error: 'invalid_template_id', message: 'The id must be lowercase (a-z, 0-9, -) and differ from the built-in templates.' });
     const { name, description = '' } = req.body || {};
     if (typeof name !== 'string' || !name.trim() || name.length > 60) return res.status(400).json({ error: 'name_required' });
     const v = validatePolicy({ ...req.body?.policy, enabled: true });

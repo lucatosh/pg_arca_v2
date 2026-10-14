@@ -6,6 +6,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { APP_ROOT } from './version';
 
 export function agentFingerprint(root: string): string {
   const files: string[] = [];
@@ -31,7 +32,7 @@ export function agentFingerprint(root: string): string {
 
 let cached: { at: number; v: string } | null = null;
 /** The console's agent fingerprint (re-read at most every 30 s: a `git pull` without restart is seen too). */
-export function consoleAgentBuild(root = path.join(process.cwd(), 'unix-agent')): string {
+export function consoleAgentBuild(root = path.join(APP_ROOT, 'unix-agent')): string {
   if (!cached || Date.now() - cached.at > 30000) cached = { at: Date.now(), v: agentFingerprint(root) };
   return cached.v;
 }

@@ -63,7 +63,7 @@ export function mountWorkerRoutes(app: any, store: Store) {
   app.patch('/api/workers/:id', async (req: Request, res: Response) => {
     const { label, roles } = req.body || {};
     if (label !== undefined && (typeof label !== 'string' || label.length > 120)) return res.status(400).json({ error: 'invalid_label' });
-    if (roles !== undefined && (!Array.isArray(roles) || roles.some((r: any) => !ROLES.includes(r)))) return res.status(400).json({ error: 'invalid_roles', message: `ruoli ammessi: ${ROLES.join(', ')}` });
+    if (roles !== undefined && (!Array.isArray(roles) || roles.some((r: any) => !ROLES.includes(r)))) return res.status(400).json({ error: 'invalid_roles', message: `allowed roles: ${ROLES.join(', ')}` });
     const ok = await store.mutate(d => {
       const n = Object.prototype.hasOwnProperty.call(d.nodes, req.params.id) ? d.nodes[req.params.id] : undefined;
       if (!n || n.kind !== 'worker') return false;

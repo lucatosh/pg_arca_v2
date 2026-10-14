@@ -1,6 +1,5 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import http from 'http';
 import { spawn } from 'child_process';
 
@@ -28,8 +27,8 @@ import { mountGeoRoutes } from './server/geo';
 import { startGeoMonitor } from './server/geodr';
 import { buildDemoCluster } from './server/demo';
 import { makeAsyncSafe, asyncErrorHandler } from './server/asyncsafe';
+import { APP_ROOT, APP_VERSION } from './server/version';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.set('case sensitive routing', true);
 if (process.env.PG_ARCA_TRUST_PROXY) app.set('trust proxy', /^\d+$/.test(process.env.PG_ARCA_TRUST_PROXY) ? Number(process.env.PG_ARCA_TRUST_PROXY) : process.env.PG_ARCA_TRUST_PROXY);   // behind a reverse proxy: req.ip = the real client (login back-off, audit)   // defence in depth: the auth gate also lower-cases
@@ -109,13 +108,13 @@ app.post('/api/selftest', async (_req: Request, res: Response) => {
 });
 
 // Agent bundle served by the console itself: `curl .../agent/install.sh | bash` needs no other infrastructure.
-app.get('/agent/install.sh', (_req: Request, res: Response) => res.type('text/x-shellscript').sendFile(path.join(__dirname, 'unix-agent', 'install-agent.sh')));
+app.get('/agent/install.sh', (_req: Request, res: Response) => res.type('text/x-shellscript').sendFile(path.join(APP_ROOT, 'unix-agent', 'install-agent.sh')));
 app.get('/agent/pg-arca-agent.tar.gz', (_req: Request, res: Response) => {
   res.type('application/gzip');
-  const tar = spawn('tar', ['czf', '-', '-C', path.join(__dirname, 'unix-agent'), '--exclude=__pycache__', '--exclude=tests', '.']);
+  const tar = spawn('tar', ['czf', '-', '-C', path.join(APP_ROOT, 'unix-agent'), '--exclude=__pycache__', '--exclude=tests', '.']);
   tar.stdout.pipe(res); tar.on('error', () => res.destroy());
 });
-app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true, time: new Date().toISOString() }));
+app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true, time: new Date().toISOString(), version: APP_VERSION }));
 app.use('/api', asyncErrorHandler);
 
 bootstrapAdminFromEnv(store);
@@ -128,8 +127,8 @@ startNotifier(store);
 
 // Static / Vite
 if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, 'dist')));
-  app.get('*', (_req: Request, res: Response) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
+  app.use(express.static(path.join(APP_ROOT, 'dist')));
+  app.get('*', (_req: Request, res: Response) => res.sendFile(path.join(APP_ROOT, 'dist', 'index.html')));
 } else {
   import('vite').then(async ({ createServer }) => {
     const vite = await createServer({ server: { middlewareMode: true }, appType: 'spa' });
@@ -141,5 +140,5 @@ if (process.env.NODE_ENV === 'production') {
 for (const sig of ['SIGTERM', 'SIGINT'] as const) process.once(sig, () => { store.flush().catch(() => undefined).finally(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[pg_arca] Console on http://0.0.0.0:${PORT} (live logs on /ws/logs)`);
+  console.log(`[pg_arca] Console ${APP_VERSION} on http://0.0.0.0:${PORT} (live logs on /ws/logs)`);
 });

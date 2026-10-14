@@ -45,6 +45,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
   const { data, loading } = useQuery<{ clusters: any[]; demoAvailable: boolean }>('/api/clusters', { interval: 6000 });
   const wq = useQuery<{ workers: { id: string; name: string; label: string; online: boolean; roles: string[] }[] }>('/api/workers-summary', { interval: 10000 });
   const workers = wq.data?.workers || [];
+  const ver = useQuery<{ version?: string }>('/api/health').data?.version;
   const health = useHealth(30000); const hc = health.data?.counts; const urgent = (hc?.critical || 0) + (hc?.warning || 0);
   const healthMap = useMemo(() => Object.fromEntries(((health.data?.clusters || []) as any[]).map(c => [c.id, c.worst])), [health.data]);
   const [pal, setPal] = useState(false);
@@ -78,7 +79,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
 
   return <div className="shell" data-rail={rail ? '1' : '0'}>
     <aside className="side" aria-label="Navigation">
-      <div className="brand"><span className="logo"><Icon n="ark" s={18} /></span><span className="name">pg_arca</span>
+      <div className="brand"><span className="logo"><Icon n="ark" s={18} /></span><span className="name">pg_arca{ver ? <span className="ver" title="Console version">{ver}</span> : null}</span>
         <button className="railtoggle" onClick={toggleRail} aria-label={rail ? 'Expand the sidebar' : 'Collapse the sidebar'} title={rail ? 'Expand' : 'Collapse'}><Icon n="panel" /></button></div>
       {clusters.length ? (() => { const real = clusters.filter(c => !c.isSandbox); const t = real.map(c => toneOf(c, healthMap)); const bad = t.filter(x => x === 'bad').length, warn = t.filter(x => x === 'warn').length;
         const tone = bad ? 'bad' : warn ? 'warn' : 'ok';
@@ -107,7 +108,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         {!loading && !clusters.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>No clusters.</div> : null}
         {!loading && clusters.length && !shown.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>No results.</div> : null}
       </div>
-      <div className="sgroup row" style={{ paddingRight: 14 }}><span className="grow">Macchine operative{workers.length ? ` (${workers.length})` : ''}</span>
+      <div className="sgroup row" style={{ paddingRight: 14 }}><span className="grow">Worker hosts{workers.length ? ` (${workers.length})` : ''}</span>
         <button className="sgadd" onClick={() => go('workers')} title="All worker hosts and how to add one" aria-label="Worker hosts"><Icon n="plus" s={13} /></button></div>
       <div className="wlist">
         {workers.map(w => <button key={w.id} className="citem" title={w.label || w.name} aria-current={route.page === 'worker' && route.id === w.id ? 'page' : undefined} onClick={() => go(`w/${encodeURIComponent(w.id)}`)}>
@@ -116,7 +117,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
       </div>
       </div>
       <div className="foot">
-        <span className="trunc who" title={user}><Icon n="user" s={14} /> {user}{role !== 'admin' ? <span className="faint"> · {role === 'viewer' ? 'sola lettura' : 'operatore'}</span> : null}</span>
+        <span className="trunc who" title={user}><Icon n="user" s={14} /> {user}{role !== 'admin' ? <span className="faint"> · {role === 'viewer' ? 'read-only' : 'operator'}</span> : null}</span>
         <span className="row gap-s">
           <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={cycle} title={`Theme: ${th === 'auto' ? 'automatic' : th === 'dark' ? 'dark' : 'light'}`} aria-label="Change theme"><Icon n={th === 'dark' ? 'moon' : th === 'light' ? 'sun' : 'settings'} /></button>
           <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={logout} title="Sign out" aria-label="Sign out"><Icon n="logout" /></button>

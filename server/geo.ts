@@ -300,7 +300,7 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
   const last = jobs.sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt)))[0];
   const lastTest = last ? { at: last.finishedAt || last.createdAt, seconds: last.finishedAt ? Math.round((Date.parse(last.finishedAt) - Date.parse(last.createdAt)) / 1000) : null, from: last.fromName, to: last.toName } : null;
   if (!lastTest) add({ id: 'tested', level: 'info', text: 'switchover between the sites never tested from this console: a planned test measures the real changeover time' });
-  else add({ id: 'tested', level: now - Date.parse(lastTest.at) > 180 * DAY ? 'info' : 'ok', text: `ultimo switchover ${lastTest.from} → ${lastTest.to} ${Math.round((now - Date.parse(lastTest.at)) / DAY)} giorni fa${lastTest.seconds != null ? `, durato ${lastTest.seconds} s` : ''}` });
+  else add({ id: 'tested', level: now - Date.parse(lastTest.at) > 180 * DAY ? 'info' : 'ok', text: `last switchover ${lastTest.from} → ${lastTest.to} ${Math.round((now - Date.parse(lastTest.at)) / DAY)} days ago${lastTest.seconds != null ? `, took ${lastTest.seconds} s` : ''}` });
   const status = checks.some(c => c.level === 'bad') ? 'not_ready' as const : checks.some(c => c.level === 'warn') ? 'degraded' as const : 'ready' as const;
   return { checks, status, rpoSec: rpo, rpoTargetSec: rpoTarget, lastTest };
 }
@@ -429,7 +429,7 @@ export function mountGeoRoutes(app: any, store: Store) {
   /** RPO objective of the geo pairs (seconds of transactions it is acceptable to lose if the primary site is lost). */
   app.put('/api/geo/settings', async (req: Request, res: Response) => {
     const v = Number(req.body?.rpoSec);
-    if (!Number.isInteger(v) || v < 1 || v > 86400) return res.status(400).json({ error: 'invalid_rpo', message: 'Obiettivo RPO tra 1 secondo e 24 ore.' });
+    if (!Number.isInteger(v) || v < 1 || v > 86400) return res.status(400).json({ error: 'invalid_rpo', message: 'The RPO target must be between 1 second and 24 hours.' });
     await store.mutate(d => { d.settings.geoRpoSec = v; ops.audit(d, { actor: actor(req), action: 'geo.settings', status: 'OK', details: { rpoSec: v } } as any); });
     res.json({ ok: true, rpoSec: v });
   });

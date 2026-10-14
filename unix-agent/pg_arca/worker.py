@@ -1,4 +1,4 @@
-"""Operational machines ("macchine operative"): hosts that run the pg_arca agent WITHOUT a database of their own - a backup server holding repositories,
+"""Worker hosts: hosts that run the pg_arca agent WITHOUT a database of their own - a backup server holding repositories,
 a host dedicated to the ephemeral recovery instances, a machine that runs restore drills.
 
 On such a host the agent must not look for a PostgreSQL to manage (there is none, and a local test instance would be mistaken for a cluster); it reports
@@ -6,7 +6,7 @@ instead what matters for its job: the PostgreSQL server binaries installed per m
 space and type (local disk, NFS, SMB...), the pg_arca directories (scratch, repository, WAL archive), CPU and memory.
 
 The role comes from the agent configuration (node_role = worker, or PG_ARCA_ROLE=worker at install time) or from the console (a node enrolled with a
-"macchina operativa" token, or approved as one): the console tells the agent in every heartbeat answer and the agent remembers it in its credentials.
+"worker host" token, or approved as one): the console tells the agent in every heartbeat answer and the agent remembers it in its credentials.
 Python 3.6+, stdlib only.
 """
 import os

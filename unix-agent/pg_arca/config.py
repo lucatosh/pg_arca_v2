@@ -26,7 +26,7 @@ DEFAULT_CONFIG = {
     # identity (empty = derived from host / discovery)
     "node_name": "",
     "environment": "prod",
-    "node_role": "auto",       # auto | database | worker ("macchina operativa": backup server / recovery host, no database of its own; see worker.py)
+    "node_role": "auto",       # auto | database | worker (worker host: backup server / recovery host, no database of its own; see worker.py)
 
     # console link. connection_mode: "push" (outbound only, recommended), "daemon" (inbound API only), "hybrid"
     "connection_mode": "push",

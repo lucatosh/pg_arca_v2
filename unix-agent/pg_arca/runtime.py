@@ -9,14 +9,14 @@ import re
 import shutil
 import time
 
-from pg_arca import pgaccess, sysres
+from pg_arca import __version__, pgaccess, sysres
 from pg_arca.db_client import PostgresClient
 from pg_arca.discovery import ClusterDiscoveryEngine
 from pg_arca.patroni_bridge import PatroniBridge
 from pg_arca.pgcompat import Profile, VersionError, check_tools
 
 logger = logging.getLogger("pg_arca.runtime")
-AGENT_VERSION = "2.0.0"
+AGENT_VERSION = __version__
 
 
 class Runtime(object):
