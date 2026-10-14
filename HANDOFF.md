@@ -157,6 +157,17 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### Sessione 14/10 sera: tutto il prodotto in inglese tecnico (richiesta utente)
+- **Interfaccia**: ogni pagina, scheda, finestra, messaggio e stato è in inglese tecnico (restore, point-in-time recovery, standby site, switchover/failover, WAL archiving, backup policies, worker hosts, Recovery & storage, Audit log, Operation history, Today). Date `en-GB`, ortografia US.
+- **Messaggi dell'agent**: non vengono più tradotti in italiano dalla console (`src/i18n.ts`: `itCheck`/`itFix` lasciano passare il testo, restano come unico punto per riformularlo). Tradotti in inglese i testi italiani rimasti nell'agent (consigli della discovery, etichette e validazione delle impostazioni, sonde pg_hba, avanzamento della scansione WAL, riepilogo della promozione).
+- **Server**: messaggi d'errore, salute («Oggi»), prontezza geo, passi di switchover/failover/riallineamento, conflitti tra operazioni, modelli HBA e di backup, notifiche webhook: in inglese. Il controllo dello split-brain confrontava il testo italiano «DUE SITI PRIMARI»: ora «TWO PRIMARY SITES».
+- **Parole di conferma**: REPLACE, DELETE, RESTART, PROMOTE, DEMOTE, ORPHANS (SWITCHOVER, INSTALL invariate). Server (`confirmed()` in `server/optypes.ts`, geo) e agent accettano ancora le parole italiane delle versioni precedenti.
+- **Guardia**: `tests/ui/i18n.test.ts` fallisce se in una stringa o testo JSX di `src/` resta italiano (ha già trovato leftover sfuggiti agli altri controlli).
+- **Test aggiornati**: server (tutti verdi), UI e2e/fluidity/archive/sweep verdi con agent simulato, agent 235 test verdi. Script del lab (`restore-ui.cjs`, `onboard.cjs`, `explore.cjs`) con i selettori inglesi; `explore.cjs` ora segnala l'italiano rimasto a schermo.
+- **Corretti strada facendo**: scadenza delle approvazioni in «Today» (usava `ago()` su una data futura); schede dei modelli di backup troppo larghe sul telefono; `datetime.fromisoformat` in `engine/restored.py` (Python ≥ 3.7) sostituito da un parser compatibile 3.6 (segnalato da `test_universal`).
+- **README e COMPAT.md** in inglese. HANDOFF, PROJECT_TRACKER, ARCHITETTURA e DESTINAZIONE restano documenti interni in italiano.
+- **Da fare**: build tsc e deploy sulla VM (il lab non era raggiungibile da questa sessione), poi `explore.cjs` sulla console vera per l'italiano residuo nei dati reali.
+
 ### Sessione 14/10 pomeriggio (3): giro UX sulla console vera, root cause dei fork di timeline
 - **`tools/lab/ui/explore.cjs`**: cammina su tutte le 142 pagine della console reale (12 generali + 13 cluster × 10 schede).
   - Nessun errore di pagina, nessuna API lenta oltre 3 s, nessun undefined/NaN.

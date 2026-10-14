@@ -1,98 +1,101 @@
 # pg_arca
 
-Console e agent per **backup, ripristino a un istante preciso (PITR) e gestione dei cluster PostgreSQL**.
+Console and agent for **backup, point-in-time recovery (PITR) and management of PostgreSQL clusters**.
 
-- **Console web** (Node/Express + React): inventario cluster, nodi, alta affidabilità (Patroni), parametri, backup, ripristino, registro attività.
-- **Agent Unix** (Python 3.6+, solo libreria standard): gira sul server del database, apre la connessione verso la console (nessuna porta in ingresso), esegue le operazioni e contiene il motore di backup/ripristino.
+- **Web console** (Node/Express + React): cluster inventory, nodes, high availability (Patroni), parameters, backup, restore, audit log.
+- **Unix agent** (Python 3.6+, standard library only): runs on the database server, opens the connection to the console (no inbound port), executes operations and contains the backup/restore engine.
 
-> Questo documento descrive **ciò che esiste ed è stato eseguito**. Le parti non ancora reali sono elencate esplicitamente in [Stato](#stato-reale-delle-funzioni).
+The console and every message it shows are in English (the agent's checks, warnings and errors included).
 
-## Stato reale delle funzioni
+> This document describes **what exists and has been run**. The parts that are not real yet are listed explicitly in [Status](#real-status-of-the-features).
 
-| Area | Stato | Come è stato verificato |
+## Real status of the features
+
+| Area | Status | How it was verified |
 | --- | --- | --- |
-| Collegamento cluster con agent (token monouso, iscrizione, heartbeat, long-poll) | Funziona | Test end-to-end agent↔console su HTTP con le route reali |
-| Collegamento cluster **senza** agent (connessione PostgreSQL, Patroni REST opzionale) | Scritto, **mai eseguito contro un PostgreSQL reale** (il pacchetto `pg` non è installabile nell'ambiente di sviluppo) | Solo test con stub: provarlo prima di fidarsene |
-| Operazioni (idempotency-key, lease, ri-consegna, TTL, annullamento, corsie controllo/dati) | Funziona | `tests/server/ops.test.ts`, `api.test.ts` |
-| Backup completo / differenziale / incrementale a livello di pagina, deduplica, verifica di ogni blocco in lettura | Funziona | 15 test su **PostgreSQL 16 reale** (`unix-agent/tests/test_engine_pg.py`) |
-| Ripristino istanza con PITR (tempo / LSN / xid / nome), verifica copertura WAL prima di partire | Funziona | idem |
-| Ripristino di **un database** (estrae solo i suoi file) e di **una tabella** (in database di quarantena) | Funziona | idem |
-| **Il ripristino finisce nell'originale** (scelta «Alla fine»): tabella rimessa a posto, righe riportate, database al posto dell'originale (l'attuale conservato), **server di produzione rimesso com'era al suo posto** (ricostruito accanto ai dati, stop/scambio/avvio, rollback automatico, anche a produzione ferma senza perdere i WAL non archiviati; non su Patroni) | Provato su PG16 reale; UI con agent simulato; lab non ancora | `test_replace_pg.py`, `test_db_swap_pg.py`, `test_engine_pg.py`, `tests/ui/e2e.cjs` |
-| Prova di ripristino (recupera davvero l’ultimo backup in un’istanza temporanea) | Funziona | idem |
-| Pulizia (retention, garbage collection dei blocchi, WAL) | Funziona | idem |
-| Ricerca DROP/TRUNCATE nei WAL (`pg_waldump`) | Funziona | idem |
-| Pianificazione backup (idempotente, back-off, retention, verifica periodica) | Funziona | `tests/server/scheduler.test.ts` |
-| Alta affidabilità: switchover, failover, riavvio membro, manutenzione (Patroni) | Precondizioni e verifica dell’effetto; switchover provati dalla console sul lab Patroni reale (3 nodi e coppia geo) | Test con Patroni simulato, `tools/lab/scenario-geo.py`, `scenario-ha.sh` |
-| Parametri (`ALTER SYSTEM` + reload) | Scritto; provato con psql simulato | `unix-agent/tests` |
-| Interfaccia web | Funziona nel browser (Chromium) con agent simulato | `tests/ui/e2e.cjs` |
-| Ripristino guidato per situazione (tabella eliminata o svuotata, righe sbagliate, database com'era, tutto il server), momento proposto dai WAL, controllo in parole semplici | Funziona nel browser con agent simulato | `tests/ui/e2e.cjs` |
-| Fluidità: ciò che si scrive o sceglie resta quando si cambia scheda, si apre un'impostazione dall'interno di un modulo o si torna indietro (bozze in memoria e nella sessione del browser, mai per password, token o URL dei webhook; cancellate a salvataggio, annullamento e logout); finestre con dati inseriti protette dai clic fuori; posizione di scorrimento ripristinata con Indietro | Funziona nel browser con agent simulato | `tests/ui/fluidity.cjs` |
-| Layout su desktop e telefono (nessuna pagina più larga dello schermo, nessun testo tagliato) | Controllato su tutte le pagine e schede | `tests/ui/sweep.cjs` |
-| Strategie di backup per cartella / ambiente / cluster (modelli suggeriti e personalizzati, ereditarietà) | Funziona: risolte a ogni tick dello scheduler, nessuna copia | `tests/server/policies.test.ts`, `tests/ui/e2e.cjs` |
-| Gestione pg_hba (Patroni: SOLO DCS, il file non viene mai letto né scritto; altrimenti file; simulazione anti lock-out, verifica con `pg_hba_file_rules`, versioni precedenti / rollback) | Agent provato su PostgreSQL 16 reale (Patroni simulato che riscrive e ricarica); DCS su lab Patroni provato il 11/10 (9/9) prima delle ultime modifiche, da rieseguire `tools/lab/hba-all.sh` | `unix-agent/tests/test_hba*.py`, `tests/server/hba.test.ts`, `tests/ui/hbalogic.test.ts` |
-| Assistente HBA nella UI (duplicati, regole oscurate, ordine, descrizioni, modelli) | Funziona nel browser con agent simulato | `tests/ui/e2e.cjs` |
-| Rilevamento: consigli dell'agent e differenze tra nodi | Funziona | `tests/server/discovery.test.ts`, `unix-agent/tests/test_discovery_advisor.py` |
-| Riporta una tabella ripristinata nel database (`as_new` / `replace`, non distruttivo) | Agent provato su PG16; | `test_engine_pg.py` |
-| Restore di oggetti con dipendenze e di schemi interi (FK, viste, sequenze, tipi, ACL; `replace` atomico / `missing_only` / `as_new`; anteprima prima di toccare nulla) | Provato su PG16 reale; lab Patroni da rieseguire | `test_objects_v2.py` |
-| Istanza di recupero configurabile (globale/ambiente/cartella/cluster; sul nodo o centralizzata; binari per versione; installazione PG privata o di sistema) | Configurazione e preflight provati; installazione e posizionamento centrale **non provati su rete reale** | `test_ephcfg.py`, `scoped.test.ts` |
-| Destinazione dei backup per cluster/ambiente/cartella/globale: cartella locale o condivisione NFS/SMB montata (S3/Azure/GCS/SFTP: Anteprima). Controllo su ogni nodo con **entrambe le utenze che scrivono** (agent e server PostgreSQL via `COPY … TO PROGRAM`, come l'archive_command), permessi, mappatura utenti delle condivisioni, inode, `soft`/`ro`, archivio WAL di un altro cluster, comandi di correzione. Applicazione con verifica del primo segmento WAL (altrimenti ritorno automatico alla cartella precedente) e approvazione a quattro occhi sugli ambienti protetti. La posizione precedente resta **leggibile dai ripristini** (anche PITR a cavallo del cambio); **migrazione in background** verificata, riprendibile, con limite di banda, spazio e durata stimata prima di partire; eliminazione della vecchia solo esplicita | PG16 reale: cambio, PITR a cavallo, migrazione interrotta e ripresa, cifrato, rollback del WAL; utenze diverse provate con `runuser`. Mount NFS/SMB reali **non provati** (lab) | `test_destcheck.py`, `test_destcheck_pg.py`, `test_destination_switch_pg.py`, `test_destination_apply_pg.py`, `test_destination_migrate_pg.py`, `destinations.test.ts`, e2e UI |
-| Tuning guidato (RAM/core dell'agent + carico → parametri, applicati con `pg_set_param`) | Funziona; regole generali di dimensionamento, non misure | `tests/ui/tuning.test.ts` |
-| Utenti e ruoli (amministratore / operatore / sola lettura), sessioni revocate al cambio ruolo | Funziona; negazione per default su ogni rotta che modifica | `tests/server/rbac.test.ts` |
-| Cifratura del repository (AES-256-GCM su blocchi, manifest, cataloghi e archivio WAL; identificativi dei blocchi con chiave; chiave fuori dal repository) | Funziona; provata con l'intera suite su PG16 con repository cifrato (`PG_ARCA_TEST_ENCRYPT=1`). Un repository esistente non si cifra sul posto: ne serve uno nuovo. Richiede il pacchetto Python `cryptography`. File `.history`/label dei WAL restano in chiaro | `unix-agent/tests/test_crypto.py`, `test_engine_pg.py` |
-| Macchine operative (backup server, host di recupero): agent senza ricerca del database, inventario, pagina dedicata, uso come nodo dei ripristini | Server e agent con test; UI con agent simulato; lab non ancora | `tests/server/workers.test.ts`, `test_worker.py`, `tests/ui/e2e.cjs` |
-| Più DBA sullo stesso cluster: conflitti rifiutati con chi/cosa/da quando, attività in corso visibile | Server con test; UI con agent simulato | `tests/server/conflicts.test.ts` |
-| Spazio su disco per volume prima di ripristini e promozioni (scratch + dati del cluster sommati) | Agent provato su PG16; UI con agent simulato | `test_restorecheck.py`, `test_objects_v2.py` |
-| Analisi dei WAL per trovare DROP/TRUNCATE (parallela, con cache) e DROPPED in rosso nella scelta del database | Agent provato su PG16 (2,1 s a freddo, 0,02 s con cache sul test locale); UI con agent simulato | `test_walscan.py`, `tests/ui/e2e.cjs` |
-| Controlli prima del restore (catena di chunk, spazio, nome occupato) e read-ahead dei WAL | Agent provato su PG16 (recovery −38 % misurato); UI con agent simulato; lab non ancora | `test_restorecheck.py`, `test_walprefetch.py`, `tests/ui/e2e.cjs` |
-| Recupero di singole righe (confronto per chiave primaria tra tabella ripristinata e attuale, copia di sicurezza, una sola transazione) | Agent provato su PG16; UI provata con agent simulato | `test_engine_pg.py::test_06b0`, `tests/ui/e2e.cjs` |
-| Prova di disaster recovery (ripristina l'intero cluster in scratch, lo avvia, controlla ogni database, misura il tempo) | Provata su PG16 (cluster di test piccolo): il tempo misurato vale per quel server e volume di dati | `test_engine_pg.py::test_06x` |
-| Pagina «Oggi»: problemi con causa e passo successivo (backup mancanti/vecchi, buchi WAL, archiviazione che fallisce, slot inattivi, repliche in ritardo, dischi, connessioni, verifica/drill in ritardo) | Funziona sulla telemetria; soglie generali, non tarate | `tests/server/health.test.ts` |
-| Notifiche webhook (JSON o testo Slack/Teams): nuovo problema, promemoria, risolto; ritenta dopo un errore; l'URL non torna mai al browser | Funziona (provato contro un server HTTP locale); **non provato contro Slack/Teams reali; niente email** | `tests/server/health.test.ts` |
-| Georidondanza: siti primario/replica (standby_cluster Patroni o standby fisico), relazioni rilevate o indicate a mano, albero nella flotta, switchover pianificato e promozione DR tramite il DCS di ogni sito | Console con agent simulati (`tests/server/geo.test.ts`, e2e); lab geo (2 siti Patroni + bk1) verificato con `geo.sh verify`; **switchover reale tra i siti del lab non ancora eseguito** | `tests/server/geo.test.ts`, `tools/lab/geo.sh` |
-| Approvazione a due persone per ambiente (pg_hba, parametri, HA, sostituzione tabella, recupero righe) | Funziona; richiede almeno due amministratori attivi | `tests/server/approvals.test.ts` |
-| HBA: adozione delle regole esistenti nel blocco gestito (ordine di valutazione invariato) e regole temporanee con scadenza | Agent provato su PG16; scadenza guidata dallo scheduler; anche su Patroni (nel DCS, un solo membro la applica) | `test_hba_pg.py::test_5`, `tests/server/hba.test.ts` |
-| Nuovi server che si annunciano da soli (agent installato senza token → richiesta in attesa → approvazione nella UI con scelta di ambiente/cluster) | Funziona, provato con l'agent reale contro la console reale; il segreto lo genera l'agent e alla console arriva solo l'hash. Endpoint non autenticato, quindi limitato (100 in attesa, 10 per indirizzo, scadenza 48 h) e disattivabile in Impostazioni | `tests/server/join.test.ts`, `unix-agent/tests/test_e2e_console.py`, `tests/ui/e2e.cjs` |
-| LDAP/AD | **Anteprima**: visibile e marcata, senza funzione dietro | — |
-| Velocità rispetto a pgBackRest | **Mai misurata**: nessuna affermazione | — |
+| Connecting a cluster with the agent (single-use token, enrollment, heartbeat, long-poll) | Works | End-to-end agent↔console tests over HTTP with the real routes |
+| Connecting a cluster **without** the agent (PostgreSQL connection, optional Patroni REST) | Written, **never run against a real PostgreSQL** (the `pg` package cannot be installed in the development environment) | Stub tests only: try it before relying on it |
+| Operations (idempotency key, lease, redelivery, TTL, cancellation, control/data lanes) | Works | `tests/server/ops.test.ts`, `api.test.ts` |
+| Page-level full / differential / incremental backup, deduplication, every chunk verified on read | Works | 15 tests on **real PostgreSQL 16** (`unix-agent/tests/test_engine_pg.py`) |
+| Instance restore with PITR (time / LSN / xid / name), WAL coverage checked before starting | Works | same |
+| Restore of **one database** (only its files are extracted) and of **one table** (into a quarantine database) | Works | same |
+| **The restore finishes in the original** ("When done" choice): table put back, rows brought back, database swapped in for the original (the current one kept), **production server put back in place as it was** (rebuilt next to the data, stop/swap/start, automatic rollback, also with production down without losing unarchived WAL; not on Patroni) | Tested on real PG16; UI with a simulated agent; lab: every restore scenario, server replacement included, on fresh Debian/Ubuntu/Rocky servers | `test_replace_pg.py`, `test_db_swap_pg.py`, `test_engine_pg.py`, `tests/ui/e2e.cjs`, `tools/lab/ui/restore-ui.cjs` |
+| Test restore (actually recovers the latest backup into a temporary instance) | Works | same |
+| Cleanup (retention, chunk garbage collection, WAL) | Works | same |
+| DROP/TRUNCATE search in the WAL (`pg_waldump`) | Works | same |
+| Backup scheduling (idempotent, back-off, retention, periodic verification) | Works | `tests/server/scheduler.test.ts` |
+| High availability: switchover, failover, member restart, maintenance mode (Patroni) | Preconditions and verification of the effect; switchovers run from the console on the real Patroni lab (3 nodes and a geo pair) | Tests with simulated Patroni, `tools/lab/scenario-geo.py`, `scenario-ha.sh` |
+| Parameters (`ALTER SYSTEM` + reload; Patroni: DCS only) | Written; tested with simulated psql | `unix-agent/tests` |
+| Web interface | Works in the browser (Chromium) with a simulated agent | `tests/ui/e2e.cjs` |
+| Guided restore by situation (table dropped or truncated, wrong rows, database as it was, whole server), point in time proposed from the WAL, plain-language check | Works in the browser with a simulated agent | `tests/ui/e2e.cjs` |
+| Fluidity: what is typed or chosen survives switching tabs, opening a setting from inside a form or going Back (drafts in memory and in the browser session, never for passwords, tokens or webhook URLs; cleared on save, cancel and sign-out); dialogs with entered data protected from stray clicks; scroll position restored on Back | Works in the browser with a simulated agent | `tests/ui/fluidity.cjs` |
+| Desktop and phone layout (no page wider than the screen, no clipped text) | Checked on every page and tab | `tests/ui/sweep.cjs` |
+| No Italian left in the interface | Guarded on every string and JSX text of `src/` | `tests/ui/i18n.test.ts` |
+| Backup policies per folder / environment / cluster (suggested and custom templates, inheritance) | Works: resolved on every scheduler tick, no copies | `tests/server/policies.test.ts`, `tests/ui/e2e.cjs` |
+| pg_hba management (Patroni: DCS ONLY, the file is never read or written; otherwise the file; lock-out simulation, verification with `pg_hba_file_rules`, previous versions / rollback) | Agent tested on real PostgreSQL 16 (simulated Patroni that rewrites and reloads); DCS on the Patroni lab tested on 11/10 (9/9) before the latest changes, to be rerun with `tools/lab/hba-all.sh` | `unix-agent/tests/test_hba*.py`, `tests/server/hba.test.ts`, `tests/ui/hbalogic.test.ts` |
+| HBA assistant in the UI (duplicates, shadowed rules, ordering, descriptions, templates) | Works in the browser with a simulated agent | `tests/ui/e2e.cjs` |
+| Discovery: agent advice and differences between nodes | Works | `tests/server/discovery.test.ts`, `unix-agent/tests/test_discovery_advisor.py` |
+| Bring a restored table back into the database (`as_new` / `replace`, non-destructive) | Agent tested on PG16 | `test_engine_pg.py` |
+| Restore of objects with dependencies and of whole schemas (FKs, views, sequences, types, ACLs; atomic `replace` / `missing_only` / `as_new`; preview before anything is touched) | Tested on real PG16; Patroni lab to be rerun | `test_objects_v2.py` |
+| Configurable recovery instance (global/environment/folder/cluster; on the node or central; binaries per version; private or system PostgreSQL installation) | Configuration and pre-flight tested; installation and central placement **not tested on a real network** | `test_ephcfg.py`, `scoped.test.ts` |
+| Backup destination per cluster/environment/folder/global: local directory or mounted NFS/SMB share (S3/Azure/GCS/SFTP: preview). Check on every node with **both users that write** (agent and PostgreSQL server via `COPY … TO PROGRAM`, like archive_command), permissions, share user mapping, inodes, `soft`/`ro`, another cluster's WAL archive, fix commands. Apply with verification of the first WAL segment (otherwise automatic return to the previous directory) and four-eyes approval in protected environments. The previous location stays **readable by restores** (PITR across the change included); verified, resumable **background migration** with bandwidth limit, space and estimated duration before starting; deletion of the old location only on explicit request | Real PG16: change, PITR across it, migration interrupted and resumed, encrypted, WAL rollback; different users tested with `runuser`. Real NFS/SMB mounts **not tested** (lab) | `test_destcheck.py`, `test_destcheck_pg.py`, `test_destination_switch_pg.py`, `test_destination_apply_pg.py`, `test_destination_migrate_pg.py`, `destinations.test.ts`, UI e2e |
+| Guided tuning (agent RAM/cores + workload → parameters, applied with `pg_set_param`) | Works; general sizing rules, not measurements | `tests/ui/tuning.test.ts` |
+| Users and roles (administrator / operator / read-only), sessions revoked on role change | Works; deny by default on every route that changes something | `tests/server/rbac.test.ts` |
+| Repository encryption (AES-256-GCM on chunks, manifests, catalogs and WAL archive; keyed chunk identifiers; key outside the repository) | Works; tested with the whole suite on PG16 with an encrypted repository (`PG_ARCA_TEST_ENCRYPT=1`). An existing repository is not encrypted in place: a new one is needed. Requires the Python `cryptography` package. WAL `.history` files and labels stay in clear text | `unix-agent/tests/test_crypto.py`, `test_engine_pg.py` |
+| Worker hosts (backup server, recovery host): agent without database discovery, inventory, dedicated page, use as the restore node | Server and agent with tests; UI with a simulated agent; lab not yet | `tests/server/workers.test.ts`, `test_worker.py`, `tests/ui/e2e.cjs` |
+| Several DBAs on the same cluster: conflicts refused with who/what/since when, running activity visible | Server with tests; UI with a simulated agent | `tests/server/conflicts.test.ts` |
+| Disk space per volume before restores and promotions (scratch + cluster data added up) | Agent tested on PG16; UI with a simulated agent | `test_restorecheck.py`, `test_objects_v2.py` |
+| WAL scan to find DROP/TRUNCATE (parallel, cached) and DROPPED in red in the database choice | Agent tested on PG16 (2.1 s cold, 0.02 s cached on the local test); UI with a simulated agent | `test_walscan.py`, `tests/ui/e2e.cjs` |
+| Checks before the restore (chunk chain, space, name taken) and WAL read-ahead | Agent tested on PG16 (recovery −38 % measured); UI with a simulated agent | `test_restorecheck.py`, `test_walprefetch.py`, `tests/ui/e2e.cjs` |
+| Recovery of single rows (primary-key comparison between restored and current table, safety copy, a single transaction) | Agent tested on PG16; UI tested with a simulated agent | `test_engine_pg.py::test_06b0`, `tests/ui/e2e.cjs` |
+| Disaster recovery drill (restores the whole cluster into scratch, starts it, checks every database, measures the time) | Tested on PG16 (small test cluster): the measured time applies to that server and data volume | `test_engine_pg.py::test_06x` |
+| "Today" page: problems with cause and next step (missing/old backups, WAL gaps, failing archiving, inactive slots, lagging replicas, disks, connections, overdue verification/drill) | Works on telemetry; general thresholds, not tuned | `tests/server/health.test.ts` |
+| Webhook notifications (JSON or Slack/Teams text): new problem, reminder, resolved; retries after an error; the URL never goes back to the browser | Works (tested against a local HTTP server); **not tested against real Slack/Teams; no email** | `tests/server/health.test.ts` |
+| Geo-redundancy: primary/standby sites (Patroni standby_cluster or physical standby), detected or declared relationships, tree in the fleet, planned switchover and DR promotion through each site's DCS, automatic failover and rejoin, same-timeline divergence detected and rebuilt | Console with simulated agents (`tests/server/geo.test.ts`, e2e); hy lab: switchover both ways, automatic failover with no rows lost | `tests/server/geo.test.ts`, `tools/lab/geo.sh`, `tools/lab/scenario-hy.py` |
+| Two-person approval per environment (pg_hba, parameters, HA, table replacement, row recovery) | Works; requires at least two active administrators | `tests/server/approvals.test.ts` |
+| HBA: adoption of existing rules into the managed block (evaluation order unchanged) and temporary rules with expiry | Agent tested on PG16; expiry driven by the scheduler; on Patroni too (in the DCS, a single member applies it) | `test_hba_pg.py::test_5`, `tests/server/hba.test.ts` |
+| New servers that announce themselves (agent installed without a token → pending request → approval in the UI choosing environment/cluster) | Works, tested with the real agent against the real console; the agent generates the secret and only its hash reaches the console. Unauthenticated endpoint, therefore limited (100 pending, 10 per address, 48 h expiry) and can be turned off in Settings | `tests/server/join.test.ts`, `unix-agent/tests/test_e2e_console.py`, `tests/ui/e2e.cjs` |
+| LDAP/AD | **Preview**: visible and marked, no function behind it | — |
+| Speed compared with pgBackRest | **Never measured**: no claims | — |
+| Restore: objects with unusual names (spaces, unicode, dots, 63 characters), RLS, exclusion, inheritance, **single partition** (re-attached to the live table), extended statistics, shared sequences, domains with functions, stand-alone views/sequences, objects and databases **created after the last backup**, database owners/privileges/settings, delivery to another server without its tablespaces/roles, publications/rules/policies/defaults of other tables re-attached, a 1500-table schema (lock limit stated beforehand) | Tested on real PostgreSQL 16; the 14-18 matrix to be rerun with these tests | `test_objects_exotic_pg.py`, `test_objects_deps_pg.py`, `test_late_created_pg.py`, `test_restore_database_props_pg.py`, `test_into_other_server_pg.py`, `test_scale_schema_pg.py` (opt-in) |
+| Restart of a stand-alone PostgreSQL from the console (the server's systemd unit through a restricted polkit rule, or pg_ctl without systemd) | `pg_ctl` tested on real PG16; systemd/polkit used by the lab restore runs | `test_pgrestart.py`, `test_archive_enable_pg.py` |
+| Enrollment: token for several servers (Patroni nodes), enrollment outcome printed by the installer, expired/used token → announcement for approval | Real agent against the real console | `tests/server/api.test.ts`, `test_e2e_console.py` |
 
-| Restore: oggetti con nomi insoliti (spazi, unicode, punti, 63 caratteri), RLS, exclusion, ereditarietà, **singola partizione** (riattaccata alla tabella viva), statistiche estese, sequenze condivise, domini con funzioni, viste/sequenze da sole, oggetti e database **creati dopo l'ultimo backup**, proprietari/permessi/impostazioni del database, consegna a un altro server senza i suoi tablespace/ruoli, pubblicazioni/regole/policy/default di altre tabelle ricollegati, schema di 1500 tabelle (limite dei lock detto prima) | Provato su PostgreSQL 16 reale; matrice 14-18 da rieseguire con questi test | `test_objects_exotic_pg.py`, `test_objects_deps_pg.py`, `test_late_created_pg.py`, `test_restore_database_props_pg.py`, `test_into_other_server_pg.py`, `test_scale_schema_pg.py` (opt-in) |
-| Riavvio di un PostgreSQL singolo dalla console (unità systemd del server via polkit limitato, o pg_ctl senza systemd) | `pg_ctl` provato su PG16 reale; systemd/polkit con test simulati, **da provare sul lab** | `test_pgrestart.py`, `test_archive_enable_pg.py` |
-| Aggancio: token per più server (nodi Patroni), esito dell'iscrizione stampato dall'installer, token scaduto/usato → annuncio per approvazione | Agent reale contro console reale | `tests/server/api.test.ts`, `test_e2e_console.py` |
+Typed confirmations use English words (REPLACE, DELETE, RESTART, PROMOTE, DEMOTE, ORPHANS, SWITCHOVER, INSTALL); the server and the agent still accept the Italian words of earlier versions.
 
-Limiti noti: i backup da standby richiedono `archive_mode=always`; gli incrementali richiedono `data_checksums` o `wal_log_hints`; backup e ripristino richiedono l’agent sul server; una vista materializzata ripristinata da sola viene ricalcolata sui dati attuali; il recupero riga per riga richiede una chiave primaria o un indice univoco su colonne NOT NULL; una tabella creata dopo l'ultimo backup ed eliminata prima del successivo non ha un nome nell'analisi dei WAL (si ripristina l'intero database a un istante prima dell'eliminazione).
+Known limits: backups from a standby require `archive_mode=always`; incrementals require `data_checksums` or `wal_log_hints`; backup and restore require the agent on the server; a materialized view restored on its own is refreshed on the current data; row-by-row recovery requires a primary key or a unique index on NOT NULL columns; a table created after the last backup and dropped before the next one has no name in the WAL scan (restore the whole database to a point before the drop).
 
-## Architettura
+## Architecture
 
 ```
-Browser ──HTTPS──> Console (server.ts) <──HTTPS (solo uscente)── Agent (su ogni nodo) ── psql / pg_ctl / Patroni REST
-                      │  store.json (atomico)                         │  repository: cas/ + stanza/<cluster>/backup/<set>/
-                      └─ operazioni, audit, scheduler                 └─ archivio WAL condiviso (write-once, fsync)
+Browser ──HTTPS──> Console (server.ts) <──HTTPS (outbound only)── Agent (on every node) ── psql / pg_ctl / Patroni REST
+                      │  store.json (atomic)                            │  repository: cas/ + stanza/<cluster>/backup/<set>/
+                      └─ operations, audit, scheduler                   └─ shared WAL archive (write-once, fsync)
 ```
 
-- **Repository**: archivio *content-addressed* — blocchi da 64 KiB, hash blake2b-256 verificato a ogni lettura, compressione zstd/zlib. Ogni backup è un manifesto di `[offset, lunghezza, hash]`; i blocchi uguali si memorizzano una volta sola.
-- **Incrementali**: si confrontano le LSN di pagina (solo file principali; FSM/VM e altri fork interi). La catena viene validata prima di partire, altrimenti il backup diventa completo.
-- **Sicurezza dei backup**: i blocchi scritti attorno a un’esecuzione interrotta vengono riverificati prima della deduplica; un solo `sync` prima del commit del backup; la garbage collection ha 48 h di tolleranza.
-- **Ripristino**: non scrive mai nella data directory in uso (percorsi protetti, controllo dei symlink, mai come root). Il ripristino lavora sempre prima su una copia (nome nuovo, quarantena, cartella accanto) e solo alla fine, se scelto e confermato, la mette al posto dell'originale, che resta conservato (`<db>_before_<ts>`, tabelle `_old_<data>`, `<pgdata>.pgarca-before-<ts>`); in caso di errore ciò che è stato creato viene eliminato e l'originale non viene toccato. L’istanza temporanea usata per il recovery è isolata (nessuna rete, archiviazione spenta, sola lettura).
-- **PITR**: `target_time` richiede il fuso orario; il backup di partenza è il più recente concluso prima dell’istante scelto; la copertura WAL è controllata *prima* di iniziare.
-- **Operazioni**: ogni azione ha una Idempotency-Key; backup e ripristino non vengono mai ripetuti automaticamente dopo un crash; corsia *controllo* (HA, parametri) separata dalla corsia *dati* (backup, ripristino) così un backup di ore non blocca uno switchover.
+- **Repository**: *content-addressed* store — 64 KiB chunks, blake2b-256 hash verified on every read, zstd/zlib compression. Every backup is a manifest of `[offset, length, hash]`; identical chunks are stored once.
+- **Incrementals**: page LSNs are compared (main forks only; FSM/VM and other forks whole). The chain is validated before starting, otherwise the backup becomes a full one.
+- **Backup safety**: chunks written around an interrupted run are re-verified before deduplication; a single `sync` before the backup commit; garbage collection has a 48 h grace period.
+- **Restore**: never writes into the data directory in use (protected paths, symlink checks, never as root). A restore always works on a copy first (new name, quarantine, directory next to the data) and only at the end, if chosen and confirmed, swaps it in for the original, which is kept (`<db>_before_<ts>`, `_old_<date>` tables, `<pgdata>.pgarca-before-<ts>`); on error whatever was created is removed and the original is not touched. The temporary instance used for recovery is isolated (no network, archiving off, read-only).
+- **PITR**: `target_time` requires a time zone; the base backup is the most recent one finished before the chosen point; WAL coverage is checked *before* starting.
+- **Operations**: every action has an Idempotency-Key; backup and restore are never repeated automatically after a crash; the *control* lane (HA, parameters) is separate from the *data* lane (backup, restore), so an hours-long backup never blocks a switchover.
 
-## Avvio rapido
+## Quick start
 
-Console (serve Node 20+):
+Console (needs Node 20+):
 
 ```bash
 npm install
-npm test                 # suite TypeScript + test Python dell’agent
-npm run dev              # http://localhost:3000 — il primo accesso crea l’amministratore
-# produzione: npm run build && NODE_ENV=production tsx server.ts
-
-> Come funzionano backup e restore (formato, algoritmi, limiti, confronto onesto con pgBackRest): vedi [ARCHITETTURA-BACKUP-RESTORE.md](ARCHITETTURA-BACKUP-RESTORE.md) — da aggiornare a ogni modifica del motore.
-
+npm test                 # TypeScript suite + the agent's Python tests
+npm run dev              # http://localhost:3000 — the first sign-in creates the administrator
+# production: npm run build && NODE_ENV=production tsx server.ts
 ```
 
-Variabili: `PORT`, `PG_ARCA_DATA_DIR` (stato persistente, default `./data`), `PG_ARCA_ADMIN_USER` / `PG_ARCA_ADMIN_PASSWORD` (creazione non interattiva dell’amministratore). Metti la console dietro un reverse proxy TLS.
+> How backup and restore work (format, algorithms, limits, an honest comparison with pgBackRest): see [ARCHITETTURA-BACKUP-RESTORE.md](ARCHITETTURA-BACKUP-RESTORE.md) — updated with every engine change.
 
-Agent: dalla console, **Cluster → Collega cluster → Con agent**, copia il comando e lancialo come root sul server. L’installer rileva PostgreSQL/Patroni, crea utente, directory e servizio systemd. Poi, sul primario, abilita l’archiviazione WAL (la scheda Backup mostra le righe esatte):
+Variables: `PORT`, `PG_ARCA_DATA_DIR` (persistent state, default `./data`), `PG_ARCA_ADMIN_USER` / `PG_ARCA_ADMIN_PASSWORD` (non-interactive creation of the administrator). Put the console behind a TLS reverse proxy.
+
+Agent: in the console, **Clusters → Connect cluster → With agent**, copy the command and run it as root on the server. The installer detects PostgreSQL/Patroni and creates the user, directories and systemd service. Then enable WAL archiving from the Backup tab (“Enable WAL archiving”; on Patroni it goes through the DCS), or by hand on the primary:
 
 ```ini
 wal_level = replica
@@ -100,69 +103,68 @@ archive_mode = on
 archive_command = '/usr/local/bin/pg-arca-wal archive %p %f'
 ```
 
-Il primo backup deve essere completo; poi attiva la pianificazione dalla scheda Backup.
+The first backup must be a full backup; then enable scheduling from the Backup tab.
 
-## Riga di comando (sul nodo)
+## Command line (on the node)
 
 ```bash
-pg-arca-cli status                    # telemetria locale
-pg-arca-cli discover                  # rilevamento reale di PostgreSQL, Patroni, etcd, pgbouncer, pgBackRest
-pg-arca-cli wal-check                 # continuità archivio WAL (exit 3 se ci sono buchi)
+pg-arca-cli status                    # local telemetry
+pg-arca-cli discover                  # real discovery of PostgreSQL, Patroni, etcd, pgbouncer, pgBackRest
+pg-arca-cli wal-check                 # WAL archive continuity (exit 3 when there are gaps)
 pg-arca-cli backup --type full        # full | diff | incr
-pg-arca-cli info                      # backup, intervallo WAL, deduplica
+pg-arca-cli info                      # backups, WAL range, deduplication
 pg-arca-cli verify [--deep] [--restore-test]
 pg-arca-cli expire [--dry-run]
-pg-arca-cli forensics                 # DROP/TRUNCATE nei WAL
+pg-arca-cli forensics                 # DROP/TRUNCATE in the WAL
 pg-arca-cli restore database --db billing --target-time '2026-10-08 11:42:00+02' --rename billing_pitr
 pg-arca-cli restore object --object billing.public.invoices --target-time '2026-10-08 11:42:00+02'
 pg-arca-cli restore instance --destination /var/lib/postgresql/restore --target-time '2026-10-08 11:42:00+02' [--dry-run]
 ```
 
-## Sviluppo e test
+## Development and tests
 
-| Cosa | Comando |
+| What | Command |
 | --- | --- |
-| Server (ops, vista, API, scheduler) | `tsx tests/server/<nome>.test.ts` |
-| Agent (WAL, esecutore, e2e con la console) | `cd unix-agent && python3 -m unittest discover -s tests -t .` |
-| Motore con PostgreSQL 16 reale | come utente **non root** (PostgreSQL rifiuta root): `su postgres -c 'cd unix-agent && python3 -m unittest tests.test_engine_pg'` — salta da solo se manca PostgreSQL o se sei root |
-| Interfaccia nel browser | `esbuild src/main.tsx --bundle --outfile=<dir>/app.js --loader:.css=css --jsx=automatic`, poi `tsx tests/ui/devserver.ts 5188 <dir>` e `node tests/ui/e2e.cjs` (Playwright; il server di test usa le route reali con un agent simulato — solo per i test) |
+| Server (ops, view, API, scheduler) | `tsx tests/server/<name>.test.ts` |
+| Agent (WAL, executor, e2e with the console) | `cd unix-agent && python3 -m unittest discover -s tests -t .` |
+| Engine with real PostgreSQL 16 | as a **non-root** user (PostgreSQL refuses root): `su postgres -c 'cd unix-agent && python3 -m unittest tests.test_engine_pg'` — skips by itself when PostgreSQL is missing or you are root |
+| Interface in the browser | `esbuild src/main.tsx --bundle --outfile=<dir>/app.js --loader:.css=css --jsx=automatic`, then `tsx tests/ui/devserver.ts 5188 <dir>` and `node tests/ui/e2e.cjs` (Playwright; the test server uses the real routes with a simulated agent — tests only) |
+| No Italian left in the interface | `tsx tests/ui/i18n.test.ts` |
 
-## Guida: cluster Patroni di prova a 3 nodi
+## Guide: a 3-node Patroni test cluster
 
-> Procedura di laboratorio ereditata dalla prima versione del progetto: **non è stata rieseguita** durante il rifacimento. Verifica versioni e percorsi prima di usarla.
+> Lab procedure inherited from the first version of the project: **it has not been rerun** during the rewrite. Check versions and paths before using it.
 
-## 🚀 4. Guida Creazione Cluster Patroni 3 Nodi su KVM / Ubuntu VM
+This guide builds a real cluster with **3 Ubuntu 22.04 LTS virtual machines on a KVM hypervisor** for a high-availability topology with a distributed etcd quorum.
 
-Questa guida descrive la creazione di un cluster reale con **3 Virtual Machine Ubuntu 22.04 LTS su hypervisor KVM** per una topologia ad alta disponibilità a zero downtime con quorum etcd distribuito.
+### Network and IP addresses
 
-### Schema Rete & Assegnazione IP
-
-| Macchina Virtuale | Nome Host | Indirizzo IP | Ruolo Componenti |
+| Virtual machine | Host name | IP address | Components |
 | :--- | :--- | :--- | :--- |
-| **VM 1** | `pg-node-01` | `192.168.100.11` | etcd member 1 + Patroni + PostgreSQL 16 + pg_arca Agent |
-| **VM 2** | `pg-node-02` | `192.168.100.12` | etcd member 2 + Patroni + PostgreSQL 16 + pg_arca Agent |
-| **VM 3** | `pg-node-03` | `192.168.100.13` | etcd member 3 + Patroni + PostgreSQL 16 + pg_arca Agent |
+| **VM 1** | `pg-node-01` | `192.168.100.11` | etcd member 1 + Patroni + PostgreSQL 16 + pg_arca agent |
+| **VM 2** | `pg-node-02` | `192.168.100.12` | etcd member 2 + Patroni + PostgreSQL 16 + pg_arca agent |
+| **VM 3** | `pg-node-03` | `192.168.100.13` | etcd member 3 + Patroni + PostgreSQL 16 + pg_arca agent |
 
 ---
 
-### Passo 4.1: Configurazione Base su Tutte e 3 le VM
+### Step 1: base setup on all 3 VMs
 
-Eseguire su **tutti e tre i nodi**:
+Run on **all three nodes**:
 ```bash
-# Aggiornamento pacchetti
+# Update the packages
 sudo apt update && sudo apt upgrade -y
 
-# Installazione repository ufficiale PostgreSQL
+# Official PostgreSQL repository
 sudo apt install -y curl ca-certificates gnupg lsb-release
 sudo install -d /etc/apt/keyrings
 curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg
 echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
 
-# Installazione PostgreSQL 16, etcd, patroni e strumenti di supporto
+# PostgreSQL 16, etcd, Patroni and support tools
 sudo apt update
 sudo apt install -y postgresql-16 postgresql-client-16 patroni etcd-server etcd-client python3-psycopg2 jq zstd lz4
 
-# Fermare l'istanza standard di postgres creata di default (sarà gestita da Patroni)
+# Stop the default postgres instance (Patroni will manage it)
 sudo systemctl stop postgresql
 sudo systemctl disable postgresql
 sudo rm -rf /var/lib/postgresql/16/main/*
@@ -170,10 +172,10 @@ sudo rm -rf /var/lib/postgresql/16/main/*
 
 ---
 
-### Passo 4.2: Configurazione del Quorum etcd3
+### Step 2: the etcd3 quorum
 
-#### Su `pg-node-01` (`192.168.100.11`):
-Modificare `/etc/default/etcd`:
+#### On `pg-node-01` (`192.168.100.11`):
+Edit `/etc/default/etcd`:
 ```bash
 ETCD_NAME="etcd-01"
 ETCD_DATA_DIR="/var/lib/etcd/default.etcd"
@@ -186,7 +188,7 @@ ETCD_INITIAL_CLUSTER_TOKEN="etcd-patroni-cluster"
 ETCD_ADVERTISE_CLIENT_URLS="http://192.168.100.11:2379"
 ```
 
-#### Su `pg-node-02` (`192.168.100.12`):
+#### On `pg-node-02` (`192.168.100.12`):
 ```bash
 ETCD_NAME="etcd-02"
 ETCD_DATA_DIR="/var/lib/etcd/default.etcd"
@@ -199,7 +201,7 @@ ETCD_INITIAL_CLUSTER_TOKEN="etcd-patroni-cluster"
 ETCD_ADVERTISE_CLIENT_URLS="http://192.168.100.12:2379"
 ```
 
-#### Su `pg-node-03` (`192.168.100.13`):
+#### On `pg-node-03` (`192.168.100.13`):
 ```bash
 ETCD_NAME="etcd-03"
 ETCD_DATA_DIR="/var/lib/etcd/default.etcd"
@@ -212,24 +214,24 @@ ETCD_INITIAL_CLUSTER_TOKEN="etcd-patroni-cluster"
 ETCD_ADVERTISE_CLIENT_URLS="http://192.168.100.13:2379"
 ```
 
-Avviare etcd su tutti e 3 i nodi e verificare il quorum:
+Start etcd on all 3 nodes and check the quorum:
 ```bash
 sudo systemctl restart etcd
 sudo systemctl enable etcd
-# Verifica salute cluster
+# Cluster health
 ETCDCTL_API=3 etcdctl --endpoints=http://192.168.100.11:2379,http://192.168.100.12:2379,http://192.168.100.13:2379 endpoint health
 ```
 
 ---
 
-### Passo 4.3: Configurazione Patroni su Ogni Nodo
+### Step 3: Patroni on every node
 
-Creare su ciascun nodo il file `/etc/patroni/patroni.yml` (adattando `name` e gli indirizzi IP `192.168.100.X`):
+Create `/etc/patroni/patroni.yml` on each node (adapting `name` and the `192.168.100.X` addresses):
 
 ```yaml
 scope: pg-cluster-prod
 namespace: /service
-name: pg-node-01  # Modificare in pg-node-02 o pg-node-03 sugli altri nodi
+name: pg-node-01  # pg-node-02 / pg-node-03 on the other nodes
 
 etcd3:
   hosts:
@@ -261,7 +263,7 @@ bootstrap:
         work_mem: 32MB
         wal_level: replica
         archive_mode: 'on'
-        archive_command: '/usr/local/bin/pg-arca-wal-archive.sh %p %f'
+        archive_command: '/usr/local/bin/pg-arca-wal archive %p %f'
         archive_timeout: 60
         hot_standby: 'on'
         hot_standby_feedback: 'on'
@@ -307,16 +309,16 @@ tags:
   nosync: false
 ```
 
-Assegnare i permessi corretti e avviare il cluster:
+Set the permissions and start the cluster:
 ```bash
 sudo chown postgres:postgres /etc/patroni/patroni.yml
 sudo chmod 0600 /etc/patroni/patroni.yml
 
-# Avviare Patroni (avviare prima il nodo 1, poi nodo 2 e nodo 3)
+# Start Patroni (node 1 first, then node 2 and node 3)
 sudo systemctl enable --now patroni
 ```
 
-Verificare la topologia su qualsiasi nodo con `patronictl`:
+Check the topology on any node with `patronictl`:
 ```bash
 sudo patronictl -c /etc/patroni/patroni.yml topology pg-cluster-prod
 sudo patronictl -c /etc/patroni/patroni.yml list
@@ -324,6 +326,7 @@ sudo patronictl -c /etc/patroni/patroni.yml list
 
 ---
 
-## Documenti correlati
-- [HANDOFF.md](./HANDOFF.md): stato del lavoro e come riprenderlo.
-- [PROJECT_TRACKER.md](./PROJECT_TRACKER.md): registro dei componenti, dei test e delle decisioni.
+## Related documents
+- [HANDOFF.md](./HANDOFF.md): work status and how to pick it up (internal, Italian).
+- [PROJECT_TRACKER.md](./PROJECT_TRACKER.md): register of components, tests and decisions (internal, Italian).
+- [COMPAT.md](./COMPAT.md): PostgreSQL / OS compatibility.

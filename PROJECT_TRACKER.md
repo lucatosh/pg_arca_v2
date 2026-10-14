@@ -49,6 +49,7 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 - Nessuna simulazione presentata come reale: ciò che non funziona è "Anteprima" o risponde con un errore chiaro.
 - Ripristino che finisce nell’originale (tabella, righe, database, server standalone) partendo sempre da una copia: l’originale viene sostituito solo alla fine, con conferma, e resta conservato; rollback automatico per il server.
 - UI riscritta da zero in moduli (CSS semplice, nessuna dipendenza oltre React); il vecchio monolite da 4247 righe, Tailwind e lucide sono stati rimossi.
+- Prodotto in inglese tecnico (14/10): interfaccia, messaggi di server e agent, parole di conferma (le italiane restano accettate); guardia `tests/ui/i18n.test.ts`; README e COMPAT in inglese, documenti interni in italiano.
 - `server.ts` ridotto da ~2700 a ~90 righe: le rotte simulate (HA, HBA, LDAP, RBAC, PITR, stanze, politiche, parametri, tuning) sono state eliminate; HA e parametri passano dal motore operazioni.
 
 ## Da fare
