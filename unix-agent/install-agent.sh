@@ -102,7 +102,10 @@ else
   CURL=(curl -fsSL --retry 3); [[ -n "${PG_ARCA_TLS_CA:-}" ]] && CURL+=(--cacert "$PG_ARCA_TLS_CA")
   "${CURL[@]}" "${PG_ARCA_URL%/}/agent/pg-arca-agent.tar.gz" -o "$TMP/agent.tgz" || die "cannot download the agent bundle from $PG_ARCA_URL"
   if [[ -n "${PG_ARCA_BUNDLE_SHA256:-}" ]]; then echo "${PG_ARCA_BUNDLE_SHA256}  $TMP/agent.tgz" | sha256sum -c - >/dev/null || die "bundle checksum mismatch"; fi
-  mkdir "$TMP/b" && tar xzf "$TMP/agent.tgz" -C "$TMP/b"; BUNDLE="$TMP/b"
+  mkdir "$TMP/b"
+  if command -v tar >/dev/null; then tar xzf "$TMP/agent.tgz" -C "$TMP/b"
+  else python3 -c 'import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2])' "$TMP/agent.tgz" "$TMP/b"; fi      # minimal images (Rocky/RHEL containers) have no tar
+  BUNDLE="$TMP/b"
 fi
 
 # --- layout ----------------------------------------------------------------------
@@ -153,6 +156,15 @@ fi
 # restart of a STANDALONE PostgreSQL from the console (after enabling WAL archiving or changing a restart-only parameter): the agent asks systemd to restart the
 # server's own unit. polkit lets the agent's user restart/start ONLY postgresql units (postgresql.service, postgresql@14-main, postgresql-16), never stop
 # them, nothing else. Opt out with PG_ARCA_ALLOW_PG_RESTART=0 (the console then shows the command to run by hand). Not for operational machines.
+# Without polkit an unprivileged agent cannot ask systemd for anything: no restart after enabling archiving, no whole-server restore that puts production
+# back (stop, swap, START of its unit). On a standalone server under systemd the installer adds polkit (small, from the distribution) unless told not to.
+if [[ "${PG_ARCA_ALLOW_PG_RESTART:-1}" != 0 && "$ROLE" != worker && ! -d /etc/polkit-1 && -d /run/systemd/system ]] \
+   && ! pgrep -f "bin/patroni" >/dev/null 2>&1 && ! systemctl is-active --quiet patroni 2>/dev/null; then
+  echo "installing polkit (lets the agent start/restart ONLY the PostgreSQL units; PG_ARCA_ALLOW_PG_RESTART=0 to skip)"
+  { command -v apt-get >/dev/null && { apt-get install -y -qq polkitd >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && { apt-get install -y -qq polkitd >/dev/null 2>&1 || apt-get install -y -qq policykit-1 >/dev/null 2>&1; }; }; }; } \
+    || { command -v dnf >/dev/null && dnf install -y -q polkit >/dev/null 2>&1; } || { command -v yum >/dev/null && yum install -y -q polkit >/dev/null 2>&1; } || true
+  [ -d /etc/polkit-1 ] && { systemctl enable --now polkit >/dev/null 2>&1 || systemctl start polkit >/dev/null 2>&1 || true; }
+fi
 if [[ "${PG_ARCA_ALLOW_PG_RESTART:-1}" != 0 && "$ROLE" != worker && -d /etc/polkit-1 ]]; then
   install -d -m 0755 /etc/polkit-1/rules.d
   cat > /etc/polkit-1/rules.d/50-pg-arca-restart.rules <<RULE
@@ -234,4 +246,10 @@ case "$st" in
   *)                  echo "The agent is starting; registration not confirmed yet. Follow it with: journalctl -u $UNIT -f" ;;
 esac
 echo "Logs: journalctl -u $UNIT -f"
-echo "Next: WAL archiving (needed for point-in-time restore) is switched on from the console, Backup tab -> 'Attiva archiviazione' (on Patroni through the DCS)."
+# what is left to do, said only when it is really left (the default local server; a host with several instances gets the generic line)
+arch=$(cd / && runuser -u "$PGUSER_OS" -- psql -XAtc "select current_setting('archive_mode')||'|'||current_setting('archive_command')" 2>/dev/null || true)
+case "$arch" in
+  on\|*pg-arca*|always\|*pg-arca*) echo "WAL archiving: already active through pg_arca." ;;
+  on\|?*|always\|?*) echo "Next: WAL archiving is active with another command (${arch#*|}): switch it to pg_arca from the console, Backup tab -> 'Attiva archiviazione'." ;;
+  *) echo "Next: WAL archiving (needed for point-in-time restore) is switched on from the console, Backup tab -> 'Attiva archiviazione' (on Patroni through the DCS)." ;;
+esac
