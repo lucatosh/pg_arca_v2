@@ -157,6 +157,33 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### Sessione 14/10 pomeriggio (2): tutti i server vergini OK via web UI, georidondanza provata davvero, password standard
+- **restore-ui.cjs su tutti e 5 i server vergini Proxmox: TUTTO OK**. Scenari: archiviazione e riavvio dalla UI, backup, tabella, tabella in quarantena, righe, database, copia d'istanza, sostituzione del server.
+  - deb12-pg15: 299 s.
+  - ubu24-pg16: 310 s.
+  - rocky9-pg14: OK.
+  - deb12-pg17-custom: 368 s; la sostituzione del server è rifiutata per il tablespace, come previsto.
+  - deb12-pg18-two: 365 s.
+- **Georidondanza hy (Docker + Proxmox, Rocky 9), `scenario-hy.py`**:
+  - switchover andata e ritorno in 6 s ciascuno, senza righe perse;
+  - **failover automatico** con il sito primario spento: 105 s, 0 righe perse (5001 su 5001), hy-rm scrivibile.
+- **Difetto grave trovato e corretto nel riallineamento**:
+  - Al ritorno il vecchio primario si era promosso da solo sulla **stessa timeline (10)** del nuovo, con una storia diversa (`9 0/100000A0` contro `9 0/10000000`).
+  - Patroni **e pg_rewind** confrontano solo il numero («no rewind required»). Il sito seguiva il nuovo primario con un buco nei dati, e il job diceva «riallineato».
+  - Correzioni:
+    - nuova operazione `pg_timeline` (timeline e file di history);
+    - la console confronta le history prima e dopo la retrocessione (`sameTimelineDiverged`) e non dichiara più il successo se divergono;
+    - `geo_demote force_rewind` ricostruisce il leader del sito: Patroni in manutenzione, `pg_basebackup` dal nuovo primario con le credenziali di replica di Patroni, cartella vecchia tenuta come `.pgarca-diverged-<ts>`, ripresa; gli altri membri vengono reinizializzati.
+  - Durante le prove sono emersi altri due problemi, entrambi già gestiti:
+    - pg_rewind non aiuta in questo caso;
+    - Patroni con una cartella vuota aspetta e non clona.
+  - **Ultimo tentativo in corso al momento della consegna** (`~/lablogs/fix4.log`): hy-mi era fermo (dati vecchi in `.pgarca-diverged-20261014121829`), con la ricostruzione via `pg_basebackup` appena lanciata. Da verificare: `hy.sh status`, conteggio `hy_dr` uguale sui due siti, poi rifare `scenario-hy.py dr,wan` (con il primario riportato su hy-mi).
+  - `scenario-hy` è stato interrotto durante il taglio WAN; `wan-restore` è già stato eseguito.
+- **Password standard del lab**:
+  - `standard-access.sh`: una sola password (`~/.arca-lab-pw` sulla VM, mai nel repo) per root dei CT e per postgres/replicator/rewinder, con ssh root abilitato. Applicata a 410-417 e 422.
+  - **Mancano hy (420/421 + Docker hy1/hy2)**, da fare dopo il ripristino della coppia: le password di Patroni stanno nei due siti.
+  - `inventory.sh` e `access-table.py` generano `LAB-ACCESS.md`. **Non è committato** finché il repo è pubblico (l'utente lo rende privato); è escluso in `.git/info/exclude`.
+
 ### Sessione 14/10 pomeriggio: lab ripartito, server vergini collegati dalla console, ripristini via web UI su systemd reale
 - **VM ripartita** (era spenta: avviata headless da VirtualBox, `ubuntu26`). Console aggiornata con `deploy.sh`; i log dei lavori di lab ora stanno in `~/lablogs` (persistono al reboot).
 - **Server vergini Proxmox 410-414 collegati come un cliente**: «Collega cluster» nella console (`onboard.cjs`) → comando → `virgin.sh agent`. Indirizzo della console impostato a `http://192.168.1.179:3000`.
