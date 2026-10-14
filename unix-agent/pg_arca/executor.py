@@ -724,19 +724,24 @@ class OperationExecutor:
             from pg_arca import geo_rewind
             me = self.runtime.patroni_info or {}
             try:
-                rebuilt = geo_rewind.rebuild_aside(me.get("data_dir") or (self.runtime.instance or {}).get("data_directory"), me.get("bin_dir") or "", self._progress)
+                user, pw = geo_rewind.patroni_auth(me.get("config_path") or "", ("replication", "superuser"))
+                rebuilt = geo_rewind.rebuild_from(me.get("data_dir") or (self.runtime.instance or {}).get("data_directory"), me.get("bin_dir") or "", host, port, user, pw,
+                                                  self.config.get("state_dir"), self._progress) or "(nothing to keep)"
             finally:
                 self.patroni.patch_config({"pause": False})            # Patroni clones the standby leader from standby_cluster and starts it
-            # the other members of this site carry the same wrong history: rebuilt from their (now rewound) leader
-            for m in [x for x in (self.patroni.get_cluster_topology()[1] or {}).get("members", []) if x.get("name") != me.get("node_name")]:
-                if m.get("api_url"):
-                    self.patroni.for_member(m["api_url"]).reinitialize(True)
         if rewind:
             # a clone takes time and the member list can still show the old standby leader for a moment: wait for one that STREAMS
             time.sleep(15)
             ok, lead2, members = self.patroni.wait_for(lambda l, m: any(x.get("role") == "standby_leader" and x.get("state") == "streaming" for x in m),
                                                        timeout=int(p.get("timeout", 3600)), interval=5)
             leader = next((x for x in members if x.get("role") == "standby_leader"), None) or {}
+            if ok:
+                # the other members of this site carry the same wrong history: rebuilt by Patroni from their new standby leader
+                for m in [x for x in members if x.get("name") != leader.get("name") and x.get("api_url")]:
+                    try:
+                        self.patroni.for_member(m["api_url"]).reinitialize(True)
+                    except Exception:
+                        logger.warning("reinitialize of %s not requested", m.get("name"))
         else:
             ok, leader, members = self._wait_role(("standby_leader",), int(p.get("timeout", 120)))
         if not ok:

@@ -59,8 +59,8 @@ def diverged_same_timeline(local, source):
     return parse_history(a) != parse_history(b)
 
 
-def patroni_auth(config_path):
-    """(user, password) pg_rewind connects with: Patroni's rewind role, else its superuser (read from the DBA's patroni.yml, never written)."""
+def patroni_auth(config_path, kinds=("rewind", "superuser")):
+    """(user, password) Patroni itself uses for that job (rewind / replication / superuser), read from the DBA's patroni.yml, never written."""
     from pg_arca.discovery import parse_simple_yaml
     try:
         with open(config_path, "r", errors="replace") as f:
@@ -69,7 +69,7 @@ def patroni_auth(config_path):
         raise EngineError("PGA-GEO-020", "cannot read the Patroni configuration %s (needed for pg_rewind's credentials)" % config_path,
                           "make it readable by the agent's user, or rebuild the old site's members by hand (patronictl reinit)")
     auth = ((cfg.get("postgresql") or {}).get("authentication") or {})
-    for k in ("rewind", "superuser"):
+    for k in kinds:
         a = auth.get(k) or {}
         if a.get("username"):
             return str(a["username"]), str(a.get("password") or "")
@@ -106,6 +106,54 @@ def force_rewind(pgdata, bindir, host, port, user, password, state_dir, progress
         raise EngineError("PGA-GEO-023", "pg_rewind failed (exit %d): %s" % (r.returncode, out[-600:]),
                           "the old site's members must be rebuilt from the new primary (patronictl reinit, or remove the data directory and let Patroni clone it)")
     return out.splitlines()[-3:]
+
+
+def rebuild_from(pgdata, bindir, host, port, user, password, state_dir, progress=None):
+    """Stop the local PostgreSQL (the caller paused Patroni), keep its data directory aside and clone a new one from the new primary with pg_basebackup
+    (Patroni cannot do it by itself here: its cluster is 'initialized', so with an empty directory it only waits for a standby leader). On failure the
+    original directory is put back. Returns the path the old data directory is kept under."""
+    import shutil
+    import time as _t
+    ctl = os.path.join(bindir, "pg_ctl") if bindir else "pg_ctl"
+    bb = os.path.join(bindir, "pg_basebackup") if bindir else "pg_basebackup"
+    if progress:
+        progress({"phase": "geo-rebuild", "msg": "stopping PostgreSQL of the old primary (Patroni paused)"})
+    real = os.path.realpath(pgdata).rstrip("/")
+    if os.path.exists(os.path.join(real, "PG_VERSION")):
+        r = subprocess.run([ctl, "stop", "-D", real, "-m", "fast", "-w", "-t", "300"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=360)
+        if r.returncode != 0 and os.path.exists(os.path.join(real, "postmaster.pid")) and "not running" not in (r.stdout or ""):
+            raise EngineError("PGA-GEO-022", "pg_ctl stop failed: %s" % (r.stdout or "")[-300:])
+    ts = _t.strftime("%Y%m%d%H%M%S")
+    clone = "%s.pgarca-clone-%s" % (real, ts)
+    fd, passfile = tempfile.mkstemp(prefix=".pgpass-clone-", dir=state_dir if state_dir and os.path.isdir(state_dir) else None)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("%s:%s:*:%s:%s\n" % (host.replace(":", "\\:"), port, user.replace(":", "\\:"), password.replace("\\", "\\\\").replace(":", "\\:")))
+        os.chmod(passfile, 0o600)
+        if progress:
+            progress({"phase": "geo-rebuild", "msg": "cloning the site from the new primary (%s:%s) with pg_basebackup" % (host, port)})
+        r = subprocess.run([bb, "-D", clone, "-h", host, "-p", str(port), "-U", user, "-X", "stream", "-c", "fast", "--no-password"], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True, timeout=12 * 3600, env=dict(os.environ, PGPASSFILE=passfile, PGCONNECT_TIMEOUT="15"), cwd="/")
+    finally:
+        try:
+            os.unlink(passfile)
+        except OSError:
+            pass
+    if r.returncode != 0:
+        shutil.rmtree(clone, ignore_errors=True)
+        raise EngineError("PGA-GEO-024", "pg_basebackup from the new primary failed (exit %d): %s" % (r.returncode, (r.stdout or "")[-500:]),
+                          "check the replication rule of the new primary's pg_hba for this site and the replication credentials of its Patroni configuration")
+    kept = None
+    if os.path.isdir(real):
+        rest = [x for x in os.listdir(real) if x != "patroni.dynamic.json"]
+        if rest:
+            kept = "%s.pgarca-diverged-%s" % (real, ts)
+            os.rename(real, kept)
+        else:
+            shutil.rmtree(real)                                    # an empty directory left by an earlier attempt (only Patroni's cache in it)
+    os.rename(clone, real)
+    os.chmod(real, 0o700)
+    return kept
 
 
 def rebuild_aside(pgdata, bindir, progress=None):
