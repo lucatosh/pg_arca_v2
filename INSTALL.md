@@ -100,6 +100,8 @@ After registration: enable WAL archiving from the cluster's Backup tab, take the
 
 ## 6. Back up the console
 
+The console protects its own state by itself: a compressed snapshot of the state (users, clusters, policies, schedules, history) is written to `/var/lib/pg-arca-console/snapshots/` one minute after every start and once a day, and the newest 14 are kept. `GET /api/health` reports the time of the newest one (`stateSnapshot`). The snapshot does not contain the secret key; a full copy to take off the host is the command below.
+
 ```bash
 sudo /opt/pg-arca-console/current/install-console.sh --backup-state /srv/backup/pg-arca
 ```

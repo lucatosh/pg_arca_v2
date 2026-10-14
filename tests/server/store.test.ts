@@ -59,4 +59,17 @@ const sync = (performance.now() - t0) / 50;
 await big.flush();
 assert(sync < 5, `a small mutation blocks the event loop ${sync.toFixed(2)} ms on a big state`);
 console.log(`store: small mutation on a ${(fs.statSync(path.join(big.dir, 'state.json')).size / 1e6).toFixed(1)} MB state = ${sync.toFixed(3)} ms of event loop; writes grouped`);
+
+// the console's own protection: daily gzip snapshots of the state, retention, newest reported
+{
+  const fs2 = await import('fs'); const path2 = await import('path'); const zlib = await import('zlib');
+  const dir = fs2.mkdtempSync(path2.join(os.tmpdir(), 'snap-')); const s2 = new Store(dir);
+  await s2.mutate(d => { d.clusters.push({ id: 'z', name: 'zeta', environment: 'dev' } as any); });
+  const f1 = await s2.snapshot(2);
+  assert(fs2.existsSync(f1)); assert.strictEqual(JSON.parse(zlib.gunzipSync(fs2.readFileSync(f1)).toString()).clusters[0].name, 'zeta');
+  assert.strictEqual((fs2.statSync(f1).mode & 0o777), 0o600, 'snapshot readable by the service user only');
+  await new Promise(r => setTimeout(r, 1100)); await s2.snapshot(2); await new Promise(r => setTimeout(r, 1100)); const f3 = await s2.snapshot(2);
+  const left = fs2.readdirSync(path2.join(dir, 'snapshots')).filter(x => x.endsWith('.json.gz'));
+  assert.strictEqual(left.length, 2, 'retention keeps the newest 2'); assert.strictEqual(s2.lastSnapshot()!.file, f3);
+}
 console.log('store tests OK');

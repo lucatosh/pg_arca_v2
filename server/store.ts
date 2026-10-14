@@ -266,6 +266,34 @@ export class Store {
     });
   }
 
+  /** Daily protection of the console's own state: a gzip copy of the current state in <dir>/snapshots/, keep the newest `keep`.
+   *  The secret key is NOT in it (it lives next to the state; install-console.sh --backup-state takes both). Returns the file written. */
+  async snapshot(keep = 14): Promise<string> {
+    const zlib = await import('zlib');
+    await this.flush();
+    const dir = path.join(this.dir, 'snapshots');
+    await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+    const name = `state-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json.gz`;
+    const out = path.join(dir, name); const tmp = out + '.tmp';
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(this.state)), { level: 6 });
+    const fh = await fs.promises.open(tmp, 'w', 0o600);
+    try { await fh.writeFile(gz); await fh.sync(); } finally { await fh.close(); }
+    await fs.promises.rename(tmp, out);
+    const all = (await fs.promises.readdir(dir)).filter(f => /^state-.*\.json\.gz$/.test(f)).sort();
+    for (const f of all.slice(0, Math.max(0, all.length - keep))) { try { await fs.promises.unlink(path.join(dir, f)); } catch { /* gone */ } }
+    return out;
+  }
+
+  /** The newest snapshot (name and time), for /api/health and the status page. */
+  lastSnapshot(): { file: string; at: string } | null {
+    try {
+      const dir = path.join(this.dir, 'snapshots');
+      const all = fs.readdirSync(dir).filter(f => /^state-.*\.json\.gz$/.test(f)).sort();
+      if (!all.length) return null;
+      const f = all[all.length - 1]; return { file: path.join(dir, f), at: fs.statSync(path.join(dir, f)).mtime.toISOString() };
+    } catch { return null; }
+  }
+
   private async persist(data: string) {
     const tmp = `${this.file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     const fh = await fs.promises.open(tmp, 'w', 0o600);

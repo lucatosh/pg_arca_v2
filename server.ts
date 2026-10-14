@@ -126,7 +126,11 @@ app.get('/agent/pg-arca-agent.tar.gz', (_req: Request, res: Response) => {
   const tar = spawn('tar', ['czf', '-', '-C', path.join(APP_ROOT, 'unix-agent'), '--exclude=__pycache__', '--exclude=tests', '.']);
   tar.stdout.pipe(res); tar.on('error', () => res.destroy());
 });
-app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true, time: new Date().toISOString(), version: APP_VERSION }));
+app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true, time: new Date().toISOString(), version: APP_VERSION, stateSnapshot: store.lastSnapshot()?.at || null }));
+// the console protects its own state: a compressed snapshot every day (and one shortly after every start), the newest 14 kept in <data>/snapshots/
+const SNAPSHOT_MS = 24 * 3600_000;
+const snap = () => store.snapshot(14).catch(e => console.error('[pg_arca] state snapshot failed:', e?.message || e));
+setTimeout(snap, 60_000).unref?.(); setInterval(snap, SNAPSHOT_MS).unref?.();
 app.use('/api', asyncErrorHandler);
 
 bootstrapAdminFromEnv(store);
