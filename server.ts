@@ -1,6 +1,8 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import http from 'http';
+import https from 'https';
+import fs from 'fs';
 import { spawn } from 'child_process';
 
 import { Store, loadSecretKey } from './server/store';
@@ -34,7 +36,17 @@ app.set('case sensitive routing', true);
 if (process.env.PG_ARCA_TRUST_PROXY) app.set('trust proxy', /^\d+$/.test(process.env.PG_ARCA_TRUST_PROXY) ? Number(process.env.PG_ARCA_TRUST_PROXY) : process.env.PG_ARCA_TRUST_PROXY);   // behind a reverse proxy: req.ip = the real client (login back-off, audit)   // defence in depth: the auth gate also lower-cases
 process.on('unhandledRejection', (e: any) => console.error('[pg_arca] unhandled rejection (kept running):', e?.stack || e));
 const PORT = parseInt(process.env.PORT || '3000', 10);
-const server = http.createServer(app);
+// Native TLS (PG_ARCA_TLS_CERT + PG_ARCA_TLS_KEY, PEM): the console serves https and wss directly; SIGHUP reloads the files (certificate renewal
+// without a restart). Without them: plain http, meant for a reverse proxy that terminates TLS (then PG_ARCA_TRUST_PROXY and PG_ARCA_COOKIE_SECURE=1).
+const TLS_CERT = process.env.PG_ARCA_TLS_CERT, TLS_KEY = process.env.PG_ARCA_TLS_KEY;
+if (!!TLS_CERT !== !!TLS_KEY) { console.error('[pg_arca] PG_ARCA_TLS_CERT and PG_ARCA_TLS_KEY go together: set both or neither'); process.exit(2); }
+const tlsFiles = () => ({ cert: fs.readFileSync(TLS_CERT!), key: fs.readFileSync(TLS_KEY!) });
+const server = (TLS_CERT ? https.createServer({ ...tlsFiles(), minVersion: 'TLSv1.2' }, app) : http.createServer(app)) as unknown as http.Server;
+if (TLS_CERT) process.on('SIGHUP', () => {
+  try { (server as unknown as https.Server).setSecureContext(tlsFiles()); console.log('[pg_arca] TLS certificate reloaded'); }
+  catch (e: any) { console.error('[pg_arca] TLS certificate NOT reloaded (the previous one stays in use):', e?.message || e); }
+});
+const LISTEN = process.env.PG_ARCA_LISTEN || '0.0.0.0';
 
 const DATA_DIR = process.env.PG_ARCA_DATA_DIR || path.join(process.cwd(), 'data');
 const store = new Store(DATA_DIR);
@@ -139,6 +151,6 @@ if (process.env.NODE_ENV === 'production') {
 // a clean stop writes what is still only in memory (telemetry is written lazily, within seconds)
 for (const sig of ['SIGTERM', 'SIGINT'] as const) process.once(sig, () => { store.flush().catch(() => undefined).finally(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[pg_arca] Console ${APP_VERSION} on http://0.0.0.0:${PORT} (live logs on /ws/logs)`);
+server.listen(PORT, LISTEN, () => {
+  console.log(`[pg_arca] Console ${APP_VERSION} on ${TLS_CERT ? 'https' : 'http'}://${LISTEN.includes(':') ? `[${LISTEN}]` : LISTEN}:${PORT} (live logs on /ws/logs)`);
 });

@@ -13,6 +13,7 @@
 #       PG_ARCA_INSTANCE=<name> PG_ARCA_PGDATA=<data dir>   one more agent for ANOTHER PostgreSQL instance on the same server (several clusters on one host):
 #                             own config /etc/pg-arca/<name>, state /var/lib/pgarca/<name>, service pg-arca-agent-<name>, node name <host>-<name>
 #       PG_ARCA_ALLOW_PG_RESTART=0   do not let the agent restart PostgreSQL's systemd unit (default: allowed through a polkit rule limited to postgresql units)
+#       PG_ARCA_NO_PKG=1     never install distribution packages (python3-zstandard, zstd, polkit): set by the .deb/.rpm, which declare them as dependencies
 #       PG_ARCA_UNINSTALL=1  remove the agent (keeps backups/WAL; PG_ARCA_PURGE=1 deletes them too; refused while PostgreSQL archives through pg_arca)
 #       PG_ARCA_ROLE=worker   operational machine (backup server, host for the recovery instances): no database is searched; runs as postgres if present, else as a
 #                             dedicated system user "pgarca" created here
@@ -78,17 +79,19 @@ if [[ "${PG_ARCA_UNINSTALL:-}" == 1 ]]; then
 fi
 
 # --- python + tools ------------------------------------------------------------
+NOPKG="${PG_ARCA_NO_PKG:-}"
 if ! command -v python3 >/dev/null; then
+  [[ -z "$NOPKG" ]] || die "python3 missing"
   if command -v dnf >/dev/null; then dnf install -y -q python3; elif command -v apt-get >/dev/null; then apt-get update -qq && apt-get install -y -qq python3; else die "python3 missing"; fi
 fi
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,6) else 1)' || die "Python >= 3.6 required"
 # python zstandard: the chunk compressor of the backups. Without it the agent falls back to zlib, measured 5-10x slower per core on database pages
 # (the lab: zlib ~16-80 MB/s per core). Debian/Ubuntu: python3-zstandard; RHEL/Rocky/Alma: python3-zstandard from EPEL (or AppStream on newer releases).
-if ! python3 -c 'import zstandard' 2>/dev/null && ! python3 -c 'from compression import zstd' 2>/dev/null; then
+if [[ -z "$NOPKG" ]] && ! python3 -c 'import zstandard' 2>/dev/null && ! python3 -c 'from compression import zstd' 2>/dev/null; then
   { command -v apt-get >/dev/null && { apt-get install -y -qq python3-zstandard >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq python3-zstandard >/dev/null 2>&1; }; }; } || { command -v dnf >/dev/null && dnf install -y -q python3-zstandard >/dev/null 2>&1; } \
     || echo "WARN: python3-zstandard not available: backups will use zlib (much slower). Install python3-zstandard (EPEL on RHEL) or 'pip3 install zstandard' for the agent's python."
 fi
-if ! command -v zstd >/dev/null; then
+if [[ -z "$NOPKG" ]] && ! command -v zstd >/dev/null; then
   { command -v dnf >/dev/null && dnf install -y -q zstd; } || { command -v apt-get >/dev/null && { apt-get install -y -qq zstd >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq zstd >/dev/null 2>&1; }; }; } || echo "WARN: zstd not installed; WAL/chunks will be stored uncompressed"
 fi
 
@@ -158,7 +161,7 @@ fi
 # them, nothing else. Opt out with PG_ARCA_ALLOW_PG_RESTART=0 (the console then shows the command to run by hand). Not for operational machines.
 # Without polkit an unprivileged agent cannot ask systemd for anything: no restart after enabling archiving, no whole-server restore that puts production
 # back (stop, swap, START of its unit). On a standalone server under systemd the installer adds polkit (small, from the distribution) unless told not to.
-if [[ "${PG_ARCA_ALLOW_PG_RESTART:-1}" != 0 && "$ROLE" != worker && ! -d /etc/polkit-1 && -d /run/systemd/system ]] \
+if [[ -z "$NOPKG" && "${PG_ARCA_ALLOW_PG_RESTART:-1}" != 0 && "$ROLE" != worker && ! -d /etc/polkit-1 && -d /run/systemd/system ]] \
    && ! pgrep -f "bin/patroni" >/dev/null 2>&1 && ! systemctl is-active --quiet patroni 2>/dev/null; then
   echo "installing polkit (lets the agent start/restart ONLY the PostgreSQL units; PG_ARCA_ALLOW_PG_RESTART=0 to skip)"
   { command -v apt-get >/dev/null && { apt-get install -y -qq polkitd >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && { apt-get install -y -qq polkitd >/dev/null 2>&1 || apt-get install -y -qq policykit-1 >/dev/null 2>&1; }; }; }; } \
@@ -240,7 +243,7 @@ IFS='|' read -r st detail nid <<<"$state"
 case "$st" in
   enrolled|connected) echo "OK: registered in the console as node $nid. Open ${PG_ARCA_URL:-the console}: the server is listed under Clusters." ;;
   waiting_approval)   [[ -n "$detail" ]] && echo "NOTE: the enrollment token was refused ($detail: expired, already used or unknown)."
-                      echo "WAITING: this server announced itself; an administrator approves it in the console (Oggi / Cluster: 'Nuovo server rilevato')." ;;
+                      echo "WAITING: this server announced itself; an administrator approves it in the console (Today / Clusters: 'New server detected')." ;;
   token_refused)      echo "NOTE: the enrollment token was refused ($detail); the agent is announcing the server for approval instead." ;;
   unreachable)        echo "PROBLEM: the agent cannot reach the console: $detail"; echo "  check the address (${PG_ARCA_URL:-?}), DNS, firewall/proxy from this server; the agent keeps retrying." ;;
   *)                  echo "The agent is starting; registration not confirmed yet. Follow it with: journalctl -u $UNIT -f" ;;

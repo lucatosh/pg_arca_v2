@@ -21,3 +21,4 @@ __pycache__/
 *.pyc
 *.pyo
 tools/lab/.env
+out/
