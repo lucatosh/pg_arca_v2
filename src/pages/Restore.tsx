@@ -234,7 +234,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       <Details k={`${K}:when-adv`} summary="Backup timeline and advanced WAL search">
         <div className="stack" style={{ marginTop: 10 }}>
           <RecoveryTimeline sets={sets} from={from} to={to} value={tgt?.mode === 'time' ? tgt.ms : null} onChange={ms => setTgt(ms == null ? { mode: 'latest' } : { mode: 'time', ms })} events={events} broken={d.wal?.continuous === false} />
-          <div className="small muted">The ticks are backups, the coloured area is the recoverable window. Base backup for the current choice: {baseSet ? <span className="mono">{baseSet.id}</span> : <span style={{ color: 'var(--bad)' }}>none before this point in time</span>}</div>
+          <div className="small muted">The ticks are backups, the colored area is the recoverable window. Base backup for the current choice: {baseSet ? <span className="mono">{baseSet.id}</span> : <span style={{ color: 'var(--bad)' }}>none before this point in time</span>}</div>
           <ForensicsTools fx={fx} dml={dml} fxHours={fxHours} setFxHours={setFxHours} dmlMin={dmlMin} setDmlMin={setDmlMin} onPick={t => setTgt(t)} />
         </div></Details>
       <div className="row"><Button onClick={() => setStep(intent === 'cluster' ? 0 : 1)}>Back</Button><div className="grow" /><Button kind="primary" disabled={!okWhen || (!baseSet && tgt?.mode === 'time')} onClick={goCheck}>Next</Button></div></div></Card>}
@@ -302,7 +302,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         {objs.length === 1 && splitId(obj).length === 3 && goneNow !== true ? <Details k={`${K}:somerows`} summary="Recover only some rows"><RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /></Details> : null}</>) : null}
       <Result op={exec.op} />
       {scope === 'instance' && exec.op && ['failed', 'cancelled'].includes(exec.op.status) && /PGA-RST-040|cancel|interrott|interrupt|No space|ENOSPC|PGA-RST-03/i.test(String(exec.op.error || '')) ? <Banner kind="info" title="Restore interrupted" actions={<Button sm icon="restore" onClick={() => exec.run('restore_instance', { ...(exec.op!.params || params().p), resume: true })}>Resume where it stopped</Button>}>
-        The partial copy in <code>{(exec.op.params || {}).destination || dest}</code> is recognised: when resuming, pg_arca writes only what is missing or different (useful after a cancellation, a full disk that was freed, or an agent restart).</Banner> : null}
+        The partial copy in <code>{(exec.op.params || {}).destination || dest}</code> is recognized: when resuming, pg_arca writes only what is missing or different (useful after a cancellation, a full disk that was freed, or an agent restart).</Banner> : null}
       {exec.op && exec.op.status === 'failed' && !running ? <div><Button onClick={() => { exec.reset(); setStep(3); check(); }}>Back to the checks</Button></div> : null}
       {(exec.op && !running) ? <div><Button onClick={restart}>New restore</Button></div> : null}</div></Card>}
 

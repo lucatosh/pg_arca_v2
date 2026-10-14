@@ -10,7 +10,7 @@ assert.strictEqual(itCheck(null), '');
 assert.strictEqual(itFix(undefined), '');
 
 // the UI is English: no Italian left in the string literals / JSX text of src/ (comments are ignored)
-const IT = /[àèéìòù]|\b(della|delle|degli|dello|nella|nelle|questo|questa|quando|perché|sono|vengono|viene|cartella|ripristino|ripristina|nessun|nessuna|impostazioni|scegli|annulla|chiudi|salva|elimina|attiva|riprova|aggiorna|indietro|avanti|utente|errore|fallita|completato|in corso|non è)\b/i;
+const IT = /[àèéìòù]|\b(della|delle|degli|dello|nella|nelle|questo|questa|quando|perché|sono|vengono|viene|cartella|ripristino|ripristina|nessun|nessuna|impostazioni|scegli|annulla|chiudi|salva|elimina|attiva|riprova|aggiorna|indietro|avanti|utente|errore|fallita|completato|in corso|non è|tuo|tua|tuoi|nuovo|nuova|pronto|spento|acceso|sì|oggi|nodo|nodi|primario|sito|siti|ruolo|ruoli|cartelle|righe|tabelle|backup completo)\b/i;
 const files: string[] = [];
 const walk = (d: string) => { for (const f of fs.readdirSync(d)) { const p = path.join(d, f); if (fs.statSync(p).isDirectory()) walk(p); else if (/\.(ts|tsx)$/.test(f)) files.push(p); } };
 walk(path.join(path.dirname(new URL(import.meta.url).pathname), '../../src'));

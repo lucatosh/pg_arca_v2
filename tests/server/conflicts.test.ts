@@ -9,7 +9,7 @@ const op = (type: string, status: string, params: any = {}, by = 'mario', cid = 
 
 // duplicates of singletons
 let c = conflictFor([op('backup_run', 'running')], 'c1', 'backup_run', {}, 'luca');
-assert(c && c.message.includes('da mario') && c.with.type === 'backup_run');
+assert(c && c.message.includes('by mario') && c.with.type === 'backup_run');
 assert.strictEqual(conflictFor([op('backup_run', 'running')], 'c2', 'backup_run', {}), null, 'another cluster is independent');
 assert.strictEqual(conflictFor([op('backup_run', 'succeeded')], 'c1', 'backup_run', {}), null, 'finished work does not block');
 // retention vs readers of backup sets, both ways
@@ -23,7 +23,7 @@ assert(conflictFor([op('restore_object', 'queued', { stage_db: 'pgarca_stage_a' 
 assert(conflictFor([op('restore_database', 'running', { new_name: 'x' })], 'c1', 'restore_database', { new_name: 'x' }));
 // HA actions vs data work: refused, overridable with force; data work refused while an HA action is pending
 c = conflictFor([op('backup_run', 'running')], 'c1', 'patroni_switchover', {});
-assert(c && c.overridable && c.message.includes('interromperebbe'));
+assert(c && c.overridable && c.message.includes('would interrupt'));
 assert.strictEqual(conflictFor([op('backup_run', 'running')], 'c1', 'patroni_switchover', { force: true }), null);
 assert(conflictFor([op('patroni_switchover', 'queued')], 'c1', 'backup_run', {}));
 // activity strip

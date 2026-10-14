@@ -22,7 +22,7 @@ import { validateOp } from '../../server/optypes';
 
   // validation: real types only, placeholders, paths
   assert.equal(v({ type: 'nfs', repoPath: '/mnt/backup/pgarca', walPath: '/mnt/backup/wal/{cluster}', requireMount: true, minFreeGb: 50 }).ok, true);
-  for (const t of ['s3', 'azure', 'gcs', 'sftp']) { const r = v({ type: t }); assert.equal(r.ok, false); assert.match(r.error, /anteprima/i); }
+  for (const t of ['s3', 'azure', 'gcs', 'sftp']) { const r = v({ type: t }); assert.equal(r.ok, false); assert.match(r.error, /preview/i); }
   for (const bad of [{ type: 'tape' }, { repoPath: 'rel/path' }, { repoPath: '/a/../b' }, { repoPath: '/mnt/{nope}' }, { repoPath: '/x', walPath: '/x' }, { minFreeGb: -1 }, { foo: 1 }]) assert.equal(v(bad).ok, false, JSON.stringify(bad));
 
   // global value + per-env override; placeholders give each cluster its own directory
@@ -33,7 +33,7 @@ import { validateOp } from '../../server/optypes';
   assert.deepEqual([d2.type, d2.repo_path, d2.wal_path, d2.require_mount], ['local', '/var/lib/pgarca/repo', '/mnt/backup/wal/dev/dev2', false]);
   // a WAL path shared by several clusters is called out
   await call('PUT', '/api/scoped/destination/assignments', { scope: 'global', value: { type: 'nfs', repoPath: '/mnt/backup/pgarca', walPath: '/mnt/backup/wal' } });
-  assert.match(destinationFor(store.peek(), store.peek().clusters[0]).dest!.wal_shared_warning || '', /sovrascrivono/);
+  assert.match(destinationFor(store.peek(), store.peek().clusters[0]).dest!.wal_shared_warning || '', /overwrite each other/);
   // the same value set on ONE cluster is its own path: no warning
   await call('PUT', '/api/scoped/destination/assignments', { scope: 'cluster', key: 'c1', value: { type: 'nfs', repoPath: '/mnt/backup/pgarca', walPath: '/mnt/backup/wal/only-c1' } });
   assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.wal_shared_warning, undefined);
@@ -43,7 +43,7 @@ import { validateOp } from '../../server/optypes';
   // two clusters that resolve to the same archive directory even WITH placeholders are caught, and apply refuses
   await store.mutate(d => { d.clusters.push({ id: 'c3', name: 'Prod DB 1', environment: 'prod', folder: '', source: 'agent' } as any); });
   const col = destinationFor(store.peek(), store.peek().clusters[0]).dest!;
-  assert.match(col.wal_collision || '', /coincide/);
+  assert.match(col.wal_collision || '', /is the same as/);
   assert.equal((await call('POST', '/api/clusters/c1/destination/apply', {}, 'kc')).status, 409);
   // ...unless the two clusters are the two sites of ONE geo-redundant database (same system identifier): they share its archive on purpose
   await store.mutate(d => { for (const n of Object.values(d.nodes) as any[]) if (n.clusterId === 'c1') n.snapshot = { ...(n.snapshot || {}), postgres: { ...(n.snapshot?.postgres || {}), system_identifier: '7001' } };
@@ -90,7 +90,7 @@ import { validateOp } from '../../server/optypes';
   const nOps = store.peek().operations.length;
   r = await call('POST', '/api/clusters/c1/destination/apply', {}, 'ap6'); assert.equal(r.status, 202); assert(r.body.approval, JSON.stringify(r.body));
   assert.equal(store.peek().operations.length, nOps, 'nothing applied before the approval');
-  assert.match(r.body.approval.summary, /destinazione dei backup.*\/mnt\/other\/pgarca/);
+  assert.match(r.body.approval.summary, /Backup destination change.*\/mnt\/other\/pgarca/);
   await store.mutate(d => { d.settings.approvalRequests.find((x: any) => x.id === r.body.approval.id).requestedBy = 'someone-else'; });
   const ap = await call('POST', `/api/approvals/${r.body.approval.id}/approve`, {});
   assert.equal(ap.status, 200, JSON.stringify(ap.body)); assert.equal(ap.body.operations.length, 2);

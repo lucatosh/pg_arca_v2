@@ -11,7 +11,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.goto(base); await p.waitForSelector('text=Sign in');
   await p.fill('input[autocomplete=username]', 'admin'); await p.fill('input[type=password]', 'correct-horse-battery'); await p.click('button[type=submit]');
   await p.waitForSelector('a:has-text("prodpg")'); await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Data protection');
-  await p.click('.gnav >> role=tab[name="Protezione"]'); await p.click('.clusternav .tabs >> role=tab[name=/Backup/]');
+  await p.click('.gnav >> role=tab[name="Protection"]'); await p.click('.clusternav .tabs >> role=tab[name=/Backup/]');
   await p.waitForSelector('button:has-text("Enable WAL archiving")', { timeout: 15000 });
   if (await p.locator('text=through the Patroni configuration').count()) throw new Error('a standalone server is described as Patroni');
   await p.click('button:has-text("Enable WAL archiving")'); await p.click('.modal button:has-text("Enable")');

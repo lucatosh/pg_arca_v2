@@ -82,7 +82,10 @@ import * as ops from '../../server/ops';
     assert.strictEqual(validateOp('restore_promote', { ...pr, mode: 'as_new' }), null);
     // whole server back IN PLACE: typed confirmation, no copy options; kept directories only by their exact name
     assert.ok(validateOp('restore_instance', { replace_production: true }));
-    assert.strictEqual(validateOp('restore_instance', { replace_production: true, confirm: 'SOSTITUISCI' }), null);
+    assert.strictEqual(validateOp('restore_instance', { replace_production: true, confirm: 'REPLACE' }), null);
+    assert.strictEqual(validateOp('restore_instance', { replace_production: true, confirm: 'SOSTITUISCI' }), null, 'the Italian word of earlier consoles is still accepted');
+    assert.ok(validateOp('pg_restart', { confirm: 'restart' }), 'confirmation words are exact');
+    assert.strictEqual(validateOp('pg_restart', { confirm: 'RESTART' }), null);
     assert.strictEqual(validateOp('restore_instance', { replace_production: true, dry_run: true }), null);
     assert.ok(validateOp('restore_instance', { replace_production: true, confirm: 'SOSTITUISCI', destination: '/x' }));
     assert.ok(validateOp('restore_instance', { replace_production: true, confirm: 'SOSTITUISCI', action: 'pause' }));

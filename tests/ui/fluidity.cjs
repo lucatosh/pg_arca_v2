@@ -28,7 +28,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   const nameIn = p.locator('.field:has-text("New database name") input'); await nameIn.fill('appdb_yesterday');
   await p.click('summary:has-text("Technical details")'); await p.click('button:has-text("General settings")'); await p.waitForSelector('text=Recovery & storage');
   await p.goBack(); await p.waitForSelector('text=Review and confirm', { timeout: 5000 });
-  assert.equal(await nameIn.inputValue(), 'appdb_ieri', 'the typed name survived the round trip');
+  assert.equal(await nameIn.inputValue(), 'appdb_yesterday', 'the typed name survived the round trip');
   assert(await p.locator('label.opt.on:has-text("Only a copy to check")').count() === 1, 'the chosen end survived the round trip');
   assert(await p.locator('details[open] summary:has-text("Technical details")').count() === 1, 'technical details still open');
   await shot('f1-restore-back');
@@ -45,11 +45,11 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Add a rule")').catch(() => {}); await p.fill('input[list=hba-users]', 'halfway');
   await tab('Status'); await tab('Access', 'HBA'); await p.waitForSelector('text=You have unapplied changes', { timeout: 15000 });
   assert(await p.locator('td:has-text("from network 10.1.2.0/24")').count() >= 1, 'the added rule is still in the list');
-  assert.equal(await p.locator('input[list=hba-users]').inputValue(), 'mezza', 'the half-typed rule is still in the form'); await shot('f2-hba-kept');
+  assert.equal(await p.locator('input[list=hba-users]').inputValue(), 'halfway', 'the half-typed rule is still in the form'); await shot('f2-hba-kept');
   await p.click('button:has-text("Discard changes")'); await p.waitForSelector('text=No changes compared');
   // 6. a modal with typed data does not vanish on a stray click outside; Esc asks; X closes
   await p.goto(base + '/#/'); await p.click('tr:has-text("prodpg") button:has-text("Organize")'); await p.fill('.modal input[list]', 'new/folder');
-  await p.mouse.click(5, 5); await p.waitForSelector('.modal-ask'); assert(await p.locator('.modal input[list]').inputValue() === 'nuova/cartella', 'typed data still there');
+  await p.mouse.click(5, 5); await p.waitForSelector('.modal-ask'); assert(await p.locator('.modal input[list]').inputValue() === 'new/folder', 'typed data still there');
   await p.click('.modal-ask button:has-text("Keep editing")'); await p.keyboard.press('Escape'); await p.waitForSelector('.modal-ask'); await shot('f3-modal-ask');
   await p.click('.modal-ask button:has-text("Close")'); await p.waitForSelector('.modal', { state: 'detached' });
   // ...and a modal without changes closes on a click outside as before

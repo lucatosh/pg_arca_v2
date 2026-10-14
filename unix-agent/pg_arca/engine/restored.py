@@ -42,6 +42,18 @@ _NET_FS = {"nfs", "nfs4", "cifs", "smb3", "fuse.sshfs", "glusterfs", "ceph", "fu
 
 
 # ============================================================================================================== registry
+
+def _parse_iso(s):
+    """datetime.isoformat() output back to an aware datetime, on Python 3.6 too (no fromisoformat there, and %z wants +0000, not +00:00)."""
+    import re as _re
+    t = _re.sub(r"([+-]\d\d):(\d\d)$", r"\1\2", str(s).strip().replace("Z", "+00:00"))
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(t, fmt)
+        except ValueError:
+            pass
+    raise ValueError("not an ISO timestamp: %r" % s)
+
 def _reg_path(state_dir):
     return os.path.join(state_dir, REGISTRY)
 
@@ -689,7 +701,7 @@ def housekeeping(state_dir, ctx=None, log=None, every=60):
         for it in items:
             try:
                 exp = it.get("expires_at")
-                if exp and datetime.fromisoformat(exp) < datetime.now(timezone.utc):
+                if exp and _parse_iso(exp) < datetime.now(timezone.utc):
                     threading.Thread(target=_expire, args=(state_dir, ctx() if callable(ctx) else ctx, it, log), daemon=True).start()
                     continue
                 if it.get("want") == "running" and it.get("state") in ("running", "paused") and not _alive(it):

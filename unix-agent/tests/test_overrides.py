@@ -55,7 +55,7 @@ class Overrides(unittest.TestCase):
     def test_describe_shows_source(self):
         d = mkpgdata(self.t); ov.save(self.cfg, {"pg_data": d})
         rows = {r["key"]: r for r in ov.describe(load_config(self.conf))}
-        self.assertEqual(rows["pg_data"]["source"], "impostato qui"); self.assertTrue(rows["pg_data"]["check"]["ok"])
+        self.assertEqual(rows["pg_data"]["source"], "set here"); self.assertTrue(rows["pg_data"]["check"]["ok"])
         self.assertEqual(rows["repo_path"]["source"], "agent.conf")
 
     def test_corrupt_local_file_does_not_stop_the_agent(self):
@@ -77,7 +77,7 @@ class ExecutorHandlers(unittest.TestCase):
             d = mkpgdata(t)
             r = ex.h_cfg_set({"set": {"pg_data": d, "pg_port": 5444}})
             self.assertEqual(cfg["pg_data"], d); self.assertEqual(cfg["pg_port"], 5444)
-            self.assertEqual({s["key"]: s["source"] for s in r["settings"]}["pg_data"], "impostato qui")
+            self.assertEqual({s["key"]: s["source"] for s in r["settings"]}["pg_data"], "set here")
             with self.assertRaises(OpError): ex.h_cfg_set({"set": {"pg_data": t}})
             self.assertEqual(cfg["pg_data"], d)                              # failed change leaves the running config alone
             ex.h_cfg_set({"set": {"pg_data": None}}); self.assertEqual(cfg["pg_data"], "")      # reset -> default again

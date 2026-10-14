@@ -118,10 +118,10 @@ export function StrategyPage() {
           <td className="num"><Button sm onClick={() => setDlg({ scope: 'cluster', k: c.id, label: c.name, env: c.environment })}>Assign</Button></td></tr>)}</tbody></table></div>}</Card>
 
       <Card title="Templates" actions={<Button sm icon="plus" onClick={() => setEdit('new')}>New template</Button>}>
-        <div className="grid g3">{v.templates.map(t => <div key={t.id} className="tpl"><div className="row"><strong className="grow">{t.name}</strong>{!t.builtin ? <Badge>Tuo</Badge> : null}</div>
+        <div className="grid g3">{v.templates.map(t => <div key={t.id} className="tpl"><div className="row"><strong className="grow">{t.name}</strong>{!t.builtin ? <Badge>Yours</Badge> : null}</div>
           <p className="small muted" style={{ margin: '6px 0' }}>{t.description || summarize(t.policy)}</p>
           <div className="small" style={{ marginBottom: 8 }}>{summarize(t.policy)}</div>
-          <div className="row">{ENVS.filter(e => v.suggested[e] === t.id).map(e => <Badge key={e} kind="accent">recommended {e}</Badge>)}<div className="grow" />
+          <div className="row wrap gap-s">{ENVS.filter(e => v.suggested[e] === t.id).map(e => <Badge key={e} kind="accent">recommended {e}</Badge>)}<div className="grow" />
             <Button sm onClick={() => setEdit({ ...t, id: t.builtin ? '' : t.id, name: t.builtin ? `${t.name} (copy)` : t.name, builtin: false })}>{t.builtin ? 'Duplicate' : 'Edit'}</Button>
             {!t.builtin ? <Button sm kind="ghost" aria-label="Delete template" onClick={() => del(t)}><Icon n="trash" /></Button> : null}</div></div>)}</div></Card>
     </div>

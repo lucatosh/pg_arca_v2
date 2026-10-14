@@ -78,12 +78,12 @@ import { requiredRole } from '../../server/auth';
   let r = await tick(now); assert.strictEqual(sent.length, 1); assert(r[wid].sent >= 3); assert(/archiver|WAL|Slot/i.test(sent[0].body.text));
   assert(!sent[0].body.text.includes('good-db'));
   r = await tick(now + 60_000); assert.strictEqual(sent.length, 1, 'nothing new -> nothing sent');
-  r = await tick(now + 25 * 3600_000); assert.strictEqual(sent.length, 2, 'reminder after 24h'); assert(/Ancora aperto/.test(sent[1].body.text));
-  // a problem disappears -> "Risolto"
+  r = await tick(now + 25 * 3600_000); assert.strictEqual(sent.length, 2, 'reminder after 24h'); assert(/Still open/.test(sent[1].body.text));
+  // a problem disappears -> "Resolved"
   await store.mutate(d => { (d.nodes.n1 as any).snapshot.postgres.slots = []; });
   const t2 = now + 26 * 3600_000; await tick(t2);
   // the node lastSeen is now old, so more things open; just check that the slot recovery was announced
-  assert(sent.some(s => /Risolto/.test(s.body.text) && /old_slot/.test(s.body.text)), sent.map(s => s.body.text).join('\n---\n'));
+  assert(sent.some(s => /Resolved/.test(s.body.text) && /old_slot/.test(s.body.text)), sent.map(s => s.body.text).join('\n---\n'));
   // failed delivery is retried after the back-off, state not advanced
   const n0 = sent.length; fail = true; await store.mutate(d => { (d.nodes.n3 as any).snapshot.wal.gap_count = 1; });
   const t3 = t2 + 120_000; let rr = await tick(t3); assert.strictEqual(rr[wid].sent, 0); assert(rr[wid].error);

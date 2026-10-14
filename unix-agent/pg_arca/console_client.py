@@ -265,7 +265,7 @@ class ConsoleClient(threading.Thread):
         if sh is not None and not (isinstance(sh, str) and re.match(r"^[A-Za-z0-9_.-]{1,60}$", sh)):
             sh = None
         if (sh or None) != self.config.get("stanza_shared"):
-            logger.info("backup catalogue (stanza) assigned by the console: %s", sh or "(own)")
+            logger.info("backup catalog (stanza) assigned by the console: %s", sh or "(own)")
             if sh:
                 self.config["stanza_shared"] = sh
             else:

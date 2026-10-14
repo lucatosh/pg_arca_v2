@@ -14,7 +14,7 @@ const SEED = Number(process.env.FUZZ_SEED || Math.floor(Math.random() * 1e9));
 let s = SEED;
 const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
 const pick = <T>(a: T[]): T => a[Math.floor(rnd() * a.length)];
-const STR = ['', ' ', 'x', '../../etc/passwd', '/etc/shadow', "'; DROP TABLE t; --", '$(rm -rf /)', '`id`', 'a\nb', '\u0000', 'é漢字🙂', 'RIAVVIA', 'ELIMINA', 'INSTALL',
+const STR = ['', ' ', 'x', '../../etc/passwd', '/etc/shadow', "'; DROP TABLE t; --", '$(rm -rf /)', '`id`', 'a\nb', '\u0000', 'é漢字🙂', 'RIAVVIA', 'ELIMINA', 'RESTART', 'DELETE', 'REPLACE', 'INSTALL',
   'x'.repeat(10000), 'replace', 'as_new', 'missing_only', 'full', 'incr', 'pgarca_stage_x', 'db.schema.table', '"a.b"."c"', '2026-10-12 10:00:00+02', 'now', '0/1000000', '-1', 'NaN', 'Infinity'];
 const val = (depth = 0): any => {
   const k = Math.floor(rnd() * 10);

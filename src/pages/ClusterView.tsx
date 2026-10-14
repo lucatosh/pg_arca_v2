@@ -18,7 +18,7 @@ import { TAB_ITEMS, TAB_GROUPS, groupOf } from '../tabs';
 import { GeoLinkModal } from '../GeoLink';
 
 const PREVIEW_TEXT: Record<string, string> = {
-  ldap: 'Synchronisation of users and groups from LDAP / Active Directory to PostgreSQL roles. Not available yet.',
+  ldap: 'Synchronization of users and groups from LDAP / Active Directory to PostgreSQL roles. Not available yet.',
   rbac: 'Console roles and permissions. Today there is a single administrator.',
   templates: 'Policies and templates that apply to several clusters. Not available yet.',
 };

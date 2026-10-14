@@ -203,7 +203,7 @@ function HbaInner({ c }: { c: any }) {
     {st.reads.some(r => !r.ok) ? <Banner kind="warn" title="Some nodes did not respond">{st.reads.filter(r => !r.ok).map(r => `${r.nodeName}: ${r.error}`).join(' · ')}</Banner> : null}
     {drift.length ? <Banner kind="warn" title="The nodes have different rules">{drift.map(d => d.nodeName).join(', ')} {drift.length > 1 ? 'differ' : 'differs'} from {okReads[0].nodeName}. Applying from here gives every node the same managed block; rules written by hand outside the block stay as they were.</Banner> : null}
     {probs.length ? <Banner kind="bad" title="PostgreSQL reports errors in the current file">{probs.slice(0, 3).map((p: any) => `line ${p.line_number}: ${p.error}`).join(' · ')}</Banner> : null}
-    {first.has_includes ? <Banner kind="info" title="The file uses include">Rules imported with include are not analysed here: the order shown may not reflect the whole file.</Banner> : null}
+    {first.has_includes ? <Banner kind="info" title="The file uses include">Rules imported with include are not analyzed here: the order shown may not reflect the whole file.</Banner> : null}
 
     <Suggestions rows={shown} existing={existing} first={first} add={add} c={c} />
 

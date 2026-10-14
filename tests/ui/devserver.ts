@@ -29,7 +29,7 @@ const withAgent = process.env.NO_AGENT !== '1';
 (async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uitest-'));
   const store = new Store(dir), app = new MiniApp(); const direct = new DirectDriver(store, loadSecretKey(dir));
-  const demo = () => ({ id: 'cluster-demo', name: 'Cluster demo', environment: 'dev', isSandbox: true, status: 'healthy', pgVersion: '16', databases: [{ name: 'demo', size: 1e9 }], totalSizeBytes: 1e9, tps: 0, haState: { nodes: [{ name: 'demo-1', role: 'primary', online: true, state: 'running', host: 'demo', port: 5432, replicationLagBytes: 0, cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 100, source: 'agent' }] } });
+  const demo = () => ({ id: 'cluster-demo', name: 'Demo cluster', environment: 'dev', isSandbox: true, status: 'healthy', pgVersion: '16', databases: [{ name: 'demo', size: 1e9 }], totalSizeBytes: 1e9, tps: 0, haState: { nodes: [{ name: 'demo-1', role: 'primary', online: true, state: 'running', host: 'demo', port: 5432, replicationLagBytes: 0, cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 100, source: 'agent' }] } });
   app.use(requireAdmin(store));
   mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec });
   mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountScopedRoutes(app, store); mountDestinationRoutes(app, store); mountNotifyRoutes(app, store, async () => ({ ok: true })); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store); mountWorkerRoutes(app, store); mountGeoRoutes(app, store);

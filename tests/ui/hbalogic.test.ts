@@ -35,9 +35,9 @@ assert(analyze(sortRules([R('host','all','all','10.0.0.0/8'), R('host','app','bo
 const st = sortRules([R('host','a','x','10.0.0.0/8'), R('host','b','x','10.0.0.0/8')]); assert.equal(st[0].database, 'a');
 
 // describe / tag
-assert(/Rifiuta/.test(describe(R('host', 'all', 'mallory', '203.0.113.0/24', 'reject'))));
-assert(/replica/.test(describe(R('hostssl', 'replication', 'rep', '10.0.0.7/32'))));
-assert(/solo con TLS/.test(describe(R('hostssl', 'app', 'bob', '10.0.0.0/24'))));
+assert(/Rejects/.test(describe(R('host', 'all', 'mallory', '203.0.113.0/24', 'reject'))));
+assert(/replication/.test(describe(R('hostssl', 'replication', 'rep', '10.0.0.7/32'))));
+assert(/TLS only/.test(describe(R('hostssl', 'app', 'bob', '10.0.0.0/24'))));
 assert.equal(tag(R('host', 'all', 'all', '0.0.0.0/0')).kind, 'warn');
 assert.equal(tag(R('host', 'app', 'bob', '10.0.0.1/32', 'trust')).kind, 'bad');
 assert.equal(tag(R('hostssl', 'app', 'bob', '10.0.0.0/24')).kind, 'ok');
@@ -51,7 +51,7 @@ assert.equal(fill({ rules: [R('hostssl', '{{db}}', '{{u}}', '{{net}}')] }, { db:
 // temporary rules
 import { withUntil, untilOf, stripUntil, untilLabel } from '../../src/hbaLogic';
 const t0 = Date.UTC(2030, 0, 1, 12, 0);
-assert.equal(withUntil('Consulente', t0), 'Consulente [until=2030-01-01T12:00Z]'); assert.equal(untilOf('x [until=2030-01-01T12:00Z]'), t0);
-assert.equal(stripUntil('Consulente [until=2030-01-01T12:00Z]'), 'Consulente'); assert.equal(withUntil('A [until=2030-01-01T12:00Z]', null), 'A'); assert.equal(untilOf('no'), null);
-assert.equal(untilLabel(t0, t0 - 30 * 60000), 'scade tra 30 min'); assert.equal(untilLabel(t0, t0 + 1), 'scaduta'); assert.equal(untilLabel(t0, t0 - 5 * 86400000), 'scade tra 5 giorni');
+assert.equal(withUntil('Consultant', t0), 'Consultant [until=2030-01-01T12:00Z]'); assert.equal(untilOf('x [until=2030-01-01T12:00Z]'), t0);
+assert.equal(stripUntil('Consultant [until=2030-01-01T12:00Z]'), 'Consultant'); assert.equal(withUntil('A [until=2030-01-01T12:00Z]', null), 'A'); assert.equal(untilOf('no'), null);
+assert.equal(untilLabel(t0, t0 - 30 * 60000), 'expires in 30 min'); assert.equal(untilLabel(t0, t0 + 1), 'expired'); assert.equal(untilLabel(t0, t0 - 5 * 86400000), 'expires in 5 days');
 console.log('hbalogic ok');

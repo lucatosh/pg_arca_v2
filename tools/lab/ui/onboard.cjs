@@ -10,12 +10,12 @@ fs.mkdirSync(out, { recursive: true });
   const b = await chromium.launch({ executablePath: exe }); const p = await (await b.newContext({ viewport: { width: 1360, height: 860 } })).newPage();
   const errs = []; p.on('pageerror', e => errs.push(e.message));
   const shot = async name => p.screenshot({ path: `${out}/${name}.png` });
-  await p.goto(base); await p.waitForSelector('text=Accedi');
+  await p.goto(base); await p.waitForSelector('text=Sign in');
   await p.fill('input[autocomplete=username]', process.env.ARCA_USER || 'claude-test'); await p.fill('input[type=password]', process.env.ARCA_PASS || 'claude-lab-test-pass-1');
-  await p.click('button[type=submit]'); await p.waitForSelector('button:has-text("Collega cluster")');
-  await p.click('button:has-text("Collega cluster") >> nth=0'); await p.click('text=Con agent (consigliato)'); await shot('01-agent-form');
+  await p.click('button[type=submit]'); await p.waitForSelector('button:has-text("Connect cluster")');
+  await p.click('button:has-text("Connect cluster") >> nth=0'); await p.click('text=With agent (recommended)'); await shot('01-agent-form');
   await p.selectOption('.modal select', env); await p.fill('.modal input[placeholder="es. pg-prod-01"]', label); await p.fill('.modal input[type=number]', String(n));
-  await p.click('button:has-text("Genera comando di installazione")'); await p.waitForSelector('.modal pre, .modal code'); await shot('02-command');
+  await p.click('button:has-text("Generate the install command")'); await p.waitForSelector('.modal pre, .modal code'); await shot('02-command');
   const cmd = (await p.locator('.modal pre, .modal .copyblock').first().innerText()).trim().split('\n')[0];
   fs.writeFileSync(`${out}/command.txt`, cmd + '\n'); console.log('COMMAND ' + cmd);
   // the operator now runs the command on each server; the dialog follows the joins by itself
@@ -27,7 +27,7 @@ fs.mkdirSync(out, { recursive: true });
     await p.waitForTimeout(3000);
   }
   await shot('03-joined'); console.log('FINAL ' + (await p.locator('.modal').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 600));
-  if (await p.locator('button:has-text("Apri il cluster")').count()) { await p.click('button:has-text("Apri il cluster")'); await p.waitForTimeout(4000); await shot('04-cluster'); console.log('CLUSTER ' + (await p.locator('main.page').innerText()).replace(/\s+/g, ' ').slice(0, 1500)); }
+  if (await p.locator('button:has-text("Open the cluster")').count()) { await p.click('button:has-text("Open the cluster")'); await p.waitForTimeout(4000); await shot('04-cluster'); console.log('CLUSTER ' + (await p.locator('main.page').innerText()).replace(/\s+/g, ' ').slice(0, 1500)); }
   if (errs.length) console.log('PAGE ERRORS ' + errs.join(' | '));
   await b.close();
 })().catch(e => { console.error('FAIL ' + e.message); process.exit(1); });
