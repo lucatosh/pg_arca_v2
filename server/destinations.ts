@@ -70,7 +70,8 @@ export function destinationFor(st: any, c: any): { dest: ResolvedDestination | n
   if (v.repoPath) d.repo_path = expand(v.repoPath, c);
   if (v.walPath) d.wal_path = expand(v.walPath, c);
   if (v.minFreeGb) d.min_free_gb = Number(v.minFreeGb);
-  if (v.walPath && !/\{(cluster|id)\}/.test(v.walPath) && st.clusters.filter((x: any) => !x.isSandbox).length > 1) {
+  // a value set on ONE cluster is that cluster's own path: the warning is about a shared value (global / environment / folder) without {cluster}
+  if (v.walPath && !/\{(cluster|id)\}/.test(v.walPath) && r.sources?.walPath?.scope !== 'cluster' && st.clusters.filter((x: any) => !x.isSandbox).length > 1) {
     d.wal_shared_warning = 'Il percorso WAL non contiene {cluster}: se lo stesso valore vale per più cluster, i loro segmenti WAL finiscono nella stessa cartella e si sovrascrivono.';
   }
   if (d.wal_path) {                                         // two clusters that RESOLVE to the same (or a nested) archive directory, even with placeholders (same name and environment, two clusters assigned the same path by hand)

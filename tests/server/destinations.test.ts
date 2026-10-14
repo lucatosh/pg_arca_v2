@@ -34,6 +34,10 @@ import { validateOp } from '../../server/optypes';
   // a WAL path shared by several clusters is called out
   await call('PUT', '/api/scoped/destination/assignments', { scope: 'global', value: { type: 'nfs', repoPath: '/mnt/backup/pgarca', walPath: '/mnt/backup/wal' } });
   assert.match(destinationFor(store.peek(), store.peek().clusters[0]).dest!.wal_shared_warning || '', /sovrascrivono/);
+  // the same value set on ONE cluster is its own path: no warning
+  await call('PUT', '/api/scoped/destination/assignments', { scope: 'cluster', key: 'c1', value: { type: 'nfs', repoPath: '/mnt/backup/pgarca', walPath: '/mnt/backup/wal/only-c1' } });
+  assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.wal_shared_warning, undefined);
+  await call('PUT', '/api/scoped/destination/assignments', { scope: 'cluster', key: 'c1', inherit: true });
   await call('PUT', '/api/scoped/destination/assignments', { scope: 'global', value: { type: 'nfs', repoPath: '/mnt/backup/pgarca', walPath: '/mnt/backup/wal/{cluster}', requireMount: true } });
 
   // two clusters that resolve to the same archive directory even WITH placeholders are caught, and apply refuses
