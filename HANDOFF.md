@@ -157,6 +157,17 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### 15/10 00:40 — checkpoint (pausa chiesta dall'utente), ramo `release/1.0.0-rc.1`
+Fatti stanotte, committati e pushati (ogni voce con test):
+- **Backup su standby** (6d2ae53): la console fa fare `pg_switch_wal` al primario quando il backup entra in fase WAL (hook sul report di progresso, idempotente; `api.test.ts`); l'agent diagnostica presto l'archivio NON condiviso (`PGA-WAL-021` con rimedio, `tests/test_backup_wait.py`), progresso periodico con i segmenti mancanti.
+- **Nome membro Patroni** (6d2ae53): l'agent riporta `local_node.name` (da `/patroni`, altrimenti match host↔IP locali); `deriveNodes` unisce le righe per nome membro (`memberName`) — niente più nodi doppi «no agent» — e UI+server usano/traducono il nome membro per switchover/failover/restart/reinit (errore visto: «candidate 'pg-17-2' is not a member of this cluster»). Test in `view.test.ts`.
+- **Focus UI** (6d2ae53): la Modal metteva il focus a ogni re-render del genitore (pagine in polling) → cursore che saltava al primo campo mentre si scriveva e selezione persa prima di Ctrl+C/V. Ora il focus è messo una volta sola (refs per onClose/locked).
+- **Backup server con cartella** (32148fc): il «Check a backup directory» sul worker mostrava solo «not usable» senza i dettagli (erano in `result.paths`, mai renderizzati): ora checks+rimedi+fix_commands (componente `DestPaths` condiviso con Infra); a check OK un pannello «next step» stampa export NFS (all_squash+anonuid del proprietario), riga fstab per i nodi e dove impostare la destinazione. Hint in Infra. Ultimo italiano in destinations.ts.
+- **Badge testata cluster** (af8c109): combina `c.status` con i findings del briefing (critico → «Critical problems»).
+- **build .rpm** (in 6d2ae53): immagine builder `pg-arca-rpmbuild:el9` costruita una volta e riusata (il dnf dentro il container superava 15 min). Build rilanciata sulla VM alle 00:30 (`~/lablogs/release-rc1.log`, worktree `~/rc1`, `--skip-tests`): DA VERIFICARE l'esito.
+Suite verdi in locale: server (view/ops/api/destinations), agent 246, i18n, e2e, fluidity.
+Restano (ordine consigliato): F2 ritiro ramo morto; F1 fencing geo; verifica build VM + release-test.sh sui CT; `package-lock.json`; riesame architettura backup/restore (#68: vedi tracker); 9 copie `0000000A…11` in conflicts/ da spiegare; rejoinError hy-mi.
+
 ### 14/10 21:57 — FERMO su richiesta dell'utente (utilizzo finito). Da riprendere da qui, sul ramo `release/1.0.0-rc.1`
 **1. Build di release (priorità dell'utente)**
 - Il pull di `rockylinux:9` si è piantato più di 10 minuti nel passo .rpm. Correzione 33176fb: l'.rpm si costruisce in un'immagine EL9 già presente sull'host (`pg-arca-lab-rocky:9`), con limiti di tempo su pull e build.
