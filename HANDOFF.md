@@ -157,6 +157,28 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### Sessione 14/10 pomeriggio (3): giro UX sulla console vera, root cause dei fork di timeline
+- **`tools/lab/ui/explore.cjs`**: cammina su tutte le 142 pagine della console reale (12 generali + 13 cluster × 10 schede).
+  - Nessun errore di pagina, nessuna API lenta oltre 3 s, nessun undefined/NaN.
+  - Problemi trovati e corretti:
+    - testi in inglese in «Oggi» (errori delle operazioni): tradotti, con il nome dell'operazione;
+    - «In salute · problemi critici» → «Problemi critici»;
+    - versione PostgreSQL abbreviata nella lista;
+    - avvisi duplicati sul sito di replica geo (stesso archivio);
+    - **allarme «copie WAL divergenti» che non si poteva mai chiudere**: ora si esaminano e si segnano come esaminate dalla scheda Backup (op `wal_conflicts`, copie conservate in `conflicts/reviewed/`).
+- **Root cause dei fork di timeline in georidondanza**: i siti non vedevano l'archivio condiviso. Senza restore_command una promozione sceglie un numero di timeline già usato dall'altro sito. Questo ha portato a due problemi, entrambi visti sul lab:
+  - riallineamento impossibile con Patroni o pg_rewind;
+  - archiviatore del nuovo primario **bloccato** su `00000007.history`, con una copia in quarantena a ogni tentativo.
+
+  Correzioni:
+  - restore_command su entrambi i siti (standby_cluster, oppure `postgresql.recovery_conf` per il primario), impostato alla retrocessione, dopo ogni promozione e dall'azione nella prontezza;
+  - nuovo controllo di prontezza `archive_primary` e nuovo controllo `archiver` (archiviazione bloccata sul primario);
+  - quarantena una sola volta per contenuto;
+  - errore `PGA-WAL-033` per i file di history, con spiegazione e soluzione nel briefing.
+- Lab: hy-mi è stato ricostruito dal nuovo primario (5002 righe su entrambi i siti). L'archiviatore di hy-rm è stato sbloccato spostando in `conflicts/` la history del ramo morto.
+- **In corso al momento della consegna**: `scenario-hy.py dr,wan` con le correzioni (`~/lablogs/hy-dr3.log`; il sito hy-mi è stato spento alle 13:10:17, 10003 righe confermate). Inoltre `round1.sh` (`restore-ui.cjs` su pg-solo1, pg-s14, arca-lab e vers18; `~/lablogs/rui-*.log`). pg-s14 era OK su backup, tabella, copia, righe e database.
+- Lab vers: stesso problema di IP Docker scambiati dopo il reboot (p18a prova a replicare da s14). Va aggiunto IP fisso come per hy.
+
 ### Sessione 14/10 pomeriggio (2): tutti i server vergini OK via web UI, georidondanza provata davvero, password standard
 - **restore-ui.cjs su tutti e 5 i server vergini Proxmox: TUTTO OK**. Scenari: archiviazione e riavvio dalla UI, backup, tabella, tabella in quarantena, righe, database, copia d'istanza, sostituzione del server.
   - deb12-pg15: 299 s.
