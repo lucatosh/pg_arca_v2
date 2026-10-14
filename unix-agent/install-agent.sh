@@ -104,7 +104,7 @@ else
   if [[ -n "${PG_ARCA_BUNDLE_SHA256:-}" ]]; then echo "${PG_ARCA_BUNDLE_SHA256}  $TMP/agent.tgz" | sha256sum -c - >/dev/null || die "bundle checksum mismatch"; fi
   mkdir "$TMP/b"
   if command -v tar >/dev/null; then tar xzf "$TMP/agent.tgz" -C "$TMP/b"
-  else python3 -c 'import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2])' "$TMP/agent.tgz" "$TMP/b"; fi      # minimal images (Rocky/RHEL containers) have no tar
+  else python3 -W ignore -c 'import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2])' "$TMP/agent.tgz" "$TMP/b"; fi      # minimal images (Rocky/RHEL containers) have no tar
   BUNDLE="$TMP/b"
 fi
 

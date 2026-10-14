@@ -3,9 +3,10 @@
 #   tools/lab/ui/sql.sh <cluster name> <database> '<sql>'        (or the SQL on stdin)
 #   tools/lab/ui/sql.sh <cluster name> --node                     prints "<node> <port>" of the primary
 #   tools/lab/ui/sql.sh <cluster name> --on <node> <port> <db> '<sql>'   on that node / port (e.g. a restored copy)
-# Docker containers on this VM: docker exec as the postgres OS user (or the lab superuser password). Output: psql -At (one row per line, | between columns).
+# Docker containers on this VM or Proxmox containers (node.sh):  as the postgres OS user (or the lab superuser password). Output: psql -At (one row per line, | between columns).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/.."
 name=$1; shift
 if [ "${1:-}" = --on ]; then node=$2; port=$3; shift 3
 else
@@ -21,10 +22,10 @@ fi
 if [ "${1:-}" = --node ]; then echo "$node $port"; exit 0; fi
 db=$1; sql=${2:-$(cat)}
 set -a; [ -f .env ] && . ./.env; set +a
-docker inspect "$node" >/dev/null 2>&1 || { echo "node $node is not a container on this VM" >&2; exit 2; }
 psql_peer="psql -X -At -q -v ON_ERROR_STOP=1 -p $port${SOCK:+ -h $SOCK}"     # SOCK=<socket dir>: a restored copy listens on its private socket
-if docker exec "$node" su postgres -s /bin/bash -c "$psql_peer -d postgres -c 'select 1'" >/dev/null 2>&1; then
-  printf '%s\n' "$sql" | docker exec -i "$node" su postgres -s /bin/bash -c "$psql_peer -d '$db'"
+N="$HERE/node.sh"
+if "$N" "$node" "su postgres -s /bin/bash -c \"$psql_peer -d postgres -c 'select 1'\"" >/dev/null 2>&1 </dev/null; then
+  printf '%s\n' "$sql" | "$N" "$node" "cd / && su postgres -s /bin/bash -c \"$psql_peer -d '$db'\""
 else
-  printf '%s\n' "$sql" | docker exec -i -e PGPASSWORD="${PG_SUPER_PASSWORD:-}" "$node" psql -X -At -q -v ON_ERROR_STOP=1 -h localhost -U postgres -p "$port" -d "$db"
+  printf '%s\n' "$sql" | "$N" "$node" "PGPASSWORD='${PG_SUPER_PASSWORD:-}' psql -X -At -q -v ON_ERROR_STOP=1 -h localhost -U postgres -p $port -d '$db'"
 fi

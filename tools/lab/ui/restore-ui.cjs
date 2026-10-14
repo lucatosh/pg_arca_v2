@@ -56,7 +56,21 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
   sql(DBX, `CREATE TABLE t(id int PRIMARY KEY, v text); INSERT INTO t SELECT g, md5(g::text) FROM generate_series(1, 1234) g;`);
 
   await scenario('backup', async mark => {
-    await p.goto(`${base}/#/c/${encodeURIComponent(cl.id)}/backup`); await p.waitForSelector('text=Esegui un backup', { timeout: 60e3 }); await shot('backup');
+    await p.goto(`${base}/#/c/${encodeURIComponent(cl.id)}/backup`); await p.waitForSelector('text=Esegui un backup', { timeout: 60e3 });
+    // a server just connected: WAL archiving switched on from the console (and the restart it needs), as a user would
+    if (await p.locator('button:has-text("Attiva archiviazione WAL")').count()) {
+      await p.click('button:has-text("Attiva archiviazione WAL")'); await p.click('.modal button:has-text("Attiva")');
+      await until('/serve un riavvio|Archiviazione attiva|Già attiva/', T.verdict); mark('archiving set'); await shot('archive-set');
+      if (await p.locator('button:has-text("Riavvia ora")').count()) {
+        await p.click('button:has-text("Riavvia ora")'); await p.waitForSelector('.modal input', { timeout: 60e3 }); await p.fill('.modal input', 'RIAVVIA'); await p.click('.modal button:has-text("Riavvia")');
+        mark('restart asked');
+      }
+      const end = Date.now() + 300e3;
+      while (Date.now() < end && await p.locator('text=Attiva l’archiviazione WAL').count()) { await p.waitForTimeout(5000); await failWatch(); }
+      if (await p.locator('text=Attiva l’archiviazione WAL').count()) throw new Error('archiving still off after the restart: ' + await opText());
+      mark('archiving on'); await shot('archive-on');
+    }
+    await shot('backup');
     await p.click('button:has-text("Avvia backup")'); mark('started');
     await p.waitForSelector('text=/Backup .* completato/', { timeout: T.restore }); mark('done'); await shot('backup-done');
   });
@@ -136,7 +150,7 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
     const nm = await p.locator('.modal').innerText(); const name = (nm.match(/scrivi (\S+)/) || [])[1];
     await p.fill('.modal input.input', name); await p.click('.modal button:has-text("Elimina")');
     await p.waitForSelector('.card:has-text("Ripristino") .restored .oppanel:has-text("Completata")', { timeout: 300e3 }); mark('deleted');
-    try { execFileSync('docker', ['exec', node, 'test', '-e', dir]); throw new Error('directory still there: ' + dir); } catch (e) { if (/still there/.test(e.message)) throw e; }
+    try { execFileSync(path.join(__dirname, 'node.sh'), [node, `test -e ${dir}`]); throw new Error('directory still there: ' + dir); } catch (e) { if (/still there/.test(e.message)) throw e; }
     await shot('instance-deleted');
   });
 
