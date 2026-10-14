@@ -10,7 +10,7 @@ import { GEO_DR_TIMING, geoMonitorTick, watchOf } from '../../server/geodr';
 import { deriveCluster } from '../../server/view';
 
 (async () => {
-  Object.assign(GEO_DR_TIMING, { stableMs: 300, pollMs: 50, maxCatchupMs: 3000, rejoinPollMs: 50 });
+  Object.assign(GEO_DR_TIMING, { stableMs: 300, pollMs: 50, maxCatchupMs: 3000, rejoinPollMs: 50, rejoinStreamMs: 1500 });
   const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'geo-'))); const app = new MiniApp();
   app.use((req: any, _r: any, next: any) => { req.actor = 'mario'; req.role = 'admin'; return next(); });
   mountGeoRoutes(app, store);
@@ -270,6 +270,24 @@ import { deriveCluster } from '../../server/view';
     await answerTl('m', { timeline: 3, history: hist, lsn: '0/9100000' }); await answerTl('r', { timeline: 3, history: hist, lsn: '0/9100000' });
     for (let i = 0; i < 80 && jobs().find(j => j.type === 'rejoin')!.status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
     assert.strictEqual(jobs().find(j => j.type === 'rejoin')!.status, 'succeeded', JSON.stringify(jobs()));
+    // g) the old site is on a HIGHER timeline than the new primary (it promoted itself while away): after the demotion it never streams
+    //    ("highest timeline 12 of the primary is behind recovery timeline 13"): rebuilt from the new primary (second demotion with force_rewind)
+    await st4.mutate(d => { d.settings.geoJobs = {}; for (const o of d.operations) if (o.status === 'queued') o.status = 'cancelled';
+      d.settings.geoFailovers = { [key]: { from: 'm', to: 'r', fromName: 'hy-mi', toName: 'hy-rm', at: now(), forkLsn: '0/9000000', lossBytes: 0, auto: true, timeline: 3 } };
+      d.nodes.r1.snapshot = snapP('0/9200000'); d.nodes.r1.snapshot.patroni.scope = 'hy-rm';
+      d.nodes.m1.snapshot = { ...snapP('0/9300000'), patroni: { accessible: true, scope: 'hy-mi', local_node: { role: 'leader', state: 'running' }, standby_cluster: null } }; });
+    await tick(500_000);
+    const hist3 = '1\t0/5000000\tno recovery target specified\n2\t0/9000000\tno recovery target specified\n';
+    await answerTl('m', { timeline: 4, history: hist3 + '3\t0/9200000\tno recovery target specified\n', lsn: '0/9300000' }); await answerTl('r', { timeline: 3, history: hist3, lsn: '0/9200000' });
+    // demotion answered, but the site stays a standby leader that does NOT stream (waiting)
+    const d1 = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/9300000', 'waiting', 30), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
+    assert(!d1.params.force_rewind, 'first demotion is plain (different timeline numbers)');
+    await answerTl('m', { timeline: 4, history: hist3 + '3\t0/9200000\tno recovery target specified\n', lsn: '0/9300000' }); await answerTl('r', { timeline: 3, history: hist3, lsn: '0/9200000' });
+    const d2 = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/9200000', 'streaming', 1), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
+    assert.strictEqual(d2.params.force_rewind, true, 'higher timeline on the old site: rebuilt from the new primary');
+    await answerTl('m', { timeline: 3, history: hist3, lsn: '0/9200000' }); await answerTl('r', { timeline: 3, history: hist3, lsn: '0/9200000' });
+    for (let i = 0; i < 120 && jobs().find(j => j.type === 'rejoin')!.status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
+    const rj3 = jobs().find(j => j.type === 'rejoin')!; assert.strictEqual(rj3.status, 'succeeded', JSON.stringify(rj3.steps)); assert(rj3.steps.some((x: any) => /ahead of hy-rm/.test(x.text)));
   }
   console.log('geo tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

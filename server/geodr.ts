@@ -20,7 +20,7 @@ import { geoGroups, geoSlotFor, submitTo, waitOp, GeoGroup, Site } from './geo';
 
 const MB = 1024 * 1024;
 /** Waits of the failover (tests shorten them). */
-export const GEO_DR_TIMING = { stableMs: 25_000, pollMs: 2000, maxCatchupMs: 180_000, rejoinPollMs: 3000 };
+export const GEO_DR_TIMING = { stableMs: 25_000, pollMs: 2000, maxCatchupMs: 180_000, rejoinPollMs: 3000, rejoinStreamMs: 300_000 };
 export interface GeoPolicy { autoFailover: boolean; confirmSec: number; maxLossMB: number; autoRejoin: boolean }
 export const GEO_POLICY_DEFAULT: GeoPolicy = { autoFailover: false, confirmSec: 30, maxLossMB: 16, autoRejoin: true };
 export const policyOf = (st: any, key: string): GeoPolicy => ({ ...GEO_POLICY_DEFAULT, ...((st.settings.geoPolicy || {})[key] || {}) });
@@ -210,9 +210,21 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     const r = await waitOp(store, o.id, 300_000);
     if (r.status !== 'succeeded') throw new Error(`demotion of ${old.name} failed: ${r.error || r.status}`);
     await step(store, id, `2/3 ${old.name} is a standby site of ${neu.name} (${ep.host}:${ep.port}): waiting for it to receive WAL`);
-    const t0 = Date.now(); let ok = false;
-    while (Date.now() - t0 < 300_000) { const s = siteNow(store, f.from); if (s?.role === 'standby' && s.receiver?.status === 'streaming') { ok = true; break; } await new Promise(r2 => setTimeout(r2, GEO_DR_TIMING.rejoinPollMs)); }
-    if (!ok) throw new Error(`${old.name} is not receiving WAL from ${neu.name} after 5 minutes: pg_rewind probably failed (check use_pg_rewind and the local replication pg_hba rule) and the members must be reinitialized`);
+    const streaming = async () => { const t0 = Date.now(); while (Date.now() - t0 < GEO_DR_TIMING.rejoinStreamMs) { const s = siteNow(store, f.from); if (s?.role === 'standby' && s.receiver?.status === 'streaming') return true; await new Promise(r2 => setTimeout(r2, GEO_DR_TIMING.rejoinPollMs)); } return false; };
+    let ok = await streaming();
+    if (!ok) {
+      // the old site promoted itself while it was away and is now on a HIGHER timeline than the new primary ("highest timeline N of the primary is
+      // behind recovery timeline M"): a standby can never follow a lower timeline and pg_rewind is not run by Patroni in this state. Rebuilt from the new primary.
+      const ts = await timelines(store, id, 'stuck', f.from, f.to);
+      if (ts.o && ts.n && Number(ts.o.timeline) > Number(ts.n.timeline)) {
+        await step(store, id, `2b ${old.name} is on timeline ${ts.o.timeline}, ahead of ${neu.name} (${ts.n.timeline}): it promoted itself while it was away. A standby cannot follow a lower timeline, so it is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`);
+        const o2 = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', force_rewind: true, timeout: 3600 }, `geo:${id}:demote-rebuild`, 'pg_arca (automatic rejoin)');
+        const r2 = await waitOp(store, o2.id, 3700_000);
+        if (r2.status !== 'succeeded') throw new Error(`rebuild of ${old.name} from ${neu.name} failed: ${r2.error || r2.status}`);
+        ok = await streaming();
+      }
+    }
+    if (!ok) throw new Error(`${old.name} is not receiving WAL from ${neu.name} after ${Math.round(GEO_DR_TIMING.rejoinStreamMs / 60000)} minutes: pg_rewind probably failed (check use_pg_rewind and the local replication pg_hba rule) and the members must be reinitialized`);
     // streaming is not enough: it must follow the new primary's HISTORY (same timeline, same switch points), or it is replaying from the wrong place
     const t2 = await timelines(store, id, 'post', f.from, f.to);
     if (sameTimelineDiverged(t2.o, t2.n)) throw new Error(`${old.name} receives WAL from ${neu.name} but its history of timeline ${t2.o.timeline} differs: the data ${neu.name} wrote after the failover does not reach it. It must be rebuilt from ${neu.name} (Demote with rebuild, or patronictl reinit of the members)`);
