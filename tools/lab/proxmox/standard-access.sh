@@ -31,6 +31,7 @@ echo "root:$PW" | chpasswd && log "root pw"
 # PostgreSQL roles: every local instance, by its socket
 for s in /var/run/postgresql/.s.PGSQL.* /run/postgresql/.s.PGSQL.* /tmp/.s.PGSQL.*; do
   [ -S "$s" ] || continue; port=${s##*.}; dir=${s%/.s.PGSQL.*}
+  case " ${seen:-} " in *" $port "*) continue;; esac; seen="${seen:-} $port"      # /run/postgresql and /var/run/postgresql are the same directory
   q() { su postgres -s /bin/sh -c "cd / && psql -XAtq -h $dir -p $port -d postgres -c \"$1\"" 2>/dev/null; }
   [ "$(q 'select pg_is_in_recovery()')" = f ] || { log "pg:$port standby (roles come from its primary)"; continue; }
   for r in postgres replicator rewinder; do
