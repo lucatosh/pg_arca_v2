@@ -59,6 +59,13 @@ case "${1:-help}" in
   wan-restore) for ip in ${IPB[@]}; do while sudo -n iptables -D DOCKER-USER -s $ip -j DROP 2>/dev/null; do :; done; done; echo "WAN restored at $(date +%T)" ;;
   sql-a) l=$(leader a); docker exec "$l" sudo -u postgres psql -XAt -d shop -c "$2" ;;
   sql-b) l=$(leader b); inct "$l" "sudo -u postgres psql -XAt -d shop -c $(printf %q "$2")" ;;
+  fixip)    # the containers' addresses pinned (a VM reboot gave hy1 and hy2 each other's address; Patroni's connect_address is fixed at install time)
+    n=$(docker inspect hy1 --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+    for c in hy-haproxy hy-etcd hy2 hy1; do docker network disconnect -f "$n" $c 2>/dev/null || true; done
+    docker network connect --ip 172.30.40.2 "$n" hy1; docker network connect --ip 172.30.40.3 "$n" hy2
+    docker network connect --ip 172.30.40.10 --alias hy-etcd "$n" hy-etcd; docker network connect --ip 172.30.40.11 --alias hy-haproxy "$n" hy-haproxy
+    for c in hy1 hy2 hy-etcd hy-haproxy; do echo "$c $(docker inspect $c --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"; done
+    docker restart hy-haproxy >/dev/null; for c in hy1 hy2; do docker exec $c systemctl restart patroni; done ;;
   destroy) $DC down -v || true; for i in 0 1 2; do pve "pct stop ${CT[$i]} 2>/dev/null; pct destroy ${CT[$i]} --purge 2>/dev/null" || true; done ;;
   *) sed -n 2,13p "$0" ;;
 esac
