@@ -23,10 +23,13 @@ const base = process.env.BASE || 'http://localhost:5188';
   assert(await p.locator('.rsum:has-text("appdb")').count() === 1, 'the chosen database is still there');
   // 2. from the check step open a general setting, then Back: same step, same name, details still open
   await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=Controlla e conferma');
+  await p.click('label.opt:has-text("Solo una copia da controllare") input');          // the end chosen here must survive the round trip too
+  await p.waitForSelector('text=/Tutto pronto|Pronto: leggi/'); await p.waitForSelector('.stale', { state: 'detached' });
   const nameIn = p.locator('.field:has-text("Nome del nuovo database") input'); await nameIn.fill('appdb_ieri');
   await p.click('summary:has-text("Dettagli tecnici")'); await p.click('button:has-text("Impostazioni generali")'); await p.waitForSelector('text=Ripristino e archivi');
   await p.goBack(); await p.waitForSelector('text=Controlla e conferma', { timeout: 5000 });
   assert.equal(await nameIn.inputValue(), 'appdb_ieri', 'the typed name survived the round trip');
+  assert(await p.locator('label.opt.on:has-text("Solo una copia da controllare")').count() === 1, 'the chosen end survived the round trip');
   assert(await p.locator('details[open] summary:has-text("Dettagli tecnici")').count() === 1, 'technical details still open');
   await shot('f1-restore-back');
   // 3. the area pills remember the sub-tab: Protezione > Ripristino, go to Stato, back to Protezione = Ripristino

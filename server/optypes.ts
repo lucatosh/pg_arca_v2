@@ -189,8 +189,17 @@ Object.assign(OP_SPECS, {
   restored_resume: { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => rstId(p) },
   restored_keep:   { mutating: true, target: 'node', lane: 'control', validate: (p: any) => rstId(p) || (p.hours !== undefined && p.hours !== null && !(Number(p.hours) >= 0 && Number(p.hours) <= 8760) ? 'hours 0..8760 (0 = keep until deleted)' : null) },
   restored_drop:   { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => rstId(p) || (typeof p.confirm !== 'string' || !p.confirm ? 'confirm must be the name of the copy' : null) },
-  restore_database: { ...dataOp, validate: (p: any) => !pgName(p.database) ? 'database required' : (p.new_name && !dbName.test(String(p.new_name)) ? 'invalid new_name' : (targetErr(p) || intoErr(p))) },
-  restore_object:   { ...dataOp, validate: (p: any) => objectsErr(p) || (p.stage_db && !dbName.test(String(p.stage_db)) ? 'invalid stage_db' : (targetErr(p) || intoErr(p))) },
+  restore_database: { ...dataOp, validate: (p: any) => !pgName(p.database) ? 'database required' : (p.new_name && !dbName.test(String(p.new_name)) ? 'invalid new_name' : (targetErr(p) || intoErr(p)
+                        || (p.replace_original !== undefined && typeof p.replace_original !== 'boolean' ? 'replace_original must be boolean' : null)
+                        || (p.replace_original === true && p.confirm !== 'SOSTITUISCI' ? 'replace_original needs confirm="SOSTITUISCI" (the original is renamed and kept, its sessions are ended)' : null))) },
+  // finish: the recovered objects go back into the ORIGINAL database at the end of the same operation (promote with the chosen mode, or every row back)
+  restore_object:   { ...dataOp, validate: (p: any) => objectsErr(p) || (p.stage_db && !dbName.test(String(p.stage_db)) ? 'invalid stage_db' : (targetErr(p) || intoErr(p)
+                        || (p.finish !== undefined && !['promote', 'rows_all'].includes(p.finish) ? 'finish must be promote|rows_all' : null)
+                        || (p.promote_mode !== undefined && !['as_new', 'replace', 'missing_only'].includes(p.promote_mode) ? 'promote_mode must be as_new|replace|missing_only' : null)
+                        || (p.finish === 'promote' && p.promote_mode === 'replace' && p.confirm !== 'SOSTITUISCI' ? 'replace needs confirm="SOSTITUISCI"' : null)
+                        || (p.finish === 'rows_all' && !(Array.isArray(p.objects) ? p.objects.length === 1 : true) ? 'rows_all works on one table' : null))) },
+  restore_db_swap:  { ...dataOp, target: 'primary', cancellable: false, validate: (p: any) => !dbName.test(String(p.restored ?? '')) || !pgName(p.original) ? 'restored and original database names required'
+                        : (p.restored === p.original ? 'restored and original must differ' : (String(p.restored).startsWith('pgarca_stage_') ? 'a quarantine database cannot replace a database' : (!p.dry_run && p.confirm !== 'SOSTITUISCI' ? 'confirm="SOSTITUISCI" required' : intoErr(p)))) },
   hba_read:     { mutating: false, target: 'node', lane: 'control', validate: () => null },
   hba_plan:     { mutating: false, target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) },
   hba_apply:    { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) || (p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },

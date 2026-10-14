@@ -78,6 +78,6 @@ function ConsoleAddress() {
   return <Card title="Indirizzo della console">
     <p className="small muted" style={{ marginTop: 0 }}>L’indirizzo con cui i server dei database raggiungono questa console: compare nei comandi di installazione e di aggiornamento dell’agent. Se resta vuoto si usa quello con cui hai aperto la console nel browser.</p>
     {q.data?.warning && !q.data.configured ? <Banner kind="warn">{q.data.warning}</Banner> : null}
-    <Field label="Indirizzo raggiungibile dai server" hint={q.data ? `Ora in uso: ${q.data.effective}` : undefined} error={err}><div className="row gap-s"><input className="input mono" value={v ?? ''} onChange={e => setV(e.target.value)} placeholder="https://pgarca.azienda.it" /><Button kind="primary" busy={busy} disabled={v === null || v === (q.data?.publicUrl || '')} onClick={save}>Salva</Button></div></Field>
+    <Field label="Indirizzo raggiungibile dai server" hint={q.data ? `Ora in uso: ${q.data.effective}` : undefined} error={err}><div className="row gap-s"><input className="input mono" value={v ?? ''} onChange={e => setV(e.target.value)} placeholder="https://pgarca.azienda.it" /><Button kind="primary" busy={busy} disabled={v === null || v === (q.data?.publicUrl || '')} onClick={save}>Salva indirizzo</Button></div></Field>
   </Card>;
 }

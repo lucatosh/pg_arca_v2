@@ -2,7 +2,7 @@ import { RecoveryPlacement } from './Placement';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago } from '../ui';
 import { Op, useDraft, useOpRunner, useQuery } from '../hooks';
-import { OpPanel, Result } from './shared';
+import { OpPanel, Result, hintFor } from './shared';
 import { DestPicker, RestoredCard, RestoredList, TTL_CHOICES } from './Restored';
 import { itCheck, itFix } from '../i18n';
 
@@ -56,6 +56,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [db, setDb] = useDraft(K + ':db', ''); const [objs, setObjs] = useDraft<string[]>(K + ':objs', []); const obj = objs[0] || ''; const [search, setSearch] = useDraft(K + ':search', '');
   const [tgt, setTgt] = useDraft<Target | null>(K + ':tgt', null);
   const [dest, setDest] = useDraft(K + ':dest', ''); const [newName, setNewName] = useDraft(K + ':newName', ''); const [action, setAction] = useDraft<'promote' | 'pause'>(K + ':action', 'promote'); const [delta, setDelta] = useDraft(K + ':delta', false); const [keepArch, setKeepArch] = useDraft(K + ':keepArch', false); const [mkRoles, setMkRoles] = useDraft(K + ':mkRoles', true); const [ttl, setTtl] = useDraft(K + ':ttl', 24);
+  // the END of the job, chosen before starting: the tool repairs the original (default) or only produces a copy to look at
+  const [fin, setFin] = useDraft<'fix' | 'copy'>(K + ':fin', 'fix');
   const [ask, setAsk] = useState(false);
   const prom = useOpRunner(c.id, undefined, K + ':prom'); const prev = useOpRunner(c.id, undefined, K + ':prev'); const [pmode, setPmode] = useDraft<PMode | null>(K + ':pmode', null); const [pdrop, setPdrop] = useDraft(K + ':pdrop', true); const [askPromote, setAskPromote] = useState(false); const [askOrphans, setAskOrphans] = useState(false);
   const [lastPromoteV, setLastPromote] = useDraft<any>(K + ':lastPromote', null); const lastPromote = { current: lastPromoteV }; const [pschema, setPschema] = useDraft(K + ':pschema', '');
@@ -76,11 +78,15 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   // "wrong rows": once the table is known, look for the mass DELETE / UPDATE
   useEffect(() => { if (intent === 'rows' && step === 2 && obj && !dml.op && !dml.busy) dml.run('wal_forensics', { mode: 'dml', hours: 24, min_rows: dmlMin, limit: 30 }); }, [intent, step, obj]);
 
+  // functions, not values: they read state declared further down (what exists now, what is gone)
+  const dbExists = () => !!live?.has(db);
+  const finMode = (): PMode => pmode || recommendedMode(goneNow);
   // the destination: the one the operator picked, else the one the agent proposed in the last check
   const destNow = (): string => dest || (plan.op?.status === 'succeeded' && plan.op.params?.scope === 'instance' ? String(plan.op.result?.destination || '') : '');
   const tparams = (): Record<string, any> => !tgt ? {} : tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : tgt.mode === 'xid' ? { target_xid: tgt.xid, inclusive: false, ...(tgt.lsn ? { xid_lsn: tgt.lsn } : {}) } : {};
   const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { ...(destNow() ? { destination: destNow() } : {}), label: c.name, action, delta, ttl_hours: ttl, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
-    : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: newName, ...(mkRoles ? { create_missing_roles: true } : {}), ...tparams() } } : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams() } };
+    : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: fin === 'fix' ? (dbExists() ? restoredName(db) : db) : newName, ...(fin === 'fix' && dbExists() ? { replace_original: true, confirm: 'SOSTITUISCI' } : {}), ...(mkRoles ? { create_missing_roles: true } : {}), ...tparams() } }
+    : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams(), ...(fin === 'fix' ? (intent === 'rows' ? { finish: 'rows_all' } : { finish: 'promote', promote_mode: finMode(), ...(finMode() === 'replace' ? { confirm: 'SOSTITUISCI' } : {}) }) : {}) } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
 
   const catDbs: CatDb[] = dbsR.op?.result?.databases || [];
@@ -134,7 +140,9 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
   const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && objs.length > 0 && (intent !== 'rows' || (objs.length === 1 && splitId(obj).length === 3)));
   const okName = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName);
-  const okWhere = scope === 'instance' ? destNow().startsWith('/') : scope === 'database' ? okName : true;
+  // the end of the job overwrites something that exists now: typed confirmation
+  const overwrites = () => fin === 'fix' && ((scope === 'database' && dbExists()) || (scope === 'object' && intent !== 'rows' && finMode() === 'replace'));
+  const okWhere = scope === 'instance' ? destNow().startsWith('/') : scope === 'database' ? (fin === 'fix' || okName) : true;
   const okWhen = !!tgt && (tgt.mode !== 'time' || (tgt.ms >= from && tgt.ms <= to + 60000));
   const lastPlan = useRef<any>(null); if (plan.op?.status === 'succeeded') lastPlan.current = plan.op.result; else if (!plan.op && !plan.busy) lastPlan.current = null;
   const pres = plan.op?.status === 'succeeded' ? plan.op.result : plan.busy ? lastPlan.current : null;
@@ -146,6 +154,9 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const running = exec.busy;
   const doneOk = exec.op?.status === 'succeeded';
   const check = () => { if (okWhere || scope === 'instance') plan.run('restore_plan', planParams()); else plan.reset(); };
+  // the end changed (another destination name for a database): the check runs again with it
+  const finSeen = useRef(fin);
+  useEffect(() => { if (finSeen.current === fin) return; finSeen.current = fin; if (step === 3 && !exec.op && scope === 'database') check(); }, [fin]);
   const pickDest = (p: string) => { setDest(p); setTimeout(() => plan.run('restore_plan', { scope: 'instance', ...params().p, destination: p }), 0); };
   // where the recovery runs changed (from the dialog opened in the check step, or by a colleague): the verdict shown is stale, check again
   const placement = useQuery<any>(scope !== 'instance' ? `/api/clusters/${encodeURIComponent(c.id)}/placement` : null);
@@ -154,7 +165,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   // a whole instance needs no destination to be checked: the agent proposes one (and every other volume it could use) and the check runs on it
   const goCheck = () => { setStep(3); plan.run('restore_plan', planParams()); };
   const choose = (i: Intent) => {
-    setIntent(i); setObjs([]); setTgt(null); plan.reset(); dml.reset(); prev.reset();
+    setIntent(i); setObjs([]); setTgt(null); plan.reset(); dml.reset(); prev.reset(); setFin('fix'); setPmode(null);
     if (i === 'cluster') { setScope('instance'); setStep(2); return; }
     setScope(i === 'database' ? 'database' : 'object'); setObjMode('table'); setStep(1);
   };
@@ -229,11 +240,13 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         <div className="rplan">
           <p>Recuperi {whatTxt}, {whenTxt}.</p>
           <ol className="small">{scope === 'instance' ? <><li>Una copia completa del server viene ricostruita nella cartella scelta qui sotto (pg_arca propone il disco più adatto).</li><li>La copia viene <strong>avviata</strong> da pg_arca su una porta libera, isolata dalla produzione: non archivia, non replica, non esegue job. Il server in esecuzione non viene toccato.</li><li>{ttl ? <>Resta disponibile per {TTL_CHOICES.find(x => x[0] === ttl)?.[1] || `${ttl} ore`}, poi pg_arca la ferma e la cancella da solo (puoi tenerla più a lungo in qualsiasi momento).</> : <>Resta finché non la elimini tu.</>}</li></>
-            : scope === 'database' ? <><li>pg_arca crea il nuovo database <strong>{newName || '…'}</strong> con il contenuto recuperato.</li><li>{live?.has(db) ? <>Il database {db} attuale resta com’è.</> : <>Nessun database esistente viene toccato.</>}</li><li>Lo controlli e, se va bene, decidi tu come usarlo (anche al posto dell’originale).</li></>
-            : intent === 'rows' ? <><li>La tabella viene ricostruita com’era in un database di quarantena separato.</li><li>Confronti riga per riga la versione recuperata con quella di adesso.</li><li>Riporti solo le righe che scegli; prima viene salvata una copia di sicurezza delle righe toccate.</li></>
-            : <><li>{objs.length === 1 ? 'Quanto scelto viene ricostruito' : 'Le tabelle scelte vengono ricostruite'}, con ciò da cui dipendono, in un database di quarantena separato.</li><li>Nessuna tabella attuale viene modificata in questa fase.</li><li>Poi la rimetti al suo posto con un clic{goneNow ? '' : ' (quella attuale resta salvata con un altro nome)'}.</li></>}</ol>
+            : scope === 'database' ? <><li>pg_arca ricostruisce il database {fin === 'fix' ? <strong>{db}</strong> : <>nel nuovo database <strong>{newName || '…'}</strong></>} com’era in quel momento.</li><li>{live?.has(db) ? <>Il database {db} attuale resta com’è.</> : <>Nessun database esistente viene toccato.</>}</li><li>{fin === 'fix' ? (live?.has(db) ? <>Alla fine prende il posto di <strong>{db}</strong> (le sessioni aperte vengono chiuse; il {db} attuale resta come copia di sicurezza).</> : <>Torna con il suo nome, <strong>{db}</strong>.</>) : <>Lo controlli e, se va bene, lo metti al posto dell’originale con un clic.</>}</li></>
+            : intent === 'rows' ? <><li>La tabella viene ricostruita com’era in un database di quarantena separato.</li><li>{fin === 'fix' ? 'pg_arca confronta riga per riga e riporta da solo ogni riga cancellata o modificata dopo quel momento (le righe aggiunte dopo restano).' : 'Confronti riga per riga la versione recuperata con quella di adesso e riporti solo le righe che scegli.'}</li><li>Prima di toccare la tabella viene salvata una copia di sicurezza delle righe toccate; tutto in un’unica transazione.</li></>
+            : <><li>{objs.length === 1 ? 'Quanto scelto viene ricostruito' : 'Le tabelle scelte vengono ricostruite'}, con ciò da cui dipendono, in un database di quarantena separato.</li><li>Nessuna tabella attuale viene modificata in questa fase.</li><li>{fin === 'fix' ? <>Alla fine pg_arca la rimette a posto in <strong>{db}</strong> da solo{finMode() === 'replace' ? ' (quella attuale resta salvata con un altro nome)' : finMode() === 'as_new' ? ', accanto all’originale' : ''}.</> : <>Poi decidi tu come rimetterla a posto.</>}</li></>}</ol>
         </div>
-        {scope === 'database' ? <Field label="Nome del nuovo database" hint="Non sovrascrive mai un database esistente." error={newName && !okName ? 'Solo lettere, cifre e _ (max 63 caratteri), senza spazi.' : null}><div className="row gap-s"><input className="input" value={newName} onChange={e => setNewName(e.target.value)} onBlur={check} /><Button sm icon="refresh" busy={plan.busy} onClick={check}>Ricontrolla</Button></div></Field> : null}
+        {scope !== 'instance' ? <EndChoice fin={fin} setFin={setFin} kind={scope === 'database' ? 'database' : intent === 'rows' ? 'rows' : 'objects'} db={db} exists={dbExists()} newName={newName}
+          mode={finMode()} setMode={m => setPmode(m)} gone={goneNow} what={objs.length === 1 ? shortName(obj) : `${objs.length} elementi`} /> : null}
+        {scope === 'database' && fin === 'copy' ? <Field label="Nome del nuovo database" hint="Non sovrascrive mai un database esistente." error={newName && !okName ? 'Solo lettere, cifre e _ (max 63 caratteri), senza spazi.' : null}><div className="row gap-s"><input className="input" value={newName} onChange={e => setNewName(e.target.value)} onBlur={check} /><Button sm icon="refresh" busy={plan.busy} onClick={check}>Ricontrolla</Button></div></Field> : null}
         {scope === 'instance' ? <>
           <Field label="Dove mettere la copia">{pres?.destinations ? <DestPicker where={pres.destinations} value={destNow()} onPick={pickDest} busy={plan.busy} /> : plan.busy || !plan.op ? <p className="small muted">Cerco sul server i dischi con spazio sufficiente…</p> : null}</Field>
           <Field label="Cosa fare con la copia"><div className="seg"><button aria-pressed={action === 'promote'} onClick={() => setAction('promote')}>Usarla subito</button><button aria-pressed={action === 'pause'} onClick={() => setAction('pause')}>Controllarla prima (resta in pausa)</button></div></Field>
@@ -256,14 +269,21 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
     {step === 4 && <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
       {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' ? (exec.op!.result.instance ? <>La copia del server è <strong>{exec.op!.result.instance.state === 'paused' ? 'in pausa al momento scelto' : 'avviata'}</strong>: i dati per collegarti sono qui sotto.</> : <>Copia pronta in <code>{exec.op!.result.destination}</code>{exec.op!.result.start_hint ? <>: avviala al suo posto definitivo (<code>{exec.op!.result.start_hint}</code>).</> : '.'}</>)
-        : scope === 'database' ? <>Il database <code>{exec.op!.result.result_database}</code> è pronto: collegati e controllalo. {live?.has(db) ? <>L’originale <code>{db}</code> non è stato toccato.</> : null}</>
+        : scope === 'database' ? (exec.op!.result.swap?.replaced ? <><strong>{db}</strong> è di nuovo com’era {whenTxt}. {exec.op!.result.swap.old_kept_as ? <>Il database com’era prima del ripristino resta come <code>{exec.op!.result.swap.old_kept_as}</code> (eliminalo quando hai verificato){exec.op!.result.swap.sessions_ended ? `; sessioni chiuse: ${exec.op!.result.swap.sessions_ended}` : ''}.</> : null}</>
+            : exec.op!.result.result_database === db ? <><strong>{db}</strong> è tornato con il suo nome, com’era {whenTxt}.</>
+            : <>Il database <code>{exec.op!.result.result_database}</code> è pronto: controllalo e mettilo al posto di {db} qui sotto. {live?.has(db) ? <>L’originale <code>{db}</code> non è stato toccato.</> : null}</>)
+        : exec.op!.result.finished === 'promote' ? <>{objs.length === 1 ? <strong>{shortName(obj)}</strong> : <>{objs.length} elementi</>} di nuovo al suo posto in <strong>{db}</strong>, com’era {whenTxt}.
+            {(exec.op!.result.finish?.promoted || []).length ? <> Ripristinati: {(exec.op!.result.finish.promoted as string[]).map(x => <code key={x} style={{ marginRight: 6 }}>{x}</code>)}.</> : null}
+            {(exec.op!.result.finish?.old_kept || []).length ? <> Le versioni precedenti restano come {(exec.op!.result.finish.old_kept as string[]).map(x => <code key={x} style={{ marginRight: 6 }}>{x}</code>)}: eliminale quando hai verificato.</> : null}</>
+        : exec.op!.result.finished === 'rows_all' ? <>Righe di <strong>{shortName(obj)}</strong> riportate com’erano {whenTxt}: reinserite {num(exec.op!.result.finish?.inserted ?? 0)}, ripristinate {num(exec.op!.result.finish?.updated ?? 0)}.{exec.op!.result.finish?.safety_copy ? <> Le versioni sostituite restano in <code>{exec.op!.result.finish.safety_copy}</code>.</> : null}{exec.op!.result.finish?.note ? <div className="small">{itCheck(exec.op!.result.finish.note)}</div> : null}</>
         : <>Recuperato nel database di quarantena <code>{exec.op!.result.result_database}</code>. Ora scegli come rimetterlo a posto, qui sotto.</>}</Banner> : null}
+      {doneOk && (exec.op!.result.finish_error || exec.op!.result.swap_error) ? <Banner kind="warn" title="Recuperato, ma non rimesso a posto">
+        <span style={{ whiteSpace: 'pre-wrap' }}>{itCheck(exec.op!.result.finish_error || exec.op!.result.swap_error)}</span>{hintFor(exec.op!.result.finish_error || exec.op!.result.swap_error) ? <p className="small">{hintFor(exec.op!.result.finish_error || exec.op!.result.swap_error)}</p> : null}
+        <p className="small">Non è stato toccato nulla del database originale. Il contenuto recuperato è integro: scegli qui sotto come procedere.</p></Banner> : null}
       {doneOk && scope === 'instance' && exec.op!.result.instance ? <RestoredCard clusterId={c.id} r={{ ...exec.op!.result.instance, ...((d.restored || []).find((x: any) => x.id === exec.op!.result.instance.id) || { nodeId: exec.op!.nodeId, nodeName: '', online: true }) }} /> : null}
       {doneOk ? <Notices r={exec.op!.result} /> : null}
-      {doneOk && scope === 'database' && live?.has(db) ? <details><summary className="small" style={{ cursor: 'pointer' }}>Voglio che prenda il posto di {db}</summary><div className="stack-s small" style={{ marginTop: 8 }}>
-        <p>Ferma prima le applicazioni che usano {db}, poi esegui sul server (l’originale resta come <code>{db}_prima</code> finché non lo elimini tu):</p>
-        <pre className="out">{`ALTER DATABASE "${db}" RENAME TO "${db}_prima";\nALTER DATABASE "${exec.op!.result.result_database}" RENAME TO "${db}";`}</pre></div></details> : null}
-      {doneOk && scope === 'object' && exec.op!.result.result_database ? (intent === 'rows' && objs.length === 1 && splitId(obj).length === 3 ? <>
+      {doneOk && scope === 'database' && exec.op!.result.result_database && exec.op!.result.result_database !== db ? <SwapDb clusterId={c.id} restored={exec.op!.result.result_database} original={db} exists={!!live?.has(db)} /> : null}
+      {doneOk && scope === 'object' && exec.op!.result.result_database && !exec.op!.result.finished ? (intent === 'rows' && objs.length === 1 && splitId(obj).length === 3 ? <>
         <RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} auto />
         <Details k={`${K}:whole`} summary="Oppure riporta l’intera tabella">
           <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode || 'as_new'} recommended="as_new" anyGone={goneNow} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} allowOrphans={lastPromote.current ? () => setAskOrphans(true) : undefined} schema={pschema} setSchema={v => { setPschema(v); prev.reset(); }} /></Details></> : <>
@@ -280,8 +300,12 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     {askPromote ? (() => { const m = pmode || (intent === 'rows' ? 'as_new' : recommendedMode(goneNow)); return <Confirm title="Riportare nel database?" danger={m === 'replace'} requireText={m === 'replace' ? 'SOSTITUISCI' : undefined} confirmLabel="Riporta" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); setLastPromote({ stage_db: exec.op!.result.result_database, object: obj, mode: m, drop_stage: pdrop, ...(m === 'replace' ? { confirm: 'SOSTITUISCI' } : {}), ...(m === 'as_new' && pschema ? { target_schema: pschema } : {}) }); prom.run('restore_promote', { stage_db: exec.op!.result.result_database, object: obj, mode: m, drop_stage: pdrop, ...(m === 'replace' ? { confirm: 'SOSTITUISCI' } : {}), ...(m === 'as_new' && pschema ? { target_schema: pschema } : {}) }); }}>
       <p>{m === 'as_new' ? <>Le tabelle recuperate compaiono accanto alle originali con un nome che termina in <code>_pitr_&lt;data&gt;</code>. Nulla di esistente viene toccato.</> : m === 'missing_only' ? <>Tornano solo le tabelle che oggi non esistono, con il loro nome; quelle presenti restano com’è.</> : <>Le tabelle attuali vengono rinominate <code>_old_&lt;data&gt;</code> (i loro dati restano, puoi tornare indietro) e quelle recuperate prendono il loro posto in un’unica transazione. Chiavi esterne e viste vengono ricollegate.</>}</p>
       <p className="small muted">{pdrop ? 'Il database di quarantena viene eliminato a operazione riuscita.' : 'Il database di quarantena resta disponibile.'}</p></Confirm>; })() : null}
-    {ask ? <Confirm title="Avviare il ripristino?" confirmLabel="Avvia" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); setStep(4); exec.run(x.type, x.p); }}>
-      <p>{scope === 'instance' ? <>Ricostruisce il server in <code>{destNow()}</code> e lo avvia{keepArch ? ' (no: con l’archiviazione attiva lo avvii tu)' : ''}.</> : scope === 'database' ? <>Crea il database <code>{newName}</code> da <code>{db}</code>.</> : <>Ricostruisce {objs.length === 1 ? <code>{shortName(obj)}</code> : <>{objs.length} elementi</>} in un database di quarantena.</>} I dati attuali non vengono modificati. Se qualcosa fallisce, ciò che è stato creato viene rimosso.</p></Confirm> : null}
+    {ask ? <Confirm title="Avviare il ripristino?" confirmLabel="Avvia" danger={overwrites()} requireText={overwrites() ? 'SOSTITUISCI' : undefined} onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); setStep(4); exec.run(x.type, x.p); }}>
+      <p>{scope === 'instance' ? <>Ricostruisce il server in <code>{destNow()}</code> e lo avvia{keepArch ? ' (no: con l’archiviazione attiva lo avvii tu)' : ''}. I dati attuali non vengono modificati.</>
+        : scope === 'database' ? (fin === 'fix' && dbExists() ? <>Ricostruisce <code>{db}</code> com’era e lo mette <strong>al posto</strong> di quello attuale: le sessioni aperte su <code>{db}</code> vengono chiuse, l’attuale resta come <code>{db}_before_…</code>.</> : fin === 'fix' ? <>Riporta <code>{db}</code> con il suo nome.</> : <>Crea il database <code>{newName}</code> da <code>{db}</code>. I dati attuali non vengono modificati.</>)
+        : intent === 'rows' && fin === 'fix' ? <>Riporta in <code>{shortName(obj)}</code> ogni riga cancellata o modificata dopo quel momento (copia di sicurezza prima, un’unica transazione).</>
+        : fin === 'fix' ? <>Rimette {objs.length === 1 ? <code>{shortName(obj)}</code> : <>{objs.length} elementi</>} in <code>{db}</code>{finMode() === 'replace' ? <> <strong>al posto</strong> delle versioni attuali (che restano rinominate)</> : finMode() === 'as_new' ? ' accanto alle versioni attuali' : ' (solo ciò che manca)'}.</>
+        : <>Ricostruisce {objs.length === 1 ? <code>{shortName(obj)}</code> : <>{objs.length} elementi</>} in un database di quarantena. I dati attuali non vengono modificati.</>} Se qualcosa fallisce prima della fine, ciò che è stato creato viene rimosso.</p></Confirm> : null}
   </div>;
 }
 
@@ -532,4 +556,39 @@ function RowRecovery({ clusterId, stage, obj, auto }: { clusterId: string; stage
       {d.counts.added_since ? <label className="check"><input type="checkbox" checked={delAdded} onChange={e => setDelAdded(e.target.checked)} />Elimina anche le {num(d.counts.added_since)} righe aggiunte dopo quel momento (di solito no: sono dati nuovi e validi)</label> : null}</Confirm> : null}
     {ask ? <Confirm title="Applicare le righe selezionate?" danger={dels.length > 0} confirmLabel="Applica" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); apply.run('restore_apply_rows', { stage_db: stage, object: obj, restore_keys: rest, delete_keys: dels }); }}>
       <p>{rest.length} righe verranno reinserite o sovrascritte con la versione ripristinata{dels.length ? <>, {dels.length} righe aggiunte dopo verranno eliminate</> : null}. La versione attuale di ogni riga toccata viene copiata prima in una tabella <code>pgarca_rowsafe_…</code>; se qualcosa fallisce non cambia nulla.</p></Confirm> : null}</div>;
+}
+
+/** What the restore does at the END: repair the original (the default - the tool finishes the job) or only produce a copy to look at. */
+function EndChoice({ fin, setFin, kind, db, exists, newName, mode, setMode, gone, what }: { fin: 'fix' | 'copy'; setFin: (v: 'fix' | 'copy') => void; kind: 'database' | 'rows' | 'objects'; db: string; exists: boolean; newName: string;
+  mode: PMode; setMode: (m: PMode) => void; gone: boolean | null; what: string }) {
+  const fixTitle = kind === 'database' ? (exists ? `Sostituisci ${db} con quello recuperato` : `Riporta ${db} con il suo nome`) : kind === 'rows' ? 'Riporta tutte le righe com’erano' : `Rimetti a posto in ${db}`;
+  const fixText = kind === 'database' ? (exists ? `Le sessioni aperte su ${db} vengono chiuse e il database recuperato prende il suo nome. L’attuale resta come ${db}_before_<data> per poter tornare indietro.` : 'Il database eliminato torna esattamente com’era, con lo stesso nome.')
+    : kind === 'rows' ? 'Reinserisce le righe cancellate e riporta quelle modificate al valore di quel momento. Le righe aggiunte dopo restano. Le versioni attuali vengono salvate prima in una tabella di sicurezza.'
+    : mode === 'missing_only' ? 'Torna solo ciò che oggi non esiste, con il suo nome; quello che c’è resta com’è.' : mode === 'replace' ? 'Le versioni attuali vengono rinominate (restano, per tornare indietro) e quelle recuperate prendono il loro posto, con chiavi esterne e viste ricollegate.' : 'Le versioni recuperate compaiono accanto alle attuali con il suffisso _pitr_<data>: nulla di esistente viene toccato.';
+  const copyTitle = kind === 'database' ? `Solo una copia da controllare (${newName || '…'})` : kind === 'rows' ? 'Confronta e scegli io le righe' : 'Solo una copia da controllare (database di quarantena)';
+  return <Field label="Alla fine"><div className="stack-s" role="radiogroup" aria-label="Alla fine">
+    <label className={`opt ${fin === 'fix' ? 'on' : ''}`}><input type="radio" name="fin" checked={fin === 'fix'} onChange={() => setFin('fix')} /><div className="grow">
+      <div><strong>{fixTitle}</strong> <Badge kind="ok">Consigliato</Badge></div><div className="small muted">{fixText}</div>
+      {fin === 'fix' && kind === 'objects' ? <div className="seg" style={{ marginTop: 6 }} role="group" aria-label={`Come rimettere ${what}`}>
+        <button aria-pressed={mode === 'missing_only'} onClick={e => { e.preventDefault(); setMode('missing_only'); }}>Solo ciò che manca{gone === true ? ' (consigliato)' : ''}</button>
+        <button aria-pressed={mode === 'replace'} onClick={e => { e.preventDefault(); setMode('replace'); }}>Sostituisci le attuali{gone === false ? ' (consigliato)' : ''}</button>
+        <button aria-pressed={mode === 'as_new'} onClick={e => { e.preventDefault(); setMode('as_new'); }}>Accanto alle attuali</button></div> : null}</div></label>
+    <label className={`opt ${fin === 'copy' ? 'on' : ''}`}><input type="radio" name="fin" checked={fin === 'copy'} onChange={() => setFin('copy')} /><div className="grow">
+      <div><strong>{copyTitle}</strong></div><div className="small muted">{kind === 'database' ? 'Il database recuperato resta accanto all’originale; quando l’hai controllato lo metti al suo posto con un clic.' : kind === 'rows' ? 'Vedi le differenze riga per riga e riporti solo quelle che scegli.' : 'Controlli il contenuto recuperato e poi decidi tu come rimetterlo a posto.'}</div></div></label>
+  </div></Field>;
+}
+
+/** A recovered database next to the original: put it in its place with one click (the tool renames both; the original is kept as <db>_before_<ts>). */
+function SwapDb({ clusterId, restored, original, exists }: { clusterId: string; restored: string; original: string; exists: boolean }) {
+  const r = useOpRunner(clusterId, undefined, `swapdb:${clusterId}:${restored}`); const [ask, setAsk] = useState(false);
+  const done = r.op?.status === 'succeeded'; const res = r.op?.result;
+  return <div className="stack-s">
+    {!done ? <div className="row wrap gap-s"><Button kind="primary" icon="swap" busy={r.busy} onClick={() => setAsk(true)}>{exists ? `Metti ${restored} al posto di ${original}` : `Rinominalo in ${original}`}</Button>
+      <span className="small muted">{exists ? `Le sessioni aperte su ${original} vengono chiuse; l’attuale resta come ${original}_before_<data>.` : `${original} oggi non esiste: il database recuperato prende il suo nome.`}</span></div> : null}
+    {r.op && !done ? <OpPanel op={r.op} error={r.error} /> : r.error ? <Banner kind="bad">{r.error}</Banner> : null}
+    {done ? <Banner kind="ok" title={`${original} sostituito`}>{res?.old_kept_as ? <>Il precedente resta come <code>{res.old_kept_as}</code> (eliminalo quando hai verificato).</> : <>{restored} ora si chiama {original}.</>}{res?.sessions_ended ? ` Sessioni chiuse: ${res.sessions_ended}.` : ''}</Banner> : null}
+    {ask ? <Confirm title={exists ? `Mettere ${restored} al posto di ${original}?` : `Rinominare ${restored} in ${original}?`} danger={exists} requireText={exists ? 'SOSTITUISCI' : undefined} confirmLabel={exists ? 'Sostituisci' : 'Rinomina'} onClose={() => setAsk(false)}
+      onConfirm={() => { setAsk(false); r.run('restore_db_swap', { restored, original, confirm: 'SOSTITUISCI' }); }}>
+      <p>{exists ? <>Le connessioni a <code>{original}</code> vengono chiuse e rifiutate per qualche secondo, poi <code>{original}</code> diventa <code>{original}_before_…</code> e <code>{restored}</code> prende il suo nome, in un’unica transazione. Le applicazioni si ricollegano al database recuperato.</> : <><code>{restored}</code> prende il nome <code>{original}</code>.</>}</p></Confirm> : null}
+  </div>;
 }

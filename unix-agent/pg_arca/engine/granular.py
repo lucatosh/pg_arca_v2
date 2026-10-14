@@ -785,6 +785,86 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         eph.cleanup()
 
 
+def swap_database(ctx, restored, original, into=None, dry_run=False, wait_sec=15):
+    """The restored database takes the place of the original - the end of a database restore, done by the tool and not left as SQL to type.
+      original gone (dropped): the restored one is renamed to it.
+      original present: new connections to both are refused, their sessions ended, then in ONE transaction the original becomes
+        <original>_before_<YYYYmmdd_HHMMSS> (kept, never dropped: the way back) and the restored one gets the original name; connections are allowed again.
+    Refused when the restored database is still being filled, is a quarantine database, or the server is a standby."""
+    _check_name(restored, "restored database name")
+    _check_name(original, "original database name")
+    if restored == original:
+        raise EngineError("PGA-GEN-097", "the restored database already has the original name")
+    if restored.startswith("pgarca_stage_") or original in ("template0", "template1"):
+        raise EngineError("PGA-GEN-097", "%s cannot take the place of %s" % (restored, original))
+    admin = _dest_conn(ctx, into)
+    hub = "template1" if original == "postgres" or restored == "postgres" else "postgres"       # never connected to a database being renamed
+    s = PgSession(admin.with_db(hub))
+    try:
+        if s.scalar("SELECT pg_is_in_recovery()") == "t":
+            raise EngineError("PGA-GEN-098", "this server is a standby: databases are renamed on the primary", "run it against the primary of the cluster")
+        rows = dict((r[0], r) for r in s.query("SELECT datname, datallowconn::text, COALESCE(shobj_description(oid, 'pg_database'), '') FROM pg_database WHERE datname IN (%s, %s)"
+                                               % (sql_lit(restored), sql_lit(original))))
+        if restored not in rows:
+            raise EngineError("PGA-GEN-099", "the restored database %s does not exist" % restored)
+        if (rows[restored][2] or "").startswith(RESTORING_MARK):
+            raise EngineError("PGA-GEN-099", "%s is incomplete (its restore did not finish): it cannot replace %s" % (restored, original), "restore the database again")
+        exists = original in rows
+        old = ("%s_before_%s" % (original, now_utc().strftime("%Y%m%d_%H%M%S")))[:63] if exists else None
+        sessions = [r for r in s.query("SELECT datname, COALESCE(application_name, ''), COALESCE(usename::text, ''), COALESCE(client_addr::text, 'local') FROM pg_stat_activity "
+                                       "WHERE datname IN (%s, %s) AND pid <> pg_backend_pid()" % (sql_lit(restored), sql_lit(original)))]
+        res = {"restored": restored, "original": original, "original_existed": exists, "old_kept_as": old,
+               "sessions": [{"database": r[0], "application": r[1], "user": r[2], "client": r[3]} for r in sessions][:50], "dry_run": bool(dry_run)}
+        if dry_run:
+            return res
+        names = [n for n in (original, restored) if n in rows]
+        allow = dict((n, rows[n][1] == "true") for n in names)     # as they were
+        for n in names:
+            s.query("ALTER DATABASE %s ALLOW_CONNECTIONS false" % quote_ident(n))
+        renamed = False
+        try:
+            t0 = time.time()
+            ended = 0
+            while True:
+                left = int(s.scalar("SELECT count(*) FROM pg_stat_activity WHERE datname IN (%s) AND pid <> pg_backend_pid()" % ",".join(sql_lit(n) for n in names)))
+                if not left:
+                    break
+                if time.time() - t0 > wait_sec:
+                    raise EngineError("PGA-GEN-100", "%d session(s) on %s did not end within %d s: nothing was renamed" % (left, " / ".join(names), wait_sec),
+                                      "stop the application or the pooler holding them, then try again")
+                ended += int(s.scalar("SELECT count(*) FROM (SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN (%s) AND pid <> pg_backend_pid()) t"
+                                      % ",".join(sql_lit(n) for n in names)))
+                time.sleep(0.5)
+            res["sessions_ended"] = ended
+            s.query("BEGIN")
+            try:
+                if exists:
+                    s.query("ALTER DATABASE %s RENAME TO %s" % (quote_ident(original), quote_ident(old)))
+                s.query("ALTER DATABASE %s RENAME TO %s" % (quote_ident(restored), quote_ident(original)))
+                s.query("COMMIT")
+                renamed = True
+            except BaseException:
+                try:
+                    s.query("ROLLBACK")
+                except EngineError:
+                    pass
+                raise
+        finally:
+            # connections back as they were: after the swap the restored database answers under the original name, the old one under <original>_before_...
+            now_names = {restored: original, original: old} if renamed else {restored: restored, original: original}
+            for n, was in allow.items():
+                try:
+                    s.query("ALTER DATABASE %s ALLOW_CONNECTIONS %s" % (quote_ident(now_names[n]), "true" if was else "false"))
+                except EngineError:
+                    pass
+        if old:
+            s.query("COMMENT ON DATABASE %s IS %s" % (quote_ident(old), sql_lit("pg_arca: replaced by a restore on %s; kept as the way back - drop it when no longer needed" % now_utc().isoformat(timespec="seconds"))))
+        res["replaced"] = True
+        return res
+    finally:
+        s.close()
+
+
 def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,
                    into=None, stage_db=None, data_only=False, dry_run=False, progress=None, cancel=None, objects=None):
     """Recover tables / views / whole schemas (a list of `db.schema.name` or `db.schema`, all in one database) with everything around them, into a quarantine database.

@@ -106,6 +106,7 @@ class OperationExecutor:
         r("restore_database", self.h_restore_database, False)
         r("restore_object", self.h_restore_object, False)
         r("restore_promote", self.h_restore_promote, False)
+        r("restore_db_swap", self.h_restore_db_swap, False)
         r("hba_expire", self.h_hba_expire, False)
         r("agent_config_get", self.h_cfg_get, True)
         r("agent_config_set", self.h_cfg_set, True)       # same input -> same file: idempotent
@@ -884,16 +885,50 @@ class OperationExecutor:
     def h_restore_database(self, p):
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
-        return granular.restore_database(ctx, str(p.get("database")), p.get("set"), into=p.get("into"), new_name=p.get("new_name"),
-                                         jobs=int(p.get("jobs", 2)), progress=self._progress, cancel=self._cancelled,
-                                         create_missing_roles=bool(p.get("create_missing_roles")), **self._targets(p))
+        res = granular.restore_database(ctx, str(p.get("database")), p.get("set"), into=p.get("into"), new_name=p.get("new_name"),
+                                        jobs=int(p.get("jobs", 2)), progress=self._progress, cancel=self._cancelled,
+                                        create_missing_roles=bool(p.get("create_missing_roles")), **self._targets(p))
+        if p.get("replace_original") and res.get("result_database") and res["result_database"] != str(p.get("database")):
+            # the end of the job: the recovered database takes the place of the original (kept as <db>_before_<ts>), not a SQL snippet for the operator
+            self._progress({"phase": "swap", "msg": "the recovered database takes the place of %s" % p.get("database")})
+            try:
+                res["swap"] = granular.swap_database(ctx, res["result_database"], str(p.get("database")), into=p.get("into"))
+                res["result_database"] = str(p.get("database"))
+            except EngineError as e:
+                res["swap_error"] = e.as_text()            # the recovered copy stays, complete, under its own name: the UI offers the swap again
+        return res
 
     def h_restore_object(self, p):
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
         objs = [str(x) for x in p.get("objects")] if isinstance(p.get("objects"), list) and p.get("objects") else None
-        return granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), into=p.get("into"), stage_db=p.get("stage_db"), objects=objs,
-                                       data_only=bool(p.get("data_only")), dry_run=bool(p.get("dry_run")), progress=self._progress, cancel=self._cancelled, **self._targets(p))
+        res = granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), into=p.get("into"), stage_db=p.get("stage_db"), objects=objs,
+                                      data_only=bool(p.get("data_only")), dry_run=bool(p.get("dry_run")), progress=self._progress, cancel=self._cancelled, **self._targets(p))
+        fin = p.get("finish")
+        stage = res.get("result_database") if isinstance(res, dict) else None
+        if fin and stage and not p.get("dry_run"):
+            # the end of the job, chosen before starting: the recovered objects are put back in the ORIGINAL database by the tool itself.
+            # The quarantine copy stays only when this last step cannot be done safely (the reason is in finish_error, the UI offers the choices).
+            try:
+                if fin == "promote":
+                    self._progress({"phase": "swap", "msg": "putting the recovered objects back in place"})
+                    res["finish"] = granular.promote_object(ctx, stage, str(p.get("object") or ""), mode=p.get("promote_mode") or "missing_only", drop_stage=True,
+                                                            into=p.get("into"), progress=self._progress, target_schema=p.get("target_schema") or None,
+                                                            allow_orphans=bool(p.get("allow_orphans")))
+                elif fin == "rows_all":
+                    self._progress({"phase": "swap", "msg": "putting every deleted / changed row back"})
+                    res["finish"] = granular.apply_rows(ctx, stage, str(p.get("object") or ""), restore_all=["missing", "changed"], into=p.get("into"))
+                    granular._drop_db(granular._dest_conn(ctx, p.get("into")), stage)      # rows back, previous versions in the safety table: the quarantine copy goes
+                    res["finish"]["stage_dropped"] = True
+                res["finished"] = fin
+            except EngineError as e:
+                res["finish_error"] = e.as_text()
+        return res
+
+    def h_restore_db_swap(self, p):
+        from pg_arca.engine import granular
+        ctx = self._ctx() if not p.get("into") else self._ctx_ro()
+        return granular.swap_database(ctx, str(p.get("restored") or ""), str(p.get("original") or ""), into=p.get("into"), dry_run=bool(p.get("dry_run")))
 
     def h_restore_promote(self, p):
         from pg_arca.engine import granular
