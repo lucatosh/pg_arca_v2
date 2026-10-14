@@ -319,16 +319,15 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             if entry is not None:
                 manifest_files[rel] = entry
 
+        def tick():
+            if progress and time.time() - last[0] > 1.0:
+                last[0] = time.time()
+                progress({"phase": "copy", "set": set_id, "files": totals["files"], "files_total": len(files) + 1,
+                          "bytes_logical": totals["bytes_logical"], "bytes_written": totals["bytes_written"], "bytes_total": planned,
+                          "pct": int(100.0 * totals["bytes_logical"] / max(planned, 1))})
         with ThreadPoolExecutor(max_workers=ctx.process_max) as pool:
-            for i in range(0, len(files), 512):
-                batch = files[i:i + 512]
-                for rel, (entry, st) in pool.map(one, batch):
-                    absorb(rel, entry, st)
-                if progress and time.time() - last[0] > 1.0:
-                    last[0] = time.time()
-                    progress({"phase": "copy", "set": set_id, "files": totals["files"], "files_total": len(files) + 1,
-                              "bytes_logical": totals["bytes_logical"], "bytes_written": totals["bytes_written"], "bytes_total": planned,
-                              "pct": int(100.0 * totals["bytes_logical"] / max(planned, 1))})
+            for rel, (entry, st) in _stream(pool, files, one, ctx.process_max * 4, tick):
+                absorb(rel, entry, st)
         for item in control:                                           # pg_control last, as pg_basebackup does
             rel, (entry, st) = one(item)
             absorb(rel, entry, st)
@@ -429,6 +428,34 @@ def _wal_seg_size(sess):
     u = sess.scalar("SELECT unit FROM pg_settings WHERE name='wal_segment_size'")
     n = int(v)
     return n * {"B": 1, "kB": 1024, "8kB": 8192, "MB": 1024 * 1024}.get(u or "B", 1)
+
+
+def _stream(pool, items, fn, window, tick=None):
+    """Run fn over items on the pool with at most `window` tasks in flight, yielding results as they complete. Unlike batched
+    pool.map there is no barrier: a worker that finishes a small file takes the next one at once, even while a 1 GB relation is still
+    being chunked on another thread (with the old 512-file batches the other workers sat idle at the tail of every batch, waiting for its slowest file).
+    The first exception stops the stream (the remaining queued work is dropped)."""
+    from concurrent.futures import FIRST_COMPLETED, wait
+    it = iter(items)
+    pending = set()
+    try:
+        for x in it:
+            pending.add(pool.submit(fn, x))
+            if len(pending) >= window:
+                break
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for f in done:
+                yield f.result()
+                if tick:
+                    tick()
+            for x in it:
+                pending.add(pool.submit(fn, x))
+                if len(pending) >= window:
+                    break
+    finally:
+        for f in pending:
+            f.cancel()
 
 
 def _wait_for_wal(ctx, sess, tli, start_lsn, stop_lsn, seg_size, in_recovery, timeout, cancel, progress=None, set_id=""):
