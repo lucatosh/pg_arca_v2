@@ -55,8 +55,8 @@ if [[ $WITH_NODE == 1 ]]; then
   NV="${NODE_VERSION:-$(node -p process.versions.node)}"; C="$HOME/.cache/pg-arca-release"; mkdir -p "$C"
   NT="node-v$NV-linux-x64.tar.xz"
   log "Node.js runtime $NV"
-  if [[ ! -f "$C/$NT" ]]; then curl -fsSL --retry 3 -o "$C/$NT.part" "https://nodejs.org/dist/v$NV/$NT" || die "cannot download the Node.js runtime (or --no-node)"; mv "$C/$NT.part" "$C/$NT"; fi
-  curl -fsSL --retry 3 -o "$C/SHASUMS256-$NV.txt" "https://nodejs.org/dist/v$NV/SHASUMS256.txt"
+  if [[ ! -f "$C/$NT" ]]; then curl -fsSL --retry 3 --connect-timeout 20 --speed-time 60 --speed-limit 1024 -o "$C/$NT.part" "https://nodejs.org/dist/v$NV/$NT" || die "cannot download the Node.js runtime (or --no-node)"; mv "$C/$NT.part" "$C/$NT"; fi
+  curl -fsSL --retry 3 --connect-timeout 20 --max-time 120 -o "$C/SHASUMS256-$NV.txt" "https://nodejs.org/dist/v$NV/SHASUMS256.txt"
   (cd "$C" && grep " $NT\$" "SHASUMS256-$NV.txt" | sha256sum -c - >/dev/null) || { rm -f "$C/$NT"; die "Node.js runtime checksum mismatch"; }
   tar xJf "$C/$NT" -C "$WORK"
   mkdir -p "$S/node/bin"; cp "$WORK/node-v$NV-linux-x64/bin/node" "$S/node/bin/"; cp "$WORK/node-v$NV-linux-x64/LICENSE" "$S/node/LICENSE"
