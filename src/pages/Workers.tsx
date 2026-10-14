@@ -4,7 +4,7 @@ import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skelet
 import { revalidate, toast, useOpRunner, useQuery, useDraft, clearDrafts } from '../hooks';
 import { go } from '../router';
 import { OP_LABEL, OpPanel, statusBadge } from './shared';
-import { CheckList } from './Infra';
+import { CheckList, DestPaths } from './Infra';
 
 /* ====================================================================================================================================================
  * Operational machines ("macchine operative"): servers with the pg_arca agent and no database of their own — backup servers, hosts for the recovery
@@ -103,7 +103,8 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
         {majors.length > 1 ? <div className="row small"><span className="muted">Version to verify:</span><select className="input" style={{ width: 'auto' }} value={mj} onChange={e => setMajor(Number(e.target.value))}>{majors.map(m => <option key={m} value={m}>PostgreSQL {m}</option>)}</select></div> : null}
         {pre.op && !res ? <OpPanel op={pre.op} error={pre.error} /> : null}
         {res && pre.op?.type === 'ephemeral_preflight' ? <><Banner kind={res.ok ? (res.level === 'warn' ? 'warn' : 'ok') : 'bad'} title={res.ok ? 'It can run restores' : 'It cannot run restores yet'}>PostgreSQL {res.major ?? mj}</Banner><CheckList checks={res.checks || []} /></> : null}
-        {res && pre.op?.type === 'destination_check' ? <><Banner kind={res.ok ? 'ok' : 'bad'} title={res.ok ? 'Directory usable' : 'Directory not usable'} />{res.checks ? <CheckList checks={res.checks} /> : null}</> : null}
+        {res && pre.op?.type === 'destination_check' ? <><Banner kind={res.ok ? 'ok' : 'bad'} title={res.ok ? 'Directory usable' : 'Directory not usable: every problem below has its remedy'} /><DestPaths r={res} />
+          {res.ok ? <ExportHints w={w} res={res} repo={String(pre.op?.params?.repo_path || '')} wal={String(pre.op?.params?.wal_path || '')} /> : null}</> : null}
       </div></Card>
       <Card title="Disks and shares"><div className="stack">
         {w.mounts.length ? <table className="t small"><thead><tr><th>Mount point</th><th>Type</th><th className="num">Free</th></tr></thead><tbody>
@@ -123,6 +124,24 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
       onConfirm={() => { pre.run('ephemeral_install', { major: mj, mode: w.root || w.sudo ? 'system' : 'private', confirm: 'INSTALL' }); setDlg(''); }}>
       <p>{w.root || w.sudo ? 'With the system packages (the machine has the privileges).' : 'In a pg_arca private directory, without root privileges.'} Only the server binaries are needed; no instance is started.</p></Confirm> : null}
   </div>;
+}
+
+/** The folder on the backup server is fine: what to do next, concretely. The nodes reach it through a share THEY mount; pg_arca never mounts anything. */
+function ExportHints({ w, res, repo, wal }: { w: WFull; res: any; repo: string; wal: string }) {
+  const host = (w.remoteIp || w.name).replace(/^::ffff:/, '');
+  const uid = res?.agent?.uid ?? w.host?.euid ?? 26;   // the folder's owner on this host: with all_squash+anonuid every node's writes become it, whatever uid postgres has on the nodes
+  const paths = [repo, wal].filter(Boolean);
+  const parent = paths.length > 1 ? (repo.split('/').slice(0, -1).join('/') || repo) : (repo || wal);
+  return <details><summary className="small" style={{ cursor: 'pointer' }}>Next step: let the database nodes use this folder (NFS export + mount + destination)</summary>
+    <div className="stack small" style={{ marginTop: 8 }}>
+      <p className="muted">The nodes write backups through a share they mount from this host. On <strong>{w.name}</strong> (as root), export the folder — map every writer to the owner so NFS permissions can never fail:</p>
+      <pre className="out">{`# /etc/exports on ${w.name}
+${parent}  <nodes-network>/24(rw,sync,no_subtree_check,all_squash,anonuid=${uid},anongid=${uid})
+exportfs -ra`}</pre>
+      <p className="muted">On every database node (as root):</p>
+      <pre className="out">{`mkdir -p /mnt/pgarca && echo '${host}:${parent} /mnt/pgarca nfs hard,noatime,_netdev 0 0' >> /etc/fstab && mount /mnt/pgarca`}</pre>
+      <p className="muted">Then set the destination in Recovery &amp; storage → Where backups go (type NFS, “mount required” on): {paths.map(x => <span key={x} className="mono">/mnt/pgarca{parent !== '/' ? x.replace(parent, '') || '' : x} </span>)}— the console checks every node before applying.</p>
+    </div></details>;
 }
 
 function EditWorker({ w, onClose }: { w: WFull; onClose: () => void }) {

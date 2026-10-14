@@ -34,7 +34,7 @@ const destPath = (v: any, name: string): string => {
 const destination: KindSpec = {
   defaults: DEST_DEFAULTS,
   validate(v) {
-    if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, error: 'oggetto atteso' };
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, error: 'an object was expected' };
     const out: Record<string, any> = {};
     try {
       for (const [k, x] of Object.entries(v)) {
@@ -48,7 +48,7 @@ const destination: KindSpec = {
           case 'walPath': out[k] = destPath(x, 'walPath'); break;
           case 'requireMount': out[k] = !!x; break;
           case 'minFreeGb': { const n = Number(x); if (!Number.isFinite(n) || n < 0 || n > 1e6) throw new Error('minFreeGb: a number between 0 and 1000000'); out[k] = n; break; }
-          default: throw new Error(`campo sconosciuto: ${k}`);
+          default: throw new Error(`unknown field: ${k}`);
         }
       }
     } catch (e: any) { return { ok: false, error: e.message }; }

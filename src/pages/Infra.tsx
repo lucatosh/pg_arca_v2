@@ -67,7 +67,7 @@ const destSummary = (v: Record<string, any>) => <>
 const PREVIEW = [{ id: 's3', label: 'Amazon S3 / MinIO / Ceph RGW' }, { id: 'azure', label: 'Azure Blob Storage' }, { id: 'gcs', label: 'Google Cloud Storage' }, { id: 'sftp', label: 'SFTP' }];
 
 const DestForm: React.FC<FormProps> = ({ value: v, set }) => <div className="stack">
-  <Field label="Where backups are written" hint="The engine writes to file paths: a local directory or a network share (NFS, SMB) already mounted on the nodes. pg_arca mounts nothing: it checks that the mount is really there.">
+  <Field label="Where backups are written" hint="The engine writes to file paths: a local directory or a network share (NFS, SMB) already mounted on the nodes. pg_arca mounts nothing: it checks that the mount is really there. Using a backup server? Check its folder from its page (Worker hosts): when the check passes, it prints the exact export and mount commands for the nodes, then come back here with the mounted path.">
     <select className="input" value={v.type ?? ''} onChange={e => set('type', e.target.value)}>
       <option value="">Same as the level above</option><option value="local">Local directory on the node</option><option value="nfs">NFS network share (mounted)</option><option value="smb">SMB/CIFS network share (mounted)</option>
       <optgroup label="Preview — not available yet">{PREVIEW.map(p => <option key={p.id} value={p.id} disabled>{p.label} (Preview)</option>)}</optgroup></select></Field>
@@ -151,6 +151,11 @@ function NodeCheck({ opId }: { opId: string }) {
   if (!isTerminal(op.status)) return <div className="small muted">Check running…</div>;
   if (op.status !== 'succeeded') return <Banner kind="bad" title="The check failed">{op.error || op.status}</Banner>;
   const r = op.result;
+  return <DestPaths r={r} />;
+}
+
+/** The full result of a destination_check: per path, every check with its remedy, who writes there, and the root commands that fix the permissions. */
+export function DestPaths({ r }: { r: any }) {
   return <div className="stack">{(r.paths || []).map((p: any) => <div key={p.kind} className="stack"><div className="small"><strong>{p.kind === 'repo' ? 'Repository' : 'WAL archive'}</strong> <span className="mono">{p.path}</span>{p.mount ? <span className="muted"> · {p.mount.fstype}</span> : null}{p.free_bytes != null ? <span className="muted"> · {bytes(p.free_bytes)} free</span> : null}</div>
     <CheckList checks={p.checks} />{p.bench && !p.bench.error ? <div className="small muted">Measured: write {p.bench.write_mb_s} MB/s, read {p.bench.read_mb_s} MB/s ({p.bench.note})</div> : null}
     {p.identity ? <Writers id={p.identity} /> : null}
