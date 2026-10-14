@@ -39,4 +39,4 @@ listen leader
 C
 setsebool -P haproxy_connect_any 1 2>/dev/null || true
 systemctl enable --now haproxy >/dev/null 2>&1; systemctl restart haproxy
-etcdctl --endpoints=http://127.0.0.1:2379 endpoint health; systemctl is-active haproxy
+/usr/local/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health; systemctl is-active haproxy
