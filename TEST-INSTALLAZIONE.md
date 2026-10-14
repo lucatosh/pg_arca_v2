@@ -8,10 +8,16 @@ Ramo: `release/1.0.0-rc.1`. Guida completa in inglese: [INSTALL.md](INSTALL.md).
 - I file della release (cartella `pg-arca-1.0.0-rc.1`):
   `pg-arca-console-1.0.0-rc.1-linux-x64.tar.gz`, `pg-arca-agent-1.0.0-rc.1.tar.gz`, `pg-arca-agent_1.0.0~rc.1_all.deb`, `pg-arca-agent-1.0.0~rc.1-1.noarch.rpm`, `SHA256SUMS`, `BUILDINFO`.
 
-Copia sulla macchina di test (da PowerShell sul PC; `<IP-CONSOLE>` = indirizzo della macchina di test):
+I file sono sulla VM del lab in `~/release-rc1` (costruiti dal ramo `release/1.0.0-rc.1`). Prima controlla che la build sia finita (l'ultima riga deve essere `== artifacts in /home/lab/release-rc1` seguita dall'elenco):
 ```powershell
+ssh lab@192.168.1.179 "tail -12 lablogs/release-rc1.log"
+```
+Poi, da PowerShell sul PC (`<IP-CONSOLE>` = indirizzo della macchina di test):
+```powershell
+scp -r lab@192.168.1.179:release-rc1 "$HOME\Downloads\pg-arca-1.0.0-rc.1"
 scp -r "$HOME\Downloads\pg-arca-1.0.0-rc.1" root@<IP-CONSOLE>:/root/
 ```
+(oppure direttamente dalla macchina di test: `scp -r lab@192.168.1.179:release-rc1 /root/pg-arca-1.0.0-rc.1`, con la password dell'utente lab.)
 
 ## 1. Console
 ```bash
