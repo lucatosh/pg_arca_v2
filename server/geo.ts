@@ -248,6 +248,12 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
     if (sv.standby_cluster && !sv.standby_cluster.restore_command) add({ id: 'archive', level: 'info', site: s.name, clusterId: s.clusterId, action: 'archive_fallback', text: at('nessun restore_command nello standby_cluster: senza streaming non può recuperare dall’archivio WAL'),
       fix: 'aggiungi standby_cluster.restore_command (es. pg-arca-wal get %f %p) per recuperare dall’archivio condiviso' });
     else if (sv.standby_cluster?.restore_command) add({ id: 'archive', level: 'ok', site: s.name, text: at('riserva dall’archivio WAL attiva (restore_command nello standby_cluster)') });
+    // after a promotion this site IS the database: without archiving there is no point-in-time restore any more (the shared archive stops at the failover)
+    const am = String(spg.settings?.archive_mode ?? '').toLowerCase(); const ac = String(spg.settings?.archive_command ?? '');
+    if (am && am !== 'on' && am !== 'always') add({ id: 'standby_archive', level: 'warn', site: s.name, clusterId: s.clusterId, text: at('archiviazione WAL spenta: dopo un failover il nuovo primario non archivia e i ripristini a un istante preciso si fermano lì'),
+      fix: 'attiva l’archiviazione anche su questo sito (Protezione → Backup → «Attiva archiviazione WAL»: con Patroni passa dal suo DCS), verso lo stesso archivio del sito primario' });
+    else if (am && !/pg-arca-wal|pg_arca/.test(ac)) add({ id: 'standby_archive', level: 'warn', site: s.name, clusterId: s.clusterId, text: at(`archive_command non è quello di pg_arca (${ac.slice(0, 60) || 'vuoto'}): dopo un failover i WAL non arrivano nell’archivio comune`) });
+    else if (am) add({ id: 'standby_archive', level: 'ok', site: s.name, text: at('archiviazione pronta: dopo un failover continua nello stesso archivio') });
     // parameters a hot standby needs at least as high as its primary
     for (const k of STANDBY_MIN_PARAMS) {
       const pvv = Number(ppg.settings?.[k]), svv = Number(spg.settings?.[k]);

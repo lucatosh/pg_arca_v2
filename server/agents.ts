@@ -417,7 +417,9 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
             || (dbNodes.filter(n => n.snapshot?.postgres?.is_in_recovery !== true).length === 1 ? dbNodes.find(n => n.snapshot?.postgres?.is_in_recovery !== true) : undefined);
           if (!target) return { code: 409, body: { error: 'no_suitable_node', message: 'Non trovo il nodo che contiene i dati di produzione (agent in linea, PostgreSQL primario o fermo). Controlla lo stato dei nodi.' } };
         }
-        else if (spec.target === 'primary') target = pick(n => n.snapshot?.postgres?.is_in_recovery === false);
+        else if (spec.target === 'primary') target = pick(n => n.snapshot?.postgres?.is_in_recovery === false)
+          // the standby site of a geo pair has no primary, but its archiving is set in ITS DCS (any member): it must archive the moment it is promoted
+          || (type === 'archive_enable' ? pick(n => !!n.snapshot?.patroni?.accessible) : undefined);
         else if (spec.target === 'patroni_node') target = pick(n => !!n.snapshot?.patroni?.accessible);
         else {
           // any_node: prefer a node whose PostgreSQL is really up (a replica still being cloned or a stopped instance cannot back up or plan a restore),

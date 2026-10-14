@@ -45,6 +45,12 @@ import { deriveCluster } from '../../server/view';
   assert.strictEqual(geoParamGuard(store.peek(), 'c1', 'max_connections', 100), null);
   assert.strictEqual(geoParamGuard(store.peek(), 'c2', 'max_connections', 300), null, 'raising on the standby site first is the right order');
   assert.strictEqual(geoParamGuard(store.peek(), 'c1', 'work_mem', '64MB'), null);
+  // the standby site must be able to archive the moment it becomes the primary: said in the readiness
+  const rd = () => geoReadiness(store.peek(), geoGroups(store.peek())[0]).checks.find(c => c.id === 'standby_archive');
+  await store.mutate(d => { d.nodes.b.snapshot.postgres.settings = { max_connections: '100', archive_mode: 'off' }; });
+  assert.strictEqual(rd()?.level, 'warn', 'archiving off on the standby site');
+  await store.mutate(d => { d.nodes.b.snapshot.postgres.settings = { max_connections: '100', archive_mode: 'on', archive_command: '/usr/local/bin/pg-arca-wal archive %p %f' }; });
+  assert.strictEqual(rd()?.level, 'ok');
   // 2. the WAN breaks: receiver down, lag grows -> critical finding on the standby site
   await store.mutate(d => { d.nodes.a.snapshot = snapP('0/9000000'); d.nodes.b.snapshot = snapS('0/5000000', 'stopping', 300); });
   s2 = geoGroups(store.peek())[0].sites.find(s => s.clusterId === 'c2')!;
