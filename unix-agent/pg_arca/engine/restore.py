@@ -185,14 +185,16 @@ def materialize(ctx, merged, dest, delta=False, progress=None, cancel=None):
 
     items = sorted(merged.items(), key=lambda kv: -kv[1]["size"])
     written = 0
+
+    def tick():
+        if progress and time.time() - last[0] > 1.0:
+            last[0] = time.time()
+            progress({"phase": "extract", "files": state["files"], "files_total": total, "bytes": state["bytes"], "bytes_total": total_bytes,
+                      "pct": int(100.0 * state["bytes"] / max(total_bytes, 1))})
+    from pg_arca.engine.backup import _stream                      # same sliding window as the backup copy: no batch barrier
     with ThreadPoolExecutor(max_workers=ctx.process_max) as pool:
-        for i in range(0, len(items), 512):
-            for n in pool.map(work, items[i:i + 512]):
-                written += n
-            if progress and time.time() - last[0] > 1.0:
-                last[0] = time.time()
-                progress({"phase": "extract", "files": state["files"], "files_total": total, "bytes": state["bytes"], "bytes_total": total_bytes,
-                          "pct": int(100.0 * state["bytes"] / max(total_bytes, 1))})
+        for n in _stream(pool, items, work, ctx.process_max * 4, tick):
+            written += n
     os.sync()
     return {"files": total, "bytes": total_bytes, "bytes_written": written, "seconds": round(time.time() - t0, 2)}
 
