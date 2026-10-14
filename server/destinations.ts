@@ -75,8 +75,12 @@ export function destinationFor(st: any, c: any): { dest: ResolvedDestination | n
   }
   if (d.wal_path) {                                         // two clusters that RESOLVE to the same (or a nested) archive directory, even with placeholders (same name and environment, two clusters assigned the same path by hand)
     const mine = d.wal_path.replace(/\/+$/, '') + '/';
+    // the sites of ONE geo-redundant database (same system identifier) share its archive on purpose: same WAL names, same history, one catalogue
+    const sysidOf = (cid: string) => Object.values(st.nodes || {}).map((n: any) => n.clusterId === cid ? n.snapshot?.postgres?.system_identifier : null).find(Boolean) || null;
+    const me = sysidOf(c.id);
     for (const o of st.clusters) {
       if (o.id === c.id || o.isSandbox) continue;
+      if (me && sysidOf(o.id) === me) continue;
       const ow = (resolveScoped(st, 'destination', o).value.walPath as string | undefined);
       if (!ow) continue;
       const theirs = expand(ow, o).replace(/\/+$/, '') + '/';

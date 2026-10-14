@@ -41,6 +41,11 @@ import { validateOp } from '../../server/optypes';
   const col = destinationFor(store.peek(), store.peek().clusters[0]).dest!;
   assert.match(col.wal_collision || '', /coincide/);
   assert.equal((await call('POST', '/api/clusters/c1/destination/apply', {}, 'kc')).status, 409);
+  // ...unless the two clusters are the two sites of ONE geo-redundant database (same system identifier): they share its archive on purpose
+  await store.mutate(d => { for (const n of Object.values(d.nodes) as any[]) if (n.clusterId === 'c1') n.snapshot = { ...(n.snapshot || {}), postgres: { ...(n.snapshot?.postgres || {}), system_identifier: '7001' } };
+    d.nodes['n-c3'] = { id: 'n-c3', clusterId: 'c3', name: 'c3-pg1', snapshot: { postgres: { system_identifier: '7001' } } } as any; });
+  assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.wal_collision, undefined, 'geo sites of one database');
+  await store.mutate(d => { delete d.nodes['n-c3']; });
   await store.mutate(d => { d.clusters = d.clusters.filter((x: any) => x.id !== 'c3'); });
   assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.wal_collision, undefined);
 
