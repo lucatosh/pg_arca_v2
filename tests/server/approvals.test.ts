@@ -23,6 +23,7 @@ import { mountHbaRoutes } from '../../server/hba';
     d.clusters.push({ id: 'prod1', name: 'prod1', environment: 'prod', source: 'agent' } as any, { id: 'dev1', name: 'dev1', environment: 'dev', source: 'agent' } as any);
     for (const [id, cl] of [['np', 'prod1'], ['nd', 'dev1']]) d.nodes[id] = { id, name: id, clusterId: cl, lastSeen: new Date().toISOString(), snapshot: { postgres: { alive: true, is_in_recovery: false } } } as any;
   });
+  assert(isRisky('restore_instance', { replace_production: true, confirm: 'SOSTITUISCI' }) && !isRisky('restore_instance', { replace_production: true, dry_run: true }) && !isRisky('restore_instance', {}) && isRisky('restore_kept_drop', {}));
   assert(isRisky('hba_apply') && isRisky('restore_promote', { mode: 'replace' }) && !isRisky('restore_promote', { mode: 'as_new' }) && !isRisky('backup_run'));
   // one admin only -> cannot switch four-eyes on (nobody could approve)
   let r = await call('PUT', '/api/advanced', { approvals: { prod: true } }, A); assert.equal(r.status, 409); assert.equal(r.body.error, 'need_two_admins');

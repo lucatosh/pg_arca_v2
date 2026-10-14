@@ -47,7 +47,7 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 ## Decisioni
 - Un solo cluster demo; nessun altro dato fittizio.
 - Nessuna simulazione presentata come reale: ciò che non funziona è "Anteprima" o risponde con un errore chiaro.
-- Ripristino sempre non distruttivo (nome nuovo / quarantena / cartella vuota).
+- Ripristino che finisce nell’originale (tabella, righe, database, server standalone) partendo sempre da una copia: l’originale viene sostituito solo alla fine, con conferma, e resta conservato; rollback automatico per il server.
 - UI riscritta da zero in moduli (CSS semplice, nessuna dipendenza oltre React); il vecchio monolite da 4247 righe, Tailwind e lucide sono stati rimossi.
 - `server.ts` ridotto da ~2700 a ~90 righe: le rotte simulate (HA, HBA, LDAP, RBAC, PITR, stanze, politiche, parametri, tuning) sono state eliminate; HA e parametri passano dal motore operazioni.
 

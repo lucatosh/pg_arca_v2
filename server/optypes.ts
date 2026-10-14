@@ -181,7 +181,15 @@ Object.assign(OP_SPECS, {
                                                        : (targetErr(p) || (p.action && !['promote', 'pause'].includes(p.action) ? 'action must be promote|pause'
                                                        : (p.label !== undefined && !(typeof p.label === 'string' && p.label.length <= 60 && noCtl(p.label)) ? 'label: up to 60 characters'
                                                        : p.start !== undefined && typeof p.start !== 'boolean' ? 'start must be boolean'
-                                                       : (p.ttl_hours !== undefined && p.ttl_hours !== null && !(Number(p.ttl_hours) >= 0 && Number(p.ttl_hours) <= 8760) ? 'ttl_hours 0..8760 (0 = keep)' : null)))) },
+                                                       : (p.ttl_hours !== undefined && p.ttl_hours !== null && !(Number(p.ttl_hours) >= 0 && Number(p.ttl_hours) <= 8760) ? 'ttl_hours 0..8760 (0 = keep)' : null))))
+                                                       // replace_production: production ITSELF goes back to the target (rebuilt next to PGDATA, stop, swap, start); no destination, no copy options
+                                                       || (p.replace_production !== undefined && typeof p.replace_production !== 'boolean' ? 'replace_production must be boolean'
+                                                       : p.replace_production === true && (p.destination || p.keep_archiving || p.delta || p.resume || (p.action && p.action !== 'promote')) ? 'replace_production takes no destination / keep_archiving / delta / resume, and always promotes'
+                                                       : p.replace_production === true && !p.dry_run && p.confirm !== 'SOSTITUISCI' ? 'replace_production needs confirm="SOSTITUISCI" (PostgreSQL is stopped and its data directory replaced; the previous one is kept)' : null) },
+  // data directories kept by a production replacement (<pgdata>.pgarca-before-<ts>): listed and removed on the node that holds them
+  restore_kept_list: { mutating: false, target: 'any_node', lane: 'control', validate: () => null },
+  restore_kept_drop: { mutating: true, target: 'any_node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => typeof p.path !== 'string' || !p.path.startsWith('/') || p.path.split('/').includes('..') || !/\.pgarca-(before|failed|new)-\d{14}$/.test(p.path) ? 'path must be a data directory kept by a replacement'
+                        : (p.confirm !== p.path.split('/').pop() ? 'confirm must be the directory name' : null) },
   // restored copies (whole-instance restores the agent started and keeps track of): listed, stopped, started, resumed, kept or deleted on the node that holds them
   restored_list:   { mutating: false, target: 'node', lane: 'control', validate: () => null },
   restored_stop:   { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => rstId(p) },

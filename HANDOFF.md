@@ -157,6 +157,16 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### Sessione 14/10: il ripristino finisce il lavoro nell'originale (richiesta utente: «non creano solo un db o istanza effimera… serve che sia il tool a completare l'operazione»)
+- **Fatto e provato su PG16 locale** (commit 9daf232 e successivo):
+  - Nel passo «Controlla e conferma» c'è **«Alla fine»**, scelto prima di partire. Il predefinito rimette a posto l'originale: tabella (solo ciò che manca / sostituisci / accanto), tutte le righe com'erano, database al posto dell'originale (l'attuale resta come `<db>_before_<ts>`). In alternativa «solo una copia da controllare», con un pulsante per metterla al posto dell'originale (`restore_db_swap`).
+  - **Tutto il server**: «Rimetti a posto il server di produzione» (predefinito se non Patroni). Il server viene ricostruito accanto a PGDATA mentre la produzione lavora; poi stop, scambio delle cartelle e avvio con la sua unità systemd o con pg_ctl. Torna primario sulla stessa porta. In caso di errore c'è il rollback automatico. Funziona anche con la produzione ferma: i WAL non archiviati vengono recuperati dal suo `pg_wal`. Le cartelle conservate si eliminano dalla UI. Dettagli in ARCHITETTURA §4.1 punto 9.
+  - Test: `test_replace_pg` (6), `test_db_swap_pg` (3), `test_engine_pg` (35), `test_restored_pg` (10), e2e UI con agent simulato.
+- **Da fare**:
+  - Provarlo sul lab: pg-s14 e pg-solo1 (Docker, pg_ctl) e un CT Proxmox con systemd (Debian `postgresql@`, Rocky `postgresql-16`); aggiornare `tools/lab/ui/restore-ui.cjs` ai nuovi predefiniti («fix»).
+  - Per Patroni: sostituzione dell'intero cluster (ricostruire il leader, `patronictl reinit` delle repliche) solo tramite Patroni/DCS.
+  - Server con tablespace esterni: oggi rifiutato (`PGA-RST-083`).
+
 ### Sessione 14/10 notte (2): georidondanza, disaster recovery automatico, lab ibrido Docker+Proxmox su Rocky
 - **Failover automatico tra siti** (`server/geodr.ts`). È spento per default e si attiva per coppia: Georidondanza → «Modifica…».
   - **Quando scatta:** servono due testimoni indipendenti per tutto il tempo di conferma: la console non sente alcun nodo del primario e il sito di replica non riceve più WAL.

@@ -64,6 +64,7 @@ const withAgent = process.env.NO_AGENT !== '1';
     });
     const report = (id: string, body: any) => app.call('POST', `/api/agent/ops/${id}/report`, { body, headers: agent.h });
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+    let keptDirs: { path: string; kind: string }[] = [];
     const handle = async (op: any) => {
       const p = op.params;
       await report(op.id, { status: 'running', progress: { phase: 'starting' } });
@@ -119,6 +120,20 @@ const withAgent = process.env.NO_AGENT !== '1';
         if (!p.database) return report(op.id, { status: 'succeeded', result: { set: p.set || 'x', databases: [{ name: 'appdb', oid: 16384, size: 4e9, objects: 42, tables: 40, schemas: 3, connectable: true, in_latest: true, last_set: sets[sets.length - 1].id, last_stop: new Date(Date.now() - 3600e3).toISOString() }, { name: 'billing', oid: 16385, size: 1e9, objects: 8, tables: 8, schemas: 1, connectable: true, in_latest: true, last_set: sets[sets.length - 1].id, last_stop: new Date(Date.now() - 3600e3).toISOString() },
           ...(p.set === 'all' ? [{ name: 'reports', oid: 16390, size: 6e8, objects: 12, tables: 12, schemas: 2, connectable: true, in_latest: true, last_set: sets[sets.length - 1].id, last_stop: new Date(Date.now() - 3600e3).toISOString() }, { name: 'arca_rl_20261010', oid: 16399, size: 1e6, objects: 1, tables: 1, schemas: 1, connectable: true, in_latest: false, last_set: sets[sets.length - 1].id, last_stop: new Date(Date.now() - 3600e3).toISOString() }] : [])] } });
         return report(op.id, { status: 'succeeded', result: { set: 'x', database: p.database, schemas: [{ name: 'public', objects: [{ name: 'orders', kind: 'p', size: 3e9, partitions: 2, parts: [{ name: 'orders_2025', kind: 'r', depth: 0, parent: 'orders' }, { name: 'orders_2026', kind: 'r', depth: 0, parent: 'orders' }] }, { name: 'customers', kind: 'r', size: 4e8 }, { name: 'v_open_orders', kind: 'v', size: 0 }].filter(o => !p.search || o.name.includes(p.search)) }], total_objects: 2, truncated: false } });
+      }
+      // a whole server put back IN PLACE (standalone): the plan says how production is stopped/started; the run reports the swap and the kept directory
+      const PGD = '/var/lib/postgresql/16/main';
+      if (op.type === 'restore_kept_list') return report(op.id, { status: 'succeeded', result: { kept: keptDirs.map(k => ({ ...k })) } });
+      if (op.type === 'restore_kept_drop') { await sleep(300); keptDirs = keptDirs.filter(k => k.path !== p.path); return report(op.id, { status: 'succeeded', result: { removed: p.path } }); }
+      if ((op.type === 'restore_plan' || op.type === 'restore_instance') && p.replace_production) {
+        const rep = { method: 'systemd', unit: 'postgresql@16-main.service', was_running: true, data_directory: PGD, carry_unarchived_wal: !p.target_time, warnings: ['1 standby server(s) stream from this server: after the replacement they follow a past timeline and must be rebuilt from it'], kept: keptDirs.map(k => ({ ...k })) };
+        const base = { set: sets[sets.length - 1].id, chain: sets.slice(-2).map(s => s.id), target: p.target_time || 'end of archive', bytes: 5e9, files: 1200, missing_wal: [], destination: PGD + '.pgarca-new-20260101000000',
+          space: [{ paths: [PGD], roles: ['dest', 'data'], need: 5.3e9, free: 4.3e10, total: 2.0e11, free_after: 3.77e10 }], preflight: { ok: true, level: 'ok', checks: [{ id: 'chunks', level: 'ok', text: 'all 61234 backup chunks needed are present in the repository' }] } };
+        if (op.type === 'restore_plan') return report(op.id, { status: 'succeeded', result: { ...base, dry_run: true, replace: rep } });
+        for (const ph of ['extract', 'swap', 'recovery']) { await sleep(500); await report(op.id, { status: 'running', progress: { phase: ph, msg: ph === 'swap' ? 'stopping production PostgreSQL' : ph === 'recovery' ? 'production recovering: WAL applied up to 0/4B000100' : undefined } }); }
+        const old = PGD + '.pgarca-before-20260101000500'; keptDirs.push({ path: old, kind: 'before' });
+        return report(op.id, { status: 'succeeded', result: { ...base, destination: PGD, replace: { ...rep, replaced: true, old_kept_as: old, data_directory: PGD, kept: keptDirs.map(k => ({ ...k })),
+          steps: ['pg_ctl stop -m fast (unit postgresql@16-main.service now inactive)', `data directory replaced (previous one kept as ${old})`, 'systemctl start postgresql@16-main.service', 'primary again after 14 s'] } } });
       }
       if (op.type === 'restore_plan') {
         if (p.target_time && Date.parse(p.target_time) > Date.now() + 60_000) return report(op.id, { status: 'failed', error: 'PGA-PITR-002: target is in the future' });

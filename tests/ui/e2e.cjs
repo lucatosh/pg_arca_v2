@@ -133,6 +133,23 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=/Tutto pronto|Pronto: leggi/', { timeout: 10000 });
   await p.click('button:has-text("Avvia il ripristino")'); await p.click('.modal button:has-text("Avvia")');
   await p.waitForSelector('text=/Righe di .* riportate/', { timeout: 15000 }); await p.waitForSelector('code:has-text("pgarca_rowsafe_")'); await shot('12i-rows-fixed');
+  // whole server, default end: PRODUCTION itself goes back (stop, swap, start, primary again); the previous data directory is kept and can be given back
+  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Devo ricostruire tutto il server")');
+  await p.waitForSelector('label.opt.on:has-text("L’ultimo istante salvato")', { timeout: 10000 }); await p.click('button:has-text("Avanti")');
+  await p.waitForSelector('label.opt.on:has-text("Rimetti a posto il server di produzione")'); await p.waitForSelector('code:has-text("postgresql@16-main.service")', { timeout: 10000 });
+  await p.waitForSelector('text=WAL non ancora archiviati'); await p.waitForSelector('text=/standby ricevono i WAL.*vanno ricostruiti/');
+  if (await p.locator('text=Dove mettere la copia').count()) throw new Error('replacing production asks for no copy destination');
+  await shot('12j-server-fix-check');
+  await p.click('button:has-text("Avvia il ripristino")'); await p.waitForSelector('.modal >> text=al posto della produzione');
+  if (!(await p.locator('.modal button:has-text("Avvia")').isDisabled())) throw new Error('replacing production needs the typed confirmation');
+  await p.fill('.modal input', 'SOSTITUISCI'); await p.click('.modal button:has-text("Avvia")');
+  await p.waitForSelector('text=Il server di produzione è di nuovo com’era', { timeout: 15000 }); await p.waitForSelector('text=di nuovo primario dopo 14 s');
+  await p.waitForSelector('text=Cartelle conservate'); await shot('12k-server-fixed');
+  await p.click('.card:has-text("Cartelle conservate") button:has-text("Elimina")'); await p.fill('.modal input', 'main.pgarca-before-20260101000500'); await p.click('.modal button:has-text("Elimina")');
+  await p.waitForSelector('text=Cartelle conservate', { state: 'detached', timeout: 10000 });
+  // the copy instead: asks where, and production is not touched
+  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Devo ricostruire tutto il server")'); await p.click('button:has-text("Avanti")');
+  await p.click('label:has-text("Solo una copia temporanea da consultare")'); await p.waitForSelector('text=Dove mettere la copia', { timeout: 10000 });
   // ripristino e archivi: istanza di recupero (globale -> cluster, verifica, installazione) e destinazione dei backup (controllo, applicazione)
   await p.goto(base + '/#/infra'); await p.waitForSelector('text=Ripristino e archivi'); await p.waitForSelector('text=Tutti i cluster');
   await p.locator('tr:has-text("Tutti i cluster") button:has-text("Modifica")').click(); await p.waitForSelector('text=Dove gira l’istanza di recupero');

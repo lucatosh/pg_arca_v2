@@ -408,6 +408,15 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
         const member = typeof params?.member === 'string' ? params.member : '';
         if (member && ['patroni_restart', 'patroni_reinit'].includes(type)) target = pick(n => n.name === member && !!n.snapshot?.patroni?.accessible);
         if (target) { /* chosen by member */ }
+        else if ((type === 'restore_instance' || (type === 'restore_plan' && params?.scope === 'instance')) && params?.replace_production) {
+          // production itself is replaced: the node that HOLDS its data directory, also (above all) when PostgreSQL there is down. Never a Patroni member.
+          if (nodes.some(n => n.snapshot?.patroni?.configured || n.snapshot?.patroni?.accessible))
+            return { code: 409, body: { error: 'patroni_managed', message: 'Questo cluster è gestito da Patroni: il server non si sostituisce alle sue spalle. Ripristina un database o una tabella (tornano al loro posto nel cluster), oppure una copia del server.' } };
+          const dbNodes = nodes.filter(n => online(n) && (n as any).kind !== 'worker');
+          target = pick(n => n.snapshot?.postgres?.alive === true && n.snapshot?.postgres?.is_in_recovery === false)
+            || (dbNodes.filter(n => n.snapshot?.postgres?.is_in_recovery !== true).length === 1 ? dbNodes.find(n => n.snapshot?.postgres?.is_in_recovery !== true) : undefined);
+          if (!target) return { code: 409, body: { error: 'no_suitable_node', message: 'Non trovo il nodo che contiene i dati di produzione (agent in linea, PostgreSQL primario o fermo). Controlla lo stato dei nodi.' } };
+        }
         else if (spec.target === 'primary') target = pick(n => n.snapshot?.postgres?.is_in_recovery === false);
         else if (spec.target === 'patroni_node') target = pick(n => !!n.snapshot?.patroni?.accessible);
         else {

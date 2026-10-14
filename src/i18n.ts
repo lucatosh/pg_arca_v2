@@ -9,6 +9,18 @@ const ROLE: Record<string, string> = {
 const roles = (s: string) => s.split(' + ').map(r => ROLE[r] || r).join(' + ');
 const SRC: Record<string, string> = { configured: 'configurati', "this node's own": 'quelli del nodo', 'installed package': 'pacchetto installato', 'installed by pg_arca': 'installati da pg_arca' };
 const RULES: Rule[] = [
+  // replacement of the production server (engine/replace.py): warnings and the steps done
+  [/^(\d+) standby server\(s\) stream from this server: after the replacement they follow a past timeline and must be rebuilt from it$/, m => `${m[1]} standby ricevono i WAL da questo server: dopo la sostituzione seguono una timeline passata e vanno ricostruiti da questo server`],
+  [/^pg_ctl stop -m fast \(unit (.+) now inactive\)$/, m => `PostgreSQL fermato (pg_ctl stop -m fast; servizio ${m[1]} ora inattivo)`],
+  [/^pg_ctl stop -m fast$/, () => 'PostgreSQL fermato (pg_ctl stop -m fast)'],
+  [/^systemctl stop (.+)$/, m => `PostgreSQL fermato (systemctl stop ${m[1]})`],
+  [/^already stopped$/, () => 'PostgreSQL era già fermo'],
+  [/^data directory replaced \(previous one kept as (.+)\)$/, m => `cartella dei dati sostituita (la precedente resta come ${m[1]})`],
+  [/^(\d+) WAL file\(s\) production had not archived yet handed to the recovery$/, m => `${m[1]} file WAL non ancora archiviati dalla produzione passati al recupero`],
+  [/^systemctl start (.+)$/, m => `PostgreSQL avviato (systemctl start ${m[1]})`],
+  [/^pg_ctl start$/, () => 'PostgreSQL avviato (pg_ctl start, con le opzioni di prima)'],
+  [/^primary again after (\d+) s$/, m => `di nuovo primario dopo ${m[1]} s`],
+  [/^recovery settings of the restore commented out in postgresql\.auto\.conf$/, () => 'impostazioni di recupero del ripristino commentate in postgresql.auto.conf'],
   [/^not enough space on the data volume of the destination cluster: (.+) free, about (.+) needed$/, m => `spazio insufficiente sul volume dati del cluster di destinazione: ${m[1]} liberi, ne servono circa ${m[2]}`],
   [/^the data volume of the destination cluster would be left with (.+) free: a full data volume stops PostgreSQL$/, m => `sul volume dati del cluster di destinazione resterebbero ${m[1]} liberi: un volume dati pieno ferma PostgreSQL`],
   [/^destination cluster data volume: (.+) free, about (.+) needed$/, m => `volume dati del cluster di destinazione: ${m[1]} liberi, ne servono circa ${m[2]}`],

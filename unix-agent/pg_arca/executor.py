@@ -107,6 +107,8 @@ class OperationExecutor:
         r("restore_object", self.h_restore_object, False)
         r("restore_promote", self.h_restore_promote, False)
         r("restore_db_swap", self.h_restore_db_swap, False)
+        r("restore_kept_drop", self.h_restore_kept_drop, False)
+        r("restore_kept_list", self.h_restore_kept_list, True)
         r("hba_expire", self.h_hba_expire, False)
         r("agent_config_get", self.h_cfg_get, True)
         r("agent_config_set", self.h_cfg_set, True)       # same input -> same file: idempotent
@@ -800,6 +802,8 @@ class OperationExecutor:
         ctx = self._ctx_ro()
         t = self._targets(p)
         scope = p.get("scope")
+        if scope == "instance" and p.get("replace_production"):
+            return self._replace_production(dict(p, dry_run=True))
         if scope == "instance":
             from pg_arca.engine.restore import restore_instance
             dest, where = self._instance_dest(ctx, p, t)
@@ -833,7 +837,57 @@ class OperationExecutor:
                               "free space, mount a volume the agent user can write to (e.g. /restore), or restore just a database or a table")
         return dest, where
 
+    def _replace_checks(self, ctx):
+        """Can this server's data directory be replaced by a restored one? Returns (how it is managed, warnings); raises with the reason when not."""
+        from pg_arca.engine import replace
+        from pg_arca.engine.util import EngineError
+        if self.patroni.configured:
+            raise EngineError("PGA-RST-081", "this server is a Patroni member: replacing its data directory behind Patroni's back would fork the cluster",
+                              "restore a database or a table (they put the data back in the running cluster), or rebuild the cluster from a restored copy")
+        pgdata = ctx.pgdata
+        if not pgdata or not os.path.isdir(pgdata):
+            raise EngineError("PGA-RST-082", "the data directory of this server is not known (or not here): nothing to replace")
+        tbl = os.path.join(pgdata, "pg_tblspc")
+        if os.path.isdir(tbl) and os.listdir(tbl):
+            raise EngineError("PGA-RST-083", "this server has tablespaces outside its data directory: replacing it in place is not supported yet",
+                              "restore the databases you need (database restore puts them back in place), or restore the whole server as a copy and move it by hand")
+        m = replace.how_managed(pgdata)
+        warn = []
+        if not m.get("alive"):
+            # no postmaster visible from here: really down, or running where the agent cannot see its processes (another container / PID namespace)
+            try:
+                from pg_arca.engine.pgsession import PgSession
+                s = PgSession(ctx.conn.with_db("postgres"), read_only=True)
+                try:
+                    s.scalar("SELECT 1")
+                finally:
+                    s.close()
+                answers = True
+            except Exception:
+                answers = False
+            if answers:
+                raise EngineError("PGA-RST-088", "PostgreSQL answers but its processes are not visible to the agent (another container or PID namespace): pg_arca cannot stop it safely",
+                                  "run the agent where the server runs, or restore a database / a table, or a copy of the server")
+        if m.get("alive"):
+            try:
+                from pg_arca.engine.pgsession import PgSession
+                s = PgSession(ctx.conn.with_db("postgres"), read_only=True)
+                try:
+                    if s.scalar("SELECT pg_is_in_recovery()") == "t":
+                        raise EngineError("PGA-RST-084", "this server is a standby: replace the PRIMARY (the standby is then rebuilt from it)")
+                    n = int(s.scalar("SELECT count(*) FROM pg_stat_replication") or 0)
+                    if n:
+                        warn.append("%d standby server(s) stream from this server: after the replacement they follow a past timeline and must be rebuilt from it" % n)
+                finally:
+                    s.close()
+            except EngineError as e:
+                if e.code == "PGA-RST-084":
+                    raise
+        return m, warn
+
     def h_restore_instance(self, p):
+        if p.get("replace_production"):
+            return self._replace_production(p)
         from pg_arca.engine.restore import restore_instance
         from pg_arca.engine import restored
         ctx = self._ctx_ro()
@@ -853,6 +907,66 @@ class OperationExecutor:
                                                        ttl_hours=restored.DEFAULT_TTL_H if ttl is None else float(ttl), op_id=getattr(self._tl, "op_id", ""),
                                                        progress=self._progress, cancel=self._cancelled)
         return plan
+
+    def _replace_production(self, p):
+        """The end of the job for a whole-server restore: production itself is put back to the chosen point (not a copy next to it).
+        Rebuilt on the same volume next to PGDATA while production keeps running, then stop -> swap -> start -> recovery -> primary; on any failure the
+        original data directory is put back (and started again). The previous data directory is kept as <pgdata>.pgarca-before-<ts> until dropped."""
+        from pg_arca.engine.restore import restore_instance
+        from pg_arca.engine import replace
+        if str(p.get("confirm") or "") != "SOSTITUISCI" and not p.get("dry_run"):
+            raise EngineError("PGA-RST-085", "replacing the production server needs the confirmation word SOSTITUISCI")
+        ctx = self._ctx_ro()
+        t = self._targets(p)
+        m, warn = self._replace_checks(ctx)
+        staged = replace.staging_dir(ctx.pgdata)
+        latest = not any(t.get(k) for k in ("target_time", "target_lsn", "target_xid", "target_name"))
+        if p.get("dry_run"):
+            plan = restore_instance(ctx, p.get("set"), staged, dry_run=True, keep_archiving=True, **t)
+        else:
+            try:
+                plan = restore_instance(ctx, p.get("set"), staged, action="promote", keep_archiving=True, progress=self._progress, cancel=self._cancelled, **t)
+            except BaseException:
+                shutil.rmtree(staged, ignore_errors=True)        # on production's own volume: never leave a half copy behind
+                raise
+        plan.pop("start_hint", None)
+        plan["replace"] = {"method": m["method"], "unit": m.get("unit"), "was_running": bool(m.get("alive")), "data_directory": os.path.realpath(ctx.pgdata),
+                           "carry_unarchived_wal": latest, "warnings": warn, "kept": replace.kept(ctx.pgdata)}
+        if plan.get("dry_run"):
+            return plan
+        if self._cancelled():
+            shutil.rmtree(staged, ignore_errors=True)
+            raise Cancelled()
+        try:
+            res = replace.swap_in(ctx, staged, m, ctx.conn.bindir, self.config.get("log_dir") or self.config.get("state_dir"), progress=self._progress,
+                                  cancel=self._cancelled, latest=latest)
+        except BaseException:
+            for k in replace.kept(ctx.pgdata):
+                if k["path"] == staged:                      # refused before anything was stopped: the rebuilt copy is useless on this volume
+                    shutil.rmtree(staged, ignore_errors=True)
+            raise
+        plan["replace"].update(res)
+        plan["replace"]["kept"] = replace.kept(ctx.pgdata)
+        plan["destination"] = res["data_directory"]
+        try:
+            if self.runtime:
+                self.runtime.refresh()
+        except Exception:
+            pass
+        return plan
+
+    def h_restore_kept_drop(self, p):
+        """Give back the disk space of a data directory kept by a production replacement (the way back is gone after this)."""
+        from pg_arca.engine import replace
+        ctx = self._ctx_ro()
+        if str(p.get("confirm") or "") != os.path.basename(str(p.get("path") or "")):
+            raise EngineError("PGA-RST-086", "type the directory name to confirm its removal")
+        return replace.drop_kept(ctx.pgdata, str(p.get("path") or ""))
+
+    def h_restore_kept_list(self, p):
+        from pg_arca.engine import replace
+        ctx = self._ctx_ro()
+        return {"kept": replace.kept(ctx.pgdata) if ctx.pgdata else []}
 
     def h_restored_list(self, p):
         from pg_arca.engine import restored

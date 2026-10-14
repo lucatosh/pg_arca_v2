@@ -1,10 +1,12 @@
 // Lab: every restore procedure driven through the REAL web console, as an operator would, on a real cluster of the lab.
 // For each scenario: damage done in SQL (drop a table, delete/update rows, drop a database), then the guided restore in the browser from the first click to
 // the data back in place, then the result checked in SQL. Screenshots of every step, timings, page errors. A failing scenario does not stop the others.
-//   NODE_PATH=~/uitest/node_modules node tools/lab/ui/restore-ui.cjs "<cluster name>" [table,rows,database,instance] [outDir]
+//   NODE_PATH=~/uitest/node_modules node tools/lab/ui/restore-ui.cjs "<cluster name>" [table,table_copy,rows,database,instance,server] [outDir]
+// Default end of each restore = the original is put right by the tool itself (table back, rows back, database back, production server replaced);
+// table_copy / instance exercise the 'only a copy to check' path. 'server' REPLACES the cluster's production server (standalone only; refused on Patroni).
 // Needs tools/lab/ui/sql.sh (SQL on the cluster's primary) and the console on PG_ARCA_URL (default http://localhost:3000).
 const { chromium } = require('playwright-core'); const fs = require('fs'); const path = require('path'); const os = require('os'); const { execFileSync } = require('child_process');
-const [cluster, which = 'table,rows,database,instance', outRoot = '/tmp/restore-ui'] = process.argv.slice(2);
+const [cluster, which = 'table,table_copy,rows,database,instance', outRoot = '/tmp/restore-ui'] = process.argv.slice(2);
 if (!cluster) { console.error('usage: restore-ui.cjs "<cluster name>" [scenarios] [outDir]'); process.exit(2); }
 const base = process.env.PG_ARCA_URL || 'http://localhost:3000';
 const exe = process.env.PW_CHROMIUM || (() => { const d = path.join(os.homedir(), '.cache/ms-playwright'); const h = fs.readdirSync(d).find(x => x.startsWith('chromium_headless_shell')); return path.join(d, h, 'chrome-linux/headless_shell'); })();
@@ -61,12 +63,25 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
   await new Promise(r => setTimeout(r, 3000));
   const flush = () => { try { sql('postgres', 'SELECT pg_switch_wal()'); } catch { /* replica or nothing to switch */ } };
 
-  if (which.includes('table')) await scenario('table', async mark => {
+  if (which.split(',').includes('table')) await scenario('table', async mark => {
+    sql(DB, 'DROP TABLE t_orders CASCADE'); flush(); mark('dropped');
+    await fresh(); await p.click('button.choice:has-text("Ho eliminato o svuotato una tabella")');
+    await p.waitForSelector('.recentrow:has-text("t_orders")', { timeout: T.wal }); mark('found in WAL');
+    await p.click('.recentrow:has-text("t_orders")'); await p.waitForSelector('label.opt.on:has-text("Subito prima")');
+    await p.click('button:has-text("Avanti")'); await verdictOk(); mark('checked');
+    if (!await p.locator('label.opt.on:has-text("Rimetti a posto in")').count()) throw new Error('the end "put it back" is not preselected');
+    await shot('table-fix-check');
+    await start(); await until('/di nuovo al suo posto/', T.restore); mark('back in place by the same operation'); await shot('table-fix-done');
+    const c = sql(DB, 'SELECT count(*) FROM t_orders'); if (c !== '500') throw new Error('t_orders has ' + c + ' rows, expected 500');
+  });
+
+  if (which.includes('table_copy')) await scenario('table_copy', async mark => {
     sql(DB, 'DROP TABLE t_items'); flush(); mark('dropped');
     await fresh(); await p.click('button.choice:has-text("Ho eliminato o svuotato una tabella")');
     await p.waitForSelector('.recentrow:has-text("t_items")', { timeout: T.wal }); mark('found in WAL'); await shot('table-found');
     await p.click('.recentrow:has-text("t_items")'); await p.waitForSelector('label.opt.on:has-text("Subito prima")');
-    await p.click('button:has-text("Avanti")'); await verdictOk(); mark('checked'); await shot('table-check');
+    await p.click('button:has-text("Avanti")'); await verdictOk(); mark('checked');
+    await p.click('label:has-text("Solo una copia da controllare")'); await shot('table-check');
     await start(); await until('/Rimetti a posto/', T.restore); mark('restored in quarantine'); await shot('table-quarantine');
     if (!await p.locator('label.opt.on:has-text("Rimetti al suo posto ciò che è stato eliminato")').count()) throw new Error('missing_only not preselected for a dropped table');
     await p.getByRole('button', { name: 'Riporta', exact: true }).click(); await p.click('.modal button:has-text("Riporta")');
@@ -83,9 +98,8 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
     await p.waitForSelector('label.opt:has-text("righe eliminate in")', { timeout: T.wal }); mark('found in WAL');
     await p.click('label.opt:has-text("righe eliminate in") input'); await shot('rows-when');
     await p.click('button:has-text("Avanti")'); await verdictOk(); mark('checked');
-    await start(); await until('/Differenze trovate|Le tabelle coincidono/', T.restore); mark('compared'); await shot('rows-diff');
-    await p.click('button:has-text("Riporta tutte le righe com’erano")'); await p.click('.modal button:has-text("Riporta")');
-    await until('/Righe recuperate/', T.restore); mark('applied'); await shot('rows-done');
+    if (!await p.locator('label.opt.on:has-text("Riporta tutte le righe com’erano")').count()) throw new Error('the end "every row back" is not preselected');
+    await start(); await until('/Righe di .* riportate/', T.restore); mark('rows back by the same operation'); await shot('rows-done');
     const c = sql(DB, "SELECT count(*), count(*) FILTER (WHERE v = 'bad') FROM t_rows"); if (c !== '3000|0') throw new Error('t_rows after recovery: ' + c + ' (expected 3000|0)');
   });
 
@@ -95,14 +109,15 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
     await p.waitForSelector(`.dbrow.gone:has-text("${DBX}")`, { timeout: 120e3 }); await p.click(`button[role=radio]:has-text("${DBX}")`); await shot('db-what');
     await p.click('button:has-text("Avanti")'); await p.waitForSelector('label.opt.on:has-text("Subito prima che venisse eliminato")', { timeout: 30e3 });
     await p.click('button:has-text("Avanti")'); await verdictOk(); mark('checked'); await shot('db-check');
-    await start(); await until('/Ripristino completato/', T.restore); mark('restored'); await shot('db-done');
-    const c = sql(`${DBX}_restored`, 'SELECT count(*) FROM t'); if (c !== '1234') throw new Error(`${DBX}_restored.t has ${c} rows, expected 1234`);
-    sql('postgres', `DROP DATABASE ${DBX}_restored`);
+    if (!await p.locator(`label.opt.on:has-text("Riporta ${DBX} con il suo nome")`).count()) throw new Error('the end "back with its name" is not preselected');
+    await start(); await until('/è tornato con il suo nome/', T.restore); mark('back with its name'); await shot('db-done');
+    const c = sql(DBX, 'SELECT count(*) FROM t'); if (c !== '1234') throw new Error(`${DBX}.t has ${c} rows, expected 1234`);
   });
 
   if (which.includes('instance')) await scenario('instance', async mark => {
     await fresh(); await p.click('button.choice:has-text("Devo ricostruire tutto il server")');
     await p.waitForSelector('label.opt.on:has-text("L’ultimo istante salvato")'); await p.click('button:has-text("Avanti")');
+    await p.click('label:has-text("Solo una copia temporanea da consultare")');
     await p.waitForSelector('.opt.dest', { timeout: T.verdict }); await verdictOk(); mark('destinations proposed');
     const cands = (await p.locator('.opt.dest').allInnerTexts()).map(x => x.replace(/\s+/g, ' ').slice(0, 200)); log('   destinations:', JSON.stringify(cands));
     if (!await p.locator('.opt.dest.on .badge:has-text("Consigliato")').count()) throw new Error('the recommended destination is not preselected');
@@ -123,6 +138,24 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
     await p.waitForSelector('.card:has-text("Ripristino") .restored .oppanel:has-text("Completata")', { timeout: 300e3 }); mark('deleted');
     try { execFileSync('docker', ['exec', node, 'test', '-e', dir]); throw new Error('directory still there: ' + dir); } catch (e) { if (/still there/.test(e.message)) throw e; }
     await shot('instance-deleted');
+  });
+
+  // production itself put back: rows committed just before (maybe not archived yet) must survive, same port, primary again
+  if (which.split(',').includes('server')) await scenario('server', async mark => {
+    sql(DB, "CREATE TABLE t_late(id int); INSERT INTO t_late SELECT generate_series(1, 77)"); mark('late rows committed');
+    const port0 = sql('postgres', 'SHOW port');
+    await fresh(); await p.click('button.choice:has-text("Devo ricostruire tutto il server")');
+    await p.waitForSelector('label.opt.on:has-text("L’ultimo istante salvato")'); await p.click('button:has-text("Avanti")');
+    await until('/Tutto pronto|Pronto: leggi|Prima va sistemato|non risponde|PGA-RST-08/', T.verdict);
+    const refused = await p.locator('text=/PGA-RST-08\\d/').count();
+    if (refused) { log('   refused (by design): ' + (await opText())); mark('refused'); await shot('server-refused'); return; }
+    await verdictOk(); mark('checked'); await shot('server-check');
+    await p.click('button:has-text("Avvia il ripristino")'); await p.fill('.modal input', 'SOSTITUISCI'); await p.click('.modal button:has-text("Avvia")');
+    await until('/Il server di produzione è di nuovo/', T.restore); mark('production replaced'); await shot('server-done');
+    const c = sql(DB, 'SELECT count(*) FROM t_late'); if (c !== '77') throw new Error('t_late has ' + c + ' rows after the replacement, expected 77');
+    if (sql('postgres', 'SELECT pg_is_in_recovery()') !== 'f' || sql('postgres', 'SHOW port') !== port0) throw new Error('not a primary on the same port');
+    await p.click('.card:has-text("Cartelle conservate") button:has-text("Elimina") >> nth=0'); const nm = (await p.locator('.modal code').first().innerText()).split('/').pop();
+    await p.fill('.modal input', nm); await p.click('.modal button:has-text("Elimina")'); await p.waitForTimeout(5000); mark('kept directory dropped');
   });
 
   try { sql('postgres', `DROP DATABASE IF EXISTS ${DB}`); sql('postgres', `DROP DATABASE IF EXISTS ${DBX}`); } catch (e) { log('cleanup: ' + e.message.slice(0, 200)); }

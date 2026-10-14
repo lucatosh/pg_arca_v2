@@ -29,8 +29,8 @@ const shortName = (id: string) => { const p = splitId(id); return p.slice(1).joi
 const INTENTS: { id: Intent; icon: string; title: string; text: string }[] = [
   { id: 'table', icon: 'trash', title: 'Ho eliminato o svuotato una tabella', text: 'Anche uno schema intero. pg_arca cerca da solo quando è successo e la riporta com’era subito prima.' },
   { id: 'rows', icon: 'file', title: 'Ho cancellato o modificato righe per errore', text: 'Un DELETE o un UPDATE sbagliato. Confronti la tabella di prima con quella di adesso e riporti solo le righe che scegli.' },
-  { id: 'database', icon: 'db', title: 'Mi serve un database com’era prima', text: 'Eliminato, danneggiato o solo da consultare: torna come nuovo database accanto agli altri, senza toccare nulla.' },
-  { id: 'cluster', icon: 'server', title: 'Devo ricostruire tutto il server', text: 'Disastro, migrazione o copia completa: l’intero cluster in una cartella vuota. La produzione non viene toccata.' },
+  { id: 'database', icon: 'db', title: 'Mi serve un database com’era prima', text: 'Eliminato o danneggiato: pg_arca lo rimette com’era al suo posto (l’attuale resta come copia di sicurezza), oppure ne fa una copia da consultare.' },
+  { id: 'cluster', icon: 'server', title: 'Devo ricostruire tutto il server', text: 'Danno o disastro sull’intero server: pg_arca lo rimette com’era al suo posto e lo riavvia, oppure ne avvia una copia completa da consultare.' },
 ];
 
 /** A point to go back to, found in the WAL: just before a DROP / TRUNCATE / mass DELETE-UPDATE. */
@@ -82,9 +82,13 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const dbExists = () => !!live?.has(db);
   const finMode = (): PMode => pmode || recommendedMode(goneNow);
   // the destination: the one the operator picked, else the one the agent proposed in the last check
-  const destNow = (): string => dest || (plan.op?.status === 'succeeded' && plan.op.params?.scope === 'instance' ? String(plan.op.result?.destination || '') : '');
+  const destNow = (): string => dest || (plan.op?.status === 'succeeded' && plan.op.params?.scope === 'instance' && !plan.op.params?.replace_production ? String(plan.op.result?.destination || '') : '');
   const tparams = (): Record<string, any> => !tgt ? {} : tgt.mode === 'time' ? { target_time: new Date(tgt.ms).toISOString() } : tgt.mode === 'lsn' ? { target_lsn: tgt.lsn, inclusive: false } : tgt.mode === 'xid' ? { target_xid: tgt.xid, inclusive: false, ...(tgt.lsn ? { xid_lsn: tgt.lsn } : {}) } : {};
-  const params = (): { type: string; p: Record<string, any> } => scope === 'instance' ? { type: 'restore_instance', p: { ...(destNow() ? { destination: destNow() } : {}), label: c.name, action, delta, ttl_hours: ttl, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
+  // a whole server: 'fix' puts PRODUCTION itself back to that point (standalone servers; a Patroni cluster gets the copy)
+  const patroni = !!c.haState?.managedByPatroni;
+  const fixServer = () => scope === 'instance' && fin === 'fix' && !patroni;
+  const params = (): { type: string; p: Record<string, any> } => fixServer() ? { type: 'restore_instance', p: { replace_production: true, confirm: 'SOSTITUISCI', label: c.name, ...tparams() } }
+    : scope === 'instance' ? { type: 'restore_instance', p: { ...(destNow() ? { destination: destNow() } : {}), label: c.name, action, delta, ttl_hours: ttl, ...(keepArch ? { keep_archiving: true } : {}), ...tparams() } }
     : scope === 'database' ? { type: 'restore_database', p: { database: db, new_name: fin === 'fix' ? (dbExists() ? restoredName(db) : db) : newName, ...(fin === 'fix' && dbExists() ? { replace_original: true, confirm: 'SOSTITUISCI' } : {}), ...(mkRoles ? { create_missing_roles: true } : {}), ...tparams() } }
     : { type: 'restore_object', p: { object: obj, objects: objs, ...tparams(), ...(fin === 'fix' ? (intent === 'rows' ? { finish: 'rows_all' } : { finish: 'promote', promote_mode: finMode(), ...(finMode() === 'replace' ? { confirm: 'SOSTITUISCI' } : {}) }) : {}) } };
   const planParams = () => { const x = params().p; return { scope, ...x }; };
@@ -141,8 +145,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && objs.length > 0 && (intent !== 'rows' || (objs.length === 1 && splitId(obj).length === 3)));
   const okName = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName);
   // the end of the job overwrites something that exists now: typed confirmation
-  const overwrites = () => fin === 'fix' && ((scope === 'database' && dbExists()) || (scope === 'object' && intent !== 'rows' && finMode() === 'replace'));
-  const okWhere = scope === 'instance' ? destNow().startsWith('/') : scope === 'database' ? (fin === 'fix' || okName) : true;
+  const overwrites = () => fixServer() || (fin === 'fix' && ((scope === 'database' && dbExists()) || (scope === 'object' && intent !== 'rows' && finMode() === 'replace')));
+  const okWhere = fixServer() ? true : scope === 'instance' ? destNow().startsWith('/') : scope === 'database' ? (fin === 'fix' || okName) : true;
   const okWhen = !!tgt && (tgt.mode !== 'time' || (tgt.ms >= from && tgt.ms <= to + 60000));
   const lastPlan = useRef<any>(null); if (plan.op?.status === 'succeeded') lastPlan.current = plan.op.result; else if (!plan.op && !plan.busy) lastPlan.current = null;
   const pres = plan.op?.status === 'succeeded' ? plan.op.result : plan.busy ? lastPlan.current : null;
@@ -156,7 +160,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const check = () => { if (okWhere || scope === 'instance') plan.run('restore_plan', planParams()); else plan.reset(); };
   // the end changed (another destination name for a database): the check runs again with it
   const finSeen = useRef(fin);
-  useEffect(() => { if (finSeen.current === fin) return; finSeen.current = fin; if (step === 3 && !exec.op && scope === 'database') check(); }, [fin]);
+  useEffect(() => { if (finSeen.current === fin) return; finSeen.current = fin; if (step === 3 && !exec.op && (scope === 'database' || scope === 'instance')) { if (scope === 'instance') { setDest(''); plan.run('restore_plan', planParams()); } else check(); } }, [fin]);
   const pickDest = (p: string) => { setDest(p); setTimeout(() => plan.run('restore_plan', { scope: 'instance', ...params().p, destination: p }), 0); };
   // where the recovery runs changed (from the dialog opened in the check step, or by a colleague): the verdict shown is stale, check again
   const placement = useQuery<any>(scope !== 'instance' ? `/api/clusters/${encodeURIComponent(c.id)}/placement` : null);
@@ -166,7 +170,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const goCheck = () => { setStep(3); plan.run('restore_plan', planParams()); };
   const choose = (i: Intent) => {
     setIntent(i); setObjs([]); setTgt(null); plan.reset(); dml.reset(); prev.reset(); setFin('fix'); setPmode(null);
-    if (i === 'cluster') { setScope('instance'); setStep(2); return; }
+    if (i === 'cluster') { setScope('instance'); setFin(c.haState?.managedByPatroni ? 'copy' : 'fix'); setStep(2); return; }
     setScope(i === 'database' ? 'database' : 'object'); setObjMode('table'); setStep(1);
   };
   const restart = () => { exec.reset(); plan.reset(); prom.reset(); prev.reset(); dml.reset(); fx.reset(); objR.reset(); liveR.reset(); setObjs([]); setTgt(null); setIntent(null); setPmode(null); setLastPromote(null); setSearch(''); setDest(''); setStep(0); };
@@ -239,15 +243,18 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       <Card title="Controlla e conferma"><div className="stack">
         <div className="rplan">
           <p>Recuperi {whatTxt}, {whenTxt}.</p>
-          <ol className="small">{scope === 'instance' ? <><li>Una copia completa del server viene ricostruita nella cartella scelta qui sotto (pg_arca propone il disco più adatto).</li><li>La copia viene <strong>avviata</strong> da pg_arca su una porta libera, isolata dalla produzione: non archivia, non replica, non esegue job. Il server in esecuzione non viene toccato.</li><li>{ttl ? <>Resta disponibile per {TTL_CHOICES.find(x => x[0] === ttl)?.[1] || `${ttl} ore`}, poi pg_arca la ferma e la cancella da solo (puoi tenerla più a lungo in qualsiasi momento).</> : <>Resta finché non la elimini tu.</>}</li></>
+          <ol className="small">{fixServer() ? <><li>Il server viene ricostruito com’era <strong>accanto ai dati attuali</strong>, sullo stesso disco, mentre la produzione continua a funzionare.</li><li>Poi pg_arca <strong>ferma PostgreSQL</strong>, mette i dati ricostruiti al posto di quelli attuali e lo riavvia: recupera fino al momento scelto e torna primario, sulla stessa porta, con lo stesso indirizzo. Le applicazioni sono ferme solo per questo passaggio.</li><li>I dati di prima restano in una cartella di sicurezza accanto (per tornare indietro); se il server non riparte, pg_arca rimette tutto com’era da solo.</li></>
+            : scope === 'instance' ? <><li>Una copia completa del server viene ricostruita nella cartella scelta qui sotto (pg_arca propone il disco più adatto).</li><li>La copia viene <strong>avviata</strong> da pg_arca su una porta libera, isolata dalla produzione: non archivia, non replica, non esegue job. Il server in esecuzione non viene toccato.</li><li>{ttl ? <>Resta disponibile per {TTL_CHOICES.find(x => x[0] === ttl)?.[1] || `${ttl} ore`}, poi pg_arca la ferma e la cancella da solo (puoi tenerla più a lungo in qualsiasi momento).</> : <>Resta finché non la elimini tu.</>}</li></>
             : scope === 'database' ? <><li>pg_arca ricostruisce il database {fin === 'fix' ? <strong>{db}</strong> : <>nel nuovo database <strong>{newName || '…'}</strong></>} com’era in quel momento.</li><li>{live?.has(db) ? <>Il database {db} attuale resta com’è.</> : <>Nessun database esistente viene toccato.</>}</li><li>{fin === 'fix' ? (live?.has(db) ? <>Alla fine prende il posto di <strong>{db}</strong> (le sessioni aperte vengono chiuse; il {db} attuale resta come copia di sicurezza).</> : <>Torna con il suo nome, <strong>{db}</strong>.</>) : <>Lo controlli e, se va bene, lo metti al posto dell’originale con un clic.</>}</li></>
             : intent === 'rows' ? <><li>La tabella viene ricostruita com’era in un database di quarantena separato.</li><li>{fin === 'fix' ? 'pg_arca confronta riga per riga e riporta da solo ogni riga cancellata o modificata dopo quel momento (le righe aggiunte dopo restano).' : 'Confronti riga per riga la versione recuperata con quella di adesso e riporti solo le righe che scegli.'}</li><li>Prima di toccare la tabella viene salvata una copia di sicurezza delle righe toccate; tutto in un’unica transazione.</li></>
             : <><li>{objs.length === 1 ? 'Quanto scelto viene ricostruito' : 'Le tabelle scelte vengono ricostruite'}, con ciò da cui dipendono, in un database di quarantena separato.</li><li>Nessuna tabella attuale viene modificata in questa fase.</li><li>{fin === 'fix' ? <>Alla fine pg_arca la rimette a posto in <strong>{db}</strong> da solo{finMode() === 'replace' ? ' (quella attuale resta salvata con un altro nome)' : finMode() === 'as_new' ? ', accanto all’originale' : ''}.</> : <>Poi decidi tu come rimetterla a posto.</>}</li></>}</ol>
         </div>
+        {scope === 'instance' ? <ServerEnd fin={patroni ? 'copy' : fin} setFin={setFin} patroni={patroni} /> : null}
         {scope !== 'instance' ? <EndChoice fin={fin} setFin={setFin} kind={scope === 'database' ? 'database' : intent === 'rows' ? 'rows' : 'objects'} db={db} exists={dbExists()} newName={newName}
           mode={finMode()} setMode={m => setPmode(m)} gone={goneNow} what={objs.length === 1 ? shortName(obj) : `${objs.length} elementi`} /> : null}
         {scope === 'database' && fin === 'copy' ? <Field label="Nome del nuovo database" hint="Non sovrascrive mai un database esistente." error={newName && !okName ? 'Solo lettere, cifre e _ (max 63 caratteri), senza spazi.' : null}><div className="row gap-s"><input className="input" value={newName} onChange={e => setNewName(e.target.value)} onBlur={check} /><Button sm icon="refresh" busy={plan.busy} onClick={check}>Ricontrolla</Button></div></Field> : null}
-        {scope === 'instance' ? <>
+        {fixServer() && pres?.replace ? <ReplaceFacts r={pres.replace} /> : null}
+        {scope === 'instance' && !fixServer() ? <>
           <Field label="Dove mettere la copia">{pres?.destinations ? <DestPicker where={pres.destinations} value={destNow()} onPick={pickDest} busy={plan.busy} /> : plan.busy || !plan.op ? <p className="small muted">Cerco sul server i dischi con spazio sufficiente…</p> : null}</Field>
           <Field label="Cosa fare con la copia"><div className="seg"><button aria-pressed={action === 'promote'} onClick={() => setAction('promote')}>Usarla subito</button><button aria-pressed={action === 'pause'} onClick={() => setAction('pause')}>Controllarla prima (resta in pausa)</button></div></Field>
           <p className="small muted" style={{ marginTop: -6 }}>{action === 'promote' ? 'Arrivata al momento scelto diventa un server normale, leggibile e scrivibile.' : 'Si ferma al momento scelto in sola lettura: controlli i dati e poi decidi se concludere il recupero.'}</p>
@@ -268,7 +275,10 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     </div>}
 
     {step === 4 && <Card title="Ripristino"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
-      {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' ? (exec.op!.result.instance ? <>La copia del server è <strong>{exec.op!.result.instance.state === 'paused' ? 'in pausa al momento scelto' : 'avviata'}</strong>: i dati per collegarti sono qui sotto.</> : <>Copia pronta in <code>{exec.op!.result.destination}</code>{exec.op!.result.start_hint ? <>: avviala al suo posto definitivo (<code>{exec.op!.result.start_hint}</code>).</> : '.'}</>)
+      {doneOk ? <Banner kind="ok" title="Ripristino completato">{scope === 'instance' && exec.op!.result.replace?.replaced ? <>Il server di produzione è di nuovo com’era {whenTxt} ed è tornato <strong>primario</strong>, sulla stessa porta. I dati di prima restano in <code>{exec.op!.result.replace.old_kept_as}</code>.
+          <ul className="small" style={{ margin: '6px 0 0 18px' }}>{(exec.op!.result.replace.steps || []).map((x: string, i: number) => <li key={i}>{itCheck(x)}</li>)}</ul>
+          <p className="small">pg_arca fa da solo un nuovo backup completo al prossimo giro (la produzione è su una nuova timeline).</p></>
+        : scope === 'instance' ? (exec.op!.result.instance ? <>La copia del server è <strong>{exec.op!.result.instance.state === 'paused' ? 'in pausa al momento scelto' : 'avviata'}</strong>: i dati per collegarti sono qui sotto.</> : <>Copia pronta in <code>{exec.op!.result.destination}</code>{exec.op!.result.start_hint ? <>: avviala al suo posto definitivo (<code>{exec.op!.result.start_hint}</code>).</> : '.'}</>)
         : scope === 'database' ? (exec.op!.result.swap?.replaced ? <><strong>{db}</strong> è di nuovo com’era {whenTxt}. {exec.op!.result.swap.old_kept_as ? <>Il database com’era prima del ripristino resta come <code>{exec.op!.result.swap.old_kept_as}</code> (eliminalo quando hai verificato){exec.op!.result.swap.sessions_ended ? `; sessioni chiuse: ${exec.op!.result.swap.sessions_ended}` : ''}.</> : null}</>
             : exec.op!.result.result_database === db ? <><strong>{db}</strong> è tornato con il suo nome, com’era {whenTxt}.</>
             : <>Il database <code>{exec.op!.result.result_database}</code> è pronto: controllalo e mettilo al posto di {db} qui sotto. {live?.has(db) ? <>L’originale <code>{db}</code> non è stato toccato.</> : null}</>)
@@ -280,6 +290,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       {doneOk && (exec.op!.result.finish_error || exec.op!.result.swap_error) ? <Banner kind="warn" title="Recuperato, ma non rimesso a posto">
         <span style={{ whiteSpace: 'pre-wrap' }}>{itCheck(exec.op!.result.finish_error || exec.op!.result.swap_error)}</span>{hintFor(exec.op!.result.finish_error || exec.op!.result.swap_error) ? <p className="small">{hintFor(exec.op!.result.finish_error || exec.op!.result.swap_error)}</p> : null}
         <p className="small">Non è stato toccato nulla del database originale. Il contenuto recuperato è integro: scegli qui sotto come procedere.</p></Banner> : null}
+      {scope === 'instance' && exec.op && (exec.op.params?.replace_production) && (doneOk || exec.op.status === 'failed') ? <KeptDirs clusterId={c.id} nodeId={exec.op.nodeId} initial={exec.op.result?.replace?.kept} /> : null}
       {doneOk && scope === 'instance' && exec.op!.result.instance ? <RestoredCard clusterId={c.id} r={{ ...exec.op!.result.instance, ...((d.restored || []).find((x: any) => x.id === exec.op!.result.instance.id) || { nodeId: exec.op!.nodeId, nodeName: '', online: true }) }} /> : null}
       {doneOk ? <Notices r={exec.op!.result} /> : null}
       {doneOk && scope === 'database' && exec.op!.result.result_database && exec.op!.result.result_database !== db ? <SwapDb clusterId={c.id} restored={exec.op!.result.result_database} original={db} exists={!!live?.has(db)} /> : null}
@@ -301,7 +312,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       <p>{m === 'as_new' ? <>Le tabelle recuperate compaiono accanto alle originali con un nome che termina in <code>_pitr_&lt;data&gt;</code>. Nulla di esistente viene toccato.</> : m === 'missing_only' ? <>Tornano solo le tabelle che oggi non esistono, con il loro nome; quelle presenti restano com’è.</> : <>Le tabelle attuali vengono rinominate <code>_old_&lt;data&gt;</code> (i loro dati restano, puoi tornare indietro) e quelle recuperate prendono il loro posto in un’unica transazione. Chiavi esterne e viste vengono ricollegate.</>}</p>
       <p className="small muted">{pdrop ? 'Il database di quarantena viene eliminato a operazione riuscita.' : 'Il database di quarantena resta disponibile.'}</p></Confirm>; })() : null}
     {ask ? <Confirm title="Avviare il ripristino?" confirmLabel="Avvia" danger={overwrites()} requireText={overwrites() ? 'SOSTITUISCI' : undefined} onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); setStep(4); exec.run(x.type, x.p); }}>
-      <p>{scope === 'instance' ? <>Ricostruisce il server in <code>{destNow()}</code> e lo avvia{keepArch ? ' (no: con l’archiviazione attiva lo avvii tu)' : ''}. I dati attuali non vengono modificati.</>
+      <p>{fixServer() ? <>Ricostruisce il server com’era {whenTxt} e lo mette <strong>al posto della produzione</strong>: PostgreSQL viene fermato, riavviato sui dati ripristinati e torna primario. I dati attuali restano in una cartella di sicurezza.</>
+        : scope === 'instance' ? <>Ricostruisce il server in <code>{destNow()}</code> e lo avvia{keepArch ? ' (no: con l’archiviazione attiva lo avvii tu)' : ''}. I dati attuali non vengono modificati.</>
         : scope === 'database' ? (fin === 'fix' && dbExists() ? <>Ricostruisce <code>{db}</code> com’era e lo mette <strong>al posto</strong> di quello attuale: le sessioni aperte su <code>{db}</code> vengono chiuse, l’attuale resta come <code>{db}_before_…</code>.</> : fin === 'fix' ? <>Riporta <code>{db}</code> con il suo nome.</> : <>Crea il database <code>{newName}</code> da <code>{db}</code>. I dati attuali non vengono modificati.</>)
         : intent === 'rows' && fin === 'fix' ? <>Riporta in <code>{shortName(obj)}</code> ogni riga cancellata o modificata dopo quel momento (copia di sicurezza prima, un’unica transazione).</>
         : fin === 'fix' ? <>Rimette {objs.length === 1 ? <code>{shortName(obj)}</code> : <>{objs.length} elementi</>} in <code>{db}</code>{finMode() === 'replace' ? <> <strong>al posto</strong> delle versioni attuali (che restano rinominate)</> : finMode() === 'as_new' ? ' accanto alle versioni attuali' : ' (solo ciò che manca)'}.</>
@@ -576,6 +588,46 @@ function EndChoice({ fin, setFin, kind, db, exists, newName, mode, setMode, gone
     <label className={`opt ${fin === 'copy' ? 'on' : ''}`}><input type="radio" name="fin" checked={fin === 'copy'} onChange={() => setFin('copy')} /><div className="grow">
       <div><strong>{copyTitle}</strong></div><div className="small muted">{kind === 'database' ? 'Il database recuperato resta accanto all’originale; quando l’hai controllato lo metti al suo posto con un clic.' : kind === 'rows' ? 'Vedi le differenze riga per riga e riporti solo quelle che scegli.' : 'Controlli il contenuto recuperato e poi decidi tu come rimetterlo a posto.'}</div></div></label>
   </div></Field>;
+}
+
+function ServerEnd({ fin, setFin, patroni }: { fin: 'fix' | 'copy'; setFin: (v: 'fix' | 'copy') => void; patroni: boolean }) {
+  return <Field label="Alla fine"><div className="stack-s" role="radiogroup" aria-label="Alla fine">
+    <label className={`opt ${fin === 'fix' ? 'on' : ''} ${patroni ? 'dis' : ''}`}><input type="radio" name="sfin" disabled={patroni} checked={fin === 'fix'} onChange={() => setFin('fix')} /><div className="grow">
+      <div><strong>Rimetti a posto il server di produzione</strong> {!patroni ? <Badge kind="ok">Consigliato</Badge> : null}</div>
+      <div className="small muted">{patroni ? 'Non disponibile su un cluster Patroni: lì si ripristina un database o una tabella (tornano al loro posto nel cluster in funzione), oppure si ricostruisce il cluster da una copia.' : 'La produzione stessa torna com’era: stesso server, stessa porta, di nuovo primario. Breve fermo; i dati attuali restano in una cartella di sicurezza.'}</div></div></label>
+    <label className={`opt ${fin === 'copy' ? 'on' : ''}`}><input type="radio" name="sfin" checked={fin === 'copy'} onChange={() => setFin('copy')} /><div className="grow">
+      <div><strong>Solo una copia temporanea da consultare</strong></div><div className="small muted">Avviata accanto alla produzione su un’altra porta, isolata: la produzione non viene toccata.</div></div></label>
+  </div></Field>;
+}
+
+const HOW_IT: Record<string, string> = { systemd: 'con il suo servizio systemd', pg_ctl: 'con pg_ctl, con le stesse opzioni di avvio' };
+function ReplaceFacts({ r }: { r: any }) {
+  return <div className="stack-s">
+    <dl className="kv small">
+      <dt>Dati di produzione</dt><dd><code>{r.data_directory}</code></dd>
+      <dt>Fermo e riavvio</dt><dd>{HOW_IT[r.method] || r.method}{r.unit ? <> (<code>{r.unit}</code>)</> : null}</dd>
+      <dt>Stato attuale</dt><dd>{r.was_running ? 'in funzione' : <strong>fermo</strong>}</dd>
+      {r.carry_unarchived_wal ? <><dt>WAL non ancora archiviati</dt><dd>passati al recupero dopo il fermo: non si perde nulla di confermato</dd></> : null}
+    </dl>
+    {(r.warnings || []).map((w: string, i: number) => <Banner key={i} kind="warn">{itCheck(w)}</Banner>)}
+    {(r.kept || []).length ? <p className="small muted">Ci sono già {r.kept.length} cartelle conservate da sostituzioni precedenti: occupano spazio sullo stesso disco (le trovi dopo il ripristino).</p> : null}
+  </div>;
+}
+
+/** Data directories kept by a production replacement: the way back, and disk space to give back once the result is verified. */
+function KeptDirs({ clusterId, nodeId, initial }: { clusterId: string; nodeId?: string; initial?: { path: string; kind: string }[] }) {
+  const ls = useOpRunner(clusterId, undefined, `kept:${clusterId}`); const rm = useOpRunner(clusterId, () => ls.run('restore_kept_list', {}, { nodeId }));
+  const [ask, setAsk] = useState<string | null>(null);
+  const list: { path: string; kind: string }[] = ls.op?.status === 'succeeded' ? ls.op.result.kept || [] : initial || [];
+  if (!list.length) return null;
+  const KIND: Record<string, string> = { before: 'dati di prima della sostituzione', failed: 'tentativo non riuscito', partial: 'ricostruzione interrotta' };
+  return <Card title="Cartelle conservate"><div className="stack-s">
+    <p className="small muted">Stanno sullo stesso disco della produzione. Eliminale quando hai verificato che il server è come ti serve: dopo non si torna più indietro.</p>
+    {list.map(k => <div key={k.path} className="row wrap gap-s"><code className="grow">{k.path}</code><span className="small muted">{KIND[k.kind] || k.kind}</span><Button sm icon="trash" busy={rm.busy && ask === null} onClick={() => setAsk(k.path)}>Elimina</Button></div>)}
+    {rm.op && rm.op.status === 'failed' ? <OpPanel op={rm.op} error={rm.error} /> : null}
+    {ask ? <Confirm title="Eliminare la cartella?" danger requireText={ask.split('/').pop()} confirmLabel="Elimina" onClose={() => setAsk(null)} onConfirm={() => { const p = ask; setAsk(null); rm.run('restore_kept_drop', { path: p, confirm: p.split('/').pop() }, { nodeId }); }}>
+      <p><code>{ask}</code> viene cancellata definitivamente.</p></Confirm> : null}
+  </div></Card>;
 }
 
 /** A recovered database next to the original: put it in its place with one click (the tool renames both; the original is kept as <db>_before_<ts>). */

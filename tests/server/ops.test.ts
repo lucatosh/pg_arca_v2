@@ -80,6 +80,15 @@ import * as ops from '../../server/ops';
     assert.strictEqual(validateOp('restore_promote', { ...pr, mode: 'replace', confirm: 'SOSTITUISCI' }), null);
     assert.strictEqual(validateOp('restore_promote', { ...pr, mode: 'replace', dry_run: true }), null);
     assert.strictEqual(validateOp('restore_promote', { ...pr, mode: 'as_new' }), null);
+    // whole server back IN PLACE: typed confirmation, no copy options; kept directories only by their exact name
+    assert.ok(validateOp('restore_instance', { replace_production: true }));
+    assert.strictEqual(validateOp('restore_instance', { replace_production: true, confirm: 'SOSTITUISCI' }), null);
+    assert.strictEqual(validateOp('restore_instance', { replace_production: true, dry_run: true }), null);
+    assert.ok(validateOp('restore_instance', { replace_production: true, confirm: 'SOSTITUISCI', destination: '/x' }));
+    assert.ok(validateOp('restore_instance', { replace_production: true, confirm: 'SOSTITUISCI', action: 'pause' }));
+    assert.strictEqual(validateOp('restore_kept_drop', { path: '/var/lib/pg/16/main.pgarca-before-20261014101010', confirm: 'main.pgarca-before-20261014101010' }), null);
+    assert.ok(validateOp('restore_kept_drop', { path: '/var/lib/pg/16/main', confirm: 'main' }));
+    assert.ok(validateOp('restore_kept_drop', { path: '/var/lib/pg/16/main.pgarca-before-20261014101010', confirm: 'x' }));
     // operation log: phase changes are lines, counters of the same phase are throttled
     const id = got.find(o => o.type === 'backup_run')!.id;
     await ops.report(s3, 'n9', id, 'running', undefined, undefined, 120, { phase: 'checkpoint' });

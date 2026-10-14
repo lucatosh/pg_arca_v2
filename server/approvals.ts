@@ -11,7 +11,9 @@ export const APPROVABLE_ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 export function isRisky(type: string, params: any = {}): boolean {
   if (type === 'pg_restart' && params.dry_run) return false;                 // only says HOW it would restart
   if (type === 'restore_db_swap' && params.dry_run) return false;
-  if (type === 'restore_database' && params.replace_original) return true;      // the restored database takes the original's place
+  if (type === 'restore_database' && params.replace_original) return true;
+  if (type === 'restore_instance' && params.replace_production && !params.dry_run) return true;   // production is stopped and its data directory replaced
+  if (type === 'restore_kept_drop') return true;      // the restored database takes the original's place
   if (type === 'restore_object' && params.finish === 'promote' && params.promote_mode === 'replace') return true;
   if (type === 'restore_object' && params.finish === 'rows_all') return true;
   if (['hba_cluster_apply', 'hba_apply', 'hba_rollback', 'hba_restore', 'pg_set_param', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'pg_restart', 'patroni_reinit', 'archive_enable', 'patroni_config_patch', 'patroni_pause', 'ephemeral_install', 'geo_promote', 'geo_demote', 'geo_switchover', 'restore_db_swap', 'destination_apply', 'destination_drop_old'].includes(type)) return true;
@@ -26,7 +28,9 @@ export const requiresApproval = (st: any, cluster: any, type: string, params: an
 export function describeOp(type: string, params: any = {}): string {
   const m: Record<string, string> = { destination_apply: `Cambio della destinazione dei backup${params.repo_path ? ' → ' + params.repo_path : ''}`, destination_drop_old: `Eliminazione della posizione precedente dei backup ${params.path ?? ''}`, hba_cluster_apply: 'Modifica delle regole di accesso (pg_hba) su tutto il cluster', hba_apply: 'Modifica delle regole di accesso (pg_hba)', hba_rollback: 'Ripristino delle regole di accesso precedenti', hba_restore: 'Ripristino di una versione precedente delle regole di accesso (DCS Patroni)', pg_set_param: `Cambio del parametro ${params.name ?? ''} = ${params.value ?? ''}`,
     patroni_switchover: 'Switchover pianificato', patroni_failover: 'Failover forzato', patroni_restart: 'Riavvio via Patroni', pg_restart: 'Riavvio di PostgreSQL', patroni_reinit: 'Ricostruzione di una replica', archive_enable: 'Attivazione archiviazione WAL', patroni_config_patch: 'Modifica della configurazione Patroni', patroni_pause: 'Manutenzione Patroni',
-    restore_promote: 'Sostituzione di tabelle con quelle ripristinate', ephemeral_install: `Installazione dei binari PostgreSQL ${params.major ?? ''} per i ripristini`, restore_apply_rows: `Recupero righe in ${params.object ?? ''}` };
+    restore_promote: 'Sostituzione di tabelle con quelle ripristinate', ephemeral_install: `Installazione dei binari PostgreSQL ${params.major ?? ''} per i ripristini`, restore_apply_rows: `Recupero righe in ${params.object ?? ''}`,
+    restore_kept_drop: `Eliminazione dei dati conservati ${params.path ?? ''}`, restore_db_swap: `Sostituzione del database ${params.original ?? ''} con ${params.restored ?? ''}` };
+  if (type === 'restore_instance' && params.replace_production) return 'Ripristino del server di produzione al suo posto (PostgreSQL fermato e riavviato sui dati ripristinati)';
   return m[type] || type;
 }
 
