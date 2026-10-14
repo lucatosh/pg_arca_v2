@@ -369,6 +369,20 @@ class WalManager:
     def has_segment(self, name, anywhere=True):
         return self._find(name, anywhere)[0] is not None
 
+    def activity_since(self, ts):
+        """True if anything was written to the archive directory (top level) at or after ts. Unknown (scan error) counts as activity,
+        so a slow NFS never makes a caller fail fast for the wrong reason."""
+        try:
+            for e in os.scandir(self.wal_dir):
+                try:
+                    if e.is_file(follow_symlinks=False) and e.stat(follow_symlinks=False).st_mtime >= ts:
+                        return True
+                except OSError:
+                    continue
+        except OSError:
+            return True
+        return False
+
     def list_segments(self, anywhere=False):
         """Sorted list of archived WAL segment base names (no .history/.backup/.partial/.meta). anywhere=True: also the previous locations (read paths)."""
         out = set()

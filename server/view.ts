@@ -38,6 +38,8 @@ export interface DerivedNode {
   cpuPercent: number; memoryPercent: number; connections: number; maxConnections: number;
   online: boolean; nodeId?: string; source: 'agent' | 'patroni' | 'direct';
   pgVersion?: string; compat?: { label: string; tier: string; eol: boolean; eolDate: string; problems: { severity: string; code: string; text: string }[] } | null;
+  /** This node's name in Patroni: what switchover/failover/restart/reinit must use. It need not match the agent's node name (hostname). */
+  memberName?: string;
 }
 
 function num(v: any, d = 0): number { const n = Number(v); return Number.isFinite(n) ? n : d; }
@@ -55,8 +57,9 @@ export function deriveNodes(nodes: NodeRecord[], now = Date.now()): DerivedNode[
     const pg = s.postgres || {};
     const pt = s.patroni || {};
     const online = !!n.lastSeen && now - Date.parse(n.lastSeen) < OFFLINE_AFTER_MS;
-    const member = patroniMembers.find(m => m.name === n.name);
-    const r = repl.find(x => x.application_name === n.name || (member && x.application_name === member.name));
+    const memberName: string = (pt.local_node?.name && String(pt.local_node.name)) || n.name;
+    const member = patroniMembers.find(m => m.name === memberName) || patroniMembers.find(m => m.name === n.name);
+    const r = repl.find(x => x.application_name === memberName || x.application_name === n.name || (member && x.application_name === member.name));
 
     let role: DerivedNode['role'];
     const pr = (pt.local_node?.role || pt.role || '').toString();
@@ -82,16 +85,21 @@ export function deriveNodes(nodes: NodeRecord[], now = Date.now()): DerivedNode[
       memoryPercent: Math.round(num(sys.memory_used_percent)),
       connections: num(pg.connections?.used), maxConnections: num(pg.connections?.max),
       online, nodeId: n.id, source: 'agent', pgVersion: pg.version ? String(pg.version) : undefined, compat: classify(pg.version),
+      memberName: member?.name || memberName,
     };
   });
   // Cluster members that Patroni reports but that have no agent enrolled yet: show them (read-only, from Patroni's own view) so the cluster looks complete.
-  const seen = new Set(nodes.map(n => n.name)); const extra: DerivedNode[] = [];
+  // an agent node is "seen" under its node name AND its Patroni member name: the two differ whenever the hostname differs from the
+  // member's configured name, and a member must never be listed twice (once with the agent, once as "no agent")
+  const seen = new Set<string>();
+  for (const a of agentNodes) { seen.add(a.name); if (a.memberName) seen.add(a.memberName); }
+  const extra: DerivedNode[] = [];
   for (const m of patroniMembers) {
     if (!m?.name || seen.has(m.name)) continue; seen.add(m.name);
     const pr = String(m.role || ''); const st = String(m.state || '');
     const role: DerivedNode['role'] = ['leader', 'primary', 'master'].includes(pr) ? 'primary' : pr === 'standby_leader' ? 'standby_leader' : pr === 'sync_standby' || pr === 'quorum_standby' ? 'sync_standby' : 'replica';
     const lag = num(m.lag, 0);
-    extra.push({ name: m.name, role, state: st || 'unknown', host: m.host || '', port: num(m.port, 5432), timeline: num(m.timeline, 0), lsn: '',
+    extra.push({ name: m.name, memberName: m.name, role, state: st || 'unknown', host: m.host || '', port: num(m.port, 5432), timeline: num(m.timeline, 0), lsn: '',
       replicationLagBytes: lag, replicationLagMs: 0, dcsLeader: role === 'primary', cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 0,
       online: ['running', 'streaming'].includes(st), source: 'patroni' });
   }

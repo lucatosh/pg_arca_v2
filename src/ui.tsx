@@ -59,13 +59,18 @@ export function Modal({ title, onClose, children, footer, wide, locked }: { titl
   // something was typed or chosen: a click outside or Esc must not throw it away (closing stays one explicit click away)
   const dirty = useRef(false); const [ask, setAsk] = useState(false);
   const tryClose = () => { if (dirty.current) setAsk(true); else onClose(); };
+  // Kept in refs ON PURPOSE: onClose is usually an inline arrow, new on every parent render (pages poll every few seconds). If the
+  // mount effect depended on it, every poll would re-run it and .focus() would YANK the cursor to the dialog's first input while the
+  // person is typing in another field - and steal the text selection right before a Ctrl+C / Ctrl+V. Focus is set exactly once.
+  const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
+  const lockedRef = useRef(locked); lockedRef.current = locked;
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLElement>('input,select,textarea,button.primary')?.focus();
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && !locked) { e.stopPropagation(); if (dirty.current) setAsk(a => !a); else onClose(); } };
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && !lockedRef.current) { e.stopPropagation(); if (dirty.current) setAsk(a => !a); else onCloseRef.current(); } };
     document.addEventListener('keydown', k);
     return () => { document.removeEventListener('keydown', k); prev?.focus?.(); };
-  }, [onClose, locked]);
+  }, []);
   // rendered on <body>: wherever the dialog is opened from, the backdrop covers the whole window (sidebar included) and nothing behind it is clickable
   return createPortal(<div className="modal-bg" onMouseDown={e => { if (e.target === e.currentTarget && !locked) tryClose(); }}>
     <div className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined} ref={ref}

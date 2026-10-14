@@ -25,6 +25,23 @@ const p1 = mk('n1', 'n1', false, '0/2000000'); p1.snapshot.patroni = { scope: 'l
 const pc = deriveCluster({ id: 'c', name: 'x', environment: 'prod', nodes: [p1], now });
 assert.deepStrictEqual(pc.haState.nodes.map((n: any) => [n.name, n.source, n.online]), [['n1', 'agent', true], ['n2', 'patroni', true], ['n3', 'patroni', false]]);
 assert.strictEqual(pc.haState.nodes[1].role, 'replica'); assert.strictEqual(pc.haState.nodes[1].nodeId, undefined);
+// an agent node whose hostname differs from its Patroni MEMBER name: one row, merged, memberName exposed (switchover must use it)
+{
+  const a1 = mk('a1', 'pg17-1', false, '0/2000000'); const a2 = mk('a2', 'pg-17-2', true, '0/1FFFF00');
+  const members = [
+    { name: 'pg17-1', role: 'leader', state: 'running', host: '10.0.0.1', port: 5432 },
+    { name: 'pg17-2', role: 'replica', state: 'streaming', host: '10.0.0.2', port: 5432, lag: 0 },
+    { name: 'pg17-3', role: 'sync_standby', state: 'streaming', host: '10.0.0.3', port: 5432, lag: 0 }];
+  a1.snapshot.patroni = { scope: 'pg17', accessible: true, local_node: { role: 'leader', name: 'pg17-1' }, members };
+  a2.snapshot.patroni = { scope: 'pg17', accessible: true, local_node: { role: 'replica', name: 'pg17-2' }, members };
+  a1.snapshot.postgres.replication = [{ application_name: 'pg17-2', state: 'streaming', sync_state: 'async', replay_lag_bytes: 7 }];
+  const mc = deriveCluster({ id: 'c', name: 'pg17', environment: 'prod', nodes: [a1, a2], now });
+  const names = mc.haState.nodes.map((n: any) => [n.name, n.source]);
+  assert.deepStrictEqual(names, [['pg17-1', 'agent'], ['pg-17-2', 'agent'], ['pg17-3', 'patroni']], JSON.stringify(names));   // no duplicate pg17-2 "no agent" row
+  assert.strictEqual(mc.haState.nodes[1].memberName, 'pg17-2');                 // Patroni ops must be sent with THIS name
+  assert.strictEqual(mc.haState.nodes[1].replicationLagBytes, 7);               // replication matched through the member name
+  assert.strictEqual(mc.haState.nodes[2].memberName, 'pg17-3');
+}
 // hostile / broken telemetry must never throw
 for (const bad of [{ postgres: { databases: 5, replication: 'x', slots: [null] }, patroni: { members: [null, 3, { name: 'z' }] } }, { postgres: 'x', patroni: 7, backup: [], system: 1 }, 'str', [], null]) {
   const sn = sanitizeSnapshot(bad); const nd: any = { ...mk('h1', 'h1', false, '0/1'), snapshot: sn };

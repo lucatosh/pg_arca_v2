@@ -89,6 +89,29 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'succeeded', result: { segment: 'x' } }, A())).status, 200);  // duplicate report ok
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'failed', error: 'x' }, A())).status, 409);
   assert.strictEqual((await call('GET', `/api/operations/${rid}`, undefined, H())).body.operation.status, 'succeeded');
+  { // a backup running on a STANDBY: the moment it reports the wal phase, the console asks the PRIMARY to switch its WAL segment (once)
+    const t3 = await call('POST', '/api/enrollment-tokens', { label: 's', environment: 'prod' }, H());
+    const en2 = await call('POST', '/api/agent/enroll', { enrollment_token: t3.body.token, node_name: 'db2', agent_version: '2.0', discovery: disc });
+    assert.strictEqual(en2.status, 201); assert.strictEqual(en2.body.cluster_id, cl.id, 'same cluster (same system identifier)');
+    const A2 = (x: any = {}) => ({ authorization: 'Bearer ' + en2.body.agent_token, 'x-arca-node': en2.body.node_id, ...x });
+    const ssnap = { ...snap, postgres: { ...snap.postgres, is_in_recovery: true, role: 'replica' }, patroni: { accessible: true, role: 'replica', scope: 'prodpg' } };
+    await call('POST', '/api/agent/heartbeat', { snapshot: ssnap, max_ops: 0 }, A2());
+    const bo = await call('POST', `/api/clusters/${cl.id}/operations`, { type: 'backup_run', params: { type: 'full' }, nodeId: en2.body.node_id }, H({ 'idempotency-key': 'bk-standby' }));
+    assert.strictEqual(bo.status, 202, JSON.stringify(bo.body));
+    const lease = await call('POST', '/api/agent/heartbeat', { snapshot: ssnap, max_ops: 1 }, A2());
+    assert.strictEqual(lease.body.ops[0]?.type, 'backup_run');
+    const bid = lease.body.ops[0].id;
+    await call('POST', `/api/agent/ops/${bid}/report`, { status: 'running', progress: { phase: 'copy', set: 's1' } }, A2());
+    let sw = store.peek().operations.filter(o => o.type === 'wal_switch' && o.idempotencyKey === bid + ':walswitch');
+    assert.strictEqual(sw.length, 0, 'no switch while copying');
+    await call('POST', `/api/agent/ops/${bid}/report`, { status: 'running', progress: { phase: 'wal', set: 's1' } }, A2());
+    await call('POST', `/api/agent/ops/${bid}/report`, { status: 'running', progress: { phase: 'wal', set: 's1', waited_sec: 15 } }, A2());
+    sw = store.peek().operations.filter(o => o.type === 'wal_switch' && o.idempotencyKey === bid + ':walswitch');
+    assert.strictEqual(sw.length, 1, 'exactly one wal_switch per backup, however many wal-phase reports arrive');
+    assert.strictEqual(sw[0].nodeId, en.body.node_id, 'the switch goes to the PRIMARY');
+    assert.strictEqual(sw[0].createdBy, 'pg_arca (backup on a standby)');
+    await call('POST', `/api/agent/ops/${bid}/report`, { status: 'succeeded', result: { set: 's1', status: 'COMPLETE' } }, A2());
+  }
   { // the activity dock's feed: slim (no result/history/params), newest first, finished operations only while recent
     const sl = await call('GET', '/api/operations?slim=1&recent=3600', undefined, H()); assert.strictEqual(sl.status, 200);
     const one = sl.body.operations.find((o: any) => o.id === rid); assert.ok(one, 'recently finished operation is listed');

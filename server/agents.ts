@@ -253,6 +253,17 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
     const r = await ops.report(store, node.id, req.params.id, status, result, error ? String(error).slice(0, 4000) : undefined, 120,
       status === 'running' && progress && typeof progress === 'object' ? JSON.parse(JSON.stringify(progress).slice(0, 4000)) : undefined);
     if (r.ok && status === 'succeeded' && (r.op?.type === 'hba_apply' || r.op?.type === 'hba_restore' || r.op?.type === 'hba_expire')) await recordHbaHistory(store, { ...r.op, result });
+    // A backup on a STANDBY waits for the stop segment in the shared archive, but only the primary can close it: ask the primary to
+    // switch its WAL segment the moment the backup enters the wal phase (idempotent: one wal_switch per backup, replayed reports reuse it).
+    if (r.ok && status === 'running' && r.op?.type === 'backup_run' && req.body?.progress?.phase === 'wal') {
+      const st = store.peek(); const me = st.nodes[node.id];
+      if (me?.snapshot?.postgres?.is_in_recovery === true && me.clusterId) {
+        const fresh = (n: any) => !!n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000;
+        const primary = Object.values(st.nodes).find((n: any) => n.clusterId === me.clusterId && n.id !== me.id && fresh(n) && n.snapshot?.postgres?.is_in_recovery === false) as NodeRecord | undefined;
+        if (primary) await ops.submit(store, { type: 'wal_switch', clusterId: me.clusterId, nodeId: primary.id, params: { reason: 'close the WAL segment for the backup running on ' + me.name },
+          idempotencyKey: r.op.id + ':walswitch', createdBy: 'pg_arca (backup on a standby)' }).catch(() => undefined);
+      }
+    }
     if (r.ok && status === 'succeeded' && r.op?.type === 'discovery_scan' && result && typeof result === 'object') {
       await store.mutate(d => { if (d.nodes[node.id]) { d.nodes[node.id].discovery = result; refreshCluster(d, d.nodes[node.id].clusterId || ''); } });
     }
@@ -401,6 +412,13 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
           if (!into) return { code: 409, body: { error: 'central_no_primary', message: 'The address of this cluster’s primary is unknown: set it in the settings (result delivery).' } };
           params = { ...params, into };
         }
+      }
+      // Patroni knows nodes by their MEMBER name, which can differ from the agent's node name (the hostname): whatever named this
+      // member (UI, script, an old tab), translate agent names to member names so Patroni never answers "not a member of this cluster".
+      if (['patroni_switchover', 'patroni_failover', 'patroni_restart', 'patroni_reinit'].includes(type)) {
+        const toMember = new Map<string, string>();
+        for (const n of nodes) { const mn = n.snapshot?.patroni?.local_node?.name; if (mn && String(mn) !== n.name) toMember.set(n.name, String(mn)); }
+        for (const k of ['leader', 'candidate', 'member']) if (typeof params?.[k] === 'string' && toMember.has(params[k])) params = { ...params, [k]: toMember.get(params[k]) };
       }
       if (!target) {
         const pick = (pred: (n: NodeRecord) => boolean) => nodes.find(n => online(n) && pred(n));

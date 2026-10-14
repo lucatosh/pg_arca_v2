@@ -367,12 +367,23 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         # ---- WAL needed to make THIS set recoverable must be in the archive
         if progress:
             progress({"phase": "wal", "set": set_id})
-        ok, need_missing = _wait_for_wal(ctx, sess, tli, start_lsn, stop_lsn, seg_size, in_recovery, archive_timeout, cancel)
+        ok, need_missing, wal_diag = _wait_for_wal(ctx, sess, tli, start_lsn, stop_lsn, seg_size, in_recovery, archive_timeout, cancel, progress, set_id)
         if not ok:
             meta["status"] = "UNRECOVERABLE"
-            meta["reason"] = "WAL segment(s) not archived within %ds: %s" % (archive_timeout, ", ".join(need_missing[:5]))
-            repo.write_meta(meta)
-            raise EngineError("PGA-WAL-020", meta["reason"], "check archive_command / pg_stat_archiver; the set is marked UNRECOVERABLE")
+            if wal_diag == "stale":
+                meta["reason"] = ("nothing reached this node's WAL archive (%s) while waiting for %s: the archive this node reads is not receiving "
+                                  "the primary's segments" % (ctx.wal.wal_dir, ", ".join(need_missing[:3])))
+                repo.write_meta(meta)
+                raise EngineError("PGA-WAL-021", meta["reason"],
+                                  "a backup taken on a standby needs the WHOLE cluster to share ONE WAL archive (the same network share or destination on every "
+                                  "node). Point every node at the same archive (Backup tab, 'Where backups go'), or run backups on the primary. "
+                                  "If the archive IS shared, the primary's archiver is failing: check pg_stat_archiver there. The set is marked UNRECOVERABLE")
+            else:
+                meta["reason"] = "WAL segment(s) not archived within %ds: %s" % (archive_timeout, ", ".join(need_missing[:5]))
+                repo.write_meta(meta)
+                raise EngineError("PGA-WAL-020", meta["reason"],
+                                  ("check archive_command / pg_stat_archiver on the primary (this backup ran on a standby: the primary archives its WAL)"
+                                   if in_recovery else "check archive_command / pg_stat_archiver") + "; the set is marked UNRECOVERABLE")
         meta["status"] = "COMPLETE"
         meta["completed"] = iso()
         repo.write_meta(meta)
@@ -420,21 +431,36 @@ def _wal_seg_size(sess):
     return n * {"B": 1, "kB": 1024, "8kB": 8192, "MB": 1024 * 1024}.get(u or "B", 1)
 
 
-def _wait_for_wal(ctx, sess, tli, start_lsn, stop_lsn, seg_size, in_recovery, timeout, cancel):
+def _wait_for_wal(ctx, sess, tli, start_lsn, stop_lsn, seg_size, in_recovery, timeout, cancel, progress=None, set_id=""):
+    """Wait until every WAL segment this set needs is in the archive. Returns (ok, missing, diag):
+    diag "" = plain timeout; "stale" = NOTHING reached this node's archive while waiting (on a standby that almost always means the
+    archive this node reads is not the one the primary writes to, i.e. not shared). On the primary the current segment is switched
+    here; on a standby the CONSOLE asks the primary to switch (an agent cannot run pg_switch_wal through a replication connection)."""
     first, last = wal_segno(lsn_to_int(start_lsn), seg_size), last_wal_segno({"stop_lsn": stop_lsn, "from_standby": in_recovery}, seg_size)
     need = [wal_name(tli, n, seg_size) for n in range(first, last + 1)]
+    switch_err = ""
     if not in_recovery:
         try:
             sess.query("SELECT pg_switch_wal()")
-        except EngineError:
-            pass
+        except EngineError as e:
+            switch_err = str(e)
+            ctx.log("warn", "pg_switch_wal failed (%s): waiting for the archiver to reach the stop segment by itself" % e)
     t0 = time.time()
+    last_note = 0.0
     missing = need
     while True:
         missing = [n for n in need if not ctx.wal.has_segment(n, anywhere=False)]
         if not missing:
-            return True, []
-        if time.time() - t0 > timeout:
-            return False, missing
+            return True, [], ""
+        waited = time.time() - t0
+        # a standby waits for segments the PRIMARY archives: if nothing at all lands here, this archive is not receiving them
+        # (each node with its own local archive directory): no amount of waiting can fix that, say it early and clearly.
+        if in_recovery and waited > min(60, timeout / 2.0) and not ctx.wal.activity_since(t0 - 1):
+            return False, missing, "stale"
+        if waited > timeout:
+            return False, missing, "switch_failed" if switch_err else ""
+        if progress and time.time() - last_note > 14:
+            last_note = time.time()
+            progress({"phase": "wal", "set": set_id, "waited_sec": int(waited), "missing": missing[:3]})
         _check_cancel(cancel)
         time.sleep(1)

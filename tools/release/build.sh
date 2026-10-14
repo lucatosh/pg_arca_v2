@@ -159,16 +159,27 @@ SPEC
   if command -v rpmbuild >/dev/null; then
     rpmbuild --define "_topdir $R" -bb "$R/SPECS/pg-arca-agent.spec" >"$WORK/rpm.log" 2>&1 || { tail -30 "$WORK/rpm.log"; die "rpmbuild failed"; }
   elif command -v docker >/dev/null; then
-    # an EL9 image already on this host first (a registry pull can stall for many minutes), else pull rockylinux:9 with a time limit
+    # rpmbuild must already be IN the image: installing it at build time (dnf inside the container) needs the network and can stall for
+    # many minutes. Order: RPM_BUILD_IMAGE, the cached pg-arca-rpmbuild:el9 builder, any local EL image that has rpmbuild, else the
+    # builder image is built once (FROM the first local EL image, or rockylinux:9 pulled with a time limit) and cached for every next build.
+    has_rpmbuild() { timeout 60 docker run --rm --pull never --entrypoint bash "$1" -c 'command -v rpmbuild' >/dev/null 2>&1; }
     IMG="${RPM_BUILD_IMAGE:-}"
+    if [[ -z "$IMG" ]] && docker image inspect pg-arca-rpmbuild:el9 >/dev/null 2>&1; then IMG=pg-arca-rpmbuild:el9; fi
     if [[ -z "$IMG" ]]; then
-      for c in rockylinux:9 rockylinux/rockylinux:9 almalinux:9 $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -Ei '(rocky|alma|rhel|ubi).*:9' || true); do
-        docker image inspect "$c" >/dev/null 2>&1 && { IMG=$c; break; }
+      BASE=""
+      for c in rockylinux:9 rockylinux/rockylinux:9 almalinux:9 $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -Ei '(rocky|alma|rhel|ubi).*9' || true); do
+        docker image inspect "$c" >/dev/null 2>&1 && { BASE=$c; has_rpmbuild "$c" && { IMG=$c; break; }; }
       done
+      if [[ -z "$IMG" ]]; then
+        [[ -n "$BASE" ]] || { BASE=rockylinux:9; timeout 600 docker pull -q "$BASE" >/dev/null || die "no EL9 image with rpmbuild and cannot pull rockylinux:9 (set RPM_BUILD_IMAGE, or --no-rpm)"; }
+        log "building the rpm builder image once (pg-arca-rpmbuild:el9, from $BASE)"
+        printf 'FROM %s\nRUN dnf -y install rpm-build && dnf clean all\n' "$BASE" | timeout 900 docker build -q -t pg-arca-rpmbuild:el9 - >"$WORK/rpmimg.log" 2>&1 \
+          || { tail -20 "$WORK/rpmimg.log"; die "cannot prepare an image with rpmbuild (network from Docker to the distribution mirrors?). Set RPM_BUILD_IMAGE to an EL9 image that has rpm-build, or --no-rpm"; }
+        IMG=pg-arca-rpmbuild:el9
+      fi
     fi
-    if [[ -z "$IMG" ]]; then IMG=rockylinux:9; timeout 600 docker pull -q "$IMG" >/dev/null || die "cannot pull $IMG (set RPM_BUILD_IMAGE to an EL9 image you have, or --no-rpm)"; fi
     echo "   (rpmbuild in $IMG)"
-    timeout 900 docker run --rm --pull never -v "$R:/rpm" "$IMG" bash -c 'command -v rpmbuild >/dev/null || dnf -y -q install rpm-build >/dev/null 2>&1; rpmbuild --define "_topdir /rpm" -bb /rpm/SPECS/pg-arca-agent.spec && chown -R '"$(id -u):$(id -g)"' /rpm' >"$WORK/rpm.log" 2>&1 \
+    timeout 600 docker run --rm --pull never --entrypoint bash -v "$R:/rpm" "$IMG" -c 'rpmbuild --define "_topdir /rpm" -bb /rpm/SPECS/pg-arca-agent.spec && chown -R '"$(id -u):$(id -g)"' /rpm' >"$WORK/rpm.log" 2>&1 \
       || { tail -30 "$WORK/rpm.log"; die "rpmbuild in a container failed"; }
   else die "neither rpmbuild nor docker: install rpm-build, or --no-rpm"; fi
   cp "$R/RPMS/noarch/"*.rpm "$OUT/$RPMF"

@@ -8,6 +8,8 @@ import os
 import re
 import shutil
 import time
+import subprocess
+import socket
 
 from pg_arca import __version__, pgaccess, sysres
 from pg_arca.db_client import PostgresClient
@@ -17,6 +19,23 @@ from pg_arca.pgcompat import Profile, VersionError, check_tools
 
 logger = logging.getLogger("pg_arca.runtime")
 AGENT_VERSION = __version__
+
+
+def _local_addresses():
+    """Best effort: the IP addresses of this machine (to find which Patroni member this node is)."""
+    addrs = set()
+    try:
+        out = subprocess.check_output(["ip", "-o", "addr"], stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+        for m in re.finditer(r"inet6? ([0-9a-fA-F.:]+)/", out):
+            addrs.add(m.group(1))
+    except Exception:
+        pass
+    try:
+        for fam, _t, _p, _c, sa in socket.getaddrinfo(socket.gethostname(), None):
+            addrs.add(sa[0])
+    except Exception:
+        pass
+    return addrs
 
 
 class Runtime(object):
@@ -126,11 +145,21 @@ class Runtime(object):
         if accessible:
             view["local_node"] = {"role": node.get("role"), "state": node.get("state"), "timeline": node.get("timeline"),
                                   "pending_restart": node.get("pending_restart"), "tags": node.get("tags"), "xlog": node.get("xlog")}
+            # this node's MEMBER NAME in Patroni: it need not match the hostname or the agent's node name, and every Patroni action
+            # (switchover candidate, restart member, reinitialize) must use it. Recent Patroni says it in /patroni; otherwise the member
+            # whose host is one of this machine's addresses.
+            pat = node.get("patroni")
+            if isinstance(pat, dict) and pat.get("name"):
+                view["local_node"]["name"] = str(pat["name"])
             s2, cl = self.patroni.get_cluster_topology()
             if s2 == 200 and isinstance(cl, dict):
                 view["members"] = [{k: m.get(k) for k in ("name", "role", "state", "host", "port", "timeline", "lag", "api_url")} for m in cl.get("members", [])]
                 view["paused"] = bool(cl.get("pause", False))
                 view["scope"] = cl.get("scope") or view.get("scope")
+                if not view["local_node"].get("name"):
+                    mine = [m for m in view["members"] if m.get("host") and m["host"] in _local_addresses()]
+                    if len(mine) == 1:
+                        view["local_node"]["name"] = mine[0].get("name")
             try:                                                   # geo: a standby cluster (DR site) has standby_cluster in its DCS config: where it replicates from
                 s3, cfg = self.patroni.get_config()
                 if s3 == 200 and isinstance(cfg, dict):

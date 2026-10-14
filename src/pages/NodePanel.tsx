@@ -7,6 +7,7 @@ type Act = { id: string; label: string; hint: string; danger?: boolean; typed?: 
 
 /** Everything you can do on ONE node: facts first, then commands grouped by what they touch. Commands act on this node, not on "some node of the cluster". */
 export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall, onRevoke }: { c: any; node: any; agent?: any; leader?: string; isAdmin: boolean; onClose: () => void; onInstall: () => void; onRevoke: () => void }) {
+  const member = node.memberName || node.name;           // Patroni knows this node by its MEMBER name, which may differ from the hostname/agent name
   const r = useOpRunner(c.id);
   const [pending, setPending] = useState<Act | null>(null); const [typed, setTyped] = useState('');
   const patroni = !!c.haState?.managedByPatroni;
@@ -20,7 +21,7 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
   const acts: { group: string; items: Act[] }[] = [
     { group: 'PostgreSQL', items: [
       patroni || !hasAgent
-        ? { id: 'restart', label: 'Restart PostgreSQL', hint: 'Orderly restart through Patroni. The node does not respond for a few seconds' + (isPrimary ? ' and, since it is the primary, applications lose their connection.' : '.'), danger: true, disabled: patroni ? undefined : noAgent, run: () => r.run('patroni_restart', { member: node.name }) }
+        ? { id: 'restart', label: 'Restart PostgreSQL', hint: 'Orderly restart through Patroni. The node does not respond for a few seconds' + (isPrimary ? ' and, since it is the primary, applications lose their connection.' : '.'), danger: true, disabled: patroni ? undefined : noAgent, run: () => r.run('patroni_restart', { member }) }
         : { id: 'restart', label: 'Restart PostgreSQL', hint: 'Restart the way the server is managed (its systemd service, or pg_ctl where there is no systemd). All connections are closed; if the configuration has errors that would prevent startup, the restart is refused beforehand.', danger: true, typed: true, run: () => r.run('pg_restart', { confirm: 'RESTART' }, { nodeId: nid }) },
 
       { id: 'reload', label: 'Reload the configuration', hint: 'Re-reads postgresql.conf and pg_hba.conf without restarting. Safe to run at any time.', disabled: hasAgent ? undefined : noAgent, run: () => r.run('pg_reload', {}, { nodeId: nid }) },
@@ -28,8 +29,8 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
       { id: 'walsw', label: 'Switch the current WAL file', hint: 'Gets the current WAL archived right away: reduces the maximum loss in case of disaster.', disabled: !isPrimary ? 'Primary only' : hasAgent ? undefined : noAgent, run: () => r.run('wal_switch', {}, { nodeId: nid }) },
     ] },
     { group: 'High availability', items: [
-      { id: 'promote', label: 'Promote to primary', hint: `Orderly switchover: ${leader || 'the primary'} hands its role to ${node.name} without data loss.`, danger: true, disabled: !patroni ? noPatroni : isPrimary ? 'It is already the primary' : !healthy ? 'The replica is not healthy (it is not replicating)' : undefined, run: () => r.run('patroni_switchover', { leader, candidate: node.name }) },
-      { id: 'reinit', label: 'Reinitialize the replica', hint: 'Deletes this node’s data and re-clones it from the primary. Used when a replica does not start or is corrupted. It can take a long time on large databases.', danger: true, typed: true, disabled: !patroni ? noPatroni : isPrimary ? 'Never on the primary: it would destroy the data' : undefined, run: () => r.run('patroni_reinit', { member: node.name }) },
+      { id: 'promote', label: 'Promote to primary', hint: `Orderly switchover: ${leader || 'the primary'} hands its role to ${node.name} without data loss.`, danger: true, disabled: !patroni ? noPatroni : isPrimary ? 'It is already the primary' : !healthy ? 'The replica is not healthy (it is not replicating)' : undefined, run: () => r.run('patroni_switchover', { leader, candidate: member }) },
+      { id: 'reinit', label: 'Reinitialize the replica', hint: 'Deletes this node’s data and re-clones it from the primary. Used when a replica does not start or is corrupted. It can take a long time on large databases.', danger: true, typed: true, disabled: !patroni ? noPatroni : isPrimary ? 'Never on the primary: it would destroy the data' : undefined, run: () => r.run('patroni_reinit', { member }) },
     ] },
     { group: 'Agent', items: [
       { id: 'compat', label: 'Check PostgreSQL compatibility', hint: 'Checks this node’s PostgreSQL version, whether it is supported or end-of-life, and that the binaries the agent uses (psql, pg_waldump…) match the server.', disabled: hasAgent ? undefined : noAgent, run: () => r.run('compat_check', {}, { nodeId: nid }) },

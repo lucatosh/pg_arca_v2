@@ -99,7 +99,7 @@ function Nodes({ c }: { c: any }) {
   const mine = (reg.data?.nodes || []).filter(n => n.clusterId === c.id);
   const isAdmin = useRole() === 'admin';
   const [revoke, setRevoke] = useState<any>(null); const [tok, setTok] = useState<any>(null); const [busy, setBusy] = useState(false); const [sel, setSel] = useState<string | null>(null);
-  const leaderName = nodes.find(n => n.role === 'primary')?.name;
+  const leaderName = (l => l?.memberName || l?.name)(nodes.find(n => n.role === 'primary'));
   const selNode = nodes.find(n => n.name === sel); const selAgent = mine.find(n => n.name === sel);
   const doRevoke = async () => { setBusy(true); try { await api('DELETE', `/api/nodes/${revoke.id}`); toast(`Agent on ${revoke.name} revoked`, 'ok'); revalidate('/api/nodes'); revalidate(`/api/clusters/${encodeURIComponent(c.id)}`); setRevoke(null); } catch (e: any) { toast(e.message, 'bad'); } finally { setBusy(false); } };
   const mint = async (nodeName?: string) => { setBusy(true); try { const t: any = await api('POST', '/api/enrollment-tokens', { label: `${c.name} +${nodeName || 'node'}`, clusterId: c.id, ttlMinutes: 60 }, { key: 'tok-' + Date.now() }); setTok(nodeName ? { ...t, node: nodeName, installCommand: t.installCommand.replace('sudo PG_ARCA_URL=', `sudo PG_ARCA_NODE_NAME=${nodeName} PG_ARCA_URL=`) } : t); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
@@ -134,11 +134,12 @@ function HA({ c }: { c: any }) {
   if (!c.haState?.managedByPatroni) return <Card><Empty icon="swap" title="Patroni not detected">High-availability operations require a Patroni-managed cluster with the agent installed (or its API connected in connection mode).</Empty></Card>;
   const standbys = nodes.filter(n => n.role !== 'primary' && n.online && ['running', 'streaming'].includes(String(n.state)));   // only replicas Patroni could really promote
   const sickCount = nodes.filter(n => n.role !== 'primary').length - standbys.length;
-  const start = (a: HaAct) => { setAct(a); setCand(standbys[0]?.name || ''); setTyped(''); r.reset(); };
+  const mname = (n: any) => n?.memberName || n?.name;
+  const start = (a: HaAct) => { setAct(a); setCand(mname(standbys[0]) || ''); setTyped(''); r.reset(); };
   const exec = () => {
     if (!act) return;
     const m = act.kind;
-    if (m === 'switchover') r.run('patroni_switchover', { leader: leader?.name, candidate: cand || undefined });
+    if (m === 'switchover') r.run('patroni_switchover', { leader: mname(leader), candidate: cand || undefined });
     else if (m === 'failover') r.run('patroni_failover', { candidate: cand, confirm: 'FAILOVER' });
     else if (m === 'restart') r.run('patroni_restart', { member: act.member });
     else if (m === 'reload') r.run('patroni_reload', {});
@@ -160,10 +161,10 @@ function HA({ c }: { c: any }) {
         <dt>Forced failover</dt><dd className="small muted">Promotes a replica immediately, without waiting for the primary. Only when the primary is not responding: transactions not yet replicated are lost.</dd></dl>
       {sickCount > 0 ? <p className="small" style={{ marginTop: 8, color: 'var(--warn, #d9a441)' }}>{sickCount} {sickCount === 1 ? 'replica is' : 'replicas are'} not healthy (state other than running): {sickCount === 1 ? 'it' : 'they'} cannot be chosen{standbys.length ? '' : ', so switchover and failover are disabled'}.</p> : null}</Card>
     <Card title="Members" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Member</th><th>Role</th><th>State</th><th /></tr></thead><tbody>
-      {nodes.map(n => <tr key={n.name}><td>{n.name}</td><td>{n.role === 'primary' ? 'Leader' : 'Replica'}</td><td>{n.online ? n.state : 'offline'}</td><td className="num"><Button sm disabled={r.busy} onClick={() => start({ kind: 'restart', member: n.name })}>Restart</Button></td></tr>)}</tbody></table></div></Card>
+      {nodes.map(n => <tr key={n.name}><td>{n.name}</td><td>{n.role === 'primary' ? 'Leader' : 'Replica'}</td><td>{n.online ? n.state : 'offline'}</td><td className="num"><Button sm disabled={r.busy} onClick={() => start({ kind: 'restart', member: mname(n) })}>Restart</Button></td></tr>)}</tbody></table></div></Card>
     {r.conflict?.overridable ? <Banner kind="warn" title="Conflict with another operation">{r.conflict.message} <Button sm kind="danger" onClick={() => r.runForced()}>Proceed anyway</Button></Banner>
       : (r.op || r.error) ? <Card><OpPanel op={r.op} error={r.error} cancel={undefined} /><Result op={r.op} /></Card> : null}
-    {act ? <Modal2 act={act} leader={leader?.name} standbys={standbys} cand={cand} setCand={setCand} typed={typed} setTyped={setTyped} onClose={() => setAct(null)} onGo={exec} maint={!!c.haState.maintenanceMode} /> : null}
+    {act ? <Modal2 act={act} leader={mname(leader)} standbys={standbys} cand={cand} setCand={setCand} typed={typed} setTyped={setTyped} onClose={() => setAct(null)} onGo={exec} maint={!!c.haState.maintenanceMode} /> : null}
   </div>;
 }
 
@@ -171,7 +172,7 @@ function Modal2({ act, leader, standbys, cand, setCand, typed, setTyped, onClose
   const k = act.kind; const danger = k === 'failover' || k === 'restart';
   const title = k === 'switchover' ? 'Planned switchover' : k === 'failover' ? 'Forced failover' : k === 'restart' ? `Restart ${act.member}?` : k === 'reload' ? 'Reload Patroni?' : maint ? 'Leave maintenance mode?' : 'Enter maintenance mode?';
   return <Confirm title={title} danger={danger} confirmLabel="Run" requireText={k === 'failover' ? 'FAILOVER' : undefined} onClose={onClose} onConfirm={() => (k === 'failover' && !cand ? null : onGo())}>
-    {k === 'switchover' || k === 'failover' ? <Field label="New primary"><select className="input" value={cand} onChange={e => setCand(e.target.value)}>{standbys.map((s: any) => <option key={s.name} value={s.name}>{s.name}{s.replicationLagBytes ? ` (lag ${bytes(s.replicationLagBytes)})` : ''}</option>)}</select></Field> : null}
+    {k === 'switchover' || k === 'failover' ? <Field label="New primary"><select className="input" value={cand} onChange={e => setCand(e.target.value)}>{standbys.map((s: any) => <option key={s.name} value={s.memberName || s.name}>{s.name}{s.replicationLagBytes ? ` (lag ${bytes(s.replicationLagBytes)})` : ''}</option>)}</select></Field> : null}
     {k === 'switchover' ? <p>The current primary <strong>{leader}</strong> hands over its role in an orderly way. Active connections are interrupted for a few seconds.</p> : null}
     {k === 'failover' ? <Banner kind="bad" title="Risk of data loss">Promotes the chosen replica without waiting for the primary. Transactions not yet replicated will be lost.</Banner> : null}
     {k === 'restart' ? <p>The member will be unreachable while PostgreSQL restarts.</p> : null}
