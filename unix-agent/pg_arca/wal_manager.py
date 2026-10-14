@@ -200,6 +200,37 @@ class WalManager:
             raise WalArchiveError("PGA-WAL-032", "this WAL archive (%s) belongs to another database (system identifier %s; this one is %s): each PostgreSQL cluster "
                                   "needs its own WAL archive directory. Set a different wal_archive_dir for this cluster" % (self.wal_dir, cur, sysid))
 
+    # ------------------------------------------------------------------ quarantine
+    def conflicts(self):
+        """Divergent copies waiting for a person: [{file, name, sha, at, size}] (conflicts/, not conflicts/reviewed/)."""
+        qdir = os.path.join(self.wal_dir, "conflicts")
+        out = []
+        for f in (sorted(os.listdir(qdir)) if os.path.isdir(qdir) else []):
+            p = os.path.join(qdir, f)
+            if not os.path.isfile(p):
+                continue
+            parts = f.split(".")
+            name = ".".join(parts[:2]) if len(parts) > 1 and parts[1] in ("history", "partial") else parts[0]
+            try:
+                st = os.stat(p)
+                out.append({"file": f, "name": name, "sha": parts[2] if name.endswith(".history") and len(parts) > 2 else (parts[1] if len(parts) > 1 else ""),
+                            "at": st.st_mtime, "size": st.st_size})
+            except OSError:
+                pass
+        return out
+
+    def conflicts_reviewed(self, files=None):
+        """A person looked at them: moved to conflicts/reviewed/ (kept), so they stop raising an alarm. files=None: all of them."""
+        qdir = os.path.join(self.wal_dir, "conflicts")
+        rdir = os.path.join(qdir, "reviewed")
+        os.makedirs(rdir, mode=0o750, exist_ok=True)
+        moved = []
+        for c in self.conflicts():
+            if files is None or c["file"] in files:
+                os.rename(os.path.join(qdir, c["file"]), os.path.join(rdir, c["file"]))
+                moved.append(c["file"])
+        return moved
+
     # ------------------------------------------------------------------ archive
     def archive_segment(self, src_path, name):
         """archive_command %p %f. Returns (ok, dest, sha256, message); raises WalArchiveError on refusal."""
@@ -511,5 +542,5 @@ class WalManager:
         names.sort()
         return {"continuous": not gaps, "total_segments": len(names), "gaps": gaps[:50], "gap_count": len(gaps),
                 "timelines": sorted(timelines), "histories": sorted(histories), "first_segment": names[0], "last_segment": names[-1],
-                "conflicts": len(os.listdir(os.path.join(self.wal_dir, "conflicts"))), "below_retention_floor": below,
+                "conflicts": len(self.conflicts()), "conflicts_newest": max([c["at"] for c in self.conflicts()] or [0]) or None, "below_retention_floor": below,
                 "status": "continuous" if not gaps else "%d gap(s) detected" % len(gaps)}

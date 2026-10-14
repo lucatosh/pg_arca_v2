@@ -110,6 +110,7 @@ class OperationExecutor:
         r("restore_kept_drop", self.h_restore_kept_drop, False)
         r("restore_kept_list", self.h_restore_kept_list, True)
         r("pg_timeline", self.h_pg_timeline, True)
+        r("wal_conflicts", self.h_wal_conflicts, True)
         r("hba_expire", self.h_hba_expire, False)
         r("agent_config_get", self.h_cfg_get, True)
         r("agent_config_set", self.h_cfg_set, True)       # same input -> same file: idempotent
@@ -772,6 +773,16 @@ class OperationExecutor:
             raise OpError("no standby leader within %ss (members: %s)" % (p.get("timeout", 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
         return {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port), "dropped_slots": drop, "rebuilt_from_new_primary": bool(rebuilt),
                 "old_data_kept_as": rebuilt}
+
+    def h_wal_conflicts(self, p):
+        """Divergent WAL copies the archive refused (conflicts/): listed, or marked as reviewed (kept under conflicts/reviewed/, no more alarm)."""
+        from pg_arca.wal_manager import WalManager
+        wal_dir = self.config.get("wal_archive_dir")
+        if not wal_dir or not os.path.isdir(wal_dir):
+            raise OpError("no WAL archive configured on this node")
+        wm = WalManager(wal_dir)
+        moved = wm.conflicts_reviewed(p.get("files") if isinstance(p.get("files"), list) else None) if p.get("reviewed") else []
+        return {"conflicts": wm.conflicts(), "reviewed": moved, "wal_dir": wal_dir}
 
     def h_pg_timeline(self, p):
         """Timeline of this server and its history file (ancestors and switch points): how the console tells two servers on the same timeline NUMBER apart."""

@@ -93,6 +93,22 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
     </div></Card>;
 }
 
+/** Divergent WAL copies the archive refused and kept aside: what they are, and 'reviewed' once a person has looked (they stay in conflicts/reviewed/). */
+function WalConflicts({ c, count, refresh }: { c: any; count: number; refresh: () => void }) {
+  const ls = useOpRunner(c.id, undefined, `walconf:${c.id}`); const ack = useOpRunner(c.id, () => { refresh(); ls.run('wal_conflicts', {}); }); const [ask, setAsk] = useState(false);
+  const list: any[] = ls.op?.status === 'succeeded' ? ls.op.result.conflicts || [] : [];
+  return <Banner kind="bad" title={`${count} ${count === 1 ? 'copia WAL divergente' : 'copie WAL divergenti'} in quarantena`}>
+    <p className="small">Due server hanno archiviato contenuti diversi con lo stesso nome: l’archivio ha tenuto la prima copia e messo da parte le altre. Succede con due primari insieme o con due promozioni sullo stesso numero di timeline (split-brain tra siti).</p>
+    {list.length ? <div className="tablewrap"><table className="t small"><thead><tr><th>Segmento / storia</th><th>Copia messa da parte</th><th>Quando</th></tr></thead><tbody>
+      {list.map(x => <tr key={x.file}><td className="mono">{x.name}</td><td className="mono">{x.file}</td><td>{ago(new Date(x.at * 1000).toISOString())}</td></tr>)}</tbody></table></div> : null}
+    <div className="row wrap gap-s" style={{ marginTop: 6 }}>{!list.length ? <Button sm busy={ls.busy} onClick={() => ls.run('wal_conflicts', {})}>Mostra le copie</Button> : null}
+      <Button sm busy={ack.busy} onClick={() => setAsk(true)}>Segna come esaminate</Button></div>
+    {(ls.op?.status === 'failed' || ack.op?.status === 'failed') ? <OpPanel op={ls.op?.status === 'failed' ? ls.op : ack.op} /> : null}
+    {ask ? <Confirm title="Segnare le copie come esaminate?" confirmLabel="Segna" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); ack.run('wal_conflicts', { reviewed: true }); }}>
+      <p>Le copie restano conservate in <code>conflicts/reviewed/</code> nell’archivio; l’avviso sparisce. Fallo dopo aver verificato quale server era il primario giusto.</p></Confirm> : null}
+  </Banner>;
+}
+
 function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) {
   const r = useOpRunner(c.id, refresh, `backup:${c.id}:health`); const [kind, setKind] = useDraft(`backup:${c.id}:health:kind`, '');
   const [ask, setAsk] = useState(false);
@@ -105,6 +121,7 @@ function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) 
         <dt>WAL archiviati</dt><dd>{num(d.wal?.total_segments)} segmenti, {d.wal?.continuous === false ? <Badge kind="bad">con buchi</Badge> : <Badge kind="ok">continui</Badge>}</dd>
         <dt>Cifratura</dt><dd>{bk?.encryption ? <><Badge kind="ok">Attiva</Badge> <span className="muted">AES-256-GCM · chiave {bk.encryption.key_id.slice(0, 8)}</span></> : <span className="muted">Non attiva — imposta <code>encryption_key_file</code> per un nuovo repository</span>}</dd>
         <dt>Archiviatore</dt><dd>{d.archiver ? `${num(d.archiver.archived_count)} ok, ${num(d.archiver.failed_count)} errori` : '—'}</dd></dl>
+      {d.wal?.conflicts > 0 ? <WalConflicts c={c} count={d.wal.conflicts} refresh={refresh} /> : null}
       <div className="row wrap"><Button sm disabled={r.busy} onClick={() => run('verify', 'backup_verify', {})}>Verifica rapida</Button><Button sm disabled={r.busy} onClick={() => run('deep', 'backup_verify', { deep: true })}>Verifica approfondita</Button>
         <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('test', 'backup_verify', { restore_test: true })} title="Ripristina davvero l’ultimo backup in un’istanza temporanea">Prova di ripristino</Button>
         <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('drill', 'restore_drill', {})} title="Ripristina l’intero cluster in una cartella temporanea, lo avvia, controlla ogni database e misura il tempo">Prova di disaster recovery</Button>

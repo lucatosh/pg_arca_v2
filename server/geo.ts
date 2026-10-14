@@ -285,6 +285,11 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
   else if (pv.accessible && !pv.standby_cluster) add({ id: 'archive_primary', level: 'ok', site: prim.name, text: `${prim.name}: vede l’archivio condiviso (restore_command): una sua promozione non può riusare un numero di timeline` });
   if (pv.accessible && pv.use_pg_rewind !== true) add({ id: 'rewind', level: 'warn', site: prim.name, clusterId: prim.clusterId, action: 'enable_rewind', text: `${prim.name}: pg_rewind spento: un vecchio primario non potrà diventare sito di replica senza ricostruzione`, fix: 'postgresql.use_pg_rewind: true nel DCS' });
   if (ppg.hba_patroni_local?.ok === false) add({ id: 'hba_local', level: 'bad', site: prim.name, text: `${prim.name}: pg_hba non consente a Patroni la replica locale`, fix: ppg.hba_patroni_local.suggest?.[0] });
+  // the primary site's archiver: blocked, it stops the shared archive (and the DR site's fallback, and point-in-time restore) right there
+  const parch: any = ppg.archiver;
+  if (parch?.last_failed_time && (!parch.last_archived_time || Date.parse(parch.last_failed_time) > Date.parse(parch.last_archived_time)) && now - Date.parse(parch.last_failed_time) < 3600_000)
+    add({ id: 'archiver', level: 'bad', site: prim.name, clusterId: prim.clusterId, text: `${prim.name}: l’archiviazione dei WAL è bloccata su ${parch.last_failed_wal || '?'}: l’archivio comune (riserva del sito di replica e ripristini a un istante preciso) si è fermato lì`,
+      fix: 'apri «Oggi» per la causa e la soluzione' });
   // backups: one catalogue for the database, recent, usable from the DR site too
   const sets = (nodesOf(prim.clusterId).map(n => n.snapshot?.backup?.recent_sets).find(x => Array.isArray(x) && x.length) || []) as any[];
   const lastOk = sets.filter(x => x.status === 'COMPLETE').map(x => Date.parse(x.start_time)).filter(Number.isFinite).sort().pop();

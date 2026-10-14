@@ -112,8 +112,11 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
 
     // ---- WAL / archiving
     const wal = (primary || nodes[0])?.snapshot?.wal;
-    if (wal && wal.gap_count > 0) add({ severity: 'critical', code: 'wal_gap', title: `Archivio WAL con ${wal.gap_count} buco/i`, cause: 'Mancano segmenti WAL: il recupero a un istante preciso oltre il buco non è possibile. Esegui subito un nuovo backup completo.', action: { label: 'Vedi il recupero', page: 'restore' } });
-    if (wal && wal.conflicts > 0) add({ severity: 'critical', code: 'wal_conflict', title: 'Segmenti WAL divergenti in quarantena', cause: 'Due server hanno archiviato contenuti diversi per lo stesso segmento: possibile split-brain. Verifica quale nodo è il primario.', action: { label: 'Apri il cluster', page: 'cluster' } });
+    if (wal && wal.gap_count > 0 && !standbySite) add({ severity: 'critical', code: 'wal_gap', title: `Archivio WAL con ${wal.gap_count} buco/i`, cause: 'Mancano segmenti WAL: il recupero a un istante preciso oltre il buco non è possibile. Esegui subito un nuovo backup completo.', action: { label: 'Vedi il recupero', page: 'restore' } });
+    // the standby site of a geo pair shares the primary site's archive: its findings are the primary's, said once there
+    if (wal && wal.conflicts > 0 && !standbySite) add({ severity: wal.conflicts_newest && now - wal.conflicts_newest * 1000 > 7 * 86400_000 ? 'warning' : 'critical', code: 'wal_conflict', title: `${wal.conflicts} ${wal.conflicts === 1 ? 'copia WAL divergente' : 'copie WAL divergenti'} in quarantena`,
+      cause: 'Due server hanno archiviato contenuti diversi con lo stesso nome (possibile split-brain: due primari insieme, o due promozioni sullo stesso numero di timeline). L’archivio ha tenuto la prima copia e messo da parte le altre. Verifica quale server era il primario giusto, poi segna le copie come esaminate (restano conservate).',
+      action: { label: 'Esamina', page: 'backup' } });
     const arch = pg.archiver;
     if (arch?.last_failed_time && (!arch.last_archived_time || ts(arch.last_failed_time) > ts(arch.last_archived_time)) && now - ts(arch.last_failed_time) < 3600_000 * 6)
       if (/\.history$/.test(String(arch.last_failed_wal || '')) && /PGA-WAL-03[13]/.test(String(pg.archive_error?.error || '')))

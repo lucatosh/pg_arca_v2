@@ -71,6 +71,8 @@ export const OP_SPECS: Record<string, OpSpec> = {
   geo_archive_fallback: { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => typeof p.enable !== 'boolean' ? 'enable (true|false) required' : null },
   // timeline + its history file (ancestors, switch points): two servers on the same timeline NUMBER with different histories have diverged
   pg_timeline: { mutating: false, target: 'any_node', lane: 'control', validate: () => null },
+  // divergent WAL copies the archive refused (conflicts/): listed, or marked as reviewed (kept, no more alarm)
+  wal_conflicts: { mutating: true, target: 'any_node', lane: 'control', validate: (p: any) => p.files !== undefined && (!Array.isArray(p.files) || p.files.some((f: any) => typeof f !== 'string' || !/^[0-9A-Za-z._-]{1,120}$/.test(f))) ? 'files must be names of quarantined copies' : null },
   geo_demote: { mutating: true, target: 'patroni_node', needsPatroni: true, cancellable: false,
     validate: p => p.confirm !== 'DECLASSA' ? 'confirm="DECLASSA" required (writes on this site stop at once)' : (!/^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$/.test(String(p.host || '')) ? 'host of the other site required' : (!(Number(p.port) >= 1 && Number(p.port) <= 65535) ? 'port required' : (p.primary_slot_name !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.primary_slot_name)) ? 'invalid primary_slot_name' : (p.drop_slots !== undefined && (!Array.isArray(p.drop_slots) || p.drop_slots.some((x: any) => !/^[a-z0-9_]{1,63}$/.test(String(x)))) ? 'invalid drop_slots' : (p.force_rewind !== undefined && typeof p.force_rewind !== 'boolean' ? 'force_rewind must be boolean' : null))))) },
   patroni_config_patch: {
