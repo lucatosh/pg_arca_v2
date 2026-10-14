@@ -1,19 +1,21 @@
 import React, { useState } from 'react';
 import { Banner, Button, Confirm } from '../ui';
-import { useOpRunner } from '../hooks';
+import { toast, useOpRunner } from '../hooks';
 import { OpPanel } from './shared';
 import { itCheck } from '../i18n';
 
 /** «Riavvia PostgreSQL» for a STANDALONE instance (Patroni members restart through Patroni). The agent first says HOW it would do it
  *  (the server's own systemd unit, or pg_ctl where there is no systemd), then the typed confirmation, then the result with what is still pending. */
 export function RestartPg({ c, label = 'Riavvia PostgreSQL', onDone }: { c: any; label?: string; onDone?: () => void }) {
-  const plan = useOpRunner(c.id); const run = useOpRunner(c.id, onDone); const [ask, setAsk] = useState(false);
+  const [ask, setAsk] = useState(false);
+  // the plan runs on the agent: the confirmation opens when it has ANSWERED (run() returns the submitted operation, not its outcome)
+  const plan = useOpRunner(c.id, o => { if (o.status === 'succeeded' && o.result?.plan?.method !== 'refuse' && o.result?.plan?.allowed !== false) setAsk(true); }); const run = useOpRunner(c.id, o => { if (o.status === 'succeeded') toast(`PostgreSQL riavviato${o.result?.unit ? ` (${o.result.unit})` : ''}`, 'ok'); onDone?.(o); });   // the card that asked may disappear at once: the toast stays
   if (c.haState?.managedByPatroni || c.source === 'direct' || c.isSandbox) return null;
   const p = plan.op?.status === 'succeeded' ? plan.op.result?.plan : null;
   const how = p ? (p.method === 'systemd' ? <>con il servizio del server: <code>systemctl restart {p.unit}</code></> : p.method === 'pg_ctl' ? <>con <code>pg_ctl restart -m fast</code> (nessun servizio systemd lo gestisce)</> : null) : null;
   const res = run.op?.status === 'succeeded' ? run.op.result : null;
   return <div className="stack">
-    <div className="row wrap"><Button icon="refresh" busy={plan.busy || run.busy} onClick={async () => { const o = await plan.run('pg_restart', { dry_run: true }); if (o?.status === 'succeeded' && o.result?.plan?.method !== 'refuse' && o.result?.plan?.allowed !== false) setAsk(true); }}>{label}</Button></div>
+    <div className="row wrap"><Button icon="refresh" busy={plan.busy || run.busy} onClick={() => { plan.run('pg_restart', { dry_run: true }); }}>{label}</Button></div>
     {p?.method === 'refuse' ? <Banner kind="warn" title="Riavvio da qui non possibile">{itCheck(p.why)}</Banner> : null}
     {p && p.allowed === false ? <Banner kind="warn" title="L’agent non ha il permesso di riavviare il servizio">{itCheck(p.why)}{p.manual ? <div style={{ marginTop: 6 }}>Comando da eseguire sul server: <code>{p.manual}</code></div> : null}</Banner> : null}
     {plan.op?.status === 'failed' ? <OpPanel op={plan.op} error={plan.error} /> : null}

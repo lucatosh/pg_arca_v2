@@ -55,7 +55,7 @@ const withAgent = process.env.NO_AGENT !== '1';
     let migrated = false;                 // the previous backup location left by a destination change (until the migration below)
     const snap = () => ({
       postgres: { alive: true, is_in_recovery: false, role: 'primary', version: '16.4', current_lsn: '0/5000000', timeline: 1, xact_total: (xact += 400), connections: { used: 12, max: 100 },
-        databases: [{ oid: 16384, name: 'appdb', size: 4e9 }, { oid: 16385, name: 'billing', size: 1e9 }], settings: { archive_mode: process.env.ARCHIVE_OFF ? 'off' : 'on', max_connections: '100', shared_buffers: '16384', work_mem: '4096' },
+        databases: [{ oid: 16384, name: 'appdb', size: 4e9 }, { oid: 16385, name: 'billing', size: 1e9 }], settings: { archive_mode: process.env.ARCHIVE_OFF && !archiveOn ? 'off' : 'on', max_connections: '100', shared_buffers: '16384', work_mem: '4096' },
         archiver: { archived_count: 120, failed_count: 0, last_archived_time: new Date().toISOString() } },
       wal: { continuous: true, total_segments: 64, gaps: [] },
       storage: { repo_path: '/mnt/backup/repo/prodpg', wal_path: '/mnt/backup/wal/prodpg', ...(migrated ? {} : { repo_previous: [{ path: '/var/lib/pgarca/repo', readable: true }], wal_previous: [{ path: '/var/lib/pgarca/wal', readable: true }] }) },
@@ -64,10 +64,14 @@ const withAgent = process.env.NO_AGENT !== '1';
     });
     const report = (id: string, body: any) => app.call('POST', `/api/agent/ops/${id}/report`, { body, headers: agent.h });
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-    let keptDirs: { path: string; kind: string }[] = [];
+    let keptDirs: { path: string; kind: string }[] = []; let archiveOn = false;
     const handle = async (op: any) => {
       const p = op.params;
       await report(op.id, { status: 'running', progress: { phase: 'starting' } });
+      // standalone archiving: settings saved, a restart is needed; the restart plan arrives LATER (as from a real agent), then the restart
+      if (op.type === 'archive_enable') { await sleep(400); return report(op.id, { status: 'succeeded', result: { changed: { archive_mode: 'on', archive_command: '/usr/local/bin/pg-arca-wal archive %p %f' }, via: 'alter_system', restart_required: true, next: 'Restart PostgreSQL (systemctl restart <service>, or pg_ctl restart) for archive_mode/wal_level to take effect.' } }); }
+      if (op.type === 'pg_restart' && p.dry_run) { await sleep(1500); return report(op.id, { status: 'succeeded', result: { dry_run: true, plan: { method: 'systemd', unit: 'postgresql@16-main.service', pid: 4242 } } }); }
+      if (op.type === 'pg_restart') { await sleep(800); archiveOn = true; return report(op.id, { status: 'succeeded', result: { unit: 'postgresql@16-main.service', how: 'systemctl restart postgresql@16-main.service', pending_before: ['archive_mode'], pending_restart: [] } }); }
       if (op.type === 'pg_set_param') { await sleep(300); return report(op.id, { status: 'succeeded', result: { name: p.name, value: p.value, applied: true } }); }
       if (op.type === 'restore_drill') { await sleep(400); return report(op.id, { status: 'succeeded', result: { full_cluster: true, set: 'x', rto_seconds: 754, data_bytes: 5368709120, throughput_mb_s: 6.8, databases_checked: ['appdb', 'billing'] } }); }
       if (op.type === 'restore_diff') { await sleep(300); return report(op.id, { status: 'succeeded', result: { object: p.object, primary_key: ['id'], restored_rows: 500, live_rows: 6, columns_only_in_one_side: [], counts: { missing_now: 2, added_since: 1, changed: 1 }, limit: 200,
