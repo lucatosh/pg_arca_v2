@@ -144,12 +144,12 @@ def _json(ex, sql, err, default):
 
 def _live_probes(ex, err):
     me = getattr(ex.db, "user", None) or "postgres"                        # the role the agent really connects with (not always "postgres")
-    probes = [{"label": "locale: utente %s (peer)" % me, "type": "local", "database": "postgres", "user": me, "ssl": False, "critical": True}]
+    probes = [{"label": "local: user %s (peer)" % me, "type": "local", "database": "postgres", "user": me, "ssl": False, "critical": True}]
     if getattr(ex.patroni, "configured", False):
         users, _ = ex.db.query_json(SQL_REPL_USERS)
         probes += _patroni_local_probes([u for u in (users or []) if isinstance(u, str) and u])
     for r in _json(ex, SQL_REPL, err, []):
-        probes.append({"label": "replica %s (%s)" % (r["address"], r["user"]), "type": "host", "ssl": bool(r.get("ssl")), "database": "replication", "user": r["user"],
+        probes.append({"label": "replication %s (%s)" % (r["address"], r["user"]), "type": "host", "ssl": bool(r.get("ssl")), "database": "replication", "user": r["user"],
                        "address": str(r["address"]).split("/")[0], "replication": True, "critical": True})
     return probes
 
@@ -161,7 +161,7 @@ SQL_REPL_USERS = ("SELECT COALESCE(json_agg(DISTINCT u),'[]'::json) FROM (SELECT
 def _patroni_local_probes(users):
     """Patroni reads a replica's own timeline / LSN through a LOCAL replication connection (host localhost, the replication user). Without a pg_hba rule
     for it Patroni cannot tell that a replica diverged after a failover and never runs pg_rewind: the replica (or a whole standby site) stays stuck."""
-    return [{"label": "Patroni: replica locale 127.0.0.1 (%s)" % u, "type": "host", "ssl": False, "database": "replication", "user": u, "address": "127.0.0.1",
+    return [{"label": "Patroni: local replication 127.0.0.1 (%s)" % u, "type": "host", "ssl": False, "database": "replication", "user": u, "address": "127.0.0.1",
              "replication": True, "critical": True, "patroni_local": True} for u in users]
 
 
@@ -280,7 +280,7 @@ def plan(ex, p, err):
     rows, lock = _simulate(old, new, _live_probes(ex, err) + _extra_probes(p, err))
     if not _ssl_on(ex) and any(r["type"] in ("hostssl", "hostgssenc") for r in clean):
         warnings.append({"index": -1, "message": "PostgreSQL has ssl=off on this node: hostssl rules will NOT match until TLS is enabled"})
-    diff = list(difflib.unified_diff(old.split("\n"), new.split("\n"), "pg_hba (attuale)", "pg_hba (nuovo)", lineterm="", n=1))
+    diff = list(difflib.unified_diff(old.split("\n"), new.split("\n"), "pg_hba (current)", "pg_hba (new)", lineterm="", n=1))
     return {"valid": True, "errors": [], "warnings": warnings, "changed": old != new, "mode": "patroni" if src.patroni else "file", "dcs_seed": src.seed, "base_rev": hba.file_rev(old),
             "diff": diff[:300], "simulation": rows, "would_lock_out": [r["label"] for r in lock if r["critical"]], "has_includes": hba.parse_file(old)[1]}
 

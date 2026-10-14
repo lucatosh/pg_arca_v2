@@ -81,7 +81,7 @@ export async function geoMonitorTick(store: Store, now = Date.now()) {
     w.downSince = both ? (w.downSince ?? now) : null;
     w.snoozedUntil = (snoozed.get(key) || 0) > now ? snoozed.get(key)! : null;
     w.actInSec = w.downSince && pol.autoFailover ? Math.max(0, Math.ceil((w.downSince + pol.confirmSec * 1000 - now) / 1000)) : null;
-    w.note = !cands.length ? 'nessun sito di replica raggiungibile: niente da promuovere' : !consoleBlind ? `${last.name} risponde ancora alla console: non è un disastro (rete tra i siti?)` : !best ? `${cands.map(s => s.name).join(', ')} riceve ancora WAL da ${last.name}` : undefined;
+    w.note = !cands.length ? 'no reachable standby site: nothing to promote' : !consoleBlind ? `${last.name} still answers the console: not a disaster (network between the sites?)` : !best ? `${cands.map(s => s.name).join(', ')} still receives WAL from ${last.name}` : undefined;
     watches.set(key, w);
     if (!both || !pol.autoFailover || w.snoozedUntil || running(store.peek())) continue;
     if (now - w.downSince! < pol.confirmSec * 1000) continue;
@@ -94,7 +94,7 @@ export async function geoMonitorTick(store: Store, now = Date.now()) {
 /** Starts a DR failover (automatic or asked by an operator). */
 export async function startFailover(store: Store, a: { key: string; from: string; to: string; auto: boolean; actor: string }): Promise<{ code: number; body: any }> {
   const st = store.peek();
-  if (running(st)) return { code: 409, body: { error: 'busy', message: 'C’è già un passaggio tra siti in corso.' } };
+  if (running(st)) return { code: 409, body: { error: 'busy', message: 'A site role change is already running.' } };
   const from = st.clusters.find((c: any) => c.id === a.from), to = st.clusters.find((c: any) => c.id === a.to);
   if (!from || !to) return { code: 404, body: { error: 'cluster_not_found' } };
   const id = newId('geo');
@@ -116,42 +116,42 @@ async function runFailover(store: Store, id: string, a: { key: string; from: str
     // the primary site coming back during the procedure cancels it - unless an operator promoted while it was still visible (stated as lost)
     const wasUp = nodesOf(st, a.from).some(n => online(n));
     const isBack = () => !wasUp && nodesOf(store.peek(), a.from).some(n => online(n)) && siteNow(store, a.from)?.role === 'primary';
-    await step(store, id, `1/5 ${fromName} non risponde${a.auto ? ' né alla console né a ' + toName : ''}: ${toName} viene portato al punto più avanzato possibile${last?.lsn ? ` (ultima posizione nota di ${fromName}: ${last.lsn}, ${last.at.slice(11, 19)})` : ''}`);
+    await step(store, id, `1/5 ${fromName} is not responding${a.auto ? ' to the console or to ' + toName : ''}: ${toName} is brought to the most advanced point possible${last?.lsn ? ` (last known position of ${fromName}: ${last.lsn}, ${last.at.slice(11, 19)})` : ''}`);
     // WAL that the primary site ARCHIVED but streaming did not deliver: the standby site reads it from the shared archive
     const s0 = siteNow(store, a.to);
     if (s0 && !s0.upstream?.archive) {
-      await step(store, id, `2/5 ${toName} legge anche dall’archivio WAL condiviso (restore_command nel suo standby_cluster) i segmenti che lo streaming non ha portato`);
+      await step(store, id, `2/5 ${toName} also reads from the shared WAL archive (restore_command in its standby_cluster) the segments streaming did not deliver`);
       try { const o = await submitTo(store, a.to, 'geo_archive_fallback', { enable: true }, `geo:${id}:archive`, a.actor); const r = await waitOp(store, o.id, 120_000);
-        if (r.status !== 'succeeded') await step(store, id, `   riserva dall’archivio non attivata (${r.error || r.status}): si prosegue con ciò che lo streaming ha portato`); }
-      catch (e: any) { await step(store, id, `   riserva dall’archivio non attivata (${e.message}): si prosegue con ciò che lo streaming ha portato`); }
-    } else await step(store, id, `2/5 ${toName} legge già dall’archivio WAL condiviso ciò che lo streaming non ha portato`);
+        if (r.status !== 'succeeded') await step(store, id, `   archive fallback not enabled (${r.error || r.status}): continuing with what streaming delivered`); }
+      catch (e: any) { await step(store, id, `   archive fallback not enabled (${e.message}): continuing with what streaming delivered`); }
+    } else await step(store, id, `2/5 ${toName} already reads from the shared WAL archive what streaming did not deliver`);
     // wait until the replay stops advancing (everything received / archived has been applied), at most 3 minutes
     let prev: bigint | null = null, stableSince = Date.now(); const tw = Date.now();
     while (Date.now() - tw < GEO_DR_TIMING.maxCatchupMs) {
       const s = siteNow(store, a.to); const l = lsnToBig(s?.lsn || null);
       if (l !== null && prev !== null && l === prev) { if (Date.now() - stableSince > GEO_DR_TIMING.stableMs) break; } else { stableSince = Date.now(); prev = l; }
       // the primary site came back during the catch-up: no failover (it is not lost)
-      if (isBack()) throw new Error(`${fromName} è tornato raggiungibile durante l’attesa: failover annullato, nessuna modifica`);
+      if (isBack()) throw new Error(`${fromName} became reachable again while waiting: failover cancelled, nothing changed`);
       await new Promise(r => setTimeout(r, GEO_DR_TIMING.pollMs));
     }
     const s1 = siteNow(store, a.to); const got = lsnToBig(s1?.lsn || null);
     const loss = lastLsn !== null && got !== null ? (lastLsn > got ? Number(lastLsn - got) : 0) : null;
-    await step(store, id, `3/5 ${toName} è a ${s1?.lsn || '?'}: ${loss === null ? 'perdita non stimabile (ultima posizione del primario sconosciuta)' : loss === 0 ? 'nessun dato mancante rispetto all’ultima posizione nota del primario' : `mancano circa ${(loss / MB).toFixed(1)} MB di WAL rispetto all’ultima posizione nota del primario (le transazioni lì contenute vanno perse)`}`, 'running', { lossBytes: loss });
+    await step(store, id, `3/5 ${toName} is at ${s1?.lsn || '?'}: ${loss === null ? 'loss cannot be estimated (last position of the primary unknown)' : loss === 0 ? 'no data missing compared with the last known position of the primary' : `about ${(loss / MB).toFixed(1)} MB of WAL missing compared with the last known position of the primary (the transactions in it are lost)`}`, 'running', { lossBytes: loss });
     if (a.auto && loss !== null && loss > pol.maxLossMB * MB)
-      throw Object.assign(new Error(`perdita stimata ${(loss / MB).toFixed(1)} MB oltre il limite del failover automatico (${pol.maxLossMB} MB): serve una decisione — promuovi ${toName} a mano se ${fromName} è davvero perso`), { held: true });
-    if (isBack()) throw new Error(`${fromName} è tornato raggiungibile: failover annullato, nessuna modifica`);
-    await step(store, id, `4/5 promozione di ${toName} tramite il suo DCS (slot permanente ${geoSlotFor(fromName)} per quando ${fromName} tornerà)`);
-    const p = await submitTo(store, a.to, 'geo_promote', { confirm: 'PROMUOVI', slot_for_peer: geoSlotFor(fromName) }, `geo:${id}:promote`, a.actor);
+      throw Object.assign(new Error(`estimated loss of ${(loss / MB).toFixed(1)} MB exceeds the automatic failover limit (${pol.maxLossMB} MB): a decision is needed — promote ${toName} by hand if ${fromName} is really lost`), { held: true });
+    if (isBack()) throw new Error(`${fromName} is reachable again: failover cancelled, nothing changed`);
+    await step(store, id, `4/5 promoting ${toName} through its DCS (permanent slot ${geoSlotFor(fromName)} for when ${fromName} comes back)`);
+    const p = await submitTo(store, a.to, 'geo_promote', { confirm: 'PROMOTE', slot_for_peer: geoSlotFor(fromName) }, `geo:${id}:promote`, a.actor);
     const pr = await waitOp(store, p.id, 240_000);
-    if (pr.status !== 'succeeded') throw new Error(`promozione di ${toName} non riuscita: ${pr.error || pr.status}`);
+    if (pr.status !== 'succeeded') throw new Error(`promotion of ${toName} failed: ${pr.error || pr.status}`);
     // the new primary keeps seeing the shared archive (restore_command in its DCS): a later promotion of either site never re-uses a timeline number
     submitTo(store, a.to, 'geo_archive_fallback', { enable: true }, `geo:${id}:archive-primary`, a.actor).catch(() => undefined);
     const fork = (pr.result as any)?.timeline ? { timeline: (pr.result as any).timeline } : {};
     await store.mutate(d => { (d.settings.geoFailovers ||= {})[a.key] = { from: a.from, to: a.to, fromName, toName, at: nowIso(), forkLsn: s1?.lsn || null, lossBytes: loss, auto: a.auto, jobId: id, ...fork };
       ops.audit(d, { clusterId: a.to, actor: a.actor, action: a.auto ? 'geo.failover.auto' : 'geo.failover', status: 'OK', details: { from: fromName, to: toName, lossBytes: loss } }); });
-    await step(store, id, `5/5 ${toName} è il sito primario (in ${Math.round((Date.now() - t0) / 1000)} s). ${policyOf(store.peek(), a.key).autoRejoin ? `Quando ${fromName} torna, pg_arca lo trasforma da solo in sito di replica di ${toName}.` : `Quando ${fromName} torna NON deve accettare scritture: riallinealo come sito di replica dalla pagina Georidondanza.`}`, 'succeeded', { finishedAt: nowIso() });
+    await step(store, id, `5/5 ${toName} is the primary site (in ${Math.round((Date.now() - t0) / 1000)} s). ${policyOf(store.peek(), a.key).autoRejoin ? `When ${fromName} comes back, pg_arca turns it into a standby site of ${toName} by itself.` : `When ${fromName} comes back it must NOT accept writes: rejoin it as a standby site from the Geo-redundancy page.`}`, 'succeeded', { finishedAt: nowIso() });
   } catch (e: any) {
-    await step(store, id, `${e.held ? 'in attesa di decisione' : 'interrotto'}: ${e.message}`, e.held ? 'held' : 'failed', { finishedAt: nowIso(), error: e.message });
+    await step(store, id, `${e.held ? 'waiting for a decision' : 'stopped'}: ${e.message}`, e.held ? 'held' : 'failed', { finishedAt: nowIso(), error: e.message });
     await store.mutate(d => ops.audit(d, { clusterId: a.to, actor: a.actor, action: 'geo.failover', status: 'FAILED', details: { error: e.message } }));
   }
 }
@@ -192,24 +192,24 @@ async function timelines(store: Store, id: string, tag: string, oldId: string, n
 async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Site, neu: Site, ep: { host: string; port: number } | null | undefined) {
   try {
     const div = old.lsn && f.forkLsn ? (() => { const a = lsnToBig(old.lsn), b = lsnToBig(f.forkLsn); return a !== null && b !== null && a > b ? Number(a - b) : 0; })() : null;
-    await step(store, id, `1/3 ${old.name} è tornato e accetta scritture, ma il primario ora è ${neu.name}: diventa subito suo sito di replica${div ? ` (aveva scritto circa ${(div / MB).toFixed(1)} MB di WAL oltre il punto di promozione: quei dati non sono in ${neu.name} e vengono scartati da pg_rewind; restano nell’archivio WAL per un’eventuale analisi)` : ''}`, 'running', { divergedBytes: div });
-    if (!ep) throw new Error(`indirizzo di ${neu.name} per gli altri siti non indicato: impostalo in Georidondanza, poi «Declassa ${old.name}»`);
+    await step(store, id, `1/3 ${old.name} is back and accepts writes, but the primary is now ${neu.name}: it becomes its standby site right away${div ? ` (it had written about ${(div / MB).toFixed(1)} MB of WAL past the promotion point: that data is not in ${neu.name} and is discarded by pg_rewind; it stays in the WAL archive for analysis)` : ''}`, 'running', { divergedBytes: div });
+    if (!ep) throw new Error(`address of ${neu.name} for the other sites not set: set it in Geo-redundancy, then “Demote ${old.name}”`);
     // the old site may have promoted itself to the SAME timeline number when it came back: then Patroni would not rewind it (see sameTimelineDiverged)
     const t1 = await timelines(store, id, 'pre', f.from, f.to);
     const force = sameTimelineDiverged(t1.o, t1.n);
-    if (force) await step(store, id, `1b ${old.name} si è promosso da solo al ritorno, sulla STESSA timeline ${t1.o.timeline} di ${neu.name} ma con una storia diversa: Patroni (e pg_rewind) confrontano solo il numero e seguirebbe ${neu.name} con un buco nei dati. Viene ricostruito da ${neu.name}: Patroni in manutenzione, la sua cartella dati resta da parte (.pgarca-diverged-…), poi Patroni lo clona di nuovo`);
-    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DECLASSA', ...(force ? { force_rewind: true } : {}) }, `geo:${id}:demote`, 'pg_arca (riallineamento automatico)');
+    if (force) await step(store, id, `1b ${old.name} promoted itself when it came back, on the SAME timeline ${t1.o.timeline} as ${neu.name} but with a different history: Patroni (and pg_rewind) compare only the number and it would follow ${neu.name} with a hole in the data. It is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`);
+    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force ? { force_rewind: true } : {}) }, `geo:${id}:demote`, 'pg_arca (riallineamento automatico)');
     const r = await waitOp(store, o.id, 300_000);
-    if (r.status !== 'succeeded') throw new Error(`declassamento di ${old.name} non riuscito: ${r.error || r.status}`);
-    await step(store, id, `2/3 ${old.name} è sito di replica di ${neu.name} (${ep.host}:${ep.port}): attesa che riceva i WAL`);
+    if (r.status !== 'succeeded') throw new Error(`demotion of ${old.name} failed: ${r.error || r.status}`);
+    await step(store, id, `2/3 ${old.name} is a standby site of ${neu.name} (${ep.host}:${ep.port}): waiting for it to receive WAL`);
     const t0 = Date.now(); let ok = false;
     while (Date.now() - t0 < 300_000) { const s = siteNow(store, f.from); if (s?.role === 'standby' && s.receiver?.status === 'streaming') { ok = true; break; } await new Promise(r2 => setTimeout(r2, GEO_DR_TIMING.rejoinPollMs)); }
-    if (!ok) throw new Error(`${old.name} non riceve WAL da ${neu.name} dopo 5 minuti: probabilmente pg_rewind non è riuscito (controlla use_pg_rewind e la regola pg_hba di replica locale) e i membri vanno ricostruiti`);
+    if (!ok) throw new Error(`${old.name} is not receiving WAL from ${neu.name} after 5 minutes: pg_rewind probably failed (check use_pg_rewind and the local replication pg_hba rule) and the members must be reinitialized`);
     // streaming is not enough: it must follow the new primary's HISTORY (same timeline, same switch points), or it is replaying from the wrong place
     const t2 = await timelines(store, id, 'post', f.from, f.to);
-    if (sameTimelineDiverged(t2.o, t2.n)) throw new Error(`${old.name} riceve WAL da ${neu.name} ma la sua storia della timeline ${t2.o.timeline} è diversa: i dati scritti da ${neu.name} dopo il failover non gli arrivano. Va ricostruito da ${neu.name} (Declassa con ricostruzione, o patronictl reinit dei membri)`);
+    if (sameTimelineDiverged(t2.o, t2.n)) throw new Error(`${old.name} receives WAL from ${neu.name} but its history of timeline ${t2.o.timeline} differs: the data ${neu.name} wrote after the failover does not reach it. It must be rebuilt from ${neu.name} (Demote with rebuild, or patronictl reinit of the members)`);
     await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinedAt = nowIso(); ops.audit(d, { clusterId: f.from, actor: 'pg_arca', action: 'geo.rejoin', status: 'OK', details: { to: neu.name } }); });
-    await step(store, id, `3/3 ${old.name} riceve i WAL da ${neu.name}: la coppia è di nuovo protetta (lo switchover pianificato può riportare il primario su ${old.name})`, 'succeeded', { finishedAt: nowIso() });
+    await step(store, id, `3/3 ${old.name} receives WAL from ${neu.name}: the pair is protected again (a planned switchover can bring the primary back to ${old.name})`, 'succeeded', { finishedAt: nowIso() });
   } catch (e: any) {
     await step(store, id, `interrotto: ${e.message}`, 'failed', { finishedAt: nowIso(), error: e.message });
     await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) { delete x.rejoinJob; x.rejoinFailedAt = nowIso(); x.rejoinError = e.message; } });

@@ -457,7 +457,7 @@ export function mountNetscanRoutes(app: any) {
     const scan = await scanNetworkTargets(ipList, ports, Math.min(Number(timeoutMs) || 280, 3000), Math.min(Number(concurrency) || 25, 64));
     const durationMs = Date.now() - t0;
     broadcastLiveLog({ timestamp: new Date().toISOString(), clusterId: 'network', clusterName: 'Network scanner', nodeName: 'console', nodeHost: '127.0.0.1', service: 'agent', level: 'INFO',
-      message: `Scansione di rete: ${ipList.length} IP, ${scan.activeEndpoints.length} servizi raggiungibili in ${durationMs}ms`, raw: `[NET-SCAN] targets=${targets} ips=${ipList.length} endpoints=${scan.activeEndpoints.length}` });
+      message: `Network scan: ${ipList.length} IPs, ${scan.activeEndpoints.length} reachable services in ${durationMs} ms`, raw: `[NET-SCAN] targets=${targets} ips=${ipList.length} endpoints=${scan.activeEndpoints.length}` });
     res.json({ success: true, durationMs, scannedIpsCount: ipList.length, ...scan });
   });
 }

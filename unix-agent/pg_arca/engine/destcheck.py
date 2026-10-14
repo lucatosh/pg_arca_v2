@@ -230,7 +230,7 @@ def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None,
         norm = overrides._abs_dir(path)
         rl = os.path.realpath(norm)
         if norm in overrides._FORBIDDEN_WRITE or rl in overrides._FORBIDDEN_WRITE or any(rl == f or rl.startswith(f + "/") for f in overrides._FORBIDDEN_UNDER):
-            raise overrides.OverrideError("cartella di sistema non ammessa: usa una sottocartella dedicata (per esempio /mnt/backup/pgarca)")
+            raise overrides.OverrideError("system directory not allowed: use a dedicated subdirectory (for example /mnt/backup/pgarca)")
     except overrides.OverrideError as e:
         add("path", "bad", str(e))
         res["ok"] = False

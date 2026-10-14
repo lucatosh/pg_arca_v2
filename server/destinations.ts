@@ -25,9 +25,9 @@ const slug = (s: any) => String(s ?? '').toLowerCase().replace(/[^a-z0-9_-]+/g, 
 
 const destPath = (v: any, name: string): string => {
   const s = String(v ?? '');
-  if (!s.startsWith('/') || /[\u0000-\u001f]/.test(s) || s.length > 300 || s.split('/').includes('..')) throw new Error(`${name}: serve un percorso assoluto, senza «..»`);
+  if (!s.startsWith('/') || /[\u0000-\u001f]/.test(s) || s.length > 300 || s.split('/').includes('..')) throw new Error(`${name}: an absolute path is required, without “..”`);
   const bad = s.replace(/\{(cluster|env|id)\}/g, '').match(/[{}]/);
-  if (bad) throw new Error(`${name}: i segnaposto ammessi sono {cluster}, {env} e {id}`);
+  if (bad) throw new Error(`${name}: the allowed placeholders are {cluster}, {env} and {id}`);
   return s.replace(/\/+$/, '') || '/';
 };
 
@@ -41,18 +41,18 @@ const destination: KindSpec = {
         if (x === undefined || x === null || x === '') continue;
         switch (k) {
           case 'type':
-            if (PREVIEW_TYPES.some(t => t.id === String(x))) throw new Error('Questo tipo di destinazione è in anteprima: il motore di backup oggi scrive su una cartella locale o su una condivisione di rete (NFS/SMB) montata sui nodi.');
-            if (!(DEST_TYPES as readonly string[]).includes(String(x))) throw new Error('tipo non valido');
+            if (PREVIEW_TYPES.some(t => t.id === String(x))) throw new Error('This destination type is in preview: today the backup engine writes to a local directory or to a network share (NFS/SMB) mounted on the nodes.');
+            if (!(DEST_TYPES as readonly string[]).includes(String(x))) throw new Error('invalid type');
             out[k] = x; break;
           case 'repoPath': out[k] = destPath(x, 'repoPath'); break;
           case 'walPath': out[k] = destPath(x, 'walPath'); break;
           case 'requireMount': out[k] = !!x; break;
-          case 'minFreeGb': { const n = Number(x); if (!Number.isFinite(n) || n < 0 || n > 1e6) throw new Error('minFreeGb: numero tra 0 e 1000000'); out[k] = n; break; }
+          case 'minFreeGb': { const n = Number(x); if (!Number.isFinite(n) || n < 0 || n > 1e6) throw new Error('minFreeGb: a number between 0 and 1000000'); out[k] = n; break; }
           default: throw new Error(`campo sconosciuto: ${k}`);
         }
       }
     } catch (e: any) { return { ok: false, error: e.message }; }
-    if (out.repoPath && out.walPath && out.repoPath === out.walPath) return { ok: false, error: 'repository e archivio WAL devono essere cartelle diverse' };
+    if (out.repoPath && out.walPath && out.repoPath === out.walPath) return { ok: false, error: 'the repository and the WAL archive must be different directories' };
     return { ok: true, value: out };
   },
 };
@@ -72,7 +72,7 @@ export function destinationFor(st: any, c: any): { dest: ResolvedDestination | n
   if (v.minFreeGb) d.min_free_gb = Number(v.minFreeGb);
   // a value set on ONE cluster is that cluster's own path: the warning is about a shared value (global / environment / folder) without {cluster}
   if (v.walPath && !/\{(cluster|id)\}/.test(v.walPath) && r.sources?.walPath?.scope !== 'cluster' && st.clusters.filter((x: any) => !x.isSandbox).length > 1) {
-    d.wal_shared_warning = 'Il percorso WAL non contiene {cluster}: se lo stesso valore vale per più cluster, i loro segmenti WAL finiscono nella stessa cartella e si sovrascrivono.';
+    d.wal_shared_warning = 'The WAL path does not contain {cluster}: if the same value applies to several clusters, their WAL segments end up in the same directory and overwrite each other.';
   }
   if (d.wal_path) {                                         // two clusters that RESOLVE to the same (or a nested) archive directory, even with placeholders (same name and environment, two clusters assigned the same path by hand)
     const mine = d.wal_path.replace(/\/+$/, '') + '/';
@@ -85,7 +85,7 @@ export function destinationFor(st: any, c: any): { dest: ResolvedDestination | n
       const ow = (resolveScoped(st, 'destination', o).value.walPath as string | undefined);
       if (!ow) continue;
       const theirs = expand(ow, o).replace(/\/+$/, '') + '/';
-      if (mine === theirs || mine.startsWith(theirs) || theirs.startsWith(mine)) { d.wal_collision = `L’archivio WAL ${d.wal_path} coincide (o contiene / è contenuto) con quello del cluster «${o.name}»: i segmenti con lo stesso nome si sovrascriverebbero. Cambia il percorso (per esempio aggiungendo {id}).`; break; }
+      if (mine === theirs || mine.startsWith(theirs) || theirs.startsWith(mine)) { d.wal_collision = `WAL archive ${d.wal_path} is the same as (or contains / is contained in) the one of cluster “${o.name}”: segments with the same name would overwrite each other. Change the path (for example by adding {id}).`; break; }
     }
   }
   return { dest: d, resolved: r };
@@ -119,7 +119,7 @@ export function precheckApply(st: any, c: any): { code: number; body: any } | nu
   if (!nodes.length) return { code: 409, body: { error: 'no_online_node' } };
   const chk = checksFor(st, c, dest);
   const bad = nodes.filter(n => !chk[n.id] || chk[n.id].ok !== true || !chk[n.id].fresh);
-  if (bad.length) return { code: 409, body: { error: 'check_required', message: `Prima di applicare serve un controllo riuscito e recente su ogni nodo (mancano: ${bad.map(n => n.name).join(', ')}).`, nodes: bad.map(n => n.name) } };
+  if (bad.length) return { code: 409, body: { error: 'check_required', message: `Before applying, every node needs a recent passed check (missing: ${bad.map(n => n.name).join(', ')}).`, nodes: bad.map(n => n.name) } };
   return null;
 }
 
@@ -148,7 +148,7 @@ export async function applyDestination(store: Store, c: any, key: string, by: st
     audit(d, { clusterId: c.id, actor: by, action: 'destination.apply', status: 'OK', details: { ...dest } });
   });
   return { code: 202, body: { destination: dest, operations: out,
-    note: dest!.repo_path ? 'I backup già fatti restano nella posizione precedente, leggibili per i ripristini; la nuova destinazione parte con un backup completo (il prossimo backup lo diventa da sé). Puoi migrare il contenuto vecchio in background.' : undefined } };
+    note: dest!.repo_path ? 'Existing backups stay in the previous location, readable by restores; the new destination starts with a full backup (the next backup becomes one by itself). You can migrate the old content in the background.' : undefined } };
 }
 
 export function mountDestinationRoutes(app: any, store: Store) {
@@ -212,11 +212,11 @@ export function mountDestinationRoutes(app: any, store: Store) {
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
     if (c.isSandbox) return res.status(409).json({ error: 'demo_cluster' });
     const { dest } = destinationFor(st, c);
-    if (!dest) return res.status(409).json({ error: 'no_destination', message: 'Nessuna destinazione configurata per questo cluster, la sua cartella o l’ambiente.' });
+    if (!dest) return res.status(409).json({ error: 'no_destination', message: 'No destination configured for this cluster, its folder or its environment.' });
     const key = String(req.headers['idempotency-key'] || '');
     if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
     const nodes = nodesOf(st, c.id).filter(online);
-    if (!nodes.length) return res.status(409).json({ error: 'no_online_node', message: 'Nessun nodo del cluster è raggiungibile: il controllo gira sui nodi.' });
+    if (!nodes.length) return res.status(409).json({ error: 'no_online_node', message: 'No node of the cluster is reachable: the check runs on the nodes.' });
     const bench = !!req.body?.bench;
     const out = [];
     for (const n of nodes) {
@@ -237,7 +237,7 @@ export function mountDestinationRoutes(app: any, store: Store) {
     if (requiresApproval(st, c, 'destination_apply', {})) {
       const { dest } = destinationFor(st, c);
       const rec = await requestApproval(store, audit, { cluster: c, type: 'destination_apply', params: { repo_path: dest!.repo_path, wal_path: dest!.wal_path }, key, actor: actor(req) });
-      return res.status(202).json({ approval: rec, message: 'Cambio di destinazione su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
+      return res.status(202).json({ approval: rec, message: 'Destination change in a protected environment: another administrator must approve it.' });
     }
     const r = await applyDestination(store, c, key, actor(req));
     res.status(r.code).json(r.body);

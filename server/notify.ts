@@ -24,15 +24,15 @@ export const defaultSender: Sender = async (url, body) => {
 
 export const maskUrl = (u: string) => { try { const x = new URL(u); return `${x.protocol}//${x.host}/…${u.slice(-4)}`; } catch { return '…'; } };
 export function validUrl(u: any): string | null {
-  try { const x = new URL(String(u)); return (x.protocol === 'http:' || x.protocol === 'https:') && String(u).length <= 600 ? null : 'URL http(s) richiesto'; } catch { return 'URL non valido'; }
+  try { const x = new URL(String(u)); return (x.protocol === 'http:' || x.protocol === 'https:') && String(u).length <= 600 ? null : 'an http(s) URL is required'; } catch { return 'invalid URL'; }
 }
 const ICON: Record<Severity, string> = { critical: '🔴', warning: '🟠', info: '🔵' };
 
 export function payload(w: Webhook, ev: { opened: Issue[]; reminders: Issue[]; resolved: { key: string; title: string; clusterName: string }[]; test?: boolean }, baseUrl = '') {
   const line = (i: Issue) => `${ICON[i.severity]} [${i.clusterName}/${i.environment}] ${i.title} — ${i.cause}`;
   const lines = [
-    ...(ev.test ? ['✅ Notifica di prova da pg_arca: il canale funziona.'] : []),
-    ...ev.opened.map(line), ...ev.reminders.map(i => '⏰ Ancora aperto: ' + line(i)), ...ev.resolved.map(r => `🟢 [${r.clusterName}] Risolto: ${r.title}`),
+    ...(ev.test ? ['✅ Test notification from pg_arca: the channel works.'] : []),
+    ...ev.opened.map(line), ...ev.reminders.map(i => '⏰ Still open: ' + line(i)), ...ev.resolved.map(r => `🟢 [${r.clusterName}] Resolved: ${r.title}`),
   ];
   if (w.format === 'slack') return { text: lines.join('\n') + (baseUrl ? `\n${baseUrl}` : '') };
   return { event: ev.test ? 'pg_arca.test' : 'pg_arca.health', at: nowIso(), opened: ev.opened, reminders: ev.reminders, resolved: ev.resolved, summary: lines.join('\n') };
@@ -89,16 +89,16 @@ export function mountNotifyRoutes(app: any, store: Store, send: Sender = default
   // body: { reminderHours?, webhooks: [{ id?, name, url?, format, minSeverity, enabled }] }  (url omitted = keep the stored one)
   app.put('/api/notifications', async (req: any, res: any) => {
     const b = req.body || {}; const list = Array.isArray(b.webhooks) ? b.webhooks : null;
-    if (!list || list.length > 10) return res.status(400).json({ error: 'invalid_webhooks', message: 'Al massimo 10 canali.' });
+    if (!list || list.length > 10) return res.status(400).json({ error: 'invalid_webhooks', message: 'At most 10 channels.' });
     const rh = b.reminderHours === undefined ? 24 : Number(b.reminderHours);
-    if (!Number.isFinite(rh) || rh < 1 || rh > 720) return res.status(400).json({ error: 'invalid_reminder', message: 'Promemoria tra 1 e 720 ore.' });
+    if (!Number.isFinite(rh) || rh < 1 || rh > 720) return res.status(400).json({ error: 'invalid_reminder', message: 'Reminder between 1 and 720 hours.' });
     const prev: Webhook[] = store.peek().settings.notifications?.webhooks || [];
     const next: Webhook[] = [];
     for (const w of list) {
       const old = prev.find(p => p.id === w.id);
       const url = w.url ?? old?.url;
       const e = validUrl(url);
-      if (e || !String(w.name || '').trim() || String(w.name).length > 60) return res.status(400).json({ error: 'invalid_webhook', message: e || 'Nome obbligatorio (max 60 caratteri).' });
+      if (e || !String(w.name || '').trim() || String(w.name).length > 60) return res.status(400).json({ error: 'invalid_webhook', message: e || 'Name required (max 60 characters).' });
       if (!['generic', 'slack'].includes(w.format)) return res.status(400).json({ error: 'invalid_format' });
       if (!['critical', 'warning', 'info'].includes(w.minSeverity)) return res.status(400).json({ error: 'invalid_severity' });
       next.push({ id: old?.id || 'wh_' + crypto.randomBytes(5).toString('hex'), name: String(w.name).trim(), url, format: w.format, minSeverity: w.minSeverity, enabled: w.enabled !== false });

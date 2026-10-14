@@ -270,7 +270,7 @@ export function consoleBase(req: Request, st: any): { base: string; configured: 
   if (set) return { base: set, configured: true };
   const host = String(req.headers.host || '');
   const base = `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${host}`;
-  return { base, configured: false, warning: LOCALHOST.test(host) ? `Stai usando la console da ${host}: i server non possono raggiungere questo indirizzo. Imposta l’indirizzo della console raggiungibile dai server (Impostazioni → Indirizzo della console) o apri la console con quell’indirizzo.` : undefined };
+  return { base, configured: false, warning: LOCALHOST.test(host) ? `You are using the console from ${host}: the servers cannot reach this address. Set the console address reachable from the servers (Settings → Console address) or open the console with that address.` : undefined };
 }
 
 // =============================================================================
@@ -280,9 +280,9 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
   app.post('/api/enrollment-tokens', async (req: Request, res: Response) => {
     const { label = '', ttlMinutes = 60, clusterId, environment, kind, maxUses } = req.body || {};
     const uses = maxUses === undefined ? 1 : Number(maxUses);
-    if (!Number.isInteger(uses) || uses < 1 || uses > 20) return res.status(400).json({ error: 'invalid_max_uses', message: 'Da 1 a 20 server per token.' });
+    if (!Number.isInteger(uses) || uses < 1 || uses > 20) return res.status(400).json({ error: 'invalid_max_uses', message: 'From 1 to 20 servers per token.' });
     if (kind !== undefined && kind !== 'worker' && kind !== 'db') return res.status(400).json({ error: 'invalid_kind' });
-    if (kind === 'worker' && clusterId) return res.status(400).json({ error: 'worker_without_cluster', message: 'Una macchina operativa non appartiene a un cluster.' });
+    if (kind === 'worker' && clusterId) return res.status(400).json({ error: 'worker_without_cluster', message: 'A worker host does not belong to a cluster.' });
     const ttl = Math.min(Math.max(Number(ttlMinutes) || 60, 1), 7 * 24 * 60);
     if (environment && !['prod', 'prep', 'int', 'dev', 'test'].includes(environment)) return res.status(400).json({ error: 'invalid_environment' });
     if (clusterId && !store.peek().clusters.some((c: any) => c.id === clusterId)) return res.status(404).json({ error: 'cluster_not_found' });
@@ -324,9 +324,9 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
 
   app.get('/api/console-address', (req: Request, res: Response) => { const cb = consoleBase(req, store.peek()); res.json({ publicUrl: store.peek().settings.publicUrl || '', effective: cb.base, configured: cb.configured, warning: cb.warning }); });
   app.put('/api/console-address', async (req: Request, res: Response) => {
-    if ((req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Solo un amministratore può cambiare l’indirizzo della console.' });
+    if ((req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can change the console address.' });
     const v = String(req.body?.publicUrl ?? '').trim().replace(/\/+$/, '');
-    if (v && !/^https?:\/\/[A-Za-z0-9.\-\[\]:]+(:\d+)?(\/[\w\-./]*)?$/.test(v)) return res.status(400).json({ error: 'invalid_url', message: 'Indirizzo non valido: es. https://pgarca.azienda.it o http://10.0.0.5:3000' });
+    if (v && !/^https?:\/\/[A-Za-z0-9.\-\[\]:]+(:\d+)?(\/[\w\-./]*)?$/.test(v)) return res.status(400).json({ error: 'invalid_url', message: 'Invalid address: e.g. https://pgarca.example.com or http://10.0.0.5:3000' });
     await store.mutate(d => { d.settings.publicUrl = v || undefined; ops.audit(d, { actor: actorOf(req), action: 'settings.console_address', status: 'OK', details: { publicUrl: v } }); });
     const cb = consoleBase(req, store.peek()); res.json({ publicUrl: v, effective: cb.base, configured: cb.configured, warning: cb.warning });
   });
@@ -355,12 +355,12 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (!key) return res.status(400).json({ error: 'idempotency_key_required', message: 'Send an Idempotency-Key header (any unique string per user action).' });
     const bad = validateOp(String(type), params);
     if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
-    if (type === 'agent_config_set' && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Solo un amministratore può cambiare percorsi e impostazioni dell’agent.' });
+    if (type === 'agent_config_set' && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can change the agent’s paths and settings.' });
     const spec = OP_SPECS[type];
     if (type === 'pg_set_param' && !params.force) { const g = geoParamGuard(st, cluster.id, String(params.name), params.value); if (g) return res.status(409).json({ error: 'geo_standby_lower', message: g, overridable: true }); }
     if (requiresApproval(st, cluster, type, params)) {
       const reqRec = await requestApproval(store, ops.audit, { cluster, type, params, nodeId, ttlSeconds, key, actor: actorOf(req) });
-      return res.status(202).json({ approval: reqRec, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
+      return res.status(202).json({ approval: reqRec, message: 'Risky operation in a protected environment: another administrator must approve it.' });
     }
     const r = await execute(cluster, type, params, nodeId, ttlSeconds, key, actorOf(req));
     res.status(r.code).json(r.body);
@@ -391,14 +391,14 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       const eph = resolveScoped(st, 'ephemeral', cluster).value;
       if (!target && eph.placement === 'central' && (CENTRAL_OPS.includes(type) || (type === 'restore_plan' && params?.scope !== 'instance'))) {
         const cn = eph.centralNode ? st.nodes[eph.centralNode] : undefined;
-        if (!cn) return { code: 409, body: { error: 'central_node_missing', message: 'Il ripristino è configurato su un nodo centrale, ma quel nodo non esiste più: scegline un altro nelle impostazioni dell’istanza effimera.' } };
+        if (!cn) return { code: 409, body: { error: 'central_node_missing', message: 'Restore is configured on a central node, but that node no longer exists: choose another one in the recovery instance settings.' } };
         target = cn;
         // the central node serves many clusters: tell it whose backup catalogue this is (the stanza the cluster's agents report, or the shared geo one)
         const stanza = cluster.geoStanza || nodes.map(n => (n.snapshot as any)?.backup?.stanza).find(Boolean);
         if (stanza && params?.stanza === undefined) params = { ...params, stanza };
         if (type !== 'restore_drill' && params?.into === undefined) {
           const into = centralInto(st, cluster, eph);
-          if (!into) return { code: 409, body: { error: 'central_no_primary', message: 'Non conosco l’indirizzo del primario di questo cluster: indicalo nelle impostazioni (consegna del risultato).' } };
+          if (!into) return { code: 409, body: { error: 'central_no_primary', message: 'The address of this cluster’s primary is unknown: set it in the settings (result delivery).' } };
           params = { ...params, into };
         }
       }
@@ -411,11 +411,11 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
         else if ((type === 'restore_instance' || (type === 'restore_plan' && params?.scope === 'instance')) && params?.replace_production) {
           // production itself is replaced: the node that HOLDS its data directory, also (above all) when PostgreSQL there is down. Never a Patroni member.
           if (nodes.some(n => n.snapshot?.patroni?.configured || n.snapshot?.patroni?.accessible))
-            return { code: 409, body: { error: 'patroni_managed', message: 'Questo cluster è gestito da Patroni: il server non si sostituisce alle sue spalle. Ripristina un database o una tabella (tornano al loro posto nel cluster), oppure una copia del server.' } };
+            return { code: 409, body: { error: 'patroni_managed', message: 'This cluster is managed by Patroni: the server is not replaced behind its back. Restore a database or a table (they go back into the cluster), or a copy of the server.' } };
           const dbNodes = nodes.filter(n => online(n) && (n as any).kind !== 'worker');
           target = pick(n => n.snapshot?.postgres?.alive === true && n.snapshot?.postgres?.is_in_recovery === false)
             || (dbNodes.filter(n => n.snapshot?.postgres?.is_in_recovery !== true).length === 1 ? dbNodes.find(n => n.snapshot?.postgres?.is_in_recovery !== true) : undefined);
-          if (!target) return { code: 409, body: { error: 'no_suitable_node', message: 'Non trovo il nodo che contiene i dati di produzione (agent in linea, PostgreSQL primario o fermo). Controlla lo stato dei nodi.' } };
+          if (!target) return { code: 409, body: { error: 'no_suitable_node', message: 'Cannot find the node holding the production data (agent online, PostgreSQL primary or stopped). Check the state of the nodes.' } };
         }
         else if (spec.target === 'primary') target = pick(n => n.snapshot?.postgres?.is_in_recovery === false)
           // the standby site of a geo pair has no primary, but its archiving is set in ITS DCS (any member): it must archive the moment it is promoted
@@ -426,14 +426,14 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
           // the primary first so that a backup chain keeps coming from one place
           const alive = (n: NodeRecord) => n.snapshot?.postgres?.alive === true;
           target = pick(n => alive(n) && n.snapshot?.postgres?.is_in_recovery === false) || pick(alive) || (spec.lane === 'data' ? undefined : pick(() => true));
-          if (!target && spec.lane === 'data') return { code: 409, body: { error: 'no_suitable_node', message: 'Nessun nodo con agent ha PostgreSQL attivo in questo momento: backup e ripristini non possono partire. Controlla lo stato dei nodi (Nodi → Percorsi e rilevamento).' } };
+          if (!target && spec.lane === 'data') return { code: 409, body: { error: 'no_suitable_node', message: 'No node with an agent has PostgreSQL running right now: backups and restores cannot start. Check the state of the nodes (Nodes → Paths and discovery).' } };
         }
       }
       if (!target) return { code: 409, body: { error: 'no_suitable_node', message: 'No online node can execute this operation right now.' } };
       if (!online(target)) return { code: 409, body: { error: 'node_offline', message: `Node ${target.name} is offline.` } };
       if (spec.needsPatroni && !target.snapshot?.patroni?.accessible) return { code: 409, body: { error: 'patroni_unavailable', message: 'Patroni REST API is not reachable from this node.' } };
       if (type === 'pg_restart' && (target.snapshot?.patroni?.accessible || target.snapshot?.patroni?.configured))
-        return { code: 409, body: { error: 'patroni_managed', message: 'Questo nodo è gestito da Patroni: riavvialo con Patroni (scheda Alta affidabilità → Riavvia), mai alle sue spalle.' } };
+        return { code: 409, body: { error: 'patroni_managed', message: 'This node is managed by Patroni: restart it through Patroni (High availability tab → Restart), never behind its back.' } };
       const { op, created } = await ops.submit(store, { type, clusterId: cluster.id, nodeId: target.id, params, idempotencyKey: key, createdBy: actor, ttlSeconds });
       return { code: created ? 202 : 200, body: { operation: op, replayed: !created } };
     } catch (e: any) {
@@ -458,10 +458,10 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     const actor = actorOf(req); const id = req.params.id;
     const rec = (store.peek().settings.approvalRequests || []).find((r: any) => r.id === id);
     if (!rec) return res.status(404).json({ error: 'not_found' });
-    if (rec.status !== 'pending') return res.status(409).json({ error: 'not_pending', message: 'La richiesta è già stata gestita.' });
-    if (Date.parse(rec.expiresAt) < Date.now()) { await store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); if (r) r.status = 'expired'; }); return res.status(409).json({ error: 'expired', message: 'La richiesta è scaduta: va rifatta.' }); }
-    if (how === 'cancel' && rec.requestedBy !== actor && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Solo chi ha chiesto l’operazione (o un amministratore) può annullarla.' });
-    if (how === 'approve' && rec.requestedBy === actor) return res.status(403).json({ error: 'self_approval', message: 'Non puoi approvare una tua richiesta: serve un altro amministratore.' });
+    if (rec.status !== 'pending') return res.status(409).json({ error: 'not_pending', message: 'The request has already been handled.' });
+    if (Date.parse(rec.expiresAt) < Date.now()) { await store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); if (r) r.status = 'expired'; }); return res.status(409).json({ error: 'expired', message: 'The request has expired: submit it again.' }); }
+    if (how === 'cancel' && rec.requestedBy !== actor && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only the requester (or an administrator) can cancel it.' });
+    if (how === 'approve' && rec.requestedBy === actor) return res.status(403).json({ error: 'self_approval', message: 'You cannot approve your own request: another administrator is needed.' });
     const done = (status: string) => store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); r.status = status; r.decidedBy = actor; r.decidedAt = nowIso();
       ops.audit(d, { clusterId: rec.clusterId, actor, action: 'approval.' + how, status: 'OK', details: { id, type: rec.type, requestedBy: rec.requestedBy } }); });
     if (how !== 'approve') { await done(how === 'reject' ? 'rejected' : 'cancelled'); return res.json({ ok: true }); }
@@ -556,7 +556,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
   app.get('/api/activity-settings', (_req: Request, res: Response) => res.json({ retentionDays: ops.retentionDays(store.peek().settings), defaultDays: ops.DEFAULT_RETENTION_DAYS, maxDays: ops.MAX_RETENTION_DAYS }));
   app.put('/api/activity-settings', async (req: Request, res: Response) => {
     const n = Number(req.body?.retentionDays);
-    if (!Number.isInteger(n) || n < 1 || n > ops.MAX_RETENTION_DAYS) return res.status(400).json({ error: 'invalid', message: `La conservazione va da 1 a ${ops.MAX_RETENTION_DAYS} giorni.` });
+    if (!Number.isInteger(n) || n < 1 || n > ops.MAX_RETENTION_DAYS) return res.status(400).json({ error: 'invalid', message: `Retention ranges from 1 to ${ops.MAX_RETENTION_DAYS} days.` });
     await store.mutate((d: any) => { d.settings.activity = { ...(d.settings.activity || {}), retentionDays: n }; ops.pruneOps(d); });
     res.json({ retentionDays: ops.retentionDays(store.peek().settings), defaultDays: ops.DEFAULT_RETENTION_DAYS, maxDays: ops.MAX_RETENTION_DAYS });
   });

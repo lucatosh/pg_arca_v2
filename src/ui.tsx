@@ -29,9 +29,9 @@ export function Icon({ n, s = 16, className, spin }: { n: string; s?: number; cl
 /* ---------- formatters ---------- */
 export function bytes(n?: number | null): string { if (n == null || !isFinite(n)) return '—'; const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; let i = 0; let v = Math.abs(n); while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; } return `${(n < 0 ? -v : v).toFixed(v >= 100 || i === 0 ? 0 : 1)} ${u[i]}`; }
 export function dur(sec?: number | null): string { if (sec == null) return '—'; const s = Math.round(sec); if (s < 60) return `${s}s`; if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`; return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`; }
-export function ago(iso?: string | null, now = Date.now()): string { if (!iso) return '—'; const s = (now - Date.parse(iso)) / 1000; if (!isFinite(s)) return '—'; if (s < 0) return 'ora'; if (s < 60) return `${Math.floor(s)}s fa`; if (s < 3600) return `${Math.floor(s / 60)} min fa`; if (s < 86400) return `${Math.floor(s / 3600)} h fa`; return `${Math.floor(s / 86400)} g fa`; }
-export const dt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString('it-CH', { dateStyle: 'short', timeStyle: 'medium' }) : '—');
-export const num = (n?: number | null) => (n == null ? '—' : n.toLocaleString('it-CH'));
+export function ago(iso?: string | null, now = Date.now()): string { if (!iso) return '—'; const s = (now - Date.parse(iso)) / 1000; if (!isFinite(s)) return '—'; if (s < 0) return 'now'; if (s < 60) return `${Math.floor(s)}s ago`; if (s < 3600) return `${Math.floor(s / 60)} min ago`; if (s < 86400) return `${Math.floor(s / 3600)} h ago`; return `${Math.floor(s / 86400)} d ago`; }
+export const dt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'medium' }) : '—');
+export const num = (n?: number | null) => (n == null ? '—' : n.toLocaleString('en-GB'));
 
 /* ---------- components ---------- */
 export function Button({ kind, sm, icon, busy, children, ...rest }: React.ButtonHTMLAttributes<HTMLButtonElement> & { kind?: 'primary' | 'danger' | 'ghost'; sm?: boolean; icon?: string; busy?: boolean }) {
@@ -72,8 +72,8 @@ export function Modal({ title, onClose, children, footer, wide, locked }: { titl
       onKeyDown={e => { const t = e.target as HTMLInputElement; if (e.key !== 'Enter' || e.shiftKey || t.tagName !== 'INPUT' || ['checkbox', 'radio', 'button'].includes(t.type)) return;
         const b = ref.current?.querySelectorAll<HTMLButtonElement>('.ft .btn.primary:not(:disabled), .ft .btn.danger:not(:disabled)'); if (b && b.length === 1) { e.preventDefault(); b[0].click(); } }}
       onInput={e => { if ((e.target as HTMLElement).closest?.('[data-nodirty]') == null) dirty.current = true; }} onChange={e => { if ((e.target as HTMLElement).closest?.('[data-nodirty]') == null) dirty.current = true; }}>
-      <div className="hd"><h2>{title}</h2>{!locked && <Button kind="ghost" className="icon" onClick={onClose} aria-label="Chiudi"><Icon n="x" /></Button>}</div>
-      {ask ? <div className="modal-ask" role="alert"><Icon n="alert" s={16} /><span className="grow">Hai inserito dei dati in questa finestra. Chiuderla?</span><Button sm onClick={() => setAsk(false)}>Continua a modificare</Button><Button sm kind="danger" onClick={onClose}>Chiudi</Button></div> : null}
+      <div className="hd"><h2>{title}</h2>{!locked && <Button kind="ghost" className="icon" onClick={onClose} aria-label="Close"><Icon n="x" /></Button>}</div>
+      {ask ? <div className="modal-ask" role="alert"><Icon n="alert" s={16} /><span className="grow">You have entered data in this dialog. Close it anyway?</span><Button sm onClick={() => setAsk(false)}>Keep editing</Button><Button sm kind="danger" onClick={onClose}>Close</Button></div> : null}
       <div className="bd">{children}</div>{footer ? <div className="ft">{footer}</div> : null}
     </div>
   </div>, document.body);
@@ -86,21 +86,21 @@ export function Details({ k, summary, children, open: init = false }: { k: strin
 }
 export function Confirm({ title, children, confirmLabel, danger, requireText, onConfirm, onClose, busy }: { title: string; children: React.ReactNode; confirmLabel: string; danger?: boolean; requireText?: string; onConfirm: () => void; onClose: () => void; busy?: boolean }) {
   const [t, setT] = useState('');
-  return <Modal title={title} onClose={onClose} footer={<><Button onClick={onClose}>Annulla</Button><Button kind={danger ? 'danger' : 'primary'} busy={busy} disabled={!!requireText && t !== requireText} onClick={onConfirm}>{confirmLabel}</Button></>}>
-    <div className="stack">{children}{requireText ? <div data-nodirty><Field label={`Per confermare scrivi ${requireText}`}><input className="input" value={t} onChange={e => setT(e.target.value)} autoFocus /></Field></div> : null}</div>
+  return <Modal title={title} onClose={onClose} footer={<><Button onClick={onClose}>Cancel</Button><Button kind={danger ? 'danger' : 'primary'} busy={busy} disabled={!!requireText && t !== requireText} onClick={onConfirm}>{confirmLabel}</Button></>}>
+    <div className="stack">{children}{requireText ? <div data-nodirty><Field label={`Type ${requireText} to confirm`}><input className="input" value={t} onChange={e => setT(e.target.value)} autoFocus /></Field></div> : null}</div>
   </Modal>;
 }
 export function Tabs<T extends string>({ value, onChange, items }: { value: T; onChange: (v: T) => void; items: { id: T; label: string; icon?: string; preview?: boolean; badge?: React.ReactNode }[] }) {
-  return <div className="tabs" role="tablist">{items.map(i => <button key={i.id} role="tab" aria-selected={value === i.id} className={i.preview ? 'preview' : ''} onClick={() => onChange(i.id)}>{i.icon ? <Icon n={i.icon} /> : null}{i.label}{i.preview ? <Badge>Anteprima</Badge> : null}{i.badge}</button>)}</div>;
+  return <div className="tabs" role="tablist">{items.map(i => <button key={i.id} role="tab" aria-selected={value === i.id} className={i.preview ? 'preview' : ''} onClick={() => onChange(i.id)}>{i.icon ? <Icon n={i.icon} /> : null}{i.label}{i.preview ? <Badge>Preview</Badge> : null}{i.badge}</button>)}</div>;
 }
 export function Toasts() {
   const ts = useToasts();
-  return <div className="toasts" aria-live="polite">{ts.map(t => <div key={t.id} className={`toast ${t.kind === 'info' ? '' : t.kind}`} onClick={() => dismissToast(t.id)} title="Clic per chiudere"><Icon n={t.kind === 'bad' ? 'alert' : t.kind === 'ok' ? 'check' : 'info'} />{t.text}</div>)}</div>;
+  return <div className="toasts" aria-live="polite">{ts.map(t => <div key={t.id} className={`toast ${t.kind === 'info' ? '' : t.kind}`} onClick={() => dismissToast(t.id)} title="Click to dismiss"><Icon n={t.kind === 'bad' ? 'alert' : t.kind === 'ok' ? 'check' : 'info'} />{t.text}</div>)}</div>;
 }
 export function CopyBlock({ text }: { text: string }) {
   const [ok, setOk] = useState(false);
-  return <div className="copy"><pre className="out">{text}</pre><Button sm icon={ok ? 'check' : 'copy'} onClick={async () => { try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ } setOk(true); setTimeout(() => setOk(false), 1500); }}>{ok ? 'Copiato' : 'Copia'}</Button></div>;
+  return <div className="copy"><pre className="out">{text}</pre><Button sm icon={ok ? 'check' : 'copy'} onClick={async () => { try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ } setOk(true); setTimeout(() => setOk(false), 1500); }}>{ok ? 'Copied' : 'Copy'}</Button></div>;
 }
 export const Preview = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <Card><Empty icon="flask" title={title} action={<Badge>Anteprima</Badge>}>{children}</Empty></Card>
+  <Card><Empty icon="flask" title={title} action={<Badge>Preview</Badge>}>{children}</Empty></Card>
 );

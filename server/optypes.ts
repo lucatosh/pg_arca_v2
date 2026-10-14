@@ -1,3 +1,6 @@
+/** Typed confirmation words. The console asks for the English word; the Italian one of earlier versions is still accepted (scripts, old tabs). */
+const LEGACY_CONFIRM: Record<string, string> = { REPLACE: 'SOSTITUISCI', DELETE: 'ELIMINA', RESTART: 'RIAVVIA', PROMOTE: 'PROMUOVI', DEMOTE: 'DECLASSA' };
+export const confirmed = (v: any, word: string) => v === word || (LEGACY_CONFIRM[word] !== undefined && v === LEGACY_CONFIRM[word]);
 /**
  * Whitelist of operations an operator may request. Anything not listed is rejected, and every
  * parameter is validated server-side (the agent validates again — never trust one side).
@@ -60,21 +63,21 @@ export const OP_SPECS: Record<string, OpSpec> = {
   },
   patroni_restart:  { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => (p.member && !ident.test(String(p.member).replace(/-/g, '_'))) ? 'invalid member' : null },
   // restart of a STANDALONE PostgreSQL (no Patroni: patroni_restart) the way that server is managed (systemd unit / pg_ctl); typed confirmation
-  pg_restart:       { mutating: true, target: 'any_node', validate: p => (p.dry_run ? null : p.confirm !== 'RIAVVIA' ? 'restart needs confirm="RIAVVIA" (every connection is closed)' : null) },
+  pg_restart:       { mutating: true, target: 'any_node', validate: p => (p.dry_run ? null : !confirmed(p.confirm, 'RESTART') ? 'restart needs confirm="RESTART" (every connection is closed)' : null) },
   archive_enable:   { mutating: true, target: 'primary', validate: p => (p.archive_timeout !== undefined && !(Number(p.archive_timeout) >= 10 && Number(p.archive_timeout) <= 3600)) ? 'archive_timeout 10..3600' : null },
   patroni_reinit:   { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => (p.member && ident.test(String(p.member).replace(/-/g, '_'))) ? null : 'member required' },
   patroni_reload:   { mutating: true, target: 'patroni_node', needsPatroni: true, validate: () => null },
   patroni_pause:    { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => typeof p.enable === 'boolean' ? null : 'enable boolean required' },
   // geo-redundancy: a Patroni standby cluster becomes writable / a cluster becomes the standby of another site. Through the DCS only (PATCH /config).
   geo_promote: { mutating: true, target: 'patroni_node', needsPatroni: true, cancellable: false,
-    validate: p => p.confirm !== 'PROMUOVI' ? 'confirm="PROMUOVI" required (the site becomes writable: if the other site still accepts writes the data diverges)' : (p.slot_for_peer !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.slot_for_peer)) ? 'invalid slot_for_peer' : null) },
+    validate: p => !confirmed(p.confirm, 'PROMOTE') ? 'confirm="PROMOTE" required (the site becomes writable: if the other site still accepts writes the data diverges)' : (p.slot_for_peer !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.slot_for_peer)) ? 'invalid slot_for_peer' : null) },
   geo_archive_fallback: { mutating: true, target: 'patroni_node', needsPatroni: true, validate: p => typeof p.enable !== 'boolean' ? 'enable (true|false) required' : null },
   // timeline + its history file (ancestors, switch points): two servers on the same timeline NUMBER with different histories have diverged
   pg_timeline: { mutating: false, target: 'any_node', lane: 'control', validate: () => null },
   // divergent WAL copies the archive refused (conflicts/): listed, or marked as reviewed (kept, no more alarm)
   wal_conflicts: { mutating: true, target: 'any_node', lane: 'control', validate: (p: any) => p.files !== undefined && (!Array.isArray(p.files) || p.files.some((f: any) => typeof f !== 'string' || !/^[0-9A-Za-z._-]{1,120}$/.test(f))) ? 'files must be names of quarantined copies' : null },
   geo_demote: { mutating: true, target: 'patroni_node', needsPatroni: true, cancellable: false,
-    validate: p => p.confirm !== 'DECLASSA' ? 'confirm="DECLASSA" required (writes on this site stop at once)' : (!/^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$/.test(String(p.host || '')) ? 'host of the other site required' : (!(Number(p.port) >= 1 && Number(p.port) <= 65535) ? 'port required' : (p.primary_slot_name !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.primary_slot_name)) ? 'invalid primary_slot_name' : (p.drop_slots !== undefined && (!Array.isArray(p.drop_slots) || p.drop_slots.some((x: any) => !/^[a-z0-9_]{1,63}$/.test(String(x)))) ? 'invalid drop_slots' : (p.force_rewind !== undefined && typeof p.force_rewind !== 'boolean' ? 'force_rewind must be boolean' : null))))) },
+    validate: p => !confirmed(p.confirm, 'DEMOTE') ? 'confirm="DEMOTE" required (writes on this site stop at once)' : (!/^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$/.test(String(p.host || '')) ? 'host of the other site required' : (!(Number(p.port) >= 1 && Number(p.port) <= 65535) ? 'port required' : (p.primary_slot_name !== undefined && !/^[a-z0-9_]{1,63}$/.test(String(p.primary_slot_name)) ? 'invalid primary_slot_name' : (p.drop_slots !== undefined && (!Array.isArray(p.drop_slots) || p.drop_slots.some((x: any) => !/^[a-z0-9_]{1,63}$/.test(String(x)))) ? 'invalid drop_slots' : (p.force_rewind !== undefined && typeof p.force_rewind !== 'boolean' ? 'force_rewind must be boolean' : null))))) },
   patroni_config_patch: {
     mutating: true, target: 'patroni_node', needsPatroni: true,
     validate: p => {
@@ -173,7 +176,7 @@ Object.assign(OP_SPECS, {
     if (p.throttle_mb_s !== undefined && !(Number(p.throttle_mb_s) >= 0 && Number(p.throttle_mb_s) <= 100000)) return 'throttle_mb_s 0..100000';
     return null; } },
   destination_drop_old: { ...dataOp, target: 'primary', cancellable: false, validate: (p: any) => {
-    if (p.confirm !== 'ELIMINA') return 'confirm must be ELIMINA';
+    if (!confirmed(p.confirm, 'DELETE')) return 'confirm must be DELETE';
     if (!p.source_repo && !p.source_wal) return 'source_repo or source_wal required';
     for (const k of ['source_repo', 'source_wal']) if (p[k] !== undefined && !(typeof p[k] === 'string' && p[k].startsWith('/') && !p[k].split('/').includes('..'))) return `${k}: absolute path`;
     return null; } },
@@ -189,7 +192,7 @@ Object.assign(OP_SPECS, {
                                                        // replace_production: production ITSELF goes back to the target (rebuilt next to PGDATA, stop, swap, start); no destination, no copy options
                                                        || (p.replace_production !== undefined && typeof p.replace_production !== 'boolean' ? 'replace_production must be boolean'
                                                        : p.replace_production === true && (p.destination || p.keep_archiving || p.delta || p.resume || (p.action && p.action !== 'promote')) ? 'replace_production takes no destination / keep_archiving / delta / resume, and always promotes'
-                                                       : p.replace_production === true && !p.dry_run && p.confirm !== 'SOSTITUISCI' ? 'replace_production needs confirm="SOSTITUISCI" (PostgreSQL is stopped and its data directory replaced; the previous one is kept)' : null) },
+                                                       : p.replace_production === true && !p.dry_run && !confirmed(p.confirm, 'REPLACE') ? 'replace_production needs confirm="REPLACE" (PostgreSQL is stopped and its data directory replaced; the previous one is kept)' : null) },
   // data directories kept by a production replacement (<pgdata>.pgarca-before-<ts>): listed and removed on the node that holds them
   restore_kept_list: { mutating: false, target: 'any_node', lane: 'control', validate: () => null },
   restore_kept_drop: { mutating: true, target: 'any_node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => typeof p.path !== 'string' || !p.path.startsWith('/') || p.path.split('/').includes('..') || !/\.pgarca-(before|failed|new)-\d{14}$/.test(p.path) ? 'path must be a data directory kept by a replacement'
@@ -203,15 +206,15 @@ Object.assign(OP_SPECS, {
   restored_drop:   { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => rstId(p) || (typeof p.confirm !== 'string' || !p.confirm ? 'confirm must be the name of the copy' : null) },
   restore_database: { ...dataOp, validate: (p: any) => !pgName(p.database) ? 'database required' : (p.new_name && !dbName.test(String(p.new_name)) ? 'invalid new_name' : (targetErr(p) || intoErr(p)
                         || (p.replace_original !== undefined && typeof p.replace_original !== 'boolean' ? 'replace_original must be boolean' : null)
-                        || (p.replace_original === true && p.confirm !== 'SOSTITUISCI' ? 'replace_original needs confirm="SOSTITUISCI" (the original is renamed and kept, its sessions are ended)' : null))) },
+                        || (p.replace_original === true && !confirmed(p.confirm, 'REPLACE') ? 'replace_original needs confirm="REPLACE" (the original is renamed and kept, its sessions are ended)' : null))) },
   // finish: the recovered objects go back into the ORIGINAL database at the end of the same operation (promote with the chosen mode, or every row back)
   restore_object:   { ...dataOp, validate: (p: any) => objectsErr(p) || (p.stage_db && !dbName.test(String(p.stage_db)) ? 'invalid stage_db' : (targetErr(p) || intoErr(p)
                         || (p.finish !== undefined && !['promote', 'rows_all'].includes(p.finish) ? 'finish must be promote|rows_all' : null)
                         || (p.promote_mode !== undefined && !['as_new', 'replace', 'missing_only'].includes(p.promote_mode) ? 'promote_mode must be as_new|replace|missing_only' : null)
-                        || (p.finish === 'promote' && p.promote_mode === 'replace' && p.confirm !== 'SOSTITUISCI' ? 'replace needs confirm="SOSTITUISCI"' : null)
+                        || (p.finish === 'promote' && p.promote_mode === 'replace' && !confirmed(p.confirm, 'REPLACE') ? 'replace needs confirm="REPLACE"' : null)
                         || (p.finish === 'rows_all' && !(Array.isArray(p.objects) ? p.objects.length === 1 : true) ? 'rows_all works on one table' : null))) },
   restore_db_swap:  { ...dataOp, target: 'primary', cancellable: false, validate: (p: any) => !dbName.test(String(p.restored ?? '')) || !pgName(p.original) ? 'restored and original database names required'
-                        : (p.restored === p.original ? 'restored and original must differ' : (String(p.restored).startsWith('pgarca_stage_') ? 'a quarantine database cannot replace a database' : (!p.dry_run && p.confirm !== 'SOSTITUISCI' ? 'confirm="SOSTITUISCI" required' : intoErr(p)))) },
+                        : (p.restored === p.original ? 'restored and original must differ' : (String(p.restored).startsWith('pgarca_stage_') ? 'a quarantine database cannot replace a database' : (!p.dry_run && !confirmed(p.confirm, 'REPLACE') ? 'confirm="REPLACE" required' : intoErr(p)))) },
   hba_read:     { mutating: false, target: 'node', lane: 'control', validate: () => null },
   hba_plan:     { mutating: false, target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) },
   hba_apply:    { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) || (p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
@@ -220,7 +223,7 @@ Object.assign(OP_SPECS, {
   hba_expire:   { mutating: true,  target: 'node', lane: 'control', validate: () => null },
   hba_restore:  { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (!Array.isArray(p.list) || !p.list.length || p.list.length > 600 || p.list.some((x: any) => typeof x !== 'string' || x.length > 600 || /[\r\n]/.test(x)) ? 'list must be pg_hba lines' : p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
   hba_rollback: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.backup && !/^[\w.\-]{1,100}$/.test(String(p.backup)) ? 'invalid backup name' : null) },
-  restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (p.object && !specOk(String(p.object), [2, 3]) ? 'object must be database.schema or database.schema.name' : (p.mode && !['as_new', 'replace', 'missing_only'].includes(p.mode) ? 'mode must be as_new|replace|missing_only' : (p.mode === 'replace' && !p.dry_run && p.confirm !== 'SOSTITUISCI' ? 'replace needs confirm="SOSTITUISCI" (the originals are renamed, never dropped, but the swap is visible to every client)' : (p.target_schema !== undefined && p.target_schema !== null && p.target_schema !== '' && (p.mode !== 'as_new' || !/^[a-z_][a-z0-9_]{0,62}$/.test(String(p.target_schema)) || /^pg_/.test(String(p.target_schema))) ? 'target_schema: only with mode as_new, lowercase letters, digits and _' : intoErr(p))))) },
+  restore_promote:  { ...dataOp, cancellable: false, validate: (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (p.object && !specOk(String(p.object), [2, 3]) ? 'object must be database.schema or database.schema.name' : (p.mode && !['as_new', 'replace', 'missing_only'].includes(p.mode) ? 'mode must be as_new|replace|missing_only' : (p.mode === 'replace' && !p.dry_run && !confirmed(p.confirm, 'REPLACE') ? 'replace needs confirm="REPLACE" (the originals are renamed, never dropped, but the swap is visible to every client)' : (p.target_schema !== undefined && p.target_schema !== null && p.target_schema !== '' && (p.mode !== 'as_new' || !/^[a-z_][a-z0-9_]{0,62}$/.test(String(p.target_schema)) || /^pg_/.test(String(p.target_schema))) ? 'target_schema: only with mode as_new, lowercase letters, digits and _' : intoErr(p))))) },
   restore_drill:    { ...dataOp, mutating: false, validate: (p: any) => (p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null) },
   restore_diff:     { ...dataOp, mutating: false, cancellable: false, validate: (p: any) => stageErr(p) || intoErr(p) },
   restore_apply_rows: { ...dataOp, cancellable: false, validate: (p: any) => stageErr(p) || keysErr(p) || intoErr(p) },

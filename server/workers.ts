@@ -81,7 +81,7 @@ export function mountWorkerRoutes(app: any, store: Store) {
       const n = Object.prototype.hasOwnProperty.call(d.nodes, req.params.id) ? d.nodes[req.params.id] : undefined;
       if (!n) return { code: 404, body: { error: 'not_found' } };
       if (n.kind === 'worker') return { code: 200, body: { ok: true } };
-      if (n.snapshot?.postgres?.alive) return { code: 409, body: { error: 'has_database', message: 'Su questo server gira PostgreSQL: non è una macchina operativa.' } };
+      if (n.snapshot?.postgres?.alive) return { code: 409, body: { error: 'has_database', message: 'PostgreSQL runs on this server: it is not a worker host.' } };
       const old = n.clusterId;
       n.kind = 'worker'; n.clusterId = undefined; n.clusterKey = undefined;
       let removed = false;
@@ -101,13 +101,13 @@ export function mountWorkerRoutes(app: any, store: Store) {
     const st = store.peek(); const n = Object.prototype.hasOwnProperty.call(st.nodes, req.params.id) ? st.nodes[req.params.id] : undefined;
     if (!n || n.kind !== 'worker') return res.status(404).json({ error: 'not_found' });
     const { type, params = {}, ttlSeconds } = req.body || {};
-    if (!WORKER_OPS.includes(String(type))) return res.status(400).json({ error: 'not_for_workers', message: `Su una macchina operativa si possono eseguire: ${WORKER_OPS.join(', ')}.` });
-    if (ADMIN_ONLY.includes(type) && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Solo un amministratore può installare software o cambiare le impostazioni dell’agent.' });
+    if (!WORKER_OPS.includes(String(type))) return res.status(400).json({ error: 'not_for_workers', message: `On a worker host you can run: ${WORKER_OPS.join(', ')}.` });
+    if (ADMIN_ONLY.includes(type) && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can install software or change the agent settings.' });
     const key = String(req.headers['idempotency-key'] || '');
     if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
     const bad = validateOp(type, params);
     if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
-    if (!online(n)) return res.status(409).json({ error: 'node_offline', message: `${n.name} non è raggiungibile.` });
+    if (!online(n)) return res.status(409).json({ error: 'node_offline', message: `${n.name} is not reachable.` });
     try {
       const { op, created } = await ops.submit(store, { type, clusterId: workerCid(n.id), nodeId: n.id, params, idempotencyKey: key, createdBy: actor(req), ttlSeconds: ttlSeconds ?? 600 });
       res.status(created ? 202 : 200).json({ operation: op, replayed: !created });

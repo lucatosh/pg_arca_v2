@@ -998,8 +998,8 @@ class OperationExecutor:
         original data directory is put back (and started again). The previous data directory is kept as <pgdata>.pgarca-before-<ts> until dropped."""
         from pg_arca.engine.restore import restore_instance
         from pg_arca.engine import replace
-        if str(p.get("confirm") or "") != "SOSTITUISCI" and not p.get("dry_run"):
-            raise EngineError("PGA-RST-085", "replacing the production server needs the confirmation word SOSTITUISCI")
+        if str(p.get("confirm") or "") not in ("REPLACE", "SOSTITUISCI") and not p.get("dry_run"):      # the Italian word of earlier consoles is still accepted
+            raise EngineError("PGA-RST-085", "replacing the production server needs the confirmation word REPLACE")
         ctx = self._ctx_ro()
         t = self._targets(p)
         m, warn = self._replace_checks(ctx)
@@ -1210,12 +1210,12 @@ class OperationExecutor:
         return res
 
     def h_destination_drop_old(self, p):
-        """Delete this cluster's content from a previous backup location. Only with confirm == 'ELIMINA'; refused while something exists only there unless
+        """Delete this cluster's content from a previous backup location. Only with confirm == 'DELETE' (or the earlier 'ELIMINA'); refused while something exists only there unless
         abandon (that PITR history is lost on purpose). The location leaves the read list."""
         from pg_arca.engine import migrate
         from pg_arca import overrides
-        if p.get("confirm") != "ELIMINA":
-            raise OpError("type ELIMINA to confirm: this deletes backups and WAL of this cluster from the previous location")
+        if p.get("confirm") not in ("DELETE", "ELIMINA"):                                               # the Italian word of earlier consoles is still accepted
+            raise OpError("type DELETE to confirm: this deletes backups and WAL of this cluster from the previous location")
         ctx = self._ctx_ro()
         src_repo, src_wal = p.get("source_repo"), p.get("source_wal")
         if not src_repo and not src_wal:

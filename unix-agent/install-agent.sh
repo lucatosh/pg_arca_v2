@@ -250,6 +250,6 @@ echo "Logs: journalctl -u $UNIT -f"
 arch=$(cd / && runuser -u "$PGUSER_OS" -- psql -XAtc "select current_setting('archive_mode')||'|'||current_setting('archive_command')" 2>/dev/null || true)
 case "$arch" in
   on\|*pg-arca*|always\|*pg-arca*) echo "WAL archiving: already active through pg_arca." ;;
-  on\|?*|always\|?*) echo "Next: WAL archiving is active with another command (${arch#*|}): switch it to pg_arca from the console, Backup tab -> 'Attiva archiviazione'." ;;
-  *) echo "Next: WAL archiving (needed for point-in-time restore) is switched on from the console, Backup tab -> 'Attiva archiviazione' (on Patroni through the DCS)." ;;
+  on\|?*|always\|?*) echo "Next: WAL archiving is active with another command (${arch#*|}): switch it to pg_arca from the console, Backup tab -> 'Enable WAL archiving'." ;;
+  *) echo "Next: WAL archiving (needed for point-in-time restore) is switched on from the console, Backup tab -> 'Enable WAL archiving' (on Patroni through the DCS)." ;;
 esac

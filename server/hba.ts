@@ -12,27 +12,27 @@ export interface HbaTemplate {
   rules: { type: string; database: string; user: string; address: string; method: string; options?: string; comment: string }[];
 }
 export const HBA_TEMPLATES: HbaTemplate[] = [
-  { id: 'replication', name: 'Replica in streaming', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'Consente ai nodi standby di replicare, solo via TLS e con password SCRAM, solo dalla rete dei nodi.',
-    vars: [{ key: 'replUser', label: 'Utente di replica', def: 'replicator' }, { key: 'replNet', label: 'Rete dei nodi (CIDR)', def: '10.0.2.0/24', hint: 'Meglio stretta: un /32 per nodo o la sola subnet dei database.' }],
-    rules: [{ type: 'hostssl', database: 'replication', user: '{{replUser}}', address: '{{replNet}}', method: 'scram-sha-256', comment: 'Replica streaming (Patroni / standby fisici)' }] },
-  { id: 'app', name: 'Applicazioni (rete applicativa)', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'Accesso degli utenti applicativi ai loro database, solo TLS + SCRAM, solo dalla rete applicativa.',
-    vars: [{ key: 'appUser', label: 'Utente applicativo (o +ruolo)', def: 'app' }, { key: 'appDb', label: 'Database', def: 'all' }, { key: 'appNet', label: 'Rete applicativa (CIDR)', def: '10.0.20.0/24' }],
-    rules: [{ type: 'hostssl', database: '{{appDb}}', user: '{{appUser}}', address: '{{appNet}}', method: 'scram-sha-256', comment: 'Applicazioni' }] },
-  { id: 'dba', name: 'Amministratori (DBA)', envs: ['prod', 'prep', 'int'], description: 'I membri di un ruolo DBA entrano da una rete di gestione (VPN / bastion), mai da Internet.',
-    vars: [{ key: 'dbaRole', label: 'Ruolo DBA', def: 'dba' }, { key: 'dbaNet', label: 'Rete di gestione (CIDR)', def: '10.0.10.0/24' }],
-    rules: [{ type: 'hostssl', database: 'all', user: '+{{dbaRole}}', address: '{{dbaNet}}', method: 'scram-sha-256', comment: 'Amministratori dalla rete di gestione' }] },
-  { id: 'monitoring', name: 'Monitoraggio', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'Un utente di sola lettura (pg_monitor) per gli strumenti di monitoraggio.',
-    vars: [{ key: 'monUser', label: 'Utente di monitoraggio', def: 'monitor' }, { key: 'monNet', label: 'Rete del monitoraggio (CIDR)', def: '10.0.30.0/24' }],
-    rules: [{ type: 'hostssl', database: 'postgres', user: '{{monUser}}', address: '{{monNet}}', method: 'scram-sha-256', comment: 'Monitoraggio' }] },
-  { id: 'tls-only', name: 'Solo connessioni cifrate', envs: ['prod', 'prep'], description: 'Rifiuta ogni connessione di rete non cifrata (le regole hostssl restano valide). Richiede ssl=on sul server.',
+  { id: 'replication', name: 'Streaming replication', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'Lets the standby nodes replicate, over TLS only, with a SCRAM password, only from the nodes’ network.',
+    vars: [{ key: 'replUser', label: 'Replication user', def: 'replicator' }, { key: 'replNet', label: 'Nodes’ network (CIDR)', def: '10.0.2.0/24', hint: 'Narrow is better: a /32 per node or just the database subnet.' }],
+    rules: [{ type: 'hostssl', database: 'replication', user: '{{replUser}}', address: '{{replNet}}', method: 'scram-sha-256', comment: 'Streaming replication (Patroni / physical standbys)' }] },
+  { id: 'app', name: 'Applications (application network)', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'Access for application users to their databases, TLS + SCRAM only, only from the application network.',
+    vars: [{ key: 'appUser', label: 'Application user (or +role)', def: 'app' }, { key: 'appDb', label: 'Database', def: 'all' }, { key: 'appNet', label: 'Application network (CIDR)', def: '10.0.20.0/24' }],
+    rules: [{ type: 'hostssl', database: '{{appDb}}', user: '{{appUser}}', address: '{{appNet}}', method: 'scram-sha-256', comment: 'Applications' }] },
+  { id: 'dba', name: 'Administrators (DBA)', envs: ['prod', 'prep', 'int'], description: 'Members of a DBA role connect from a management network (VPN / bastion), never from the Internet.',
+    vars: [{ key: 'dbaRole', label: 'DBA role', def: 'dba' }, { key: 'dbaNet', label: 'Management network (CIDR)', def: '10.0.10.0/24' }],
+    rules: [{ type: 'hostssl', database: 'all', user: '+{{dbaRole}}', address: '{{dbaNet}}', method: 'scram-sha-256', comment: 'Administrators from the management network' }] },
+  { id: 'monitoring', name: 'Monitoring', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'A read-only user (pg_monitor) for monitoring tools.',
+    vars: [{ key: 'monUser', label: 'Monitoring user', def: 'monitor' }, { key: 'monNet', label: 'Monitoring network (CIDR)', def: '10.0.30.0/24' }],
+    rules: [{ type: 'hostssl', database: 'postgres', user: '{{monUser}}', address: '{{monNet}}', method: 'scram-sha-256', comment: 'Monitoring' }] },
+  { id: 'tls-only', name: 'Encrypted connections only', envs: ['prod', 'prep'], description: 'Rejects every unencrypted network connection (hostssl rules stay valid). Requires ssl=on on the server.',
     vars: [],
-    rules: [{ type: 'hostnossl', database: 'all', user: 'all', address: '0.0.0.0/0', method: 'reject', comment: 'Niente connessioni non cifrate' }, { type: 'hostnossl', database: 'all', user: 'all', address: '::/0', method: 'reject', comment: 'Niente connessioni non cifrate (IPv6)' }] },
-  { id: 'block-external', name: 'Blocca una rete', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'Respinge esplicitamente una rete (es. una subnet non fidata) prima di ogni altra regola.',
-    vars: [{ key: 'blockNet', label: 'Rete da bloccare (CIDR)', def: '192.168.99.0/24' }],
-    rules: [{ type: 'host', database: 'all', user: 'all', address: '{{blockNet}}', method: 'reject', comment: 'Rete bloccata' }] },
-  { id: 'local-admin', name: 'Amministrazione locale', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'L’utente postgres entra dal socket locale con peer (nessuna password in chiaro) e da loopback con SCRAM.',
+    rules: [{ type: 'hostnossl', database: 'all', user: 'all', address: '0.0.0.0/0', method: 'reject', comment: 'No unencrypted connections' }, { type: 'hostnossl', database: 'all', user: 'all', address: '::/0', method: 'reject', comment: 'No unencrypted connections (IPv6)' }] },
+  { id: 'block-external', name: 'Block a network', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'Explicitly rejects a network (e.g. an untrusted subnet) before any other rule.',
+    vars: [{ key: 'blockNet', label: 'Network to block (CIDR)', def: '192.168.99.0/24' }],
+    rules: [{ type: 'host', database: 'all', user: 'all', address: '{{blockNet}}', method: 'reject', comment: 'Blocked network' }] },
+  { id: 'local-admin', name: 'Local administration', envs: ['prod', 'prep', 'int', 'dev', 'test'], description: 'The postgres user connects from the local socket with peer (no cleartext password) and from loopback with SCRAM.',
     vars: [],
-    rules: [{ type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Amministrazione locale' }, { type: 'hostssl', database: 'all', user: 'postgres', address: '127.0.0.1/32', method: 'scram-sha-256', comment: 'Loopback' }] },
+    rules: [{ type: 'local', database: 'all', user: 'postgres', address: '', method: 'peer', comment: 'Local administration' }, { type: 'hostssl', database: 'all', user: 'postgres', address: '127.0.0.1/32', method: 'scram-sha-256', comment: 'Loopback' }] },
 ];
 /** Suggested starter set per environment (template ids, in the order they should appear). */
 export const HBA_SUGGESTED: Record<string, string[]> = {
@@ -50,7 +50,7 @@ export function mountHbaRoutes(app: any, store: Store) {
   app.post('/api/clusters/:id/hba/restore', async (req: Request, res: Response) => {
     const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
-    if (!c.haState?.managedByPatroni) return res.status(409).json({ error: 'not_patroni', message: 'Per i nodi con file pg_hba.conf usa «Ripristina versione precedente» (copie di backup sul nodo).' });
+    if (!c.haState?.managedByPatroni) return res.status(409).json({ error: 'not_patroni', message: 'For nodes with a pg_hba.conf file, use “Restore the previous version” (backup copies on the node).' });
     const key = String(req.headers['idempotency-key'] || ''); if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
     const h = ((st.settings.hbaHistory || {})[c.id] || []) as any[]; const item = h[Number(req.body?.index)];
     if (!item) return res.status(404).json({ error: 'version_not_found' });
@@ -58,9 +58,9 @@ export function mountHbaRoutes(app: any, store: Store) {
     const bad = validateOp('hba_restore', params); if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
     if (requiresApproval(st, c, 'hba_cluster_apply', {})) {
       const rec = await requestApproval(store, ops.audit, { cluster: c, type: 'hba_restore', params, key, actor: (req as any).actor || 'admin' } as any);
-      return res.status(202).json({ approval: rec, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
+      return res.status(202).json({ approval: rec, message: 'Risky operation in a protected environment: another administrator must approve it.' });
     }
-    const t = hbaTarget(st, c.id); if (!t) return res.status(409).json({ error: 'no_suitable_node', message: 'Nessun nodo con l’API di Patroni raggiungibile.' });
+    const t = hbaTarget(st, c.id); if (!t) return res.status(409).json({ error: 'no_suitable_node', message: 'No node with a reachable Patroni API.' });
     const cf = conflictFor(st.operations.filter(o => o.idempotencyKey !== key), c.id, 'hba_restore', params, (req as any).actor); if (cf) return res.status(409).json(cf);
     try {
       const r = await ops.submit(store, { type: 'hba_restore', clusterId: c.id, nodeId: t.id, params, idempotencyKey: key, createdBy: (req as any).actor || 'admin', ttlSeconds: 600 });
@@ -75,8 +75,8 @@ export function mountHbaRoutes(app: any, store: Store) {
   app.post('/api/clusters/:id/hba/apply', async (req: Request, res: Response) => {
     const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
-    if (c.isSandbox) return res.status(409).json({ error: 'demo_cluster', message: 'Cluster demo: le operazioni non vengono eseguite.' });
-    if (c.source === 'direct') return res.status(409).json({ error: 'agent_required', message: 'Modificare pg_hba richiede l’agent sul nodo.' });
+    if (c.isSandbox) return res.status(409).json({ error: 'demo_cluster', message: 'Demo cluster: operations are not executed.' });
+    if (c.source === 'direct') return res.status(409).json({ error: 'agent_required', message: 'Changing pg_hba requires the agent on the node.' });
     const key = String(req.headers['idempotency-key'] || '');
     if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
     const { rules, baseRevs = {}, force = false, adopt = false } = req.body || {};
@@ -84,7 +84,7 @@ export function mountHbaRoutes(app: any, store: Store) {
     const bodyOut = { rules, baseRevs, force: !!force, adopt: !!adopt };
     if (requiresApproval(st, c, 'hba_cluster_apply', {})) {
       const rec = await requestApproval(store, ops.audit, { cluster: c, type: 'hba_cluster_apply', params: bodyOut, key, actor: (req as any).actor || 'admin' });
-      return res.status(202).json({ approval: rec, message: 'Operazione rischiosa su un ambiente protetto: serve l’approvazione di un altro amministratore.' });
+      return res.status(202).json({ approval: rec, message: 'Risky operation in a protected environment: another administrator must approve it.' });
     }
     const r = await hbaFanout(store, c, bodyOut, key, (req as any).actor || 'admin');
     res.status(r.code).json(r.body);
@@ -120,10 +120,10 @@ export async function hbaFanout(store: Store, c: any, body: any, key: string, ac
   if (bad) return { code: 400, body: { error: 'invalid_operation', message: bad } };
   for (const v of Object.values(baseRevs)) if (v !== undefined && v !== null && v !== '' && !/^[0-9a-f]{16}$/.test(String(v))) return { code: 400, body: { error: 'invalid_operation', message: 'invalid base_rev' } };
   const online = Object.values(st.nodes).filter(n => n.clusterId === c.id && n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000);
-  if (!online.length) return { code: 409, body: { error: 'no_suitable_node', message: 'Nessun nodo online.' } };
+  if (!online.length) return { code: 409, body: { error: 'no_suitable_node', message: 'No node online.' } };
   const patroni = !!c.haState?.managedByPatroni;
   const t = patroni ? hbaTarget(st, c.id) : null;
-  if (patroni && !t) return { code: 409, body: { error: 'no_suitable_node', message: 'Nessun nodo con l’API di Patroni raggiungibile: pg_hba si modifica solo tramite il DCS.' } };
+  if (patroni && !t) return { code: 409, body: { error: 'no_suitable_node', message: 'No node with a reachable Patroni API: pg_hba is changed only through the DCS.' } };
   const targets = patroni ? [t!] : online;
   {                                                   // a colleague is already changing pg_hba here: refused with who and since when (replays of the same intent pass)
     const cf = conflictFor(st.operations.filter(o => !String(o.idempotencyKey || '').startsWith(`${key}:`)), c0.id, 'hba_apply', {}, actor);

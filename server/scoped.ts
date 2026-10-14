@@ -42,10 +42,10 @@ export function resolveScoped(st: any, kind: Kind, c: any, spec: KindSpec = SPEC
 const absPath = (v: any): string | null => {
   const s = String(v ?? '');
   if (!s) return null;
-  if (!s.startsWith('/') || /[\u0000-\u001f]/.test(s) || s.length > 300 || s.split('/').includes('..')) throw new Error('serve un percorso assoluto, senza «..»');
+  if (!s.startsWith('/') || /[\u0000-\u001f]/.test(s) || s.length > 300 || s.split('/').includes('..')) throw new Error('an absolute path is required, without “..”');
   return s.replace(/\/+$/, '') || '/';
 };
-const int = (v: any, lo: number, hi: number, name: string) => { const n = Number(v); if (!Number.isInteger(n) || n < lo || n > hi) throw new Error(`${name}: valore tra ${lo} e ${hi}`); return n; };
+const int = (v: any, lo: number, hi: number, name: string) => { const n = Number(v); if (!Number.isInteger(n) || n < lo || n > hi) throw new Error(`${name}: a value between ${lo} and ${hi}`); return n; };
 
 export const EPHEMERAL_DEFAULTS = { placement: 'node', sharedBuffersMb: 256, keepOnFailure: false, installMode: 'private' };
 const ephemeral: KindSpec = {
@@ -57,32 +57,32 @@ const ephemeral: KindSpec = {
       for (const [k, x] of Object.entries(v)) {
         if (x === undefined || x === null || x === '') continue;
         switch (k) {
-          case 'placement': if (!['node', 'central'].includes(String(x))) throw new Error('placement: node oppure central'); out[k] = x; break;
-          case 'centralNode': { const id = String(x); if (!Object.prototype.hasOwnProperty.call(st.nodes || {}, id)) throw new Error('il nodo centrale non esiste (deve avere un agent registrato)'); out[k] = id; break; }
+          case 'placement': if (!['node', 'central'].includes(String(x))) throw new Error('placement: node or central'); out[k] = x; break;
+          case 'centralNode': { const id = String(x); if (!Object.prototype.hasOwnProperty.call(st.nodes || {}, id)) throw new Error('the central node does not exist (it must have a registered agent)'); out[k] = id; break; }
           case 'centralInto': {
             const o: any = x; if (typeof o !== 'object' || Array.isArray(o)) throw new Error('centralInto: oggetto {host, port, user}');
             const r: Record<string, any> = {};
-            if (o.host) { if (!/^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$/.test(String(o.host))) throw new Error('centralInto.host non valido'); r.host = String(o.host); }
+            if (o.host) { if (!/^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$/.test(String(o.host))) throw new Error('invalid centralInto.host'); r.host = String(o.host); }
             if (o.port) r.port = int(o.port, 1, 65535, 'centralInto.port');
-            if (o.user) { if (!/^[A-Za-z_][A-Za-z0-9_$-]{0,62}$/.test(String(o.user))) throw new Error('centralInto.user non valido'); r.user = String(o.user); }
+            if (o.user) { if (!/^[A-Za-z_][A-Za-z0-9_$-]{0,62}$/.test(String(o.user))) throw new Error('invalid centralInto.user'); r.user = String(o.user); }
             out[k] = r; break;
           }
           case 'scratchDir': case 'binDir': case 'installDir': out[k] = absPath(x); break;
           case 'portMin': case 'portMax': out[k] = int(x, 1024, 65535, k); break;
           case 'sharedBuffersMb': out[k] = int(x, 16, 262144, k); break;
           case 'keepOnFailure': out[k] = !!x; break;
-          case 'installMode': if (!['private', 'system'].includes(String(x))) throw new Error('installMode: private oppure system'); out[k] = x; break;
+          case 'installMode': if (!['private', 'system'].includes(String(x))) throw new Error('installMode: private or system'); out[k] = x; break;
           default: throw new Error(`campo sconosciuto: ${k}`);
         }
       }
     } catch (e: any) { return { ok: false, error: e.message }; }
-    if (('portMin' in out) !== ('portMax' in out)) return { ok: false, error: 'indica sia portMin sia portMax (oppure nessuno dei due)' };
-    if (out.portMin && out.portMax && out.portMin > out.portMax) return { ok: false, error: 'portMin non può superare portMax' };
+    if (('portMin' in out) !== ('portMax' in out)) return { ok: false, error: 'set both portMin and portMax (or neither)' };
+    if (out.portMin && out.portMax && out.portMin > out.portMax) return { ok: false, error: 'portMin cannot exceed portMax' };
     return { ok: true, value: out };
   },
 };
 
-export const SPECS: Record<Kind, KindSpec> = { ephemeral, destination: { defaults: {}, validate: () => ({ ok: false, error: 'non ancora configurato' }) } };
+export const SPECS: Record<Kind, KindSpec> = { ephemeral, destination: { defaults: {}, validate: () => ({ ok: false, error: 'not configured yet' }) } };
 export function registerKind(kind: Kind, spec: KindSpec) { SPECS[kind] = spec; }
 
 /** The settings the AGENT receives (snake_case, only what it understands; it validates again against its own filesystem). */
@@ -134,7 +134,7 @@ export function mountScopedRoutes(app: any, store: Store) {
       const v = SPECS[kind].validate(value, st0);
       if (!v.ok) return res.status(400).json({ error: 'invalid_value', message: v.error });
       clean = v.value;
-      if (!Object.keys(clean).length) return res.status(400).json({ error: 'nothing_to_assign', message: 'Nessun campo da impostare: per tornare all’ereditarietà usa «eredita».' });
+      if (!Object.keys(clean).length) return res.status(400).json({ error: 'nothing_to_assign', message: 'No field to set: to go back to inheriting, use “inherit”.' });
     }
     await store.mutate(d => {
       const m = (((d.settings.scoped ||= {})[kind]) ||= {});

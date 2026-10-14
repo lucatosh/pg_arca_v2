@@ -12,14 +12,14 @@ type Order = 'specific' | 'wide' | 'manual';
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 async function runOp(clusterId: string, type: string, params: any, nodeId?: string): Promise<Op> {
   const r = await api<{ operation?: Op; approval?: any }>('POST', `/api/clusters/${encodeURIComponent(clusterId)}/operations`, { type, params, nodeId }, { key: uid('op') });
-  if (!r.operation) throw new Error('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).');
+  if (!r.operation) throw new Error('Request sent: another administrator must approve it (Today page).');
   return waitOp(r.operation);
 }
 async function waitOp(first: Op): Promise<Op> {
   let op = first; const t0 = Date.now();
   while (!isTerminal(op.status) && Date.now() - t0 < 180000) { await sleep(700); op = (await get<{ operation: Op }>(`/api/operations/${op.id}`)).operation; }
-  if (op.status === 'failed') throw new Error(op.error || 'operazione fallita');
-  if (op.status !== 'succeeded') throw new Error(op.status === 'expired' ? 'Il nodo non ha preso in carico l’operazione (offline o occupato).' : 'operazione non completata');
+  if (op.status === 'failed') throw new Error(op.error || 'operation failed');
+  if (op.status !== 'succeeded') throw new Error(op.status === 'expired' ? 'The node did not pick up the operation (offline or busy).' : 'operation not completed');
   return op;
 }
 const rid = () => Math.random().toString(36).slice(2, 9);
@@ -27,25 +27,25 @@ const toRow = (r: Rule): Row => ({ ...r, _id: rid() });
 const clean = (r: Row): Rule => { const o: Rule = { type: r.type, database: r.database, user: r.user, address: r.address, method: r.method }; if (r.options) o.options = r.options; if (r.comment) o.comment = r.comment; return o; };
 const sig = (rs: Rule[]) => JSON.stringify(rs.map(r => [key(r), r.comment || '']));
 
-const TYPES: [string, string][] = [['hostssl', 'Rete, solo TLS (consigliato)'], ['host', 'Rete, con o senza TLS'], ['hostnossl', 'Rete, solo senza TLS'], ['local', 'Socket locale']];
-const METHODS: [string, string][] = [['scram-sha-256', 'Password SCRAM (consigliato)'], ['cert', 'Certificato client'], ['peer', 'Utente del sistema (solo locale)'], ['ldap', 'LDAP'], ['reject', 'Rifiuta'], ['md5', 'Password MD5 (obsoleta)'], ['trust', 'Nessuna password (pericoloso)']];
+const TYPES: [string, string][] = [['hostssl', 'Network, TLS only (recommended)'], ['host', 'Network, with or without TLS'], ['hostnossl', 'Network, without TLS only'], ['local', 'Local socket']];
+const METHODS: [string, string][] = [['scram-sha-256', 'SCRAM password (recommended)'], ['cert', 'Client certificate'], ['peer', 'OS user (local only)'], ['ldap', 'LDAP'], ['reject', 'Reject'], ['md5', 'MD5 password (deprecated)'], ['trust', 'No password (dangerous)']];
 
 /** Plain-language advice on a single rule before it is added: catches the usual mistakes early. */
 function advice(r: Rule): { kind: 'bad' | 'warn' | 'info'; text: string }[] {
   const out: { kind: 'bad' | 'warn' | 'info'; text: string }[] = [];
   const repl = r.database.split(',').map(s => s.trim()).includes('replication');
   const open = r.address === 'all' || r.address === '0.0.0.0/0' || r.address === '::/0';
-  if (r.method === 'trust' && r.type !== 'local') out.push({ kind: 'bad', text: 'Con “trust” chiunque raggiunga la porta entra senza password.' });
-  else if (r.method === 'trust') out.push({ kind: 'warn', text: '“trust” anche in locale permette a ogni utente del server di diventare qualsiasi ruolo.' });
-  if (r.method === 'md5') out.push({ kind: 'warn', text: 'MD5 è obsoleto: usa scram-sha-256 se tutti i client lo supportano.' });
-  if (r.method === 'peer' && r.type !== 'local') out.push({ kind: 'bad', text: '“peer” funziona solo sul socket locale.' });
-  if (r.method === 'cert' && r.type !== 'hostssl') out.push({ kind: 'bad', text: 'Il certificato client richiede il tipo “hostssl”.' });
-  if (r.type !== 'local' && open && r.method !== 'reject') out.push({ kind: 'warn', text: 'Aperta a qualsiasi indirizzo: restringila alla rete che deve davvero connettersi.' });
-  if (r.type === 'host' && r.method !== 'reject') out.push({ kind: 'info', text: 'Con “host” le connessioni possono essere non cifrate. Preferisci “hostssl”.' });
-  if (repl && r.type === 'local') out.push({ kind: 'info', text: 'La replica fisica arriva dalla rete: di solito serve una regola host/hostssl.' });
-  if (repl && r.user === 'all') out.push({ kind: 'warn', text: 'Per la replica indica l’utente dedicato, non “all”.' });
-  if (!repl && r.database === 'all' && r.user === 'all' && r.method !== 'reject' && r.type !== 'local') out.push({ kind: 'warn', text: 'Tutti gli utenti su tutti i database: valuta di limitare utente o database.' });
-  if (r.type === 'local' && r.address) out.push({ kind: 'bad', text: 'Le regole locali non hanno un indirizzo.' });
+  if (r.method === 'trust' && r.type !== 'local') out.push({ kind: 'bad', text: 'With “trust”, anyone who can reach the port gets in without a password.' });
+  else if (r.method === 'trust') out.push({ kind: 'warn', text: '“trust”, even locally, lets every OS user on the server become any role.' });
+  if (r.method === 'md5') out.push({ kind: 'warn', text: 'MD5 is deprecated: use scram-sha-256 if all clients support it.' });
+  if (r.method === 'peer' && r.type !== 'local') out.push({ kind: 'bad', text: '“peer” works only on the local socket.' });
+  if (r.method === 'cert' && r.type !== 'hostssl') out.push({ kind: 'bad', text: 'A client certificate requires the “hostssl” type.' });
+  if (r.type !== 'local' && open && r.method !== 'reject') out.push({ kind: 'warn', text: 'Open to any address: restrict it to the network that actually needs to connect.' });
+  if (r.type === 'host' && r.method !== 'reject') out.push({ kind: 'info', text: 'With “host”, connections may be unencrypted. Prefer “hostssl”.' });
+  if (repl && r.type === 'local') out.push({ kind: 'info', text: 'Physical replication comes over the network: it usually needs a host/hostssl rule.' });
+  if (repl && r.user === 'all') out.push({ kind: 'warn', text: 'For replication, name the dedicated user, not “all”.' });
+  if (!repl && r.database === 'all' && r.user === 'all' && r.method !== 'reject' && r.type !== 'local') out.push({ kind: 'warn', text: 'All users on all databases: consider restricting the user or the database.' });
+  if (r.type === 'local' && r.address) out.push({ kind: 'bad', text: 'Local rules have no address.' });
   return out;
 }
 
@@ -56,7 +56,7 @@ function useHbaState(c: any) {
     setLoading(true); setErr(null);
     try {
       const fresh = (c.agentNodes || []).filter((n: any) => n.lastSeen && Date.now() - Date.parse(n.lastSeen) < 45000);
-      if (!fresh.length) throw new Error('Nessun agent online su questo cluster.');
+      if (!fresh.length) throw new Error('No agent online on this cluster.');
       const readOne = async (n: any): Promise<NodeRead> => {
         try { const op = await runOp(c.id, 'hba_read', {}, n.id); return { nodeId: n.id, nodeName: n.name, ok: true, data: op.result }; }
         catch (e: any) { return { nodeId: n.id, nodeName: n.name, ok: false, error: e.message }; }
@@ -77,8 +77,8 @@ function useHbaState(c: any) {
 }
 
 export function HbaTab({ c }: { c: any }) {
-  if (c.isSandbox) return <Banner kind="info" title="Non disponibile sul cluster demo">Collega un cluster reale con l’agent per gestire pg_hba.</Banner>;
-  if (c.source === 'direct') return <Card><Empty icon="lock" title="Serve l’agent">pg_hba.conf si modifica sul server del database: installa l’agent su un nodo di questo cluster.</Empty></Card>;
+  if (c.isSandbox) return <Banner kind="info" title="Not available on the demo cluster">Connect a real cluster with the agent to manage pg_hba.</Banner>;
+  if (c.source === 'direct') return <Card><Empty icon="lock" title="The agent is required">pg_hba.conf is edited on the database server: install the agent on a node of this cluster.</Empty></Card>;
   return <HbaInner c={c} />;
 }
 
@@ -128,7 +128,7 @@ function HbaInner({ c }: { c: any }) {
 
   const add = (rs: Rule[]) => {
     const have = new Set(rows.map(r => key(r))); const fresh = rs.filter(r => !have.has(key(r)));
-    if (!fresh.length) { toast('Regola già presente: niente da aggiungere', 'info'); return 0; }
+    if (!fresh.length) { toast('Rule already present: nothing to add', 'info'); return 0; }
     const nr = [...rows, ...fresh.map(toRow)];
     setRows(nr); setPlanned(null); setApplyRes(null);
     return fresh.length;
@@ -164,24 +164,24 @@ function HbaInner({ c }: { c: any }) {
       if (!keyRef.current || keyRef.current.sig !== curSig + force + adopt) keyRef.current = { sig: curSig + force + adopt, key: uid('hba') };
       const baseRevs: Record<string, string> = {}; okReads.forEach(n => { baseRevs[n.nodeId] = n.data.rev; });
       const r: any = await api<{ mode: string; approval?: any; operations: { nodeId: string; nodeName: string; operation: Op }[] }>('POST', `/api/clusters/${encodeURIComponent(c.id)}/hba/apply`, { rules: shown.map(clean), baseRevs, force, adopt }, { key: keyRef.current.key });
-      if (r.approval) { toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); keyRef.current = null; return; }
-      const done = await Promise.all((r.operations as any[]).map(async o => { try { const op = await waitOp(o.operation); return { node: o.nodeName, ok: true, text: op.result?.changed === false ? 'già aggiornato' : op.result?.note || 'applicato e verificato' }; } catch (e: any) { return { node: o.nodeName, ok: false, text: e.message }; } }));
+      if (r.approval) { toast('Request sent: another administrator must approve it (Today page).', 'info', 9000); keyRef.current = null; return; }
+      const done = await Promise.all((r.operations as any[]).map(async o => { try { const op = await waitOp(o.operation); return { node: o.nodeName, ok: true, text: op.result?.changed === false ? 'already up to date' : op.result?.note || 'applied and verified' }; } catch (e: any) { return { node: o.nodeName, ok: false, text: e.message }; } }));
       setApplyRes(done); keyRef.current = null; revalidate(`/api/clusters/${encodeURIComponent(c.id)}/hba/history`);
-      if (done.every(d => d.ok)) { toast('Regole applicate e verificate', 'ok'); clearDrafts(`hba:add:${c.id}`); clearDrafts(`hba:tpl:${c.id}`); } else toast('Alcuni nodi non hanno applicato le regole', 'bad');
+      if (done.every(d => d.ok)) { toast('Rules applied and verified', 'ok'); clearDrafts(`hba:add:${c.id}`); clearDrafts(`hba:tpl:${c.id}`); } else toast('Some nodes did not apply the rules', 'bad');
       await st.load();
     } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setApplying(false); }
   };
   const [rb, setRb] = useState(false);
   const doRollback = async () => {
     setRb(false); setApplying(true);
-    try { const out = await Promise.all(okReads.map(async n => { try { await runOp(c.id, 'hba_rollback', {}, n.nodeId); return `${n.nodeName}: ripristinato`; } catch (e: any) { return `${n.nodeName}: ${e.message}`; } })); toast(out.join(' · '), 'info', 8000); await st.load(); }
+    try { const out = await Promise.all(okReads.map(async n => { try { await runOp(c.id, 'hba_rollback', {}, n.nodeId); return `${n.nodeName}: rolled back`; } catch (e: any) { return `${n.nodeName}: ${e.message}`; } })); toast(out.join(' · '), 'info', 8000); await st.load(); }
     finally { setApplying(false); }
   };
 
   if (st.loading && !st.reads) return <div className="stack"><Skeleton h={50} /><Skeleton h={200} /></div>;
-  if (st.err) return <Banner kind="bad" title="Impossibile leggere pg_hba" actions={<Button sm onClick={st.load}>Riprova</Button>}>{st.err}</Banner>;
+  if (st.err) return <Banner kind="bad" title="Cannot read pg_hba" actions={<Button sm onClick={st.load}>Retry</Button>}>{st.err}</Banner>;
   if (!st.reads) return null;
-  if (!okReads.length) return <Banner kind="bad" title="Lettura non riuscita" actions={<Button sm onClick={st.load}>Riprova</Button>}>{st.reads.map(r => `${r.nodeName}: ${r.error}`).join(' · ')}</Banner>;
+  if (!okReads.length) return <Banner kind="bad" title="Read failed" actions={<Button sm onClick={st.load}>Retry</Button>}>{st.reads.map(r => `${r.nodeName}: ${r.error}`).join(' · ')}</Banner>;
 
   // nodes whose rules differ from the first one (per-node mode)
   const drift = okReads.filter(r => r.data.rev !== first.rev);
@@ -191,29 +191,29 @@ function HbaInner({ c }: { c: any }) {
 
   return <div className="stack-l">
     <div className="row wrap">
-      {patroni ? <Badge kind="accent" title="Le regole stanno nella configurazione dinamica di Patroni (DCS): una modifica vale per tutti i membri.">Patroni · configurazione condivisa (DCS)</Badge>
-        : okReads.length > 1 ? <Badge title="Ogni nodo ha il proprio pg_hba.conf: la modifica viene applicata a tutti.">{okReads.length} nodi · file per nodo</Badge> : <Badge title={first.hba_file}>Nodo singolo · file pg_hba.conf</Badge>}
-      {first.ssl === false ? <Badge kind="warn" title="ssl=off: le regole hostssl non corrispondono finché TLS non è attivo.">TLS disattivo</Badge> : null}
+      {patroni ? <Badge kind="accent" title="The rules live in Patroni’s dynamic configuration (DCS): a change applies to all members.">Patroni · shared configuration (DCS)</Badge>
+        : okReads.length > 1 ? <Badge title="Each node has its own pg_hba.conf: the change is applied to all of them.">{okReads.length} nodes · one file per node</Badge> : <Badge title={first.hba_file}>Single node · pg_hba.conf file</Badge>}
+      {first.ssl === false ? <Badge kind="warn" title="ssl=off: hostssl rules do not match until TLS is enabled.">TLS off</Badge> : null}
       <span className="small muted mono">{patroni ? 'postgresql.pg_hba' : first.hba_file}</span>
-      <div className="grow" /><Button sm icon="refresh" busy={st.loading} onClick={st.load}>Rileggi</Button></div>
+      <div className="grow" /><Button sm icon="refresh" busy={st.loading} onClick={st.load}>Reload</Button></div>
 
-    {patroni && first.external_hba_file ? <Banner kind="bad" title="Patroni non genera pg_hba su questo cluster">È impostato <span className="mono">hba_file = {first.external_hba_file}</span>: Patroni ignora la lista <span className="mono">postgresql.pg_hba</span> del DCS, quindi le modifiche da qui non avrebbero effetto e sono bloccate. Togli <span className="mono">hba_file</span> dalla configurazione di Patroni per gestire le regole dal DCS.</Banner> : null}
-    {patroni && first.dcs_seed ? <Banner kind="info" title="Il DCS di Patroni non contiene ancora pg_hba">Le regole mostrate sono quelle in vigore secondo PostgreSQL (pg_hba_file_rules), cioè quelle che Patroni ha scritto dalla configurazione locale dei nodi. Alla prima modifica diventano la lista nel DCS e da quel momento valgono per tutti i membri.{first.seed_skipped ? ` ${first.seed_skipped} riga/e con errori non sono state riprese.` : ''}</Banner> : null}
-    {first.pg_down ? <Banner kind="warn" title={`PostgreSQL non è attivo su ${okReads[0].nodeName}`}>La lista nel DCS è leggibile e modificabile, ma la simulazione sulle connessioni attive e la verifica avvengono su un membro con PostgreSQL attivo.</Banner> : null}
-    {st.reads.some(r => !r.ok) ? <Banner kind="warn" title="Alcuni nodi non hanno risposto">{st.reads.filter(r => !r.ok).map(r => `${r.nodeName}: ${r.error}`).join(' · ')}</Banner> : null}
-    {drift.length ? <Banner kind="warn" title="I nodi hanno regole diverse">{drift.map(d => d.nodeName).join(', ')} {drift.length > 1 ? 'differiscono' : 'differisce'} da {okReads[0].nodeName}. Applicando da qui tutti i nodi riceveranno lo stesso blocco gestito; le regole scritte a mano fuori dal blocco restano com’erano.</Banner> : null}
-    {probs.length ? <Banner kind="bad" title="PostgreSQL segnala errori nel file attuale">{probs.slice(0, 3).map((p: any) => `riga ${p.line_number}: ${p.error}`).join(' · ')}</Banner> : null}
-    {first.has_includes ? <Banner kind="info" title="Il file usa include">Le regole importate con include non sono analizzate qui: l’ordine mostrato potrebbe non riflettere l’intero file.</Banner> : null}
+    {patroni && first.external_hba_file ? <Banner kind="bad" title="Patroni does not generate pg_hba on this cluster"><span className="mono">hba_file = {first.external_hba_file}</span> is set: Patroni ignores the DCS <span className="mono">postgresql.pg_hba</span> list, so changes made here would have no effect and are blocked. Remove <span className="mono">hba_file</span> from the Patroni configuration to manage the rules through the DCS.</Banner> : null}
+    {patroni && first.dcs_seed ? <Banner kind="info" title="The Patroni DCS does not hold pg_hba yet">The rules shown are those in effect according to PostgreSQL (pg_hba_file_rules), i.e. the ones Patroni wrote from the nodes’ local configuration. On the first change they become the DCS list and from then on apply to all members.{first.seed_skipped ? ` ${first.seed_skipped} line(s) with errors were not carried over.` : ''}</Banner> : null}
+    {first.pg_down ? <Banner kind="warn" title={`PostgreSQL is not running on ${okReads[0].nodeName}`}>The DCS list can be read and edited, but the simulation against active connections and the verification run on a member with PostgreSQL running.</Banner> : null}
+    {st.reads.some(r => !r.ok) ? <Banner kind="warn" title="Some nodes did not respond">{st.reads.filter(r => !r.ok).map(r => `${r.nodeName}: ${r.error}`).join(' · ')}</Banner> : null}
+    {drift.length ? <Banner kind="warn" title="The nodes have different rules">{drift.map(d => d.nodeName).join(', ')} {drift.length > 1 ? 'differ' : 'differs'} from {okReads[0].nodeName}. Applying from here gives every node the same managed block; rules written by hand outside the block stay as they were.</Banner> : null}
+    {probs.length ? <Banner kind="bad" title="PostgreSQL reports errors in the current file">{probs.slice(0, 3).map((p: any) => `line ${p.line_number}: ${p.error}`).join(' · ')}</Banner> : null}
+    {first.has_includes ? <Banner kind="info" title="The file uses include">Rules imported with include are not analysed here: the order shown may not reflect the whole file.</Banner> : null}
 
     <Suggestions rows={shown} existing={existing} first={first} add={add} c={c} />
 
-    <Card title="Regole gestite dalla console" actions={<div className="row">
-      <label className="small muted" htmlFor="hba-order">Ordine</label>
+    <Card title="Rules managed by the console" actions={<div className="row">
+      <label className="small muted" htmlFor="hba-order">Order</label>
       <select id="hba-order" className="input" style={{ width: 'auto' }} value={order} onChange={e => setOrderMode(e.target.value as Order)}>
-        <option value="specific">Specifico prima (consigliato)</option><option value="wide">Rete più ampia in alto</option><option value="manual">Manuale</option></select></div>} pad={false}>
-      {order === 'wide' ? <div className="bd"><Banner kind="info" title="Come funziona l’ordine">PostgreSQL usa la prima regola che corrisponde. Con le reti più ampie in alto, le regole più strette sotto di loro possono non essere mai raggiunte: sono segnalate in rosso.</Banner></div> : null}
-      {!shown.length ? <div className="bd"><Empty icon="lock" title="Nessuna regola gestita">Aggiungi una regola o parti da un modello qui sotto. Le regole già presenti nel file restano intatte.</Empty></div> :
-        <div className="tablewrap"><table className="t hba"><thead><tr><th style={{ width: 28 }} /><th>Regola</th><th>Dettagli</th><th /></tr></thead><tbody>
+        <option value="specific">Most specific first (recommended)</option><option value="wide">Widest network on top</option><option value="manual">Manual</option></select></div>} pad={false}>
+      {order === 'wide' ? <div className="bd"><Banner kind="info" title="How ordering works">PostgreSQL uses the first rule that matches. With the widest networks on top, narrower rules below them may never be reached: they are flagged in red.</Banner></div> : null}
+      {!shown.length ? <div className="bd"><Empty icon="lock" title="No managed rules">Add a rule or start from a template below. The rules already in the file stay untouched.</Empty></div> :
+        <div className="tablewrap"><table className="t hba"><thead><tr><th style={{ width: 28 }} /><th>Rule</th><th>Details</th><th /></tr></thead><tbody>
           {shown.map((r, i) => <RuleLine key={r._id} r={r} n={i + 1} issues={byIndex(i)} manual={order === 'manual'} onMove={d => move(r._id, d)} onRemove={() => remove(r._id)} />)}
         </tbody></table></div>}
     </Card>
@@ -222,35 +222,35 @@ function HbaInner({ c }: { c: any }) {
 
     <Templates ck={c.id} tpls={tpls.data?.templates || []} sugg={sugg} env={c.environment} all={all} hosts={hosts} onAdd={rs => add(rs)} />
 
-    {existing.length ? <Card title={patroni ? `Altre regole della lista nel DCS (${existing.length})` : `Regole già presenti nel file (${existing.length})`} pad={false} actions={!adopt ? <Button sm onClick={() => add(serverUnmanaged)} title="Le sposta nel blocco gestito mantenendo lo stesso ordine di valutazione: potrai modificarle e riordinarle.">Adotta nel blocco gestito</Button> : <span className="small muted">Valgono dopo il blocco gestito · sola lettura</span>}>
+    {existing.length ? <Card title={patroni ? `Other rules in the DCS list (${existing.length})` : `Rules already in the file (${existing.length})`} pad={false} actions={!adopt ? <Button sm onClick={() => add(serverUnmanaged)} title="Moves them into the managed block keeping the same evaluation order: you can then edit and reorder them.">Adopt into the managed block</Button> : <span className="small muted">Evaluated after the managed block · read-only</span>}>
       <div className="tablewrap"><table className="t hba"><tbody>{existing.map((r, i) => {
         const gi = shown.length + i; const is = issues.filter(x => x.index === gi);
         return <tr key={i}><td className="num muted" style={{ width: 28 }}>{gi + 1}</td><td><div>{describe(r)}</div>{is.map((x, k) => <div key={k} className={`small ${x.level === 'error' ? 'hba-err' : 'muted'}`}>{x.message}</div>)}</td>
           <td><Badge kind={tag(r).kind}>{tag(r).label}</Badge></td><td className="mono small muted">{r.type} {r.database} {r.user} {r.address || ''} {r.method}</td></tr>;
       })}</tbody></table></div></Card> : null}
 
-    <Card title="Verifica e applica">
+    <Card title="Check and apply">
       <div className="stack">
-        {!dirty ? <p className="muted">Nessuna modifica rispetto a ciò che c’è sul {patroni ? 'cluster' : okReads.length > 1 ? 'cluster' : 'nodo'}.</p> : <div className="row wrap gap-s"><p className="grow" style={{ margin: 0 }}>Hai modifiche non applicate (restano qui anche se cambi pagina). Prima controlla l’effetto: la simulazione verifica che nessuna connessione esistente (replica e amministrazione locale) venga bloccata.</p>
-          <Button sm kind="ghost" onClick={() => { const m: Rule[] = (first.managed?.rules || []).map((r: any) => ({ type: r.type, database: r.database, user: r.user, address: r.address || '', method: r.method, options: r.options, comment: r.comment })); setRows(m.map(toRow)); setOrder('specific'); setPlanned(null); setApplyRes(null); setServerMoved(false); }}>Scarta le modifiche</Button></div>}
-        {dirty && serverMoved ? <Banner kind="warn" title="Le regole sul server sono cambiate mentre modificavi">Le tue modifiche sono state tenute. Verifica di nuovo l’effetto prima di applicare (o scartale per ripartire da quelle attuali).</Banner> : null}
-        <div className="row wrap"><Button icon="eye" busy={planning} disabled={planning || applying || errorsInDraft} onClick={doPlan}>Verifica effetto</Button>
-          <Button kind="primary" icon="check" busy={applying} disabled={!plans || invalid || nothing || errorsInDraft || (lock.length > 0 && !force) || applying} onClick={() => setConfirmApply(true)}>{patroni ? 'Applica a tutto il cluster' : okReads.length > 1 ? `Applica a ${okReads.length} nodi` : 'Applica'}</Button>
-          {!patroni && first.backups?.length ? <Button icon="restore" disabled={applying} onClick={() => setRb(true)}>Ripristina versione precedente</Button> : null}</div>
-        {patroni ? <p className="small muted">Scrittura solo nel DCS di Patroni (come <span className="mono">patronictl edit-config</span>): Patroni riscrive pg_hba.conf su ogni membro e ricarica; l’agent verifica con PostgreSQL (pg_hba_file_rules) che le regole siano in vigore. I file sui nodi non vengono mai letti né modificati.</p> : null}
-        {errorsInDraft ? <Banner kind="bad" title="Ci sono regole duplicate">Rimuovi i duplicati segnalati in rosso prima di continuare.</Banner> : null}
+        {!dirty ? <p className="muted">No changes compared with what is on the {patroni ? 'cluster' : okReads.length > 1 ? 'cluster' : 'node'}.</p> : <div className="row wrap gap-s"><p className="grow" style={{ margin: 0 }}>You have unapplied changes (they stay here even if you change page). Check the effect first: the simulation verifies that no existing connection (replication and local administration) gets blocked.</p>
+          <Button sm kind="ghost" onClick={() => { const m: Rule[] = (first.managed?.rules || []).map((r: any) => ({ type: r.type, database: r.database, user: r.user, address: r.address || '', method: r.method, options: r.options, comment: r.comment })); setRows(m.map(toRow)); setOrder('specific'); setPlanned(null); setApplyRes(null); setServerMoved(false); }}>Discard changes</Button></div>}
+        {dirty && serverMoved ? <Banner kind="warn" title="The rules on the server changed while you were editing">Your changes have been kept. Check the effect again before applying (or discard them to start over from the current rules).</Banner> : null}
+        <div className="row wrap"><Button icon="eye" busy={planning} disabled={planning || applying || errorsInDraft} onClick={doPlan}>Check the effect</Button>
+          <Button kind="primary" icon="check" busy={applying} disabled={!plans || invalid || nothing || errorsInDraft || (lock.length > 0 && !force) || applying} onClick={() => setConfirmApply(true)}>{patroni ? 'Apply to the whole cluster' : okReads.length > 1 ? `Apply to ${okReads.length} nodes` : 'Apply'}</Button>
+          {!patroni && first.backups?.length ? <Button icon="restore" disabled={applying} onClick={() => setRb(true)}>Restore the previous version</Button> : null}</div>
+        {patroni ? <p className="small muted">Written only to the Patroni DCS (like <span className="mono">patronictl edit-config</span>): Patroni rewrites pg_hba.conf on every member and reloads; the agent verifies with PostgreSQL (pg_hba_file_rules) that the rules are in effect. The files on the nodes are never read or changed.</p> : null}
+        {errorsInDraft ? <Banner kind="bad" title="There are duplicate rules">Remove the duplicates flagged in red before continuing.</Banner> : null}
         {plans ? <PlanView plans={plans} lock={lock} force={force} setForce={setForce} patroni={patroni} /> : null}
         {applyRes ? <div className="stack">{applyRes.map(a => <Banner key={a.node} kind={a.ok ? 'ok' : 'bad'} title={a.node}>{a.text}</Banner>)}</div> : null}
       </div></Card>
 
     {patroni ? <DcsHistory c={c} rev={first.rev} onDone={st.load} /> : null}
 
-    <details className="card"><summary className="hd" style={{ cursor: 'pointer' }}><h2>{patroni ? (first.dcs_seed ? 'Regole in vigore (da PostgreSQL)' : 'Lista nel DCS (postgresql.pg_hba)') : 'Testo grezzo del file'}</h2></summary><div className="bd"><pre className="out">{first.raw}</pre>{first.truncated ? <p className="small muted">Mostrate solo le prime 200 000 byte.</p> : null}</div></details>
+    <details className="card"><summary className="hd" style={{ cursor: 'pointer' }}><h2>{patroni ? (first.dcs_seed ? 'Rules in effect (from PostgreSQL)' : 'DCS list (postgresql.pg_hba)') : 'Raw file content'}</h2></summary><div className="bd"><pre className="out">{first.raw}</pre>{first.truncated ? <p className="small muted">Only the first 200,000 bytes are shown.</p> : null}</div></details>
 
-    {confirmApply ? <Confirm title={patroni ? 'Applicare al cluster?' : 'Applicare le regole?'} confirmLabel="Applica" onClose={() => setConfirmApply(false)} onConfirm={doApply} danger={lock.length > 0}>
-      <p>{patroni ? `La lista viene scritta nella configurazione dinamica di Patroni (DCS) e tutti i membri la ricaricano.${first.dcs_seed ? ' Il DCS oggi non ha una lista pg_hba: le regole in vigore vengono copiate nel DCS insieme alla modifica, così nulla va perso.' : ''} La versione attuale resta tra le versioni precedenti.` : `Il blocco gestito viene scritto in modo atomico su ${okReads.length} nodo/i, ricaricato e verificato con pg_hba_file_rules. Se la verifica fallisce il file precedente viene rimesso.`}</p>
-      {lock.length ? <Banner kind="bad" title="Forzatura attiva">Questa modifica blocca: {lock.join('; ')}.</Banner> : null}</Confirm> : null}
-    {rb ? <Confirm title="Ripristinare la versione precedente?" confirmLabel="Ripristina" onClose={() => setRb(false)} onConfirm={doRollback}><p>Il file torna alla copia salvata prima dell’ultima modifica ({first.backups[first.backups.length - 1]}). Prima di sovrascrivere viene salvata la versione attuale.</p></Confirm> : null}
+    {confirmApply ? <Confirm title={patroni ? 'Apply to the cluster?' : 'Apply the rules?'} confirmLabel="Apply" onClose={() => setConfirmApply(false)} onConfirm={doApply} danger={lock.length > 0}>
+      <p>{patroni ? `The list is written to Patroni’s dynamic configuration (DCS) and every member reloads it.${first.dcs_seed ? ' The DCS has no pg_hba list today: the rules in effect are copied into the DCS together with the change, so nothing is lost.' : ''} The current version is kept among the previous versions.` : `The managed block is written atomically on ${okReads.length} node(s), reloaded and verified with pg_hba_file_rules. If verification fails, the previous file is put back.`}</p>
+      {lock.length ? <Banner kind="bad" title="Override active">This change blocks: {lock.join('; ')}.</Banner> : null}</Confirm> : null}
+    {rb ? <Confirm title="Restore the previous version?" confirmLabel="Restore" onClose={() => setRb(false)} onConfirm={doRollback}><p>The file goes back to the copy saved before the last change ({first.backups[first.backups.length - 1]}). The current version is saved before it is overwritten.</p></Confirm> : null}
   </div>;
 }
 
@@ -258,31 +258,31 @@ function RuleLine({ r, n, issues, manual, onMove, onRemove }: { r: Row; n: numbe
   const t = tag(r);
   return <tr>
     <td className="num muted">{n}</td>
-    <td><div className="row wrap gap-s"><Badge kind={t.kind}>{t.label}</Badge>{untilOf(r.comment) != null ? <Badge kind="warn" title={new Date(untilOf(r.comment)!).toLocaleString('it-CH')}>Temporanea · {untilLabel(untilOf(r.comment)!)}</Badge> : null}<span>{describe(r)}</span></div>
+    <td><div className="row wrap gap-s"><Badge kind={t.kind}>{t.label}</Badge>{untilOf(r.comment) != null ? <Badge kind="warn" title={new Date(untilOf(r.comment)!).toLocaleString('en-GB')}>Temporary · {untilLabel(untilOf(r.comment)!)}</Badge> : null}<span>{describe(r)}</span></div>
       {stripUntil(r.comment) ? <div className="small muted">{stripUntil(r.comment)}</div> : null}
       {issues.map((x, k) => <div key={k} className={`small ${x.level === 'error' ? 'hba-err' : x.level === 'warn' ? 'hba-warn' : 'muted'}`}><Icon n={x.level === 'info' ? 'info' : 'alert'} s={13} /> {x.message}</div>)}</td>
     <td className="mono small muted">{r.type} {r.database} {r.user} {r.address || ''} {r.method}</td>
     <td className="num"><div className="row gap-s" style={{ justifyContent: 'flex-end' }}>
-      {manual ? <><Button sm kind="ghost" aria-label="Sposta su" onClick={() => onMove(-1)}><Icon n="down" className="flip" /></Button><Button sm kind="ghost" aria-label="Sposta giù" onClick={() => onMove(1)}><Icon n="down" /></Button></> : null}
-      <Button sm kind="ghost" aria-label="Rimuovi regola" onClick={onRemove}><Icon n="trash" /></Button></div></td></tr>;
+      {manual ? <><Button sm kind="ghost" aria-label="Move up" onClick={() => onMove(-1)}><Icon n="down" className="flip" /></Button><Button sm kind="ghost" aria-label="Move down" onClick={() => onMove(1)}><Icon n="down" /></Button></> : null}
+      <Button sm kind="ghost" aria-label="Remove rule" onClick={onRemove}><Icon n="trash" /></Button></div></td></tr>;
 }
 
 /** Suggestions derived from live data: replication clients that no rule would currently allow. */
 function Suggestions({ rows, existing, first, add, c }: { rows: Rule[]; existing: Rule[]; first: any; add: (r: Rule[]) => number; c: any }) {
   const cur = [...rows, ...existing];
   const plc = first.patroni_local;
-  const local: Rule[] = (plc?.ok === false ? (plc.denied as string[]) : []).map(u => ({ type: 'host', database: 'replication', user: u, address: '127.0.0.1/32', method: 'scram-sha-256', comment: 'Patroni: replica locale (timeline delle repliche, pg_rewind)' }))
+  const local: Rule[] = (plc?.ok === false ? (plc.denied as string[]) : []).map(u => ({ type: 'host', database: 'replication', user: u, address: '127.0.0.1/32', method: 'scram-sha-256', comment: 'Patroni: local replication connection (replica timelines, pg_rewind)' }))
     .filter(r => !cur.some(e => covers(e, r) && e.method !== 'reject'));
-  const patroniBanner = local.length ? <Banner kind="bad" icon="alert" title="Patroni non può aprire la connessione di replica locale" actions={<Button sm onClick={() => add(local)}>Aggiungi la regola</Button>}>
-    <span>Patroni legge la timeline delle repliche con una connessione di replica su 127.0.0.1 ({local.map(r => r.user).join(', ')}). Senza questa regola, dopo un failover una replica rimasta avanti non viene riallineata con pg_rewind e resta ferma; su un sito di replica si blocca l’intero sito.</span></Banner> : null;
+  const patroniBanner = local.length ? <Banner kind="bad" icon="alert" title="Patroni cannot open the local replication connection" actions={<Button sm onClick={() => add(local)}>Add the rule</Button>}>
+    <span>Patroni reads the replicas’ timeline through a replication connection on 127.0.0.1 ({local.map(r => r.user).join(', ')}). Without this rule, after a failover a replica that is ahead is not realigned with pg_rewind and stays stuck; on a standby site the whole site stalls.</span></Banner> : null;
   const items = ((first.suggest?.replication_clients || []) as any[]).map(x => {
     const addr = String(x.address).split('/')[0]; const ip = addr.includes(':') ? `${addr}/128` : `${addr}/32`;
-    const rule: Rule = { type: x.ssl ? 'hostssl' : 'host', database: 'replication', user: x.user, address: ip, method: 'scram-sha-256', comment: `Replica da ${addr}` };
+    const rule: Rule = { type: x.ssl ? 'hostssl' : 'host', database: 'replication', user: x.user, address: ip, method: 'scram-sha-256', comment: `Replication from ${addr}` };
     return { rule, ok: cur.some(e => covers(e, rule) && e.method !== 'reject') };
   }).filter(x => !x.ok);
   if (!items.length) return patroniBanner;
-  return <>{patroniBanner}<Banner kind="warn" icon="zap" title="Repliche attive senza una regola esplicita" actions={<Button sm onClick={() => add(items.map(i => i.rule))}>Aggiungi {items.length > 1 ? 'tutte' : ''}</Button>}>
-    <span>{items.map(i => `${i.rule.user} da ${i.rule.address.replace(/\/\d+$/, '')}`).join(', ')}. Si connettono oggi perché una regola più ampia o manuale le copre; con una regola precisa, restano protette anche se quella cambia.</span></Banner></>;
+  return <>{patroniBanner}<Banner kind="warn" icon="zap" title="Active replicas without an explicit rule" actions={<Button sm onClick={() => add(items.map(i => i.rule))}>Add {items.length > 1 ? 'all' : ''}</Button>}>
+    <span>{items.map(i => `${i.rule.user} from ${i.rule.address.replace(/\/\d+$/, '')}`).join(', ')}. They connect today because a broader or manual rule covers them; with a precise rule they stay covered even if that one changes.</span></Banner></>;
 }
 
 function AddRule({ ck, rows, existing, first, hosts, order, onAdd }: { ck: string; rows: Row[]; existing: Rule[]; first: any; hosts: string[]; order: Order; onAdd: (r: Rule) => void }) {
@@ -296,7 +296,7 @@ function AddRule({ ck, rows, existing, first, hosts, order, onAdd }: { ck: strin
     return n;
   });
   const dbs: string[] = ['all', 'replication', ...(first.suggest?.databases || [])]; const users: string[] = ['all', ...(first.suggest?.roles || [])];
-  const addrErr = r.type === 'local' ? null : !r.address ? 'Indica un indirizzo o una rete.' : r.address === 'all' || validCidr(r.address) || ['samehost', 'samenet'].includes(r.address) ? null : 'Usa il formato CIDR, ad esempio 10.0.20.0/24 (un solo host: 10.0.20.5/32).';
+  const addrErr = r.type === 'local' ? null : !r.address ? 'Enter an address or a network.' : r.address === 'all' || validCidr(r.address) || ['samehost', 'samenet'].includes(r.address) ? null : 'Use CIDR notation, for example 10.0.20.0/24 (a single host: 10.0.20.5/32).';
   const ready = !!r.user.trim() && !!r.database.trim() && !addrErr;
   const cand: Rule = { ...r, user: r.user.trim() || 'all', database: r.database.trim() || 'all', comment: withUntil(r.comment, valid === '0' || !canTemp ? null : Date.now() + Number(valid) * 3600_000) };
   // what would happen to this rule if it were added now
@@ -309,25 +309,25 @@ function AddRule({ ck, rows, existing, first, hosts, order, onAdd }: { ck: strin
   const dup = preview.issues.some(x => x.code === 'duplicate');
   const adv = ready ? advice(cand) : [];
   const nets = useMemo(() => { const s = new Set<string>(); hosts.forEach(h => { s.add(`${h}/32`); s.add(h.replace(/\.\d+$/, '.0/24')); }); return [...s]; }, [hosts]);
-  if (!open) return <div><Button icon="plus" onClick={() => setOpen(true)}>Aggiungi una regola</Button></div>;
-  return <Card title="Nuova regola" actions={<Button sm kind="ghost" onClick={() => setOpen(false)} aria-label="Chiudi"><Icon n="x" /></Button>}>
+  if (!open) return <div><Button icon="plus" onClick={() => setOpen(true)}>Add a rule</Button></div>;
+  return <Card title="New rule" actions={<Button sm kind="ghost" onClick={() => setOpen(false)} aria-label="Close"><Icon n="x" /></Button>}>
     <div className="stack">
       <div className="grid g3">
-        <Field label="Tipo di connessione"><select className="input" value={r.type} onChange={e => set({ type: e.target.value })}>{TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
-        <Field label="Database" hint="“replication” = replica fisica; “all” non la include."><input className="input" list="hba-dbs" value={r.database} onChange={e => set({ database: e.target.value })} /><datalist id="hba-dbs">{dbs.map(d => <option key={d} value={d} />)}</datalist></Field>
-        <Field label="Utente o gruppo" hint="Per un gruppo scrivi +nomeruolo."><input className="input" list="hba-users" value={r.user} onChange={e => set({ user: e.target.value })} placeholder="app" /><datalist id="hba-users">{users.map(d => <option key={d} value={d} />)}{(first.suggest?.roles || []).map((u: string) => <option key={'+' + u} value={'+' + u} />)}</datalist></Field>
-        {r.type !== 'local' ? <Field label="Rete di provenienza (CIDR)" error={r.address ? addrErr : null} hint="Più è stretta, meglio è."><input className="input mono" value={r.address} onChange={e => set({ address: e.target.value.trim() })} placeholder="10.0.20.0/24" />
+        <Field label="Connection type"><select className="input" value={r.type} onChange={e => set({ type: e.target.value })}>{TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
+        <Field label="Database" hint="“replication” = physical replication; “all” does not include it."><input className="input" list="hba-dbs" value={r.database} onChange={e => set({ database: e.target.value })} /><datalist id="hba-dbs">{dbs.map(d => <option key={d} value={d} />)}</datalist></Field>
+        <Field label="User or group" hint="For a group, write +rolename."><input className="input" list="hba-users" value={r.user} onChange={e => set({ user: e.target.value })} placeholder="app" /><datalist id="hba-users">{users.map(d => <option key={d} value={d} />)}{(first.suggest?.roles || []).map((u: string) => <option key={'+' + u} value={'+' + u} />)}</datalist></Field>
+        {r.type !== 'local' ? <Field label="Source network (CIDR)" error={r.address ? addrErr : null} hint="The narrower, the better."><input className="input mono" value={r.address} onChange={e => set({ address: e.target.value.trim() })} placeholder="10.0.20.0/24" />
           {nets.length ? <div className="row wrap gap-s" style={{ marginTop: 4 }}>{nets.map(n => <button key={n} type="button" className="chip" onClick={() => set({ address: n })}>{n}</button>)}</div> : null}</Field> : null}
-        <Field label="Autenticazione"><select className="input" value={r.method} onChange={e => set({ method: e.target.value })}>{METHODS.filter(([m]) => r.type === 'local' || m !== 'peer').map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
-        <Field label="Nota (solo per te)"><input className="input" value={r.comment || ''} onChange={e => set({ comment: e.target.value })} placeholder="A cosa serve" maxLength={120} /></Field>
-        {canTemp ? <Field label="Validità" hint="Una regola temporanea viene rimossa da sola alla scadenza (accesso per un consulente, un intervento).">
-          <select className="input" value={valid} onChange={e => setValid(e.target.value)} aria-label="Validità della regola"><option value="0">Permanente</option><option value="1">1 ora</option><option value="8">8 ore</option><option value="24">24 ore</option><option value="168">7 giorni</option><option value="720">30 giorni</option></select></Field> : null}
+        <Field label="Authentication"><select className="input" value={r.method} onChange={e => set({ method: e.target.value })}>{METHODS.filter(([m]) => r.type === 'local' || m !== 'peer').map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
+        <Field label="Note (for you only)"><input className="input" value={r.comment || ''} onChange={e => set({ comment: e.target.value })} placeholder="What it is for" maxLength={120} /></Field>
+        {canTemp ? <Field label="Validity" hint="A temporary rule is removed automatically when it expires (access for a consultant, a maintenance job).">
+          <select className="input" value={valid} onChange={e => setValid(e.target.value)} aria-label="Rule validity"><option value="0">Permanent</option><option value="1">1 hour</option><option value="8">8 hours</option><option value="24">24 hours</option><option value="168">7 days</option><option value="720">30 days</option></select></Field> : null}
       </div>
       {ready ? <div className="hba-preview"><Icon n="eye" /> {describe(cand)}</div> : null}
       {adv.map((a, i) => <div key={i} className={a.kind === 'bad' ? 'hba-err' : a.kind === 'warn' ? 'hba-warn' : 'muted small'}><Icon n={a.kind === 'info' ? 'info' : 'alert'} s={14} /> {a.text}</div>)}
       {preview.issues.map((x, i) => <div key={i} className={x.level === 'error' ? 'hba-err' : x.level === 'warn' ? 'hba-warn' : 'muted small'}><Icon n="alert" s={14} /> {x.message}</div>)}
-      <div className="row"><Button kind="primary" icon="plus" disabled={!ready || dup || advice(cand).some(a => a.kind === 'bad')} onClick={() => { onAdd(cand); setR(blank); setValid('0'); }}>Aggiungi alla lista</Button>
-        <span className="small muted">Non viene scritto nulla finché non verifichi e applichi.</span></div>
+      <div className="row"><Button kind="primary" icon="plus" disabled={!ready || dup || advice(cand).some(a => a.kind === 'bad')} onClick={() => { onAdd(cand); setR(blank); setValid('0'); }}>Add to the list</Button>
+        <span className="small muted">Nothing is written until you check and apply.</span></div>
     </div></Card>;
 }
 
@@ -339,14 +339,14 @@ function Templates({ ck, tpls, sugg, env, all, hosts, onAdd }: { ck: string; tpl
   const rules = sel ? fill(sel, vars) : [];
   const errs = sel ? sel.vars.filter(v => /net$/i.test(v.key) && !validCidr(vars[v.key] || '')).map(v => v.label) : [];
   if (!ordered.length) return null;
-  return <Card title="Modelli" actions={<span className="small muted">Suggeriti per l’ambiente <strong>{env}</strong> in testa</span>}>
+  return <Card title="Templates" actions={<span className="small muted">Suggested for the <strong>{env}</strong> environment first</span>}>
     <div className="grid g3">{ordered.map(t => { const pr = present(t); return <div key={t.id} className="tpl">
-      <div className="row"><strong className="grow">{t.name}</strong>{sugg.includes(t.id) ? <Badge kind="accent">Consigliato</Badge> : null}</div>
+      <div className="row"><strong className="grow">{t.name}</strong>{sugg.includes(t.id) ? <Badge kind="accent">Recommended</Badge> : null}</div>
       <p className="small muted" style={{ margin: '6px 0 10px' }}>{t.description}</p>
-      <div className="row">{pr ? <Badge kind="ok" title="Le regole del modello con i valori predefiniti sono già coperte da regole esistenti.">Già presente</Badge> : null}<div className="grow" /><Button sm icon="plus" onClick={() => open(t)}>{pr ? 'Aggiungi comunque' : 'Usa'}</Button></div></div>; })}</div>
-    {sel ? <Modal title={sel.name} onClose={() => setSel(null)} footer={<><Button onClick={() => setSel(null)}>Annulla</Button><Button kind="primary" disabled={!!errs.length} onClick={() => { const n = onAdd(rules); setSel(null); if (n) toast(`${n} regola/e aggiunta/e alla lista`, 'ok'); }}>Aggiungi alla lista</Button></>}>
+      <div className="row">{pr ? <Badge kind="ok" title="The template’s rules with the default values are already covered by existing rules.">Already present</Badge> : null}<div className="grow" /><Button sm icon="plus" onClick={() => open(t)}>{pr ? 'Add anyway' : 'Use'}</Button></div></div>; })}</div>
+    {sel ? <Modal title={sel.name} onClose={() => setSel(null)} footer={<><Button onClick={() => setSel(null)}>Cancel</Button><Button kind="primary" disabled={!!errs.length} onClick={() => { const n = onAdd(rules); setSel(null); if (n) toast(`${n} rule(s) added to the list`, 'ok'); }}>Add to the list</Button></>}>
       <div className="stack"><p className="muted">{sel.description}</p>
-        {sel.vars.map(v => <Field key={v.key} label={v.label} hint={v.hint} error={/net$/i.test(v.key) && !validCidr(vars[v.key] || '') ? 'Formato CIDR, ad esempio 10.0.20.0/24' : null}><input className="input" value={vars[v.key] || ''} onChange={e => setVars({ ...vars, [v.key]: e.target.value.trim() })} /></Field>)}
+        {sel.vars.map(v => <Field key={v.key} label={v.label} hint={v.hint} error={/net$/i.test(v.key) && !validCidr(vars[v.key] || '') ? 'CIDR notation, for example 10.0.20.0/24' : null}><input className="input" value={vars[v.key] || ''} onChange={e => setVars({ ...vars, [v.key]: e.target.value.trim() })} /></Field>)}
         <div className="stack">{rules.map((r, i) => <div key={i} className="hba-preview"><Badge kind={tag(r).kind}>{tag(r).label}</Badge> {describe(r)}</div>)}</div>
       </div></Modal> : null}
   </Card>;
@@ -356,14 +356,14 @@ function PlanView({ plans, lock, force, setForce, patroni }: { plans: { node: st
   const p0 = plans.find(p => p.res?.valid && p.res?.diff?.length) || plans[0];
   const warns = plans.flatMap(p => (p.res?.warnings || []).map((w: any) => w.message));
   return <div className="stack">
-    {plans.filter(p => p.error || p.res?.valid === false).map(p => <Banner key={p.node} kind="bad" title={`${p.node}: regole non valide`}>{p.error || (p.res.errors || []).map((e: any) => `#${e.index + 1}: ${e.message}`).join(' · ')}</Banner>)}
-    {lock.length ? <Banner kind="bad" title="Questa modifica bloccherebbe connessioni in uso">{lock.join(' · ')}
-      <label className="check" style={{ marginTop: 8 }}><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />So cosa sto facendo: applica comunque</label></Banner> : null}
-    {warns.length ? <Banner kind="warn" title="Avvisi">{[...new Set(warns)].join(' · ')}</Banner> : null}
-    {plans.every(p => p.res?.changed === false) ? <Banner kind="ok" title="Nessuna differenza">Le regole attuali coincidono già con la lista.</Banner> : null}
-    {p0?.res?.simulation?.length ? <div className="tablewrap"><table className="t"><thead><tr><th>Connessione simulata</th><th>Prima</th><th>Dopo</th></tr></thead><tbody>
-      {p0.res.simulation.map((s: any, i: number) => <tr key={i}><td>{s.label}</td><td>{s.before ? <Badge kind="ok">consentita</Badge> : <Badge>rifiutata</Badge>}</td><td>{s.after ? <Badge kind="ok">consentita</Badge> : <Badge kind={s.before ? 'bad' : undefined}>rifiutata</Badge>}{s.uncertain ? <span className="small muted"> (incerta)</span> : null}</td></tr>)}</tbody></table></div> : null}
-    {p0?.res?.diff?.length ? <details open><summary className="small muted" style={{ cursor: 'pointer' }}>{patroni ? 'Differenze nella lista del DCS (postgresql.pg_hba)' : 'Differenze nel file'}</summary><pre className="out">{p0.res.diff.join('\n')}</pre></details> : null}
+    {plans.filter(p => p.error || p.res?.valid === false).map(p => <Banner key={p.node} kind="bad" title={`${p.node}: invalid rules`}>{p.error || (p.res.errors || []).map((e: any) => `#${e.index + 1}: ${e.message}`).join(' · ')}</Banner>)}
+    {lock.length ? <Banner kind="bad" title="This change would block connections in use">{lock.join(' · ')}
+      <label className="check" style={{ marginTop: 8 }}><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />I know what I am doing: apply anyway</label></Banner> : null}
+    {warns.length ? <Banner kind="warn" title="Warnings">{[...new Set(warns)].join(' · ')}</Banner> : null}
+    {plans.every(p => p.res?.changed === false) ? <Banner kind="ok" title="No differences">The current rules already match the list.</Banner> : null}
+    {p0?.res?.simulation?.length ? <div className="tablewrap"><table className="t"><thead><tr><th>Simulated connection</th><th>Before</th><th>After</th></tr></thead><tbody>
+      {p0.res.simulation.map((s: any, i: number) => <tr key={i}><td>{s.label}</td><td>{s.before ? <Badge kind="ok">allowed</Badge> : <Badge>rejected</Badge>}</td><td>{s.after ? <Badge kind="ok">allowed</Badge> : <Badge kind={s.before ? 'bad' : undefined}>rejected</Badge>}{s.uncertain ? <span className="small muted"> (uncertain)</span> : null}</td></tr>)}</tbody></table></div> : null}
+    {p0?.res?.diff?.length ? <details open><summary className="small muted" style={{ cursor: 'pointer' }}>{patroni ? 'Differences in the DCS list (postgresql.pg_hba)' : 'Differences in the file'}</summary><pre className="out">{p0.res.diff.join('\n')}</pre></details> : null}
   </div>;
 }
 
@@ -376,18 +376,18 @@ function DcsHistory({ c, rev, onDone }: { c: any; rev: string; onDone: () => voi
     setBusy(true); setErr(null);
     try {
       const r: any = await api('POST', `/api/clusters/${encodeURIComponent(c.id)}/hba/restore`, { index: pick.index, baseRev: rev, force }, { key: uid('hbarst') });
-      if (r.approval) { toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); setPick(null); return; }
-      await waitOp(r.operation); toast('Versione ripristinata nel DCS e verificata', 'ok'); setPick(null); revalidate(`/api/clusters/${encodeURIComponent(c.id)}/hba/history`); onDone();
+      if (r.approval) { toast('Request sent: another administrator must approve it (Today page).', 'info', 9000); setPick(null); return; }
+      await waitOp(r.operation); toast('Version restored in the DCS and verified', 'ok'); setPick(null); revalidate(`/api/clusters/${encodeURIComponent(c.id)}/hba/history`); onDone();
     } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
   };
-  return <Card title="Versioni precedenti" actions={<span className="small muted">Conservate dalla console · ultime 15</span>} pad={false}>
-    {!items.length ? <div className="bd"><p className="muted small">Nessuna modifica fatta da qui finora. Dopo ogni modifica la lista precedente resta disponibile per tornare indietro.</p></div> :
-      <div className="tablewrap"><table className="t"><thead><tr><th>Sostituita il</th><th>Da</th><th className="num">Regole</th><th /></tr></thead><tbody>
-        {items.map(x => <tr key={x.index}><td>{new Date(x.at).toLocaleString('it-CH')} <span className="faint small">({ago(x.at)})</span>{x.seed ? <Badge title="Regole in vigore prima che la lista fosse nel DCS">prima del DCS</Badge> : null}</td><td>{x.by}</td><td className="num">{x.rules}</td>
-          <td className="num"><Button sm icon="restore" onClick={() => { setPick(x); setForce(false); setErr(null); }}>Ripristina…</Button></td></tr>)}</tbody></table></div>}
-    {pick ? <Modal title="Ripristinare questa versione?" onClose={() => setPick(null)} footer={<><div className="grow" /><Button onClick={() => setPick(null)}>Annulla</Button><Button kind="primary" busy={busy} onClick={go}>Ripristina nel DCS</Button></>}>
-      <div className="stack"><p>La lista sostituita il {new Date(pick.at).toLocaleString('it-CH')} torna nel DCS di Patroni e tutti i membri la ricaricano. Prima di scrivere l’agent controlla che nessuna connessione attiva (repliche, amministrazione locale) venga bloccata; la lista attuale resta tra le versioni precedenti.</p>
+  return <Card title="Previous versions" actions={<span className="small muted">Kept by the console · last 15</span>} pad={false}>
+    {!items.length ? <div className="bd"><p className="muted small">No changes made from here yet. After each change the previous list stays available to go back.</p></div> :
+      <div className="tablewrap"><table className="t"><thead><tr><th>Replaced on</th><th>By</th><th className="num">Rules</th><th /></tr></thead><tbody>
+        {items.map(x => <tr key={x.index}><td>{new Date(x.at).toLocaleString('en-GB')} <span className="faint small">({ago(x.at)})</span>{x.seed ? <Badge title="Rules in effect before the list was in the DCS">before the DCS</Badge> : null}</td><td>{x.by}</td><td className="num">{x.rules}</td>
+          <td className="num"><Button sm icon="restore" onClick={() => { setPick(x); setForce(false); setErr(null); }}>Restore…</Button></td></tr>)}</tbody></table></div>}
+    {pick ? <Modal title="Restore this version?" onClose={() => setPick(null)} footer={<><div className="grow" /><Button onClick={() => setPick(null)}>Cancel</Button><Button kind="primary" busy={busy} onClick={go}>Restore in the DCS</Button></>}>
+      <div className="stack"><p>The list replaced on {new Date(pick.at).toLocaleString('en-GB')} goes back into the Patroni DCS and every member reloads it. Before writing, the agent checks that no active connection (replicas, local administration) gets blocked; the current list is kept among the previous versions.</p>
         <pre className="out">{pick.list.join('\n')}</pre>
-        {err ? <Banner kind="bad">{err}{/lock out/.test(err) ? <label className="check" style={{ marginTop: 8 }}><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />So cosa sto facendo: ripristina comunque</label> : null}</Banner> : null}</div></Modal> : null}
+        {err ? <Banner kind="bad">{err}{/lock out/.test(err) ? <label className="check" style={{ marginTop: 8 }}><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />I know what I am doing: restore anyway</label> : null}</Banner> : null}</div></Modal> : null}
   </Card>;
 }

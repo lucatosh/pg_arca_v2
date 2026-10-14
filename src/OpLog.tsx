@@ -10,10 +10,10 @@ export type LogLine = { at: string; text: string; kind: 'status' | 'log' };
 const EVT = 'arca:oplog'; const POS = 'arca.oplog.geom';
 export const openOpLog = (id: string, title?: string) => window.dispatchEvent(new CustomEvent(EVT, { detail: { id, title } }));
 const readGeom = () => { try { const g = JSON.parse(localStorage.getItem(POS) || ''); if (g && typeof g.x === 'number') return g; } catch { /* default */ } return null; };
-const hhmmss = (iso: string) => new Date(iso).toLocaleTimeString('it-IT', { hour12: false });
-const STATUS_IT: Record<string, string> = { queued: 'in coda', leased: 'assegnata all’agent', running: 'in esecuzione', succeeded: 'completata', failed: 'fallita', cancelled: 'annullata', expired: 'scaduta' };
+const hhmmss = (iso: string) => new Date(iso).toLocaleTimeString('en-GB', { hour12: false });
+const STATUS_TEXT: Record<string, string> = { queued: 'queued', leased: 'assigned to the agent', running: 'running', succeeded: 'succeeded', failed: 'failed', cancelled: 'cancelled', expired: 'expired' };
 const lineText = (l: LogLine) => {
-  if (l.kind === 'status') { const [st, ...rest] = l.text.split(': '); return `${STATUS_IT[st] ? STATUS_IT[st][0].toUpperCase() + STATUS_IT[st].slice(1) : st}${rest.length ? ' — ' + rest.join(': ') : ''}`; }
+  if (l.kind === 'status') { const [st, ...rest] = l.text.split(': '); return `${STATUS_TEXT[st] ? STATUS_TEXT[st][0].toUpperCase() + STATUS_TEXT[st].slice(1) : st}${rest.length ? ' — ' + rest.join(': ') : ''}`; }
   const [phase, ...rest] = l.text.split(' · ');
   return [PHASE[phase] || phase, ...rest].join(' · ');
 };
@@ -55,28 +55,28 @@ function OneLog({ id, title, index, onClose }: { id: string; title?: string; ind
   const keepSize = () => { const b = box.current; if (!b || min) return; setGeom(g => { const n = { ...g, w: b.offsetWidth, h: b.offsetHeight }; persist(n); return n; }); };
   const done = isTerminal(meta?.status); const p = meta?.progress; const pct = pctOf(p);
   const shown = onlyAgent ? lines.filter(l => l.kind === 'log') : lines;
-  const copy = async () => { try { await navigator.clipboard.writeText(shown.map(l => `${l.at} ${lineText(l)}`).join('\n')); toast('Log copiato', 'ok'); } catch { toast('Copia non riuscita: seleziona il testo a mano', 'bad'); } };
-  const name = title || OP_LABEL[meta?.type] || meta?.type || 'Operazione';
+  const copy = async () => { try { await navigator.clipboard.writeText(shown.map(l => `${l.at} ${lineText(l)}`).join('\n')); toast('Log copied', 'ok'); } catch { toast('Copy failed: select the text by hand', 'bad'); } };
+  const name = title || OP_LABEL[meta?.type] || meta?.type || 'Operation';
   const tone = meta?.status === 'failed' || meta?.status === 'expired' ? 'bad' : meta?.status === 'succeeded' ? 'ok' : meta?.status === 'cancelled' ? 'warn' : 'live';
   return <div ref={box} className={`oplog ${min ? 'min' : ''} ${tone}`} role="dialog" aria-label={`Log: ${name}`} onPointerUp={keepSize}
     style={{ left: geom.x, top: geom.y, width: min ? 300 : geom.w, height: min ? undefined : geom.h }}>
     <div className="oplog-hd" onPointerDown={drag} onDoubleClick={() => setMin(m => !m)}>
       <span className="pip" />
       <strong className="nm" title={name}>{name}</strong>
-      <span className="st small">{meta ? STATUS_IT[meta.status] || STATUS_LABEL[meta.status] || meta.status : '…'}{!done && pct != null ? ` · ${pct}%` : ''}</span>
-      <Button kind="ghost" sm className="icon" onClick={() => setMin(m => !m)} aria-label={min ? 'Espandi il log' : 'Riduci a icona'} title={min ? 'Espandi' : 'Riduci'}><Icon n={min ? 'chev' : 'minus'} s={14} /></Button>
-      <Button kind="ghost" sm className="icon" onClick={onClose} aria-label="Chiudi il log" title="Chiudi (l’operazione continua)"><Icon n="x" s={14} /></Button>
+      <span className="st small">{meta ? STATUS_TEXT[meta.status] || STATUS_LABEL[meta.status] || meta.status : '…'}{!done && pct != null ? ` · ${pct}%` : ''}</span>
+      <Button kind="ghost" sm className="icon" onClick={() => setMin(m => !m)} aria-label={min ? 'Expand the log' : 'Minimize'} title={min ? 'Expand' : 'Shrink'}><Icon n={min ? 'chev' : 'minus'} s={14} /></Button>
+      <Button kind="ghost" sm className="icon" onClick={onClose} aria-label="Close the log" title="Close (the operation keeps running)"><Icon n="x" s={14} /></Button>
     </div>
     {min ? null : <>
-      {!done ? <div className="oplog-pr"><Progress pct={pct} /><div className="small muted">{p?.phase ? PHASE[p.phase] || p.phase : meta?.status === 'queued' ? 'In coda: parte appena l’agent è libero' : 'In esecuzione…'}</div></div> : null}
+      {!done ? <div className="oplog-pr"><Progress pct={pct} /><div className="small muted">{p?.phase ? PHASE[p.phase] || p.phase : meta?.status === 'queued' ? 'Queued: starts as soon as the agent is free' : 'Running…'}</div></div> : null}
       <div className="oplog-tools small">
-        <label className="chk"><input type="checkbox" checked={onlyAgent} onChange={e => setOnlyAgent(e.target.checked)} /> Solo avanzamento</label>
-        <label className="chk"><input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> Segui</label>
-        <span className="grow" /><button className="lnk" onClick={copy}>Copia</button>
+        <label className="chk"><input type="checkbox" checked={onlyAgent} onChange={e => setOnlyAgent(e.target.checked)} /> Progress only</label>
+        <label className="chk"><input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> Follow</label>
+        <span className="grow" /><button className="lnk" onClick={copy}>Copy</button>
       </div>
       <div className="oplog-body mono" ref={body} onScroll={e => { const el = e.currentTarget; const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24; if (!atEnd && follow) setFollow(false); }} tabIndex={0} aria-live="off">
         {shown.length ? shown.map((l, i) => <div key={i} className={`ln ${l.kind}`}><span className="t">{hhmmss(l.at)}</span><span className="x">{lineText(l)}</span></div>)
-          : <div className="muted small" style={{ padding: 10 }}>{meta?.problem ? `Log non raggiungibile: ${meta.problem}` : 'In attesa dei primi messaggi dell’agent…'}</div>}
+          : <div className="muted small" style={{ padding: 10 }}>{meta?.problem ? `Log unavailable: ${meta.problem}` : 'Waiting for the agent’s first messages…'}</div>}
         {done && meta?.error ? <div className="ln status err"><span className="t" /><span className="x">{String(meta.error).slice(0, 1200)}</span></div> : null}
       </div>
     </>}

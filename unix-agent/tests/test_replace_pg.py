@@ -98,7 +98,7 @@ class Replace(unittest.TestCase):
         replace.wait_primary = lambda *a, **k: None               # the restored server "never comes up"
         try:
             with self.assertRaises(EngineError) as c:
-                X.ex.h_restore_instance({"replace_production": True, "target_time": X.t, "confirm": "SOSTITUISCI"})
+                X.ex.h_restore_instance({"replace_production": True, "target_time": X.t, "confirm": "REPLACE"})
         finally:
             replace.wait_primary = real
         self.assertEqual(c.exception.code, "PGA-RST-076")
@@ -112,7 +112,7 @@ class Replace(unittest.TestCase):
 
     def test_04_point_in_time_replaces_production_in_place(self):
         port_before = q("postgres", "SHOW port")[0][0]
-        res = X.ex.h_restore_instance({"replace_production": True, "target_time": X.t, "confirm": "SOSTITUISCI"})
+        res = X.ex.h_restore_instance({"replace_production": True, "target_time": X.t, "confirm": "REPLACE"})
         r = res["replace"]
         self.assertTrue(r["replaced"], r)
         self.assertEqual(tags(), {"A": 100, "B": 40}, "production is back at the chosen point: the deleted rows are there again")
@@ -140,7 +140,7 @@ class Replace(unittest.TestCase):
         q("postgres", "CHECKPOINT")
         r = sh(os.path.join(T.BIN, "pg_ctl"), "-D", F.src, "-m", "immediate", "stop")    # production crashes
         self.assertEqual(r.returncode, 0, r.stderr)
-        res = X.ex.h_restore_instance({"replace_production": True, "confirm": "SOSTITUISCI"})
+        res = X.ex.h_restore_instance({"replace_production": True, "confirm": "REPLACE"})
         rp = res["replace"]
         self.assertFalse(rp["was_running"])
         self.assertTrue(rp["carry_unarchived_wal"])

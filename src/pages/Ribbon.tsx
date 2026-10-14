@@ -4,7 +4,7 @@ import { ago, dt } from '../ui';
 import { go } from '../router';
 
 const RANK: Record<string, number> = { full: 3, diff: 2, incr: 1 };
-const NAME: Record<string, string> = { full: 'completo', diff: 'differenziale', incr: 'incrementale' };
+const NAME: Record<string, string> = { full: 'full', diff: 'differential', incr: 'incremental' };
 const DAYS = 30;
 
 /** The cluster's recoverability at a glance: one cell per day (strongest backup of that day) + WAL continuity + the window you can restore into. */
@@ -22,12 +22,12 @@ export function ProtectionRibbon({ c }: { c: any }) {
   const first = sets.length ? Math.min(...sets.map(s => Date.parse(s.stop_time))) : null;
   const wal = d.wal?.continuous === false ? 'bad' : d.archiver && d.archiveMode !== 'off' ? 'ok' : 'none';
   const last = sets.length ? sets.reduce((a, s) => (Date.parse(s.stop_time) > Date.parse(a.stop_time) ? s : a)) : null;
-  const msg = !sets.length ? 'Nessun backup ancora: il ripristino non è possibile.'
-    : wal === 'ok' ? `Puoi tornare a qualsiasi istante tra ${dt(new Date(first!).toISOString())} e adesso.`
-    : wal === 'bad' ? 'I WAL hanno dei buchi: il ripristino a un istante preciso è limitato.' : `Senza WAL archiviati puoi tornare solo ai momenti dei backup (ultimo ${ago(last.stop_time)}).`;
-  return <button type="button" className="ribbon" onClick={() => go(`c/${encodeURIComponent(c.id)}/restore`)} aria-label={`Protezione dei dati: ${msg}`}>
-    <div className="cells" aria-hidden="true">{cells.map((x, i) => <i key={i} className={`${x.type || 'none'} ${x.today ? 'today' : ''}`} title={`${new Date(x.start).toLocaleDateString('it-CH')}: ${x.type ? `${x.n} backup (${NAME[x.type]})` : 'nessun backup'}`} />)}</div>
+  const msg = !sets.length ? 'No backups yet: restore is not possible.'
+    : wal === 'ok' ? `You can go back to any point between ${dt(new Date(first!).toISOString())} and now.`
+    : wal === 'bad' ? 'The WAL has gaps: point-in-time recovery is limited.' : `Without archived WAL you can only go back to backup points (last ${ago(last.stop_time)}).`;
+  return <button type="button" className="ribbon" onClick={() => go(`c/${encodeURIComponent(c.id)}/restore`)} aria-label={`Data protection: ${msg}`}>
+    <div className="cells" aria-hidden="true">{cells.map((x, i) => <i key={i} className={`${x.type || 'none'} ${x.today ? 'today' : ''}`} title={`${new Date(x.start).toLocaleDateString('en-GB')}: ${x.type ? `${x.n} backup (${NAME[x.type]})` : 'no backups'}`} />)}</div>
     <div className={`wal ${wal}`} aria-hidden="true" />
-    <div className="cap"><span>{msg}</span><span className="muted">30 giorni · WAL {wal === 'ok' ? 'continui' : wal === 'bad' ? 'con buchi' : 'non archiviati'}</span></div>
+    <div className="cap"><span>{msg}</span><span className="muted">30 days · WAL {wal === 'ok' ? 'continuous' : wal === 'bad' ? 'with gaps' : 'not archived'}</span></div>
   </button>;
 }

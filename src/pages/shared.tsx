@@ -5,16 +5,16 @@ import { Badge, Banner, Button, Progress, ago, bytes, dur, num } from '../ui';
 import { itCheck } from '../i18n';
 
 export const OP_LABEL: Record<string, string> = {
-  pg_reload: 'Ricarica configurazione', wal_switch: 'Cambio segmento WAL', checkpoint: 'Checkpoint', discovery_scan: 'Rilevamento', compat_check: 'Verifica compatibilità PostgreSQL', agent_config_get: 'Lettura impostazioni agent', agent_config_set: 'Impostazioni agent', list_objects: 'Elenco oggetti',
-  pg_set_param: 'Modifica parametro', patroni_switchover: 'Switchover', patroni_failover: 'Failover', patroni_restart: 'Riavvio membro', patroni_reinit: 'Ricostruzione replica', archive_enable: 'Attivazione archiviazione WAL', patroni_reload: 'Ricarica Patroni',
-  patroni_pause: 'Modalità manutenzione', patroni_config_patch: 'Modifica config Patroni', backup_run: 'Backup', backup_info: 'Info repository', backup_verify: 'Verifica backup',
-  backup_expire: 'Scadenza e pulizia', backup_catalog: 'Catalogo backup', restore_plan: 'Piano di ripristino', restore_instance: 'Ripristino istanza', restore_database: 'Ripristino database',
-  restore_object: 'Ripristino oggetto', wal_forensics: 'Analisi WAL', hba_read: 'Lettura pg_hba', hba_plan: 'Verifica pg_hba', hba_apply: 'Modifica pg_hba', hba_rollback: 'Ripristino pg_hba', restore_promote: 'Riporta nel database', restore_drill: 'Prova di disaster recovery', restore_diff: 'Confronto riga per riga', restore_apply_rows: 'Recupero righe', hba_expire: 'Scadenza regole pg_hba',
-  ephemeral_preflight: 'Verifica dell’istanza di recupero', ephemeral_install: 'Installazione dei binari PostgreSQL', destination_check: 'Controllo della destinazione dei backup', destination_migrate: 'Migrazione dei backup', destination_drop_old: 'Eliminazione della posizione precedente', pg_restart: 'Riavvio di PostgreSQL', restore_db_swap: 'Sostituzione del database con quello ripristinato', geo_failover: 'Promozione del sito di replica (disaster recovery)', geo_promote: 'Promozione del sito', geo_demote: 'Passaggio del sito a replica', geo_archive_fallback: 'Riserva dall’archivio WAL del sito di replica', restored_stop: 'Arresto della copia ripristinata', restored_start: 'Avvio della copia ripristinata', restored_resume: 'Conclusione del recupero della copia', restored_keep: 'Durata della copia ripristinata', restored_drop: 'Eliminazione della copia ripristinata', restored_list: 'Copie ripristinate', restore_kept_drop: 'Eliminazione dei dati conservati', restore_kept_list: 'Dati conservati dalle sostituzioni',
+  pg_reload: 'Configuration reload', wal_switch: 'WAL segment switch', checkpoint: 'Checkpoint', discovery_scan: 'Discovery', compat_check: 'PostgreSQL compatibility check', agent_config_get: 'Read agent settings', agent_config_set: 'Agent settings', list_objects: 'Object list',
+  pg_set_param: 'Parameter change', patroni_switchover: 'Switchover', patroni_failover: 'Failover', patroni_restart: 'Member restart', patroni_reinit: 'Replica reinitialization', archive_enable: 'Enable WAL archiving', patroni_reload: 'Patroni reload',
+  patroni_pause: 'Maintenance mode', patroni_config_patch: 'Patroni configuration change', backup_run: 'Backup', backup_info: 'Repository info', backup_verify: 'Backup verification',
+  backup_expire: 'Retention cleanup', backup_catalog: 'Backup catalog', restore_plan: 'Restore plan', restore_instance: 'Instance restore', restore_database: 'Database restore',
+  restore_object: 'Object restore', wal_forensics: 'WAL analysis', hba_read: 'Read pg_hba', hba_plan: 'pg_hba check', hba_apply: 'pg_hba change', hba_rollback: 'pg_hba rollback', restore_promote: 'Bring back into the database', restore_drill: 'Disaster recovery drill', restore_diff: 'Row-by-row comparison', restore_apply_rows: 'Row recovery', hba_expire: 'pg_hba rule expiry',
+  ephemeral_preflight: 'Recovery instance check', ephemeral_install: 'PostgreSQL binaries installation', destination_check: 'Backup destination check', destination_migrate: 'Backup migration', destination_drop_old: 'Removal of the previous location', pg_restart: 'PostgreSQL restart', restore_db_swap: 'Swap in the restored database', geo_failover: 'Standby site promotion (disaster recovery)', geo_promote: 'Site promotion', geo_demote: 'Site demotion to standby', geo_archive_fallback: 'Fallback to the standby site’s WAL archive', restored_stop: 'Stop the restored copy', restored_start: 'Start the restored copy', restored_resume: 'Finish the copy’s recovery', restored_keep: 'Restored copy lifetime', restored_drop: 'Delete the restored copy', restored_list: 'Restored copies', restore_kept_drop: 'Delete kept data', restore_kept_list: 'Data kept from replacements',
 };
-export const STATUS_LABEL: Record<string, string> = { sending: 'Invio…', queued: 'In coda', leased: 'Assegnata', running: 'In esecuzione', succeeded: 'Completata', failed: 'Fallita', expired: 'Scaduta', cancelled: 'Annullata' };
+export const STATUS_LABEL: Record<string, string> = { sending: 'Sending…', queued: 'Queued', leased: 'Assigned', running: 'Running', succeeded: 'Succeeded', failed: 'Failed', expired: 'Expired', cancelled: 'Cancelled' };
 export const statusBadge = (s: string) => <Badge kind={s === 'succeeded' ? 'ok' : s === 'failed' ? 'bad' : s === 'running' || s === 'leased' ? 'info' : undefined}>{STATUS_LABEL[s] || s}</Badge>;
-export const PHASE: Record<string, string> = { catalog: 'Lettura del catalogo', checkpoint: 'Checkpoint di PostgreSQL', copy: 'Copia dei dati', finalize: 'Chiusura del backup', wal: 'Attesa archiviazione WAL', extract: 'Estrazione dei file', starting: 'Avvio istanza temporanea', recovery: 'Recovery dei WAL', transfer: 'Trasferimento dati', verify: 'Verifica dei chunk', 'restore-test': 'Prova di ripristino', scan: 'Analisi dei WAL', chunks: 'Copia dei blocchi', sets: 'Copia dei backup', done: 'Verifica finale', wal_flush: 'Archiviazione del WAL più recente', prepare: 'Preparazione', swap: 'Sostituzione' };
+export const PHASE: Record<string, string> = { catalog: 'Reading the catalog', checkpoint: 'PostgreSQL checkpoint', copy: 'Copying data', finalize: 'Finalizing the backup', wal: 'Waiting for WAL archiving', extract: 'Extracting files', starting: 'Starting the temporary instance', recovery: 'WAL replay', transfer: 'Transferring data', verify: 'Verifying chunks', 'restore-test': 'Test restore', scan: 'Scanning WAL', chunks: 'Copying chunks', sets: 'Copying backups', done: 'Final check', wal_flush: 'Archiving the latest WAL', prepare: 'Preparing', swap: 'Swapping' };
 
 /** Throughput and time left of the current phase, measured in the browser between progress samples (same operation, same phase). */
 const samples = new Map<string, { t: number; v: number; phase: string }>();
@@ -27,8 +27,8 @@ function rateOf(op: Op): string | null {
   const dt = (now - s0.t) / 1000; if (dt < 4 || v === s0.v) return null;
   const r = (v - s0.v) / dt; const left = (total - v) / r;
   const eta = left < 90 ? `${Math.max(1, Math.round(left))} s` : left < 5400 ? `${Math.round(left / 60)} min` : `${(left / 3600).toFixed(1)} h`;
-  const rate = unit === 'B' ? `${bytes(r)}/s` : unit === 'seg' ? `${r.toFixed(1)} segmenti/s` : `${r.toFixed(0)} file/s`;
-  return `${rate} · fine fase stimata tra ${eta}`;
+  const rate = unit === 'B' ? `${bytes(r)}/s` : unit === 'seg' ? `${r.toFixed(1)} segments/s` : `${r.toFixed(0)} file/s`;
+  return `${rate} · phase ends in about ${eta}`;
 }
 
 export function pctOf(p: any): number | null {
@@ -49,8 +49,8 @@ function Steps({ op }: { op: Op }) {
   const order = ['sending', 'queued', 'leased', 'running'];
   const at = op.status === 'sending' ? 0 : op.status === 'queued' ? 1 : op.status === 'leased' ? 2 : op.status === 'running' ? 3 : 4;
   const failedAt = op.status === 'failed' || op.status === 'cancelled' || op.status === 'expired' ? (sinceStatus(op, 'running') ? 3 : sinceStatus(op, 'leased') ? 2 : 1) : -1;
-  const labels = ['Inviata alla console', 'Presa in carico dall’agent', 'In esecuzione', op.status === 'succeeded' ? 'Completata' : op.status === 'failed' ? 'Fallita' : op.status === 'cancelled' ? 'Annullata' : op.status === 'expired' ? 'Scaduta' : 'Esito'];
-  return <ol className="opsteps" aria-label="Avanzamento">{labels.map((l, i) => {
+  const labels = ['Sent to the console', 'Picked up by the agent', 'Running', op.status === 'succeeded' ? 'Succeeded' : op.status === 'failed' ? 'Failed' : op.status === 'cancelled' ? 'Cancelled' : op.status === 'expired' ? 'Expired' : 'Outcome'];
+  return <ol className="opsteps" aria-label="Progress">{labels.map((l, i) => {
     const cls = failedAt >= 0 && i === 3 ? 'bad' : failedAt >= 0 && i > failedAt ? 'skip' : i < at || (i === 3 && op.status === 'succeeded') ? 'done' : i === at && order[i] ? 'now' : '';
     return <li key={i} className={cls}>{l}</li>;
   })}</ol>;
@@ -62,56 +62,56 @@ export function OpPanel({ op, error, cancel, label }: { op: Op | null; error?: s
   const now = useTick(live);
   const nodes = useQuery<{ nodes: any[] }>(op?.nodeId && (op.status === 'queued' || op.status === 'failed' || op.status === 'expired') ? '/api/nodes' : null, { interval: op?.status === 'queued' ? 5000 : 0 });
   if (!op && !error) return null;
-  if (!op) return <Banner kind="bad" title={/non risponde/.test(error || '') ? 'La console non risponde: operazione non inviata' : 'Operazione non avviata'}>{itCheck(error)}{hintFor(error) ? <p className="small" style={{ marginTop: 8 }}>{hintFor(error)}</p> : null}</Banner>;
+  if (!op) return <Banner kind="bad" title={/not responding/.test(error || '') ? 'The console is not responding: operation not sent' : 'Operation not started'}>{itCheck(error)}{hintFor(error) ? <p className="small" style={{ marginTop: 8 }}>{hintFor(error)}</p> : null}</Banner>;
   const done = isTerminal(op.status); const p = op.progress; const pct = pctOf(p);
   const speed = rateOf(op);
   const node = (nodes.data?.nodes || []).find(n => n.id === op.nodeId);
   const runningSince = sinceStatus(op, 'running') || sinceStatus(op, 'leased');
   const phase = p?.phase ? PHASE[p.phase] || p.phase : '';
   let what: React.ReactNode;
-  if (op.status === 'sending') { const s = secs(op.createdAt, now); what = s < 6 ? 'Invio della richiesta alla console…' : `La console non ha ancora risposto (${elapsed(s)}): riprovo da solo; se la richiesta era già arrivata non verrà eseguita due volte.`; }
+  if (op.status === 'sending') { const s = secs(op.createdAt, now); what = s < 6 ? 'Sending the request to the console…' : `The console has not answered yet (${elapsed(s)}): retrying automatically. If the request already got through, it will not run twice.`; }
   else if (op.status === 'queued') {
     const s = secs(op.createdAt, now);
-    what = node && !node.online ? <>L’agent di <strong>{node.name}</strong> non si fa sentire da {ago(node.lastSeen, now)}: l’operazione parte quando torna online (oppure scade senza fare nulla).</>
-      : s < 8 ? `In attesa che l’agent${node ? ` di ${node.name}` : ''} la prenda in carico…`
-      : <>In coda da {elapsed(s)}{node ? <> sull’agent di <strong>{node.name}</strong></> : null}: l’agent esegue le operazioni sui dati una alla volta, parte appena finisce quella in corso (la vedi in «Attività»).</>;
+    what = node && !node.online ? <>The agent on <strong>{node.name}</strong> has not checked in for {ago(node.lastSeen, now).replace(/ ago$/, '')}: the operation starts when it comes back online (or expires without doing anything).</>
+      : s < 8 ? `Waiting for the agent${node ? ` on ${node.name}` : ''} to pick it up…`
+      : <>Queued for {elapsed(s)}{node ? <> on the agent of <strong>{node.name}</strong></> : null}: the agent runs data operations one at a time, so this one starts as soon as the current one ends (see “Activity”).</>;
   }
-  else if (op.status === 'leased') what = 'L’agent l’ha presa in carico e sta partendo…';
-  else if (!done) what = <>{phase || 'In corso…'}{runningSince ? ` — da ${elapsed(secs(runningSince, now))}` : ''}
-    {p?.phase === 'checkpoint' ? `${p.fast ? '' : ' (checkpoint distribuito: su un server carico può durare alcuni minuti; l’annullamento lo interrompe)'}` : ''}{p?.files_total ? ` — ${num(p.files)} / ${num(p.files_total)} file` : ''}{p?.bytes_total ? `, ${bytes(p.bytes)} / ${bytes(p.bytes_total)}` : ''}{p?.chunks ? ` — ${num(p.chunks)} chunk verificati` : ''}{p?.segments_total ? ` — ${num(p.segments)} / ${num(p.segments_total)} segmenti` : ''}{p?.msg ? ` — ${p.msg}` : ''}</>;
+  else if (op.status === 'leased') what = 'The agent picked it up and is starting…';
+  else if (!done) what = <>{phase || 'In progress…'}{runningSince ? ` — for ${elapsed(secs(runningSince, now))}` : ''}
+    {p?.phase === 'checkpoint' ? `${p.fast ? '' : ' (spread checkpoint: on a busy server it can take a few minutes; cancelling interrupts it)'}` : ''}{p?.files_total ? ` — ${num(p.files)} / ${num(p.files_total)} file` : ''}{p?.bytes_total ? `, ${bytes(p.bytes)} / ${bytes(p.bytes_total)}` : ''}{p?.chunks ? ` — ${num(p.chunks)} chunks verified` : ''}{p?.segments_total ? ` — ${num(p.segments)} / ${num(p.segments_total)} segments` : ''}{p?.msg ? ` — ${p.msg}` : ''}</>;
   const total = done && op.createdAt ? secs(op.createdAt, Date.parse(op.updatedAt)) : null;
   return <div className="stack oppanel">
     <div className="row wrap"><strong>{label || OP_LABEL[op.type] || op.type}</strong>{statusBadge(op.status)}
-      {op.cancelRequested && !done ? <Badge kind="warn">Annullamento richiesto…</Badge> : null}
+      {op.cancelRequested && !done ? <Badge kind="warn">Cancellation requested…</Badge> : null}
       <div className="grow" />
       {op.id ? <Button sm kind="ghost" icon="logs" onClick={() => openOpLog(op.id, label || OP_LABEL[op.type])}>Log</Button> : null}
-      {!done && cancel && op.id && !op.cancelRequested ? <Button sm kind="danger" icon="stop" onClick={cancel}>Annulla</Button> : null}</div>
+      {!done && cancel && op.id && !op.cancelRequested ? <Button sm kind="danger" icon="stop" onClick={cancel}>Cancel</Button> : null}</div>
     <Steps op={op} />
     {!done ? <>
       {op.status === 'running' ? <Progress pct={pct} /> : null}{speed ? <div className="small faint">{speed}</div> : null}
       <div className="small muted" aria-live="polite">{what}</div></> : null}
-    {op.status === 'failed' ? <Banner kind="bad" title={`Fallita${p?.phase ? ` durante «${phase}»` : ''}${node ? ` su ${node.name}` : ''}${total != null ? ` dopo ${elapsed(total)}` : ''}`}>
+    {op.status === 'failed' ? <Banner kind="bad" title={`Failed${p?.phase ? ` during “${phase}”` : ''}${node ? ` on ${node.name}` : ''}${total != null ? ` after ${elapsed(total)}` : ''}`}>
       <span style={{ whiteSpace: 'pre-wrap' }}>{itCheck(op.error || error)}</span>{hintFor(op.error || error) ? <p className="small" style={{ marginTop: 8 }}>{hintFor(op.error || error)}</p> : null}
-      <p className="small" style={{ marginTop: 8 }}>Il log completo (cosa ha fatto l’agent passo per passo) è nel pulsante «Log» qui sopra.</p></Banner> : null}
-    {op.status === 'expired' ? <Banner kind="warn" title="Nessun agent ha preso in carico l’operazione">{node ? <>L’agent di <strong>{node.name}</strong> {node.online ? 'era occupato' : `è offline (ultimo contatto ${ago(node.lastSeen)})`}. </> : 'Il nodo è offline o occupato. '}Nulla è stato eseguito: puoi riprovare.</Banner> : null}
-    {op.status === 'cancelled' ? <Banner kind="warn" title="Operazione annullata">Eventuali dati parziali sono stati rimossi.</Banner> : null}
+      <p className="small" style={{ marginTop: 8 }}>The full log (what the agent did, step by step) is behind the “Log” button above.</p></Banner> : null}
+    {op.status === 'expired' ? <Banner kind="warn" title="No agent picked up the operation">{node ? <>The agent on <strong>{node.name}</strong> {node.online ? 'was busy' : `is offline (last seen ${ago(node.lastSeen)})`}. </> : 'The node is offline or busy. '}Nothing was executed: you can retry.</Banner> : null}
+    {op.status === 'cancelled' ? <Banner kind="warn" title="Operation cancelled">Any partial data has been removed.</Banner> : null}
     {error && op.status !== 'failed' ? <Banner kind="warn">{error}</Banner> : null}
   </div>;
 }
 
-export const Result = ({ op }: { op: Op | null }) => op?.status === 'succeeded' && op.result ? <>{op.result.warning ? <div className="banner warn" role="status" style={{ marginTop: 8 }}><div className="grow small">{String(op.result.warning)}</div></div> : null}{op.result.pending_restart || op.result.restart_required ? <div className="small" style={{ color: 'var(--warn)', marginTop: 6 }}>Il nuovo valore vale dopo un riavvio (Patroni: «Riavvia» nella scheda Alta affidabilità).</div> : null}<details><summary className="small muted" style={{ cursor: 'pointer' }}>Dettagli tecnici</summary><pre className="out">{JSON.stringify(op.result, null, 2)}</pre></details></> : null;
+export const Result = ({ op }: { op: Op | null }) => op?.status === 'succeeded' && op.result ? <>{op.result.warning ? <div className="banner warn" role="status" style={{ marginTop: 8 }}><div className="grow small">{String(op.result.warning)}</div></div> : null}{op.result.pending_restart || op.result.restart_required ? <div className="small" style={{ color: 'var(--warn)', marginTop: 6 }}>The new value takes effect after a restart (Patroni: “Restart” on the High availability tab).</div> : null}<details><summary className="small muted" style={{ cursor: 'pointer' }}>Technical details</summary><pre className="out">{JSON.stringify(op.result, null, 2)}</pre></details></> : null;
 export { dur };
 
 
 /** Plain-language next step for the most common refusals (the raw message stays visible above). */
 export function hintFor(msg?: string | null): string {
   const m = String(msg || '');
-  if (/console pg_arca .* non risponde/.test(m)) return 'Controlla che il servizio della console sia attivo sul server e che questo browser lo raggiunga (stesso indirizzo di prima, VPN, proxy). Quando torna raggiungibile ripremi lo stesso pulsante: la richiesta ha un identificativo, quindi non può partire due volte.';
-  if (/is not healthy/.test(m)) return 'La replica scelta non è in salute (non sta replicando). Scegline un’altra con stato “running”, oppure sistema prima quella replica: Patroni non può promuoverla.';
-  if (/no healthy replica/.test(m)) return 'Nessuna replica è in salute: finché una replica non torna “running” non c’è un nodo su cui spostare il primario. Controlla i log di Patroni dei nodi in errore.';
-  if (/stale request/.test(m)) return 'Nel frattempo il primario è cambiato. Aggiorna la pagina e riprova.';
-  if (/Patroni is not configured|not reachable|unreachable/.test(m)) return 'L’agent di questo nodo non riesce a parlare con l’API REST di Patroni. Controlla l’URL in Nodi → Percorsi e rilevamento (di solito http://127.0.0.1:8008) e che Patroni sia in esecuzione.';
-  if (/PGA-GEN-096/.test(m)) return 'Dopo lo scambio alcune righe punterebbero a righe che non esistono (chiave esterna): non è stato cambiato nulla. Ripristina anche le tabelle collegate allo stesso istante, oppure riportale «accanto agli originali» e recupera le righe che servono. Se sai che va bene così puoi procedere: quelle chiavi esterne resteranno NON VALIDE.';
-  if (/NOT confirmed/.test(m)) return 'Patroni ha accettato la richiesta ma il cambio non è stato confermato in tempo: controlla lo stato dei membri e i log di Patroni.';
+  if (/pg_arca console .* is not responding/.test(m)) return 'Check that the console service is running on the server and that this browser can reach it (same address as before, VPN, proxy). Once it is reachable, press the same button again: the request carries an ID, so it cannot run twice.';
+  if (/is not healthy/.test(m)) return 'The selected replica is not healthy (it is not replicating). Pick another one in state “running”, or fix that replica first: Patroni cannot promote it.';
+  if (/no healthy replica/.test(m)) return 'No replica is healthy: until one is back to “running” there is no node to move the primary to. Check the Patroni logs of the failing nodes.';
+  if (/stale request/.test(m)) return 'The primary has changed in the meantime. Refresh the page and try again.';
+  if (/Patroni is not configured|not reachable|unreachable/.test(m)) return 'The agent on this node cannot reach the Patroni REST API. Check the URL under Nodes → Paths and discovery (usually http://127.0.0.1:8008) and that Patroni is running.';
+  if (/PGA-GEN-096/.test(m)) return 'After the swap some rows would reference rows that do not exist (foreign key): nothing was changed. Restore the related tables to the same point in time too, or restore them “next to the originals” and recover the rows you need. If you know this is fine you can proceed: those foreign keys will stay NOT VALID.';
+  if (/NOT confirmed/.test(m)) return 'Patroni accepted the request but the change was not confirmed in time: check the member states and the Patroni logs.';
   return '';
 }

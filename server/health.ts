@@ -18,7 +18,7 @@ export const SEV_RANK: Record<Severity, number> = { critical: 0, warning: 1, inf
 
 const ONLINE_MS = 45_000;
 const GB = 1024 ** 3;
-const hrs = (h: number) => (h >= 48 ? `${Math.round(h / 24)} giorni` : `${Math.round(h)} ore`);
+const hrs = (h: number) => (h >= 48 ? `${Math.round(h / 24)} days` : `${Math.round(h)} hours`);
 const bytesH = (b: number) => (b >= GB ? `${(b / GB).toFixed(1)} GB` : `${Math.round(b / 1048576)} MB`);
 const ts = (s?: string) => (s ? Date.parse(s) : NaN);
 
@@ -39,16 +39,16 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
 
     // geo DR site (Patroni standby cluster): no primary by design; its own findings (replication between sites) come from geo.ts
     const standbySite = !primary && online.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader' || n.snapshot?.patroni?.standby_cluster);
-    if (!primary && !standbySite) add({ severity: 'critical', code: 'no_primary', title: 'Nessun primario raggiungibile', cause: online.length ? 'Gli agenti rispondono ma nessun nodo riporta il ruolo di primario.' : 'Nessun agente del cluster risponde da più di 45 secondi.', action: { label: 'Apri il cluster', page: 'cluster' } });
+    if (!primary && !standbySite) add({ severity: 'critical', code: 'no_primary', title: 'No reachable primary', cause: online.length ? 'The agents respond but no node reports the primary role.' : 'No agent of the cluster has responded for more than 45 seconds.', action: { label: 'Open the cluster', page: 'cluster' } });
     for (const n of nodes.filter(x => !on(x))) {
       if (!primary && online.length === 0 && nodes.length === 1) break;           // already covered by no_primary
-      add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Nodo ${n.name} non risponde`, cause: n.lastSeen ? `Ultimo contatto ${new Date(n.lastSeen).toISOString()}. Agente fermo, server spento o rete interrotta.` : 'Questo nodo non ha mai inviato dati.' });
+      add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Node ${n.name} is not responding`, cause: n.lastSeen ? `Last seen ${new Date(n.lastSeen).toISOString()}. Agent stopped, server down or network interrupted.` : 'This node has never sent data.' });
     }
     // Patroni members with no agent: if the nodes WITH an agent fail, nothing can run backups/restores/HBA changes there.
     const known = new Set(nodes.map((n: any) => n.name));
     const orphan = new Map<string, any>();
     for (const n of online) for (const m of (n.snapshot?.patroni?.members || [])) if (m?.name && !known.has(m.name) && !orphan.has(m.name)) orphan.set(m.name, m);
-    for (const [name, m] of orphan) add({ severity: 'warning', code: 'node_without_agent', detail: name, nodeName: name, title: `Nodo ${name} senza agent`, cause: `Patroni lo vede (${m.role || 'membro'}, ${m.state || 'stato sconosciuto'}) ma non c’è un agent: se i nodi con l’agent si fermano, backup, ripristini e modifiche non sono possibili. Installa l’agent su ogni nodo del cluster.`, action: { label: 'Collega il nodo', page: 'cluster' } });
+    for (const [name, m] of orphan) add({ severity: 'warning', code: 'node_without_agent', detail: name, nodeName: name, title: `Node ${name} has no agent`, cause: `Patroni sees it (${m.role || 'member'}, ${m.state || 'unknown state'}) but there is no agent: if the nodes with the agent stop, backups, restores and changes are not possible. Install the agent on every node of the cluster.`, action: { label: 'Connect the node', page: 'cluster' } });
     const pg = primary?.snapshot?.postgres || {};
     const pol = resolvePolicy(st, c).policy;
 
@@ -57,14 +57,14 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       const bkx = primary?.snapshot?.backup;
       const fts: string[] | null = Array.isArray(bkx?.full_tablespace_oids) ? bkx.full_tablespace_oids.map(String) : null;
       const fresh = fts ? ((pg.tablespaces || []) as any[]).filter(t => !fts.includes(String(t.oid))) : [];
-      if (fresh.length) add({ severity: 'warning', code: 'tablespace_after_full', detail: fresh.map(t => t.oid).join('-'), title: `Tablespace nuovo dopo l’ultimo backup completo (${fresh.map(t => t.location).slice(0, 2).join(', ')})`,
-        cause: 'Un ripristino rigioca la creazione del tablespace sul suo percorso reale: su questo server sarebbe il tablespace in uso, quindi i ripristini sono bloccati finché non c’è un backup completo nuovo. Lo scheduler ne avvia uno; puoi farlo anche subito.', action: { label: 'Esegui un backup completo', page: 'backup' } });
+      if (fresh.length) add({ severity: 'warning', code: 'tablespace_after_full', detail: fresh.map(t => t.oid).join('-'), title: `New tablespace after the last full backup (${fresh.map(t => t.location).slice(0, 2).join(', ')})`,
+        cause: 'A restore replays the tablespace creation on its real path: on this server that would be the live tablespace, so restores are blocked until there is a new full backup. The scheduler starts one; you can also take it right away.', action: { label: 'Take a full backup', page: 'backup' } });
     }
     // ---- a database still marked "restore in progress" while no restore is running: the restore was interrupted (agent restart, crash) and the copy is INCOMPLETE
     const busy = new Set((st.operations || []).filter((o: any) => o.clusterId === c.id && ['queued', 'leased', 'running'].includes(o.status) && o.type === 'restore_database').map((o: any) => o.params?.new_name));
     for (const d of (pg.databases || []) as any[]) {
-      if (d?.restoring && !busy.has(d.name)) add({ severity: 'warning', code: 'restore_incomplete', detail: d.name, title: `Database ${d.name}: ripristino interrotto`,
-        cause: 'Il ripristino che lo stava riempiendo non è arrivato alla fine: il contenuto è incompleto. Eliminalo e ripeti il ripristino.', action: { label: 'Vai al ripristino', page: 'restore' } });
+      if (d?.restoring && !busy.has(d.name)) add({ severity: 'warning', code: 'restore_incomplete', detail: d.name, title: `Database ${d.name}: restore interrupted`,
+        cause: 'The restore that was filling it did not complete: the content is incomplete. Drop it and run the restore again.', action: { label: 'Go to restore', page: 'restore' } });
     }
 
     // ---- backups
@@ -76,23 +76,23 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     if (!sets.length && standbySite) {
       // backups are taken on the primary site (same database, shared repository): nothing to report here
     } else if (!sets.length) {
-      add({ severity: isProd || pol?.enabled ? 'critical' : 'warning', code: 'no_backup', title: 'Nessun backup completo', cause: pol?.enabled ? 'La strategia è attiva ma non esiste ancora un backup riuscito.' : 'Il cluster non ha una strategia di backup né backup eseguiti: i dati non sono protetti.', action: { label: pol?.enabled ? 'Vedi i backup' : 'Assegna una strategia', page: pol?.enabled ? 'backup' : 'strategy' } });
+      add({ severity: isProd || pol?.enabled ? 'critical' : 'warning', code: 'no_backup', title: 'No full backup', cause: pol?.enabled ? 'The policy is active but there is no successful backup yet.' : 'The cluster has neither a backup policy nor any backups: the data is not protected.', action: { label: pol?.enabled ? 'See the backups' : 'Assign a policy', page: pol?.enabled ? 'backup' : 'strategy' } });
     } else if (expectH && Number.isFinite(lastMs) && now - lastMs > expectH * 3600_000 * 2) {
       const age = (now - lastMs) / 3600_000;
-      add({ severity: age > expectH * 4 ? 'critical' : 'warning', code: 'backup_stale', title: `Ultimo backup di ${hrs(age)} fa`, cause: `La strategia prevede un backup ogni ${hrs(expectH)}: ne manca almeno uno. Controlla l’ultimo errore o se l’agente è offline.`, action: { label: 'Vedi i backup', page: 'backup' } });
+      add({ severity: age > expectH * 4 ? 'critical' : 'warning', code: 'backup_stale', title: `Last backup ${hrs(age)} ago`, cause: `The policy expects a backup every ${hrs(expectH)}: at least one is missing. Check the last error or whether the agent is offline.`, action: { label: 'See the backups', page: 'backup' } });
     }
     const failedSince = (bk?.last_failure && (!last || ts(bk.last_failure.start_time) > lastMs)) ? bk.last_failure : null;
-    if (failedSince) add({ severity: 'warning', code: 'backup_failed', title: 'L’ultimo tentativo di backup è fallito', cause: String(failedSince.reason || 'Motivo non riportato.').slice(0, 300), action: { label: 'Vedi i backup', page: 'backup' } });
+    if (failedSince) add({ severity: 'warning', code: 'backup_failed', title: 'The last backup attempt failed', cause: String(failedSince.reason || 'Reason not reported.').slice(0, 300), action: { label: 'See the backups', page: 'backup' } });
     const lastVerify = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'backup_verify' && o.status === 'succeeded').map(o => ts(o.updatedAt)).sort().pop();
     if (pol?.enabled && pol.verifyEveryHours && sets.length) {
       const base = Number.isFinite(lastVerify as number) ? (lastVerify as number) : lastMs;
-      if (now - base > pol.verifyEveryHours * 3600_000 * 2) add({ severity: 'info', code: 'verify_stale', title: 'Verifica dei backup in ritardo', cause: lastVerify ? `Ultima verifica riuscita ${hrs((now - lastVerify) / 3600_000)} fa.` : 'Nessuna verifica riuscita finora: un backup non verificato è solo una speranza.', action: { label: 'Vedi i backup', page: 'backup' } });
+      if (now - base > pol.verifyEveryHours * 3600_000 * 2) add({ severity: 'info', code: 'verify_stale', title: 'Backup verification overdue', cause: lastVerify ? `Last successful verification ${hrs((now - lastVerify) / 3600_000)} ago.` : 'No successful verification so far: an unverified backup is only a hope.', action: { label: 'See the backups', page: 'backup' } });
     }
 
     const drills = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'restore_drill' && o.status === 'succeeded');
     const lastDrill = drills.length ? drills[drills.length - 1] : null;
     if (isProd && sets.length && !standbySite && (!lastDrill || now - Date.parse(lastDrill.updatedAt) > 90 * 86400_000))
-      add({ severity: 'info', code: 'drill_stale', title: lastDrill ? 'Prova di disaster recovery vecchia di oltre 90 giorni' : 'Mai provato il ripristino completo', cause: lastDrill ? 'Una prova periodica conferma che il ripristino funziona ancora e quanto tempo richiede.' : 'Non sai ancora quanto tempo servirebbe a ripristinare l’intero cluster: una prova lo misura senza toccare la produzione.', action: { label: 'Vedi i backup', page: 'backup' } });
+      add({ severity: 'info', code: 'drill_stale', title: lastDrill ? 'Disaster recovery drill older than 90 days' : 'Full restore never tested', cause: lastDrill ? 'A periodic drill confirms that restore still works and how long it takes.' : 'You do not know yet how long restoring the whole cluster would take: a drill measures it without touching production.', action: { label: 'See the backups', page: 'backup' } });
 
     // ---- PostgreSQL version: supported / legacy / end-of-life, and binaries of another major (the agent knows which binaries it uses)
     const seenVer = new Set<string>();
@@ -104,35 +104,35 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         const code = 'pg_' + p.code;
         if (seenVer.has(code + cmp.label)) continue;                     // same major on several nodes: one issue per cluster
         seenVer.add(code + cmp.label);
-        add({ severity: p.severity, code, detail: String(cmp.label), title: p.code === 'eol' ? `PostgreSQL ${cmp.label} è a fine vita` : p.code === 'unsupported' ? `PostgreSQL ${cmp.label} non supportato` : p.code === 'legacy' ? `PostgreSQL ${cmp.label} in modalità legacy` : `PostgreSQL ${cmp.label} non ancora verificato`, cause: String(p.text || '') });
+        add({ severity: p.severity, code, detail: String(cmp.label), title: p.code === 'eol' ? `PostgreSQL ${cmp.label} is end-of-life` : p.code === 'unsupported' ? `PostgreSQL ${cmp.label} is not supported` : p.code === 'legacy' ? `PostgreSQL ${cmp.label} in legacy mode` : `PostgreSQL ${cmp.label} not verified yet`, cause: String(p.text || '') });
       }
       for (const t of (cmp.tool_problems || []) as any[])
-        add({ severity: t.severity, code: 'pg_' + t.code, detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: binari PostgreSQL non adatti al server`, cause: String(t.text || '') });
+        add({ severity: t.severity, code: 'pg_' + t.code, detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: PostgreSQL binaries do not match the server`, cause: String(t.text || '') });
     }
 
     // ---- WAL / archiving
     const wal = (primary || nodes[0])?.snapshot?.wal;
-    if (wal && wal.gap_count > 0 && !standbySite) add({ severity: 'critical', code: 'wal_gap', title: `Archivio WAL con ${wal.gap_count} buco/i`, cause: 'Mancano segmenti WAL: il recupero a un istante preciso oltre il buco non è possibile. Esegui subito un nuovo backup completo.', action: { label: 'Vedi il recupero', page: 'restore' } });
+    if (wal && wal.gap_count > 0 && !standbySite) add({ severity: 'critical', code: 'wal_gap', title: `WAL archive with ${wal.gap_count} gap(s)`, cause: 'WAL segments are missing: point-in-time recovery past the gap is not possible. Take a new full backup right away.', action: { label: 'See restore', page: 'restore' } });
     // the standby site of a geo pair shares the primary site's archive: its findings are the primary's, said once there
-    if (wal && wal.conflicts > 0 && !standbySite) add({ severity: wal.conflicts_newest && now - wal.conflicts_newest * 1000 > 7 * 86400_000 ? 'warning' : 'critical', code: 'wal_conflict', title: `${wal.conflicts} ${wal.conflicts === 1 ? 'copia WAL divergente' : 'copie WAL divergenti'} in quarantena`,
-      cause: 'Due server hanno archiviato contenuti diversi con lo stesso nome (possibile split-brain: due primari insieme, o due promozioni sullo stesso numero di timeline). L’archivio ha tenuto la prima copia e messo da parte le altre. Verifica quale server era il primario giusto, poi segna le copie come esaminate (restano conservate).',
-      action: { label: 'Esamina', page: 'backup' } });
+    if (wal && wal.conflicts > 0 && !standbySite) add({ severity: wal.conflicts_newest && now - wal.conflicts_newest * 1000 > 7 * 86400_000 ? 'warning' : 'critical', code: 'wal_conflict', title: `${wal.conflicts} ${wal.conflicts === 1 ? 'divergent WAL copy' : 'divergent WAL copies'} in quarantine`,
+      cause: 'Two servers archived different content under the same name (possible split-brain: two primaries at once, or two promotions to the same timeline number). The archive kept the first copy and set the others aside. Check which server was the right primary, then mark the copies as reviewed (they are kept).',
+      action: { label: 'Review', page: 'backup' } });
     const arch = pg.archiver;
     if (arch?.last_failed_time && (!arch.last_archived_time || ts(arch.last_failed_time) > ts(arch.last_archived_time)) && now - ts(arch.last_failed_time) < 3600_000 * 6)
       if (/\.history$/.test(String(arch.last_failed_wal || '')) && /PGA-WAL-03[13]/.test(String(pg.archive_error?.error || '')))
         // two servers promoted themselves to the same timeline number: the archiver waits forever on this history file
-        add({ severity: 'critical', code: 'archiver_history_conflict', title: `Archiviazione bloccata: la storia della timeline ${arch.last_failed_wal} esiste già con un contenuto diverso`,
-          cause: `Due server si sono promossi sullo stesso numero di timeline (split-brain tra siti, o una promozione senza accesso all’archivio condiviso). PostgreSQL non archivia più nulla dopo questo file: i WAL si accumulano e i ripristini a un istante preciso si fermano qui. Il primario attuale è quello giusto: sposta il file ${arch.last_failed_wal} dell’archivio nella cartella conflicts/ (resta lì per l’analisi) e l’archiviazione riparte da sola. Per evitarlo: «Recupero dall’archivio» (restore_command) su entrambi i siti, in Georidondanza.`,
+        add({ severity: 'critical', code: 'archiver_history_conflict', title: `Archiving stuck: timeline history ${arch.last_failed_wal} already exists with different content`,
+          cause: `Two servers promoted themselves to the same timeline number (split-brain between sites, or a promotion without access to the shared archive). PostgreSQL archives nothing after this file: WAL piles up and point-in-time restores stop here. The current primary is the right one: move the archive’s ${arch.last_failed_wal} file into the conflicts/ directory (it stays there for analysis) and archiving resumes by itself. To prevent it: “Recovery from the archive” (restore_command) on both sites, in Geo-redundancy.`,
           action: { label: 'Vedi i backup', page: 'backup' } });
-      else add({ severity: 'critical', code: 'archiver_failing', title: 'L’archiviazione dei WAL sta fallendo', cause: `Ultimo segmento fallito: ${arch.last_failed_wal || '?'}${pg.archive_error?.error ? ` — motivo: ${pg.archive_error.error}` : ''}. Finché non si risolve i WAL si accumulano sul server e il disco si riempie.`, action: { label: 'Vedi i backup', page: 'backup' } });
-    if (pol?.enabled && pg.settings && pg.settings.archive_mode === 'off') add({ severity: 'warning', code: 'archive_off', title: 'archive_mode è spento', cause: 'La strategia di backup è attiva ma PostgreSQL non archivia i WAL: nessun recupero a un istante preciso.', action: { label: 'Vedi i backup', page: 'backup' } });
+      else add({ severity: 'critical', code: 'archiver_failing', title: 'WAL archiving is failing', cause: `Last failed segment: ${arch.last_failed_wal || '?'}${pg.archive_error?.error ? ` — reason: ${pg.archive_error.error}` : ''}. Until this is fixed, WAL piles up on the server and the disk fills up.`, action: { label: 'See the backups', page: 'backup' } });
+    if (pol?.enabled && pg.settings && pg.settings.archive_mode === 'off') add({ severity: 'warning', code: 'archive_off', title: 'archive_mode is off', cause: 'The backup policy is active but PostgreSQL does not archive WAL: no point-in-time recovery.', action: { label: 'See the backups', page: 'backup' } });
 
     // ---- shared storage: a switchover/failover moves archiving to another node. If every node writes to ITS OWN local repo / WAL archive, the archive splits and PITR breaks silently.
     if (online.length >= 2) {
-      for (const [field, what] of [['wal_id', 'L’archivio WAL'], ['repo_id', 'Il repository dei backup']] as const) {
+      for (const [field, what] of [['wal_id', 'The WAL archive'], ['repo_id', 'The backup repository']] as const) {
         const ids = new Map<string, string[]>();
         for (const n of online) { const v = n.snapshot?.storage?.[field]; if (v) ids.set(v, [...(ids.get(v) || []), n.name]); }
-        if (ids.size >= 2) add({ severity: 'warning', code: field === 'wal_id' ? 'wal_not_shared' : 'repo_not_shared', title: `${what} non è condiviso tra i nodi`, cause: `Ogni nodo scrive nella propria cartella (${[...ids.values()].map(v => v.join(', ')).join(' | ')}). Dopo uno switchover o un failover i WAL e i backup finiscono su un altro nodo e il ripristino a un istante preciso si spezza senza avvisi. Monta lo stesso storage condiviso (NFS, CephFS, volume condiviso…) sullo stesso percorso su ogni nodo e indicalo nelle impostazioni dell’agent.`, action: { label: 'Percorsi dell’agent', page: 'nodes' } });
+        if (ids.size >= 2) add({ severity: 'warning', code: field === 'wal_id' ? 'wal_not_shared' : 'repo_not_shared', title: `${what} is not shared between the nodes`, cause: `Each node writes into its own directory (${[...ids.values()].map(v => v.join(', ')).join(' | ')}). After a switchover or a failover, WAL and backups end up on another node and point-in-time recovery breaks silently. Mount the same shared storage (NFS, CephFS, shared volume…) at the same path on every node and set it in the agent settings.`, action: { label: 'Agent paths', page: 'nodes' } });
       }
     }
 
@@ -141,33 +141,33 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       const dn = (n.snapshot?.postgres?.replication || []) as any[];
       for (const r of dn) {
         const lag = Number(r.replay_lag_bytes) || 0;
-        if (lag > 64 * 1048576) add({ severity: lag > GB ? 'critical' : 'warning', code: 'repl_lag', detail: String(r.application_name), nodeId: n.id, nodeName: n.name, title: `Replica ${r.application_name} in ritardo di ${bytesH(lag)}`, cause: 'La replica non sta recuperando: rete lenta, disco saturo o query lunghe sulla replica.', action: { label: 'Apri il cluster', page: 'cluster' } });
+        if (lag > 64 * 1048576) add({ severity: lag > GB ? 'critical' : 'warning', code: 'repl_lag', detail: String(r.application_name), nodeId: n.id, nodeName: n.name, title: `Replica ${r.application_name} lagging by ${bytesH(lag)}`, cause: 'The replica is not catching up: slow network, saturated disk or long queries on the replica.', action: { label: 'Open the cluster', page: 'cluster' } });
       }
       for (const s of (n.snapshot?.postgres?.slots || []) as any[]) {
         const kept = Number(s.retained_bytes) || 0;
-        if (!s.active && kept > GB) add({ severity: kept > 10 * GB ? 'critical' : 'warning', code: 'slot_stale', detail: String(s.name), nodeId: n.id, nodeName: n.name, title: `Slot “${s.name}” inattivo trattiene ${bytesH(kept)} di WAL`, cause: 'Nessuno sta consumando questo slot: PostgreSQL conserva tutti i WAL e il disco si riempie. Se la replica non serve più, elimina lo slot.', action: { label: 'Apri il cluster', page: 'cluster' } });
+        if (!s.active && kept > GB) add({ severity: kept > 10 * GB ? 'critical' : 'warning', code: 'slot_stale', detail: String(s.name), nodeId: n.id, nodeName: n.name, title: `Inactive slot “${s.name}” retains ${bytesH(kept)} of WAL`, cause: 'Nothing is consuming this slot: PostgreSQL keeps all WAL and the disk fills up. If the replica is no longer needed, drop the slot.', action: { label: 'Open the cluster', page: 'cluster' } });
       }
       const conn = n.snapshot?.postgres?.connections;
-      if (conn?.max && conn.used / conn.max > 0.85) add({ severity: conn.used / conn.max > 0.95 ? 'critical' : 'warning', code: 'connections', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Connessioni al ${Math.round(conn.used / conn.max * 100)}% su ${n.name}`, cause: `${conn.used} di ${conn.max}: nuove connessioni saranno rifiutate. Valuta un pooler o l’analisi delle sessioni inattive.`, action: { label: 'Apri il cluster', page: 'cluster' } });
+      if (conn?.max && conn.used / conn.max > 0.85) add({ severity: conn.used / conn.max > 0.95 ? 'critical' : 'warning', code: 'connections', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Connections at ${Math.round(conn.used / conn.max * 100)}% on ${n.name}`, cause: `${conn.used} of ${conn.max}: new connections will be refused. Consider a pooler or reviewing idle sessions.`, action: { label: 'Open the cluster', page: 'cluster' } });
       for (const [label, d] of Object.entries((n.snapshot?.system?.disks || {}) as Record<string, any>)) {
         if (!d?.total_bytes) continue;
         const free = d.free_bytes / d.total_bytes;
-        if (free < 0.15) add({ severity: free < 0.07 ? 'critical' : 'warning', code: 'disk', detail: `${n.id}:${label}`, nodeId: n.id, nodeName: n.name, title: `Disco ${label} quasi pieno su ${n.name} (${Math.round(free * 100)}% libero)`, cause: label === 'repo' ? 'Il repository dei backup sta finendo lo spazio: riduci la conservazione o amplia il volume.' : label === 'wal_archive' ? 'L’archivio WAL sta finendo lo spazio: controlla la conservazione dei backup.' : 'Se il disco dei dati si riempie PostgreSQL si ferma.', action: { label: 'Apri il cluster', page: 'cluster' } });
+        if (free < 0.15) add({ severity: free < 0.07 ? 'critical' : 'warning', code: 'disk', detail: `${n.id}:${label}`, nodeId: n.id, nodeName: n.name, title: `Disk ${label} almost full on ${n.name} (${Math.round(free * 100)}% free)`, cause: label === 'repo' ? 'The backup repository is running out of space: reduce retention or grow the volume.' : label === 'wal_archive' ? 'The WAL archive is running out of space: check the backup retention.' : 'If the data disk fills up, PostgreSQL stops.', action: { label: 'Open the cluster', page: 'cluster' } });
       }
       const pv = n.snapshot?.patroni; const ps = n.snapshot?.postgres?.settings || {};
       if (pv?.accessible && (pv.members?.length || 0) + (pv.standby_cluster ? 1 : 0) >= 2 && !out.some(x => x.key === `${c.id}:patroni_rewind:dcs`)) {
         const hints = ps.wal_log_hints === 'on' || ps.data_checksums === 'on' || n.snapshot?.postgres?.checksums === true;
-        if (pv.use_pg_rewind === false || pv.use_pg_rewind == null) add({ severity: 'warning', code: 'patroni_rewind', detail: 'dcs', nodeId: n.id, nodeName: n.name, title: 'Patroni senza pg_rewind (use_pg_rewind spento)',
-          cause: 'Dopo un failover il vecchio leader, o una replica rimasta avanti, non può essere riallineato e Patroni lo ricostruisce copiando tutti i dati (o resta fermo). Attiva postgresql.use_pg_rewind nella configurazione dinamica (patronictl edit-config).', action: { label: 'Apri l’alta affidabilità', page: 'ha' } });
-        else if (pv.use_pg_rewind === true && ps.wal_log_hints !== undefined && !hints) add({ severity: 'warning', code: 'patroni_rewind', detail: 'dcs', nodeId: n.id, nodeName: n.name, title: 'pg_rewind attivo ma inutilizzabile',
-          cause: 'pg_rewind richiede wal_log_hints = on oppure i checksum dei dati: nessuno dei due è attivo, quindi dopo un failover il riallineamento fallisce. Imposta wal_log_hints = on (riavvio necessario).', action: { label: 'Apri i parametri', page: 'params' } });
+        if (pv.use_pg_rewind === false || pv.use_pg_rewind == null) add({ severity: 'warning', code: 'patroni_rewind', detail: 'dcs', nodeId: n.id, nodeName: n.name, title: 'Patroni without pg_rewind (use_pg_rewind off)',
+          cause: 'After a failover the old leader, or a replica that got ahead, cannot be realigned and Patroni rebuilds it by copying all the data (or it stays stuck). Enable postgresql.use_pg_rewind in the dynamic configuration (patronictl edit-config).', action: { label: 'Open high availability', page: 'ha' } });
+        else if (pv.use_pg_rewind === true && ps.wal_log_hints !== undefined && !hints) add({ severity: 'warning', code: 'patroni_rewind', detail: 'dcs', nodeId: n.id, nodeName: n.name, title: 'pg_rewind enabled but unusable',
+          cause: 'pg_rewind requires wal_log_hints = on or data checksums: neither is active, so after a failover the realignment fails. Set wal_log_hints = on (restart required).', action: { label: 'Open parameters', page: 'params' } });
       }
       const plc = n.snapshot?.postgres?.hba_patroni_local;
       if (plc && plc.ok === false && !out.some(x => x.key === `${c.id}:patroni_local_replication:hba`)) add({ severity: 'warning', code: 'patroni_local_replication', detail: 'hba', nodeId: n.id, nodeName: n.name,
-        title: 'pg_hba non consente a Patroni la connessione di replica locale',
-        cause: `Patroni legge la timeline delle repliche con una connessione di replica locale (127.0.0.1, utente ${plc.denied.join(', ')}), che pg_hba rifiuta. Dopo un failover una replica (o un intero sito di replica) rimasta avanti rispetto al nuovo leader non viene riallineata con pg_rewind e resta ferma. Regola da aggiungere: ${plc.suggest[0] || ''}.`,
-        action: { label: 'Apri le regole di accesso', page: 'hba' } });
-      if (n.snapshot?.postgres?.pending_restart?.length) add({ severity: 'info', code: 'pending_restart', detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: riavvio in sospeso`, cause: `Parametri modificati ma non ancora attivi: ${n.snapshot.postgres.pending_restart.slice(0, 5).join(', ')}.` });
+        title: 'pg_hba does not allow Patroni’s local replication connection',
+        cause: `Patroni reads the replicas’ timeline through a local replication connection (127.0.0.1, user ${plc.denied.join(', ')}), which pg_hba rejects. After a failover a replica (or a whole standby site) that got ahead of the new leader is not realigned with pg_rewind and stays stuck. Rule to add: ${plc.suggest[0] || ''}.`,
+        action: { label: 'Open the access rules', page: 'hba' } });
+      if (n.snapshot?.postgres?.pending_restart?.length) add({ severity: 'info', code: 'pending_restart', detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: restart pending`, cause: `Parameters changed but not active yet: ${n.snapshot.postgres.pending_restart.slice(0, 5).join(', ')}.` });
     }
   }
   for (const i of geoIssues(st, now)) out.push(i);
@@ -181,12 +181,12 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       out.push({ ...rest, key: `worker:${n.id}:${i.code}${detail ? ':' + detail : ''}`, clusterId: `worker:${n.id}`, clusterName: n.name, environment: '', nodeId: n.id, nodeName: n.name });
     };
     const isOn = !!n.lastSeen && now - Date.parse(n.lastSeen) < ONLINE_MS;
-    if (!isOn) add({ severity: users.length ? 'critical' : 'warning', code: 'worker_offline', title: `Macchina operativa ${n.name} non raggiungibile`, cause: users.length ? `È il nodo dei ripristini per ${users.length} livelli di configurazione: finché non torna, quei ripristini non possono partire.` : 'L’agent non risponde da più di 45 secondi.', action: { label: 'Apri la macchina' } });
+    if (!isOn) add({ severity: users.length ? 'critical' : 'warning', code: 'worker_offline', title: `Worker host ${n.name} unreachable`, cause: users.length ? `It is the restore node for ${users.length} configuration levels: until it is back, those restores cannot start.` : 'The agent has not responded for more than 45 seconds.', action: { label: 'Open the host' } });
     const w = n.snapshot?.worker || {};
     for (const m of (w.mounts || []) as any[]) {
       if (!m.total_bytes) continue;
       const free = m.free_bytes / m.total_bytes;
-      if (free < 0.15) add({ severity: free < 0.07 ? 'critical' : 'warning', code: 'worker_disk', detail: m.mount, title: `${n.name}: ${m.mount} quasi pieno (${Math.round(free * 100)}% libero)`, cause: m.remote ? 'Una condivisione di rete usata per i backup sta finendo lo spazio.' : 'Su questa macchina girano ripristini o backup: senza spazio falliscono.', action: { label: 'Apri la macchina' } });
+      if (free < 0.15) add({ severity: free < 0.07 ? 'critical' : 'warning', code: 'worker_disk', detail: m.mount, title: `${n.name}: ${m.mount} almost full (${Math.round(free * 100)}% free)`, cause: m.remote ? 'A network share used for backups is running out of space.' : 'Restores or backups run on this host: without space they fail.', action: { label: 'Open the host' } });
     }
     if (users.length && Array.isArray(w.pg_installations)) {
       const have = new Set((w.pg_installations as any[]).map(i => Number(i.major)));
@@ -200,8 +200,8 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         need.set(m, [...(need.get(m) || []), c.name]);
       }
       const missing = [...need.keys()].filter(m => !have.has(m)).sort((a, b) => a - b);
-      if (missing.length) add({ severity: 'warning', code: 'worker_pg_missing', title: `${n.name}: mancano i binari di PostgreSQL ${missing.join(', ')}`,
-        cause: `È il nodo dei ripristini di ${missing.map(m => `${(need.get(m) || []).slice(0, 3).join(', ')} (PostgreSQL ${m})`).join('; ')}: non potrà recuperarne i backup finché non installi i binari (dalla pagina della macchina, un clic).`, action: { label: 'Apri la macchina' } });
+      if (missing.length) add({ severity: 'warning', code: 'worker_pg_missing', title: `${n.name}: PostgreSQL ${missing.join(', ')} binaries are missing`,
+        cause: `It is the restore node of ${missing.map(m => `${(need.get(m) || []).slice(0, 3).join(', ')} (PostgreSQL ${m})`).join('; ')}: it cannot restore their backups until you install the binaries (one click from the host page).`, action: { label: 'Open the host' } });
     }
   }
   return out.sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || a.clusterName.localeCompare(b.clusterName));

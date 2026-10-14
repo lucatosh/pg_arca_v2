@@ -7,7 +7,7 @@ import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Sk
 import { Op, revalidate, toast, useOpRunner, useQuery, useDraft } from '../hooks';
 import { OP_LABEL, OpPanel, Result } from './shared';
 
-export const TYPE_LABEL: Record<string, string> = { full: 'Completo', diff: 'Differenziale', incr: 'Incrementale' };
+export const TYPE_LABEL: Record<string, string> = { full: 'Full', diff: 'Differential', incr: 'Incremental' };
 export interface SetRow { id: string; type: 'full' | 'diff' | 'incr'; parent?: string; status: string; start_time?: string; stop_time?: string; duration_sec?: number; bytes_logical: number; bytes_written: number; reason?: string; timeline?: number }
 
 /** Order sets as chains: newest full first, followed by the diffs / incrementals that depend on it. */
@@ -26,26 +26,26 @@ export function chains(sets: SetRow[]): { row: SetRow; depth: number }[] {
 export interface Protection { kind: 'ok' | 'warn' | 'bad'; title: string; text: string }
 export function protection(d: any): Protection {
   const bk = d.backup; const ar = d.archiver; const wal = d.wal; const pol = d.policy;
-  if (d.archiveMode === 'off') return { kind: 'bad', title: 'Archiviazione WAL spenta', text: 'Senza WAL archiviati non si può ripristinare a un istante preciso e i backup non sono consistenti. Segui le istruzioni qui sotto.' };
+  if (d.archiveMode === 'off') return { kind: 'bad', title: 'WAL archiving is off', text: 'Without archived WAL you cannot restore to a point in time and backups are not consistent. Follow the instructions below.' };
   if (ar && ar.failed_count > 0 && ar.last_failed_time && (!ar.last_archived_time || ar.last_failed_time > ar.last_archived_time))
-    return { kind: 'bad', title: 'L’archiviazione WAL sta fallendo', text: `Ultimo errore su ${ar.last_failed_wal} (${ago(ar.last_failed_time)}). Il disco di PostgreSQL si riempie finché non viene risolto.` };
-  if (wal && wal.continuous === false) return { kind: 'bad', title: 'Buchi nei WAL archiviati', text: `${wal.gap_count || wal.gaps?.length} interruzioni: il ripristino a un istante preciso non è possibile oltre il primo buco. Esegui un nuovo backup completo.` };
-  if (!bk?.sets) return { kind: 'warn', title: 'Nessun backup valido', text: bk?.failed_sets ? 'Esistono solo tentativi falliti: controlla l’operazione e riprova.' : 'Esegui il primo backup completo.' };
+    return { kind: 'bad', title: 'WAL archiving is failing', text: `Last error on ${ar.last_failed_wal} (${ago(ar.last_failed_time)}). PostgreSQL’s disk keeps filling up until this is fixed.` };
+  if (wal && wal.continuous === false) return { kind: 'bad', title: 'Gaps in the archived WAL', text: `${wal.gap_count || wal.gaps?.length} gaps: point-in-time recovery is not possible past the first gap. Take a new full backup.` };
+  if (!bk?.sets) return { kind: 'warn', title: 'No valid backup', text: bk?.failed_sets ? 'There are only failed attempts: check the operation and try again.' : 'Take the first full backup.' };
   const maxH = pol?.enabled ? Math.max(pol.incrEveryHours || pol.fullEveryHours, 1) * 2 : 36;
-  if (bk.last_backup_age_hours != null && bk.last_backup_age_hours > maxH) return { kind: 'warn', title: 'Ultimo backup datato', text: `Risale a ${ago(bk.last_backup?.stop_time)}${pol?.enabled ? ', più del doppio dell’intervallo pianificato' : ''}.` };
-  if (!pol?.enabled) return { kind: 'warn', title: 'Backup riusciti, ma non pianificati', text: 'Attiva la pianificazione per non dipendere da un’azione manuale.' };
-  return { kind: 'ok', title: 'Dati protetti', text: `Ultimo backup ${ago(bk.last_backup?.stop_time)}, WAL continui${wal?.last_segment ? ` fino a ${wal.last_segment}` : ''}.` };
+  if (bk.last_backup_age_hours != null && bk.last_backup_age_hours > maxH) return { kind: 'warn', title: 'Last backup is old', text: `It dates from ${ago(bk.last_backup?.stop_time)}${pol?.enabled ? ', more than twice the scheduled interval' : ''}.` };
+  if (!pol?.enabled) return { kind: 'warn', title: 'Backups succeed, but are not scheduled', text: 'Enable scheduling so you do not depend on a manual action.' };
+  return { kind: 'ok', title: 'Data protected', text: `Last backup ${ago(bk.last_backup?.stop_time)}, continuous WAL${wal?.last_segment ? ` up to ${wal.last_segment}` : ''}.` };
 }
 
 export function BackupTab({ c }: { c: any }) {
   const key = `/api/clusters/${encodeURIComponent(c.id)}/backups`;
   const agentic = c.source !== 'direct' && !c.isSandbox;
   const q = useQuery<any>(agentic ? key : null, { interval: 5000 });
-  if (c.isSandbox) return <Banner kind="info" title="Non disponibile sul cluster demo">Collega un cluster reale con l’agent per eseguire backup.</Banner>;
-  if (c.source === 'direct') return <Card><Empty icon="shield" title="Servono l’agent">Backup e ripristino girano sul server del database. Installa l’agent su un nodo di questo cluster: la console non può leggere i file di dati attraverso una semplice connessione SQL.</Empty></Card>;
+  if (c.isSandbox) return <Banner kind="info" title="Not available on the demo cluster">Connect a real cluster with the agent to run backups.</Banner>;
+  if (c.source === 'direct') return <Card><Empty icon="shield" title="The agent is required">Backup and restore run on the database server. Install the agent on a node of this cluster: the console cannot read data files through a plain SQL connection.</Empty></Card>;
   if (q.loading || !q.data) return <div className="stack"><Skeleton h={60} /><Skeleton h={200} /></div>;
   const d = q.data;
-  if (!d.agent) return <Card><Empty icon="shield" title="Nessun agent su questo cluster">Collega un nodo dalla scheda Nodi.</Empty></Card>;
+  if (!d.agent) return <Card><Empty icon="shield" title="No agent on this cluster">Connect a node from the Nodes tab.</Empty></Card>;
   const v = protection(d); const sets: SetRow[] = d.backup?.recent_sets || [];
   const done = sets.filter(s => s.status === 'COMPLETE');
   return <div className="stack-l">
@@ -60,16 +60,16 @@ export function BackupTab({ c }: { c: any }) {
 function ArchiveSetup({ c, refresh }: { c: any; refresh: () => void }) {
   const r = useOpRunner(c.id, refresh, `archive:${c.id}`); const [ask, setAsk] = useState(false); const [manual, setManual] = useDraft(`archive:${c.id}:manual`, false);
   const res = r.op?.status === 'succeeded' ? r.op.result : null;
-  return <Card title="Attiva l’archiviazione WAL"><div className="stack">
-    <p>Serve per il ripristino a un istante preciso (PITR) e per backup consistenti. L’agent imposta <code>archive_mode</code>, <code>archive_command</code> e, se servono, <code>wal_level</code> e <code>wal_log_hints</code>{c.haState?.managedByPatroni ? ' attraverso la configurazione Patroni (tutti i membri)' : ' con ALTER SYSTEM'}. Il riavvio non viene mai fatto in automatico: lo avvii tu, da qui o come preferisci.</p>
-    <div className="row wrap"><Button kind="primary" icon="play" busy={r.busy} onClick={() => setAsk(true)}>Attiva archiviazione WAL</Button><Button sm onClick={() => setManual(m => !m)}>{manual ? 'Nascondi' : 'Preferisco farlo a mano'}</Button></div>
-    {(r.op || r.error) ? <OpPanel op={r.op} error={r.error} cancel={r.cancel} label="Attivazione archiviazione WAL" /> : null}
-    {res ? <Banner kind={res.restart_required ? 'warn' : 'ok'} title={res.already_enabled ? 'Già attiva' : res.restart_required ? 'Impostazioni salvate: serve un riavvio' : 'Archiviazione attiva'}>{res.already_enabled ? 'Nessuna modifica necessaria.' : !res.restart_required ? 'Applicata con un reload: l’archiviazione è attiva.' : c.haState?.managedByPatroni ? 'Le impostazioni sono nel DCS di Patroni: riavvia ogni membro (prima le repliche, poi il leader) dalla scheda Alta affidabilità → Riavvia.' : 'archive_mode e wal_level valgono solo dopo un riavvio di PostgreSQL.'}{!c.haState?.managedByPatroni && res.restart_required ? <div style={{ marginTop: 8 }}><RestartPg c={c} label="Riavvia ora" onDone={refresh} /></div> : null}</Banner> : null}
-    {manual ? <><p className="small muted">Aggiungi a <code>postgresql.conf</code> sul primario e riavvia PostgreSQL:</p>
+  return <Card title="Enable WAL archiving"><div className="stack">
+    <p>Needed for point-in-time recovery (PITR) and consistent backups. The agent sets <code>archive_mode</code>, <code>archive_command</code> and, if needed, <code>wal_level</code> and <code>wal_log_hints</code>{c.haState?.managedByPatroni ? ' through the Patroni configuration (all members)' : ' with ALTER SYSTEM'}. The restart is never done automatically: you start it, from here or however you prefer.</p>
+    <div className="row wrap"><Button kind="primary" icon="play" busy={r.busy} onClick={() => setAsk(true)}>Enable WAL archiving</Button><Button sm onClick={() => setManual(m => !m)}>{manual ? 'Hide' : 'I prefer to do it by hand'}</Button></div>
+    {(r.op || r.error) ? <OpPanel op={r.op} error={r.error} cancel={r.cancel} label="Enabling WAL archiving" /> : null}
+    {res ? <Banner kind={res.restart_required ? 'warn' : 'ok'} title={res.already_enabled ? 'Already enabled' : res.restart_required ? 'Settings saved: a restart is needed' : 'Archiving enabled'}>{res.already_enabled ? 'No change needed.' : !res.restart_required ? 'Applied with a reload: archiving is active.' : c.haState?.managedByPatroni ? 'The settings are in the Patroni DCS: restart every member (replicas first, then the leader) from the High availability tab → Restart.' : 'archive_mode and wal_level take effect only after a PostgreSQL restart.'}{!c.haState?.managedByPatroni && res.restart_required ? <div style={{ marginTop: 8 }}><RestartPg c={c} label="Restart now" onDone={refresh} /></div> : null}</Banner> : null}
+    {manual ? <><p className="small muted">Add to <code>postgresql.conf</code> on the primary and restart PostgreSQL:</p>
       <CopyBlock text={`wal_level = replica\narchive_mode = on\narchive_command = '/usr/local/bin/pg-arca-wal archive %p %f'\nfull_page_writes = on`} />
-      <p className="small muted">Il percorso <code>/usr/local/bin/pg-arca-wal</code> è quello dell’installazione standard: verifica con <code>command -v pg-arca-wal</code> dove si trova sui tuoi nodi (deve essere lo stesso su tutti); se l’agent non usa <code>/etc/pg-arca/agent.conf</code> anteponi <code>env PG_ARCA_CONF=/percorso/agent.conf</code>. «Attiva archiviazione WAL» qui sopra costruisce il comando giusto da solo. Con Patroni, applica le stesse impostazioni con <code>patronictl edit-config</code>. Per gli incrementali serve anche <code>data_checksums</code> o <code>wal_log_hints = on</code>.</p></> : null}
-    {ask ? <Confirm title="Attivare l’archiviazione WAL?" confirmLabel="Attiva" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); r.run('archive_enable', {}); }}>
-      <p>Verranno modificati i parametri di PostgreSQL elencati sopra. Se è già configurato un altro strumento di archiviazione l’operazione si ferma senza toccarlo. Dopo l’attivazione serve un riavvio.</p></Confirm> : null}
+      <p className="small muted">The path <code>/usr/local/bin/pg-arca-wal</code> is the one of the standard installation: check with <code>command -v pg-arca-wal</code> where it is on your nodes (it must be the same on all of them); if the agent does not use <code>/etc/pg-arca/agent.conf</code>, prefix <code>env PG_ARCA_CONF=/path/agent.conf</code>. “Enable WAL archiving” above builds the right command by itself. With Patroni, apply the same settings with <code>patronictl edit-config</code>. Incremental backups also need <code>data_checksums</code> or <code>wal_log_hints = on</code>.</p></> : null}
+    {ask ? <Confirm title="Enable WAL archiving?" confirmLabel="Enable" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); r.run('archive_enable', {}); }}>
+      <p>The PostgreSQL parameters listed above will be changed. If another archiving tool is already configured, the operation stops without touching it. A restart is needed afterwards.</p></Confirm> : null}
   </div></Card>;
 }
 
@@ -80,15 +80,15 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
   const other = running.filter(o => o.id !== r.op?.id && o.type !== 'backup_info');
   const cancelOther = async (id: string) => { try { await api('POST', `/api/operations/${id}/cancel`); refresh(); } catch (e: any) { toast(e.message, 'bad'); } };
   const active = r.busy || other.length > 0;
-  const hint = { full: 'Copia tutto. È il punto di partenza di ogni catena.', diff: 'Solo ciò che è cambiato dall’ultimo completo.', incr: 'Solo le pagine cambiate dall’ultimo backup: veloce e piccolo.' }[type];
-  return <Card title="Esegui un backup">
+  const hint = { full: 'Copies everything. The starting point of every chain.', diff: 'Only what changed since the last full backup.', incr: 'Only the pages changed since the last backup: fast and small.' }[type];
+  return <Card title="Run a backup">
     <div className="stack">
-      <div className="row wrap"><div className="seg" role="group" aria-label="Tipo di backup">{(['full', 'diff', 'incr'] as const).map(t => <button key={t} aria-pressed={type === t} disabled={active || (t !== 'full' && !hasFull)} onClick={() => { setType(t); r.reset(); }}>{TYPE_LABEL[t]}</button>)}</div>
-        <Button kind="primary" icon="play" busy={r.busy} disabled={active} onClick={() => r.run('backup_run', { type, start_fast: fast }, { nodeId: from || undefined })}>Avvia backup</Button><span className="small muted">{hint}</span></div>
-      {mine.length > 1 ? <label className="row small" style={{ gap: 8 }}>Esegui da <select className="input" style={{ width: 'auto' }} value={from} onChange={e => setFrom(e.target.value)}><option value="">automatico (primario)</option>{mine.map(n => <option key={n.id} value={n.id}>{n.name}{n.role ? ` — ${n.role}` : ''}</option>)}</select><span className="muted">— da una replica il primario non viene caricato; la console gli chiede da sola di chiudere il segmento WAL.</span></label> : null}
-      <label className="row small" style={{ gap: 8 }}><input type="checkbox" checked={fast} onChange={e => setFast(e.target.checked)} /> Checkpoint immediato <span className="muted">— il backup parte subito; se spento PostgreSQL distribuisce il checkpoint e l’avvio può richiedere alcuni minuti (meno I/O).</span></label>
-      {!hasFull ? <p className="small muted">Il primo backup deve essere completo.</p> : null}
-      {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} />{r.op?.status === 'succeeded' ? <Banner kind="ok" title={`Backup ${r.op.result?.set} completato`}>{bytes(r.op.result?.bytes_logical)} letti, {bytes(r.op.result?.bytes_written)} scritti nel repository in {dur(r.op.result?.duration_sec)}{r.op.result?.chunks_dedup ? `; ${num(r.op.result.chunks_dedup)} blocchi già presenti (deduplica)` : ''}.</Banner> : null}</> : null}
+      <div className="row wrap"><div className="seg" role="group" aria-label="Backup type">{(['full', 'diff', 'incr'] as const).map(t => <button key={t} aria-pressed={type === t} disabled={active || (t !== 'full' && !hasFull)} onClick={() => { setType(t); r.reset(); }}>{TYPE_LABEL[t]}</button>)}</div>
+        <Button kind="primary" icon="play" busy={r.busy} disabled={active} onClick={() => r.run('backup_run', { type, start_fast: fast }, { nodeId: from || undefined })}>Start backup</Button><span className="small muted">{hint}</span></div>
+      {mine.length > 1 ? <label className="row small" style={{ gap: 8 }}>Run from <select className="input" style={{ width: 'auto' }} value={from} onChange={e => setFrom(e.target.value)}><option value="">automatic (primary)</option>{mine.map(n => <option key={n.id} value={n.id}>{n.name}{n.role ? ` — ${n.role}` : ''}</option>)}</select><span className="muted">— from a replica the primary carries no load; the console asks it to switch the WAL segment by itself.</span></label> : null}
+      <label className="row small" style={{ gap: 8 }}><input type="checkbox" checked={fast} onChange={e => setFast(e.target.checked)} /> Immediate checkpoint <span className="muted">— the backup starts right away; when off, PostgreSQL spreads the checkpoint and the start can take a few minutes (less I/O).</span></label>
+      {!hasFull ? <p className="small muted">The first backup must be a full backup.</p> : null}
+      {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} />{r.op?.status === 'succeeded' ? <Banner kind="ok" title={`Backup ${r.op.result?.set} completed`}>{bytes(r.op.result?.bytes_logical)} read, {bytes(r.op.result?.bytes_written)} written to the repository in {dur(r.op.result?.duration_sec)}{r.op.result?.chunks_dedup ? `; ${num(r.op.result.chunks_dedup)} chunks already present (deduplication)` : ''}.</Banner> : null}</> : null}
       {other.map(o => <div key={o.id} className="stack"><OpPanel op={o} cancel={() => cancelOther(o.id)} /></div>)}
     </div></Card>;
 }
@@ -97,15 +97,15 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
 function WalConflicts({ c, count, refresh }: { c: any; count: number; refresh: () => void }) {
   const ls = useOpRunner(c.id, undefined, `walconf:${c.id}`); const ack = useOpRunner(c.id, () => { refresh(); ls.run('wal_conflicts', {}); }); const [ask, setAsk] = useState(false);
   const list: any[] = ls.op?.status === 'succeeded' ? ls.op.result.conflicts || [] : [];
-  return <Banner kind="bad" title={`${count} ${count === 1 ? 'copia WAL divergente' : 'copie WAL divergenti'} in quarantena`}>
-    <p className="small">Due server hanno archiviato contenuti diversi con lo stesso nome: l’archivio ha tenuto la prima copia e messo da parte le altre. Succede con due primari insieme o con due promozioni sullo stesso numero di timeline (split-brain tra siti).</p>
-    {list.length ? <div className="tablewrap"><table className="t small"><thead><tr><th>Segmento / storia</th><th>Copia messa da parte</th><th>Quando</th></tr></thead><tbody>
+  return <Banner kind="bad" title={`${count} ${count === 1 ? 'divergent WAL copy' : 'divergent WAL copies'} in quarantine`}>
+    <p className="small">Two servers archived different content under the same name: the archive kept the first copy and set the others aside. This happens with two primaries at once or with two promotions to the same timeline number (split-brain between sites).</p>
+    {list.length ? <div className="tablewrap"><table className="t small"><thead><tr><th>Segment / history</th><th>Copy set aside</th><th>When</th></tr></thead><tbody>
       {list.map(x => <tr key={x.file}><td className="mono">{x.name}</td><td className="mono">{x.file}</td><td>{ago(new Date(x.at * 1000).toISOString())}</td></tr>)}</tbody></table></div> : null}
-    <div className="row wrap gap-s" style={{ marginTop: 6 }}>{!list.length ? <Button sm busy={ls.busy} onClick={() => ls.run('wal_conflicts', {})}>Mostra le copie</Button> : null}
-      <Button sm busy={ack.busy} onClick={() => setAsk(true)}>Segna come esaminate</Button></div>
+    <div className="row wrap gap-s" style={{ marginTop: 6 }}>{!list.length ? <Button sm busy={ls.busy} onClick={() => ls.run('wal_conflicts', {})}>Show the copies</Button> : null}
+      <Button sm busy={ack.busy} onClick={() => setAsk(true)}>Mark as reviewed</Button></div>
     {(ls.op?.status === 'failed' || ack.op?.status === 'failed') ? <OpPanel op={ls.op?.status === 'failed' ? ls.op : ack.op} /> : null}
-    {ask ? <Confirm title="Segnare le copie come esaminate?" confirmLabel="Segna" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); ack.run('wal_conflicts', { reviewed: true }); }}>
-      <p>Le copie restano conservate in <code>conflicts/reviewed/</code> nell’archivio; l’avviso sparisce. Fallo dopo aver verificato quale server era il primario giusto.</p></Confirm> : null}
+    {ask ? <Confirm title="Mark the copies as reviewed?" confirmLabel="Mark" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); ack.run('wal_conflicts', { reviewed: true }); }}>
+      <p>The copies stay in <code>conflicts/reviewed/</code> in the archive; the warning goes away. Do this after verifying which server was the right primary.</p></Confirm> : null}
   </Banner>;
 }
 
@@ -114,37 +114,37 @@ function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) 
   const [ask, setAsk] = useState(false);
   const run = (k: string, type: string, params: any) => { setKind(k); r.run(type, params); };
   const bk = d.backup; const res = r.op?.result;
-  return <Card title="Salute del repository">
+  return <Card title="Repository health">
     <div className="stack">
       {c.source !== 'direct' && !c.isSandbox ? <BackupPlacement clusterId={c.id} /> : null}
-      <dl className="kv small"><dt>Backup validi</dt><dd>{bk?.sets ?? 0}{bk?.failed_sets ? ` (+${bk.failed_sets} falliti)` : ''}</dd><dt>Spazio usato</dt><dd>{bytes(bk?.stored_bytes)} {bk?.dedup_ratio ? <span className="muted">— {bk.dedup_ratio}× di deduplica e compressione</span> : null}</dd>
-        <dt>WAL archiviati</dt><dd>{num(d.wal?.total_segments)} segmenti, {d.wal?.continuous === false ? <Badge kind="bad">con buchi</Badge> : <Badge kind="ok">continui</Badge>}</dd>
-        <dt>Cifratura</dt><dd>{bk?.encryption ? <><Badge kind="ok">Attiva</Badge> <span className="muted">AES-256-GCM · chiave {bk.encryption.key_id.slice(0, 8)}</span></> : <span className="muted">Non attiva — imposta <code>encryption_key_file</code> per un nuovo repository</span>}</dd>
-        <dt>Archiviatore</dt><dd>{d.archiver ? `${num(d.archiver.archived_count)} ok, ${num(d.archiver.failed_count)} errori` : '—'}</dd></dl>
+      <dl className="kv small"><dt>Valid backups</dt><dd>{bk?.sets ?? 0}{bk?.failed_sets ? ` (+${bk.failed_sets} failed)` : ''}</dd><dt>Space used</dt><dd>{bytes(bk?.stored_bytes)} {bk?.dedup_ratio ? <span className="muted">— {bk.dedup_ratio}× from deduplication and compression</span> : null}</dd>
+        <dt>Archived WAL</dt><dd>{num(d.wal?.total_segments)} segments, {d.wal?.continuous === false ? <Badge kind="bad">with gaps</Badge> : <Badge kind="ok">continuous</Badge>}</dd>
+        <dt>Encryption</dt><dd>{bk?.encryption ? <><Badge kind="ok">On</Badge> <span className="muted">AES-256-GCM · key {bk.encryption.key_id.slice(0, 8)}</span></> : <span className="muted">Off — set <code>encryption_key_file</code> for a new repository</span>}</dd>
+        <dt>Archiver</dt><dd>{d.archiver ? `${num(d.archiver.archived_count)} ok, ${num(d.archiver.failed_count)} errors` : '—'}</dd></dl>
       {d.wal?.conflicts > 0 ? <WalConflicts c={c} count={d.wal.conflicts} refresh={refresh} /> : null}
-      <div className="row wrap"><Button sm disabled={r.busy} onClick={() => run('verify', 'backup_verify', {})}>Verifica rapida</Button><Button sm disabled={r.busy} onClick={() => run('deep', 'backup_verify', { deep: true })}>Verifica approfondita</Button>
-        <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('test', 'backup_verify', { restore_test: true })} title="Ripristina davvero l’ultimo backup in un’istanza temporanea">Prova di ripristino</Button>
-        <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('drill', 'restore_drill', {})} title="Ripristina l’intero cluster in una cartella temporanea, lo avvia, controlla ogni database e misura il tempo">Prova di disaster recovery</Button>
-        <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('dry', 'backup_expire', { dry_run: true, retention_full: d.policy.retentionFull })}>Anteprima pulizia</Button></div>
-      {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} label={kind === 'drill' ? 'Prova di disaster recovery' : kind === 'test' ? 'Prova di ripristino' : kind === 'dry' ? 'Anteprima pulizia' : kind === 'deep' ? 'Verifica approfondita' : 'Verifica'} />
-        {r.op?.status === 'succeeded' && kind === 'drill' ? <Banner kind="ok" title={`Cluster ripristinato in ${res.rto_seconds >= 120 ? Math.round(res.rto_seconds / 60) + ' minuti' : Math.round(res.rto_seconds) + ' secondi'}`}>{bytes(res.data_bytes)} a {res.throughput_mb_s} MB/s; {(res.databases_checked || []).length} database controllati. È un tempo misurato su questo server e questo volume di dati: usalo come riferimento per il tuo obiettivo di ripristino (RTO).</Banner> : null}
-        {r.op?.status === 'succeeded' && kind !== 'dry' && kind !== 'drill' ? (res?.ok ? <Banner kind="ok" title="Repository integro">{res.chunks_checked ? `${num(res.chunks_checked)} blocchi controllati.` : 'Controlli strutturali superati.'}{res.restore_test ? ' L’ultimo backup è stato ripristinato davvero e PostgreSQL ha completato il recovery.' : ''}</Banner> : <Banner kind="bad" title="Problemi trovati"><ul style={{ margin: '4px 0 0 18px', padding: 0 }}>{(res?.problems || []).slice(0, 8).map((x: string, i: number) => <li key={i}>{x}</li>)}</ul></Banner>) : null}
-        {r.op?.status === 'succeeded' && kind === 'dry' ? <><Banner kind={res.delete_sets?.length ? 'warn' : 'ok'} title={res.delete_sets?.length ? `La pulizia eliminerebbe ${res.delete_sets.length} backup` : 'Niente da eliminare'}>{res.delete_sets?.length ? res.delete_sets.join(', ') : `Rientri già nelle ${res.retention_full} catene conservate.`}</Banner>
-          {res.delete_sets?.length ? <div><Button kind="danger" sm onClick={() => setAsk(true)}>Elimina ora…</Button></div> : null}</> : null}
-        {kind === 'expire' && r.op?.status === 'succeeded' ? <Banner kind="ok" title="Pulizia completata">{bytes(res.bytes_freed)} liberati, {num(res.wal_removed)} segmenti WAL rimossi.</Banner> : null}</> : null}
+      <div className="row wrap"><Button sm disabled={r.busy} onClick={() => run('verify', 'backup_verify', {})}>Quick verify</Button><Button sm disabled={r.busy} onClick={() => run('deep', 'backup_verify', { deep: true })}>Deep verify</Button>
+        <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('test', 'backup_verify', { restore_test: true })} title="Actually restores the latest backup into a temporary instance">Test restore</Button>
+        <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('drill', 'restore_drill', {})} title="Restores the whole cluster into a temporary directory, starts it, checks every database and measures the time">Disaster recovery drill</Button>
+        <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('dry', 'backup_expire', { dry_run: true, retention_full: d.policy.retentionFull })}>Preview cleanup</Button></div>
+      {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} label={kind === 'drill' ? 'Disaster recovery drill' : kind === 'test' ? 'Test restore' : kind === 'dry' ? 'Preview cleanup' : kind === 'deep' ? 'Deep verify' : 'Verify'} />
+        {r.op?.status === 'succeeded' && kind === 'drill' ? <Banner kind="ok" title={`Cluster restored in ${res.rto_seconds >= 120 ? Math.round(res.rto_seconds / 60) + ' minutes' : Math.round(res.rto_seconds) + ' seconds'}`}>{bytes(res.data_bytes)} at {res.throughput_mb_s} MB/s; {(res.databases_checked || []).length} databases checked. This time was measured on this server with this data volume: use it as a reference for your recovery time objective (RTO).</Banner> : null}
+        {r.op?.status === 'succeeded' && kind !== 'dry' && kind !== 'drill' ? (res?.ok ? <Banner kind="ok" title="Repository intact">{res.chunks_checked ? `${num(res.chunks_checked)} chunks checked.` : 'Structural checks passed.'}{res.restore_test ? ' The latest backup was actually restored and PostgreSQL completed recovery.' : ''}</Banner> : <Banner kind="bad" title="Problems found"><ul style={{ margin: '4px 0 0 18px', padding: 0 }}>{(res?.problems || []).slice(0, 8).map((x: string, i: number) => <li key={i}>{x}</li>)}</ul></Banner>) : null}
+        {r.op?.status === 'succeeded' && kind === 'dry' ? <><Banner kind={res.delete_sets?.length ? 'warn' : 'ok'} title={res.delete_sets?.length ? `The cleanup would delete ${res.delete_sets.length} backups` : 'Nothing to delete'}>{res.delete_sets?.length ? res.delete_sets.join(', ') : `You are already within the ${res.retention_full} retained chains.`}</Banner>
+          {res.delete_sets?.length ? <div><Button kind="danger" sm onClick={() => setAsk(true)}>Delete now…</Button></div> : null}</> : null}
+        {kind === 'expire' && r.op?.status === 'succeeded' ? <Banner kind="ok" title="Cleanup completed">{bytes(res.bytes_freed)} freed, {num(res.wal_removed)} WAL segments removed.</Banner> : null}</> : null}
     </div>
-    {ask ? <Confirm danger title="Eliminare i backup scaduti?" confirmLabel="Elimina" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); run('expire', 'backup_expire', { retention_full: d.policy.retentionFull }); }}>
-      <p>I backup elencati e i WAL non più necessari verranno cancellati dal repository. L’operazione non è reversibile.</p></Confirm> : null}
+    {ask ? <Confirm danger title="Delete the expired backups?" confirmLabel="Delete" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); run('expire', 'backup_expire', { retention_full: d.policy.retentionFull }); }}>
+      <p>The listed backups and the WAL no longer needed will be deleted from the repository. This cannot be undone.</p></Confirm> : null}
   </Card>;
 }
 
 function SetsCard({ sets, d }: { sets: SetRow[]; d: any }) {
   const rows = useMemo(() => chains(sets), [sets]);
-  if (!sets.length) return <Card title="Backup"><Empty icon="shield" title="Ancora nessun backup">Il primo backup completo crea il punto di partenza per tutti i ripristini.</Empty></Card>;
-  return <Card title="Backup nel repository" pad={false}><div className="tablewrap"><table className="t sets"><thead><tr><th>Backup</th><th>Tipo</th><th>Stato</th><th>Avvio</th><th className="num">Durata</th><th className="num">Dati</th><th className="num">Scritto</th></tr></thead><tbody>
+  if (!sets.length) return <Card title="Backup"><Empty icon="shield" title="No backups yet">The first full backup creates the starting point for every restore.</Empty></Card>;
+  return <Card title="Backups in the repository" pad={false}><div className="tablewrap"><table className="t sets"><thead><tr><th>Backup</th><th>Type</th><th>Status</th><th>Started</th><th className="num">Duration</th><th className="num">Data</th><th className="num">Written</th></tr></thead><tbody>
     {rows.map(({ row: s, depth }) => <tr key={s.id} className={depth ? 'd1' : 'chainrow'}>
       <td className="mono">{s.id}</td><td>{TYPE_LABEL[s.type]}</td>
-      <td>{s.status === 'COMPLETE' ? <Badge kind="ok">Valido</Badge> : s.status === 'FAILED' || s.status === 'UNRECOVERABLE' ? <Badge kind="bad" title={s.reason}>{s.status === 'FAILED' ? 'Fallito' : 'Non recuperabile'}</Badge> : <Badge kind="info">{s.status === 'PENDING_WAL' ? 'Attesa WAL' : s.status === 'EXPIRING' ? 'In eliminazione' : 'In corso'}</Badge>}</td>
+      <td>{s.status === 'COMPLETE' ? <Badge kind="ok">Valid</Badge> : s.status === 'FAILED' || s.status === 'UNRECOVERABLE' ? <Badge kind="bad" title={s.reason}>{s.status === 'FAILED' ? 'Failed' : 'Unrecoverable'}</Badge> : <Badge kind="info">{s.status === 'PENDING_WAL' ? 'Waiting for WAL' : s.status === 'EXPIRING' ? 'Being deleted' : 'Running'}</Badge>}</td>
       <td title={dt(s.start_time)}>{ago(s.start_time)}</td><td className="num">{dur(s.duration_sec)}</td><td className="num">{bytes(s.bytes_logical)}</td><td className="num">{bytes(s.bytes_written)}</td></tr>)}
   </tbody></table></div></Card>;
 }

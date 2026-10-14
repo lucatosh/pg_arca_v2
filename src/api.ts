@@ -28,7 +28,7 @@ function setNet(down: boolean, err = '') {
   netSubs.forEach(f => f());
 }
 export const UNREACHABLE = 'console_unreachable';
-const unreachable = (why: string) => new ApiError(0, { error: UNREACHABLE, message: `La console pg_arca (${location.host}) non risponde: ${why}. Nulla è andato perso: appena torna raggiungibile puoi riprovare.` });
+const unreachable = (why: string) => new ApiError(0, { error: UNREACHABLE, message: `The pg_arca console (${location.host}) is not responding: ${why}. Nothing was lost: you can retry as soon as it is reachable again.` });
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function once(method: string, path: string, body: any, opts: { key?: string; signal?: AbortSignal; timeoutMs?: number }): Promise<Response> {
@@ -42,7 +42,7 @@ async function once(method: string, path: string, body: any, opts: { key?: strin
     return await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', signal: ctl.signal });
   } catch (e: any) {
     if (opts.signal?.aborted) throw e;                                    // the caller gave up: not a network problem
-    throw unreachable(timedOut ? `nessuna risposta in ${Math.round((opts.timeoutMs ?? (method === 'GET' ? 25000 : 30000)) / 1000)} s` : 'connessione non riuscita (server spento, rete assente o indirizzo cambiato)');
+    throw unreachable(timedOut ? `no response within ${Math.round((opts.timeoutMs ?? (method === 'GET' ? 25000 : 30000)) / 1000)} s` : 'connection failed (server down, no network, or the address changed)');
   } finally { clearTimeout(t); opts.signal?.removeEventListener('abort', relay); }
 }
 
@@ -56,7 +56,7 @@ export async function api<T = any>(method: string, path: string, body?: any, opt
   }
   if (!res) throw last;
   // a proxy in front of the console answering for it (502/503/504 with an HTML page) is the same problem as no answer
-  if ([502, 503, 504].includes(res.status) && !(res.headers.get('content-type') || '').includes('json')) { const e = unreachable(`il proxy davanti alla console risponde ${res.status}`); setNet(true, e.message); throw e; }
+  if ([502, 503, 504].includes(res.status) && !(res.headers.get('content-type') || '').includes('json')) { const e = unreachable(`the proxy in front of the console answered ${res.status}`); setNet(true, e.message); throw e; }
   setNet(false);
   let data: any = null;
   const text = await res.text();

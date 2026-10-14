@@ -244,7 +244,7 @@ def strip_unmanaged(text):
             out.append(raw)
             continue
         if not inblock and s and not s.startswith("#") and not s.startswith("include") and parse_rule_line(s):
-            out.append("# (adottata nel blocco gestito) " + s)
+            out.append("# (adopted into the managed block) " + s)
             continue
         out.append(raw)
     return "\n".join(out)

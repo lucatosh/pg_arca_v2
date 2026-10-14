@@ -14,9 +14,9 @@ export const linkModeOf = (c: any): LinkMode => (c.geoLink?.primary ? 'manual' :
 /** The relationship as the console sees it now, in one sentence. */
 export function linkSummary(c: any): string {
   const g = c.geo; const prim = g?.peers?.find((p: any) => p.role === 'primary');
-  if (!g) return c.geoLink?.none ? 'Nessuna relazione (abbinamento automatico disattivato).' : 'Nessuna relazione di replica rilevata con gli altri cluster.';
-  if (g.role === 'standby') return `Sito di replica di ${prim?.name || '?'} — ${g.link === 'manual' ? 'impostato a mano' : 'rilevato automaticamente (stesso database, replica in corso)'}.`;
-  return `Sito primario, replicato su ${(g.peers || []).filter((p: any) => p.role === 'standby').map((p: any) => `${p.name}${p.link === 'manual' ? ' (impostato a mano)' : ''}`).join(', ') || '—'}.`;
+  if (!g) return c.geoLink?.none ? 'No relationship (automatic pairing turned off).' : 'No replication relationship detected with the other clusters.';
+  if (g.role === 'standby') return `Standby site of ${prim?.name || '?'} — ${g.link === 'manual' ? 'set by hand' : 'detected automatically (same database, replication running)'}.`;
+  return `Primary site, replicated to ${(g.peers || []).filter((p: any) => p.role === 'standby').map((p: any) => `${p.name}${p.link === 'manual' ? ' (set by hand)' : ''}`).join(', ') || '—'}.`;
 }
 
 /** Form section (used inside other dialogs). */
@@ -24,13 +24,13 @@ export function GeoLinkField({ c, all, mode, setMode, primary, setPrimary }: { c
   const cands = all.filter(x => x.id !== c.id && !x.isSandbox).sort((a, b) => a.name.localeCompare(b.name));
   const sameDb = (x: any) => x.geo && c.geo && (x.geo.peers || []).some((p: any) => p.clusterId === c.id);
   return <fieldset className="geolinkf">
-    <legend>Relazione di replica (georidondanza)</legend>
+    <legend>Replication relationship (geo-redundancy)</legend>
     <p className="small muted" style={{ margin: '0 0 8px' }}>{linkSummary(c)}</p>
-    <label className="check"><input type="radio" name="glm" checked={mode === 'auto'} onChange={() => setMode('auto')} /><span><strong>Automatica</strong> <span className="muted small">(consigliata) — la console abbina i cluster dello stesso database quando uno replica dall’altro</span></span></label>
-    <label className="check"><input type="radio" name="glm" checked={mode === 'manual'} onChange={() => setMode('manual')} /><span><strong>È una replica di…</strong> <span className="muted small">— per un cluster senza agent, o per dichiararlo prima che la replica sia attiva</span></span></label>
-    {mode === 'manual' ? <Field label="Cluster primario"><select className="input" value={primary} onChange={e => setPrimary(e.target.value)}>
-      <option value="">Scegli…</option>{cands.map(x => <option key={x.id} value={x.id}>{x.name}{x.environment ? ` · ${x.environment}` : ''}{sameDb(x) ? ' · stesso database' : ''}</option>)}</select></Field> : null}
-    <label className="check"><input type="radio" name="glm" checked={mode === 'none'} onChange={() => setMode('none')} /><span><strong>Nessuna relazione</strong> <span className="muted small">— non abbinarlo mai (copia ripristinata, clone di test con lo stesso identificativo)</span></span></label>
+    <label className="check"><input type="radio" name="glm" checked={mode === 'auto'} onChange={() => setMode('auto')} /><span><strong>Automatic</strong> <span className="muted small">(recommended) — the console pairs clusters of the same database when one replicates from the other</span></span></label>
+    <label className="check"><input type="radio" name="glm" checked={mode === 'manual'} onChange={() => setMode('manual')} /><span><strong>Is a replica of…</strong> <span className="muted small">— for a cluster without an agent, or to declare it before replication is running</span></span></label>
+    {mode === 'manual' ? <Field label="Primary cluster"><select className="input" value={primary} onChange={e => setPrimary(e.target.value)}>
+      <option value="">Choose…</option>{cands.map(x => <option key={x.id} value={x.id}>{x.name}{x.environment ? ` · ${x.environment}` : ''}{sameDb(x) ? ' · same database' : ''}</option>)}</select></Field> : null}
+    <label className="check"><input type="radio" name="glm" checked={mode === 'none'} onChange={() => setMode('none')} /><span><strong>No relationship</strong> <span className="muted small">— never pair it (restored copy, test clone with the same system identifier)</span></span></label>
   </fieldset>;
 }
 
@@ -46,12 +46,12 @@ export function GeoLinkModal({ c, all, onClose }: { c: any; all: any[]; onClose:
   const [mode, setMode] = useState<LinkMode>(linkModeOf(c)); const [primary, setPrimary] = useState<string>(c.geoLink?.primary || '');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
   const save = async () => {
-    if (mode === 'manual' && !primary) { setErr('Scegli il cluster primario.'); return; }
+    if (mode === 'manual' && !primary) { setErr('Choose the primary cluster.'); return; }
     setBusy(true); setErr(null);
-    try { if (await saveGeoLink(c, mode, primary)) toast('Relazione salvata', 'ok'); onClose(); } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
+    try { if (await saveGeoLink(c, mode, primary)) toast('Relationship saved', 'ok'); onClose(); } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
   };
-  return <Modal title={`Relazione di replica di ${c.name}`} onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Annulla</Button><Button kind="primary" busy={busy} onClick={save}>Salva</Button></>}>
+  return <Modal title={`Replication relationship of ${c.name}`} onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Cancel</Button><Button kind="primary" busy={busy} onClick={save}>Save</Button></>}>
     <div className="stack"><GeoLinkField c={c} all={all} mode={mode} setMode={setMode} primary={primary} setPrimary={setPrimary} />
-      <p className="small muted">La relazione decide dove il cluster compare (sotto il suo primario nella barra laterale e nell’elenco), lo stato di salute del sito di replica e le azioni della pagina Georidondanza. Non modifica nulla su PostgreSQL o Patroni.</p>
+      <p className="small muted">The relationship decides where the cluster appears (under its primary in the sidebar and in the list), the health status of the standby site and the actions on the Geo-redundancy page. It changes nothing in PostgreSQL or Patroni.</p>
       {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
 }

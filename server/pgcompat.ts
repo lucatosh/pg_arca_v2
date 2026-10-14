@@ -28,9 +28,9 @@ export function classify(version: string | undefined | null, now = Date.now()): 
   const eol = eolDate(major);
   const isEol = now > Date.parse(eol + 'T23:59:59Z');
   const problems: Compat['problems'] = [];
-  if (tier === 'unsupported') problems.push({ severity: 'critical', code: 'unsupported', text: `PostgreSQL ${label} non è supportato (minimo ${MIN_LEGACY}): backup e ripristino si rifiutano di partire.` });
-  else if (tier === 'legacy') problems.push({ severity: 'warning', code: 'legacy', text: `PostgreSQL ${label} è gestito in modalità legacy: è previsto (recovery.conf, viste precedenti) ma non fa parte della matrice di test.` });
-  else if (tier === 'newer') problems.push({ severity: 'info', code: 'newer', text: `PostgreSQL ${label} è più recente dell’ultima versione esaminata (${NEWEST_KNOWN}): dovrebbe funzionare, ma verifica un ripristino prima di affidartici.` });
-  if (tier !== 'unsupported' && isEol) problems.push({ severity: 'warning', code: 'eol', text: `PostgreSQL ${label} è a fine vita dal ${eol}: non riceve più correzioni di sicurezza. Pianifica l’aggiornamento.` });
+  if (tier === 'unsupported') problems.push({ severity: 'critical', code: 'unsupported', text: `PostgreSQL ${label} is not supported (minimum ${MIN_LEGACY}): backup and restore refuse to start.` });
+  else if (tier === 'legacy') problems.push({ severity: 'warning', code: 'legacy', text: `PostgreSQL ${label} is handled in legacy mode: it is catered for (recovery.conf, older views) but it is not part of the test matrix.` });
+  else if (tier === 'newer') problems.push({ severity: 'info', code: 'newer', text: `PostgreSQL ${label} is newer than the latest version reviewed (${NEWEST_KNOWN}): it should work, but verify a restore before relying on it.` });
+  if (tier !== 'unsupported' && isEol) problems.push({ severity: 'warning', code: 'eol', text: `PostgreSQL ${label} has been end-of-life since ${eol}: it no longer receives security fixes. Plan the upgrade.` });
   return { label, major, tier, eolDate: eol, eol: isEol, problems };
 }

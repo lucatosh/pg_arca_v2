@@ -146,7 +146,7 @@ export function requireAdmin(store: Store) {
     const role = roleOf(store, u);
     if (!role) return res.status(401).json({ error: 'unauthenticated' });          // user removed or disabled while logged in
     (req as any).actor = u; (req as any).role = role;
-    if (!can(role, req.method, p)) return res.status(403).json({ error: 'forbidden', message: `Il ruolo “${role}” non può eseguire questa azione.`, requiredRole: requiredRole(req.method, p) });
+    if (!can(role, req.method, p)) return res.status(403).json({ error: 'forbidden', message: `Role “${role}” cannot perform this action.`, requiredRole: requiredRole(req.method, p) });
     // CSRF defence in depth on top of SameSite=Strict: state-changing calls must be JSON or have no body
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers['content-length'] && req.headers['content-length'] !== '0' &&
         !String(req.headers['content-type'] || '').includes('application/json')) {
@@ -165,7 +165,7 @@ export function mountAuthRoutes(app: any, store: Store) {
   app.post('/api/auth/setup', async (req: Request, res: Response) => {
     const { username, password, setupCode } = req.body || {};
     if (setupCodeNeeded(req) && !(SETUP_CODE && typeof setupCode === 'string' && setupCode.trim().length === SETUP_CODE.length && crypto.timingSafeEqual(Buffer.from(setupCode.trim()), Buffer.from(SETUP_CODE))))
-      return res.status(403).json({ error: 'setup_code_required', message: 'Serve il codice di prima configurazione: lo trovi nel log della console o nel file setup-code della sua cartella dati.' });
+      return res.status(403).json({ error: 'setup_code_required', message: 'The first-setup code is required: you find it in the console log or in the setup-code file of its data directory.' });
     if (typeof username !== 'string' || !/^[A-Za-z0-9_.@-]{3,64}$/.test(username)) return res.status(400).json({ error: 'invalid_username' });
     if (typeof password !== 'string' || password.length < 12) return res.status(400).json({ error: 'weak_password', message: 'Minimum 12 characters.' });
     const h = hashPassword(password);
@@ -268,7 +268,7 @@ export function mountAuthRoutes(app: any, store: Store) {
       return 'ok' as const;
     });
     if (r === 'missing') return res.status(404).json({ error: 'not_found' });
-    if (r === 'last_admin') return res.status(409).json({ error: 'last_admin', message: 'Deve restare almeno un amministratore attivo.' });
+    if (r === 'last_admin') return res.status(409).json({ error: 'last_admin', message: 'At least one active administrator must remain.' });
     revokeSessionsOf(name);
     res.json({ ok: true });
   });

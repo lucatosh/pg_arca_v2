@@ -10,262 +10,262 @@ const base = process.env.BASE || 'http://localhost:5188';
   // cluster pages live in four areas: pick the area (pill), then the page (underline tab)
   const tab = async (area, name) => { await p.click(`.gnav >> role=tab[name="${area}"]`); if (name) await p.click(`.clusternav .tabs >> role=tab[name=/${name}/]`); };
   const shot = n => p.screenshot({ path: `${out}/${n}.png` });
-  await p.goto(base); await p.waitForSelector('text=Accedi'); await shot('01-login');
+  await p.goto(base); await p.waitForSelector('text=Sign in'); await shot('01-login');
   await p.fill('input[autocomplete=username]', 'admin'); await p.fill('input[type=password]', 'wrong-password-1'); await p.click('button[type=submit]');
-  await p.waitForSelector('text=non corretti'); await p.waitForTimeout(1300);
+  await p.waitForSelector('text=Wrong username or password'); await p.waitForTimeout(1300);
   await p.fill('input[type=password]', 'correct-horse-battery'); await p.click('button[type=submit]');
-  await p.waitForSelector('text=Cluster collegati'); await p.waitForSelector('text=prodpg');
-  // organise: prodpg into prod > fatturazione/api; the sidebar and the list group it, with the state of the group
-  await p.click('tr:has-text("prodpg") button:has-text("Organizza")'); await p.fill('.modal input[list]', 'fatturazione/api'); await p.click('.modal button:has-text("Salva")');
-  await p.waitForSelector('.side .fhead.folder:has-text("fatturazione")'); await p.waitForSelector('.fleettable tr.frow:has-text("api")'); await shot('02-clusters');
-  assert(await p.locator('text=Cluster demo').count() >= 1, 'demo present');
-  await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Protezione dei dati'); await shot('03-overview');
+  await p.waitForSelector('text=Connected clusters'); await p.waitForSelector('text=prodpg');
+  // organise: prodpg into prod > billing/api; the sidebar and the list group it, with the state of the group
+  await p.click('tr:has-text("prodpg") button:has-text("Organize")'); await p.fill('.modal input[list]', 'billing/api'); await p.click('.modal button:has-text("Save")');
+  await p.waitForSelector('.side .fhead.folder:has-text("billing")'); await p.waitForSelector('.fleettable tr.frow:has-text("api")'); await shot('02-clusters');
+  assert(await p.locator('text=Demo cluster').count() >= 1, 'demo present');
+  await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Data protection'); await shot('03-overview');
   // backup tab
-  await tab('Protezione', 'Backup'); await p.waitForSelector('text=Esegui un backup'); await p.waitForSelector('.placement code:has-text("/mnt/backup/repo/prodpg")'); await shot('04-backup');
+  await tab('Protection', 'Backup'); await p.waitForSelector('text=Run a backup'); await p.waitForSelector('.placement code:has-text("/mnt/backup/repo/prodpg")'); await shot('04-backup');
   // previous backup location after a destination change: plan the migration (sizes, free space, time), run it, follow it
-  await p.waitForSelector('text=Posizione precedente ancora usata dai ripristini'); await p.click('.placement button:has-text("Migra o elimina")');
-  await p.click('.modal button:has-text("Calcola cosa spostare")'); await p.waitForSelector('.modal td:has-text("Totale da copiare")', { timeout: 10000 });
-  await p.waitForSelector('.modal >> text=repository e archivio WAL: 4.0 GiB da copiare'); await shot('04c-migration-plan');
-  await p.click('.modal button:has-text("Avvia la migrazione in background")'); await p.click('.modal >> nth=-1 >> button:has-text("Avvia")');
-  await p.waitForSelector('text=Migrazione completata', { timeout: 15000 }); await shot('04d-migration-done');
-  await p.click('.modal >> nth=0 >> button:has-text("Chiudi")'); await p.waitForSelector('text=Posizione precedente ancora usata dai ripristini', { state: 'detached', timeout: 20000 });
-  { const b = p.locator('button:has-text("Prova di disaster recovery")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster ripristinato in 13 minuti', { timeout: 10000 }); await shot('04b-drill'); } }
-  await p.click('button:has-text("Avvia backup")'); await p.waitForSelector('text=Copia dei dati'); await p.waitForSelector('.activitystrip:has-text("un backup")', { timeout: 8000 }); await shot('05-backup-running');
+  await p.waitForSelector('text=Previous location still used by restores'); await p.click('.placement button:has-text("Migrate or delete")');
+  await p.click('.modal button:has-text("Work out what to move")'); await p.waitForSelector('.modal td:has-text("Total to copy")', { timeout: 10000 });
+  await p.waitForSelector('.modal >> text=repository + WAL archive: 4.0 GiB to copy'); await shot('04c-migration-plan');
+  await p.click('.modal button:has-text("Start the migration in the background")'); await p.click('.modal >> nth=-1 >> button:has-text("Start")');
+  await p.waitForSelector('text=Migration completed', { timeout: 15000 }); await shot('04d-migration-done');
+  await p.click('.modal >> nth=0 >> button:has-text("Close")'); await p.waitForSelector('text=Previous location still used by restores', { state: 'detached', timeout: 20000 });
+  { const b = p.locator('button:has-text("Disaster recovery drill")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster restored in 13 minutes', { timeout: 10000 }); await shot('04b-drill'); } }
+  await p.click('button:has-text("Start backup")'); await p.waitForSelector('text=Copying data'); await p.waitForSelector('.activitystrip:has-text("a backup")', { timeout: 8000 }); await shot('05-backup-running');
   // the dock's Log opens a floating window with THIS operation's log (not the database log): movable, minimisable, closable
   await p.click('.dock-chip'); await p.click('.dock-item button:has-text("Log")'); await p.waitForSelector('.oplog'); await p.waitForSelector('.oplog-body .ln', { timeout: 8000 });
   assert(/Backup/.test(await p.locator('.oplog-hd .nm').innerText()), 'log window is titled with the operation');
   { const hd = await p.locator('.oplog-hd').boundingBox(); const x0 = (await p.locator('.oplog').boundingBox()).x; await p.mouse.move(hd.x + 60, hd.y + 10); await p.mouse.down(); await p.mouse.move(hd.x + 160, hd.y - 60, { steps: 4 }); await p.mouse.up();
     assert(Math.abs((await p.locator('.oplog').boundingBox()).x - x0 - 100) < 6, 'window moves with the header'); }
-  await shot('05a-oplog'); await p.click('.oplog button[aria-label="Riduci a icona"]'); await p.waitForSelector('.oplog.min'); await p.click('.oplog button[aria-label="Espandi il log"]'); await p.waitForSelector('.oplog-body');
-  await p.click('.oplog button[aria-label="Chiudi il log"]'); await p.waitForSelector('.oplog', { state: 'detached' }); await p.keyboard.press('Control+j');
-  await p.waitForSelector('text=/Backup .* completato/', { timeout: 15000 }); await shot('06-backup-done');
+  await shot('05a-oplog'); await p.click('.oplog button[aria-label="Minimize"]'); await p.waitForSelector('.oplog.min'); await p.click('.oplog button[aria-label="Expand the log"]'); await p.waitForSelector('.oplog-body');
+  await p.click('.oplog button[aria-label="Close the log"]'); await p.waitForSelector('.oplog', { state: 'detached' }); await p.keyboard.press('Control+j');
+  await p.waitForSelector('text=/Backup .* completed/', { timeout: 15000 }); await shot('06-backup-done');
   // guided restore, situation first: a database as it was
-  await tab('Protezione', 'Ripristino'); await p.waitForSelector('text=Cosa è successo?'); await shot('07-restore-situation');
-  await p.click('button.choice:has-text("Mi serve un database")');
+  await tab('Protection', 'Restore'); await p.waitForSelector('text=What happened?'); await shot('07-restore-situation');
+  await p.click('button.choice:has-text("I need a database")');
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 });
   // a database that is in the backups and not on the server is DROPPED, in red, with the date found in the WAL
-  await p.waitForSelector('.dbrow.gone:has-text("reports") .dropped', { timeout: 10000 }); await p.waitForSelector('.dbrow.gone:has-text("reports"):has-text("2026"), .dbrow.gone:has-text("reports"):has-text("ott")', { timeout: 10000 });
-  assert(await p.locator('.dbrow:has-text("appdb") .here').count() === 1, 'live database says Presente');
+  await p.waitForSelector('.dbrow.gone:has-text("reports") .dropped', { timeout: 10000 }); await p.waitForSelector('.dbrow.gone:has-text("reports"):has-text("2026"), .dbrow.gone:has-text("reports"):has-text("Oct")', { timeout: 10000 });
+  assert(await p.locator('.dbrow:has-text("appdb") .here').count() === 1, 'live database says Present');
   assert(await p.locator('.dbrow:has-text("arca_rl_20261010")').count() === 1, 'pg_arca working database is listed (apart)');
   await p.click('button[role=radio]:has-text("reports")'); await p.waitForSelector('.dropnote'); await shot('07a-restore-dropped');
-  await p.click('button[role=radio]:has-text("appdb")'); await shot('07-restore-what'); await p.click('button:has-text("Avanti")');
+  await p.click('button[role=radio]:has-text("appdb")'); await shot('07-restore-what'); await p.click('button:has-text("Next")');
   // when: the latest point is preselected (and recommended) for a whole database
-  await p.waitForSelector('text=A quale momento?'); assert(await p.locator('label.opt.on:has-text("L’ultimo istante salvato") .badge:has-text("Consigliato")').count() === 1, 'latest preselected');
-  await p.click('label.opt:has-text("Un momento preciso") input'); await p.click('button:has-text("1 ora fa")'); await p.waitForSelector('input[type=datetime-local]');
-  await p.click('summary:has-text("Linea temporale")'); await p.waitForSelector('[role=slider]'); await shot('08-timeline');
+  await p.waitForSelector('text=To which point in time?'); assert(await p.locator('label.opt.on:has-text("The latest saved point") .badge:has-text("Recommended")').count() === 1, 'latest preselected');
+  await p.click('label.opt:has-text("A specific point in time") input'); await p.click('button:has-text("1 hour ago")'); await p.waitForSelector('input[type=datetime-local]');
+  await p.click('summary:has-text("Backup timeline")'); await p.waitForSelector('[role=slider]'); await shot('08-timeline');
   const tr = await p.locator('.rt .track').boundingBox();
   await p.mouse.click(tr.x + tr.width * 0.55, tr.y + 30); await p.waitForTimeout(200); await shot('09-timeline-picked');
-  await p.click('button:has-text("Avvia analisi")'); await p.waitForSelector('text=appdb.public.orders', { timeout: 10000 }); await shot('10-forensics');
-  await p.click('button:has-text("Cerca modifiche di massa")'); await p.waitForSelector('text=/48.?210 righe eliminate/', { timeout: 10000 });
-  await p.locator('tr:has-text("righe eliminate") button:has-text("Ripristina subito prima")').click(); await p.waitForSelector('label.opt.on:has-text("Subito prima: 48")'); await shot('10b-forensics-dml');
-  await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=Controlla e conferma'); await p.waitForSelector('.rplan:has-text("appdb")');
-  await p.waitForSelector('text=/Tutto pronto|Pronto: leggi/', { timeout: 10000 }); await p.waitForSelector('.preflight.warn');
-  await p.click('summary:has-text("Dettagli tecnici")'); await p.waitForSelector('.spacebars .vol'); await p.waitForSelector('.placement code:has-text("/var/tmp/pg_arca_scratch")'); await shot('11-plan');
+  await p.click('button:has-text("Start the scan")'); await p.waitForSelector('text=appdb.public.orders', { timeout: 10000 }); await shot('10-forensics');
+  await p.click('button:has-text("Search for mass changes")'); await p.waitForSelector('text=/48.?210 rows deleted/', { timeout: 10000 });
+  await p.locator('tr:has-text("rows deleted") button:has-text("Restore to just before")').click(); await p.waitForSelector('label.opt.on:has-text("Just before: 48")'); await shot('10b-forensics-dml');
+  await p.click('button:has-text("Next")'); await p.waitForSelector('text=Review and confirm'); await p.waitForSelector('.rplan:has-text("appdb")');
+  await p.waitForSelector('text=/All set|Ready: read/', { timeout: 10000 }); await p.waitForSelector('.preflight.warn');
+  await p.click('summary:has-text("Technical details")'); await p.waitForSelector('.spacebars .vol'); await p.waitForSelector('.placement code:has-text("/var/tmp/pg_arca_scratch")'); await shot('11-plan');
   // the END of the job is chosen here: by default the recovered database REPLACES appdb (the tool finishes the job); the copy path keeps the name field
-  await p.waitForSelector('label.opt.on:has-text("Sostituisci appdb con quello recuperato") .badge:has-text("Consigliato")'); await shot('11a-end-choice');
-  await p.click('label.opt:has-text("Solo una copia da controllare") input'); await p.waitForSelector('.field:has-text("Nome del nuovo database") input');
+  await p.waitForSelector('label.opt.on:has-text("Replace appdb with the recovered one") .badge:has-text("Recommended")'); await shot('11a-end-choice');
+  await p.click('label.opt:has-text("Only a copy to check") input'); await p.waitForSelector('.field:has-text("New database name") input');
   // a taken destination name is a blocker: the start button stays disabled
-  const nameIn = p.locator('.field:has-text("Nome del nuovo database") input');
-  const keep = await nameIn.inputValue(); await nameIn.fill('taken'); await p.click('button:has-text("Ricontrolla")'); await p.waitForSelector('text=Prima va sistemato qualcosa');
-  if (!(await p.locator('button:has-text("Avvia il ripristino")').isDisabled())) throw new Error('start must be blocked by a failing pre-flight');
-  await shot('11b-plan-blocked'); await nameIn.fill(keep); await p.click('button:has-text("Ricontrolla")'); await p.waitForSelector('text=/Tutto pronto|Pronto: leggi/');
+  const nameIn = p.locator('.field:has-text("New database name") input');
+  const keep = await nameIn.inputValue(); await nameIn.fill('taken'); await p.click('button:has-text("Check again")'); await p.waitForSelector('text=Something must be fixed first');
+  if (!(await p.locator('button:has-text("Start the restore")').isDisabled())) throw new Error('start must be blocked by a failing pre-flight');
+  await shot('11b-plan-blocked'); await nameIn.fill(keep); await p.click('button:has-text("Check again")'); await p.waitForSelector('text=/All set|Ready: read/');
   // roles the database uses but the destination lacks: NOLOGIN placeholders, on by default, the choice reaches the agent
-  assert(await p.locator('label:has-text("Crea i ruoli mancanti (gone_owner)") input').isChecked(), 'placeholder roles on by default'); await p.waitForSelector('text=un account eliminato non torna mai attivo');
-  await p.click('button:has-text("Avvia il ripristino")'); await p.click('.modal button:has-text("Avvia")');
-  await p.waitForSelector('text=Ripristino completato', { timeout: 15000 }); await p.waitForSelector('text=ruoli creati come segnaposto'); await shot('12-restore-done');
+  assert(await p.locator('label:has-text("Create the missing roles (gone_owner)") input').isChecked(), 'placeholder roles on by default'); await p.waitForSelector('text=a dropped account never becomes active again');
+  await p.click('button:has-text("Start the restore")'); await p.click('.modal button:has-text("Start")');
+  await p.waitForSelector('text=Restore completed', { timeout: 15000 }); await p.waitForSelector('text=roles created as NOLOGIN placeholders'); await shot('12-restore-done');
   // the checked copy takes the place of appdb with one click (no SQL to type): typed confirmation, the original kept as appdb_before_...
-  await p.click('button:has-text("al posto di appdb")'); if (!(await p.locator('.modal button:has-text("Sostituisci")').isDisabled())) throw new Error('swap needs the typed confirmation');
-  await p.fill('.modal input.input', 'SOSTITUISCI'); await p.click('.modal button:has-text("Sostituisci")'); await p.waitForSelector('text=appdb sostituito', { timeout: 10000 }); await p.waitForSelector('code:has-text("appdb_before_")'); await shot('12f-db-swapped');
+  await p.click('button:has-text("in for appdb")'); if (!(await p.locator('.modal button:has-text("Replace")').isDisabled())) throw new Error('swap needs the typed confirmation');
+  await p.fill('.modal input.input', 'REPLACE'); await p.click('.modal button:has-text("Replace")'); await p.waitForSelector('text=appdb replaced', { timeout: 10000 }); await p.waitForSelector('code:has-text("appdb_before_")'); await shot('12f-db-swapped');
   // and the default end: restore + replace in ONE operation
-  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Mi serve un database")'); await p.waitForSelector('button[role=radio]:has-text("billing")', { timeout: 10000 });
-  await p.click('button[role=radio]:has-text("billing")'); await p.click('button:has-text("Avanti")'); await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=/Tutto pronto|Pronto: leggi/', { timeout: 10000 });
-  await p.waitForSelector('label.opt.on:has-text("Sostituisci billing")'); await p.click('button:has-text("Avvia il ripristino")');
-  if (!(await p.locator('.modal button:has-text("Avvia")').isDisabled())) throw new Error('replacing a database needs the typed confirmation');
-  await p.fill('.modal input.input', 'SOSTITUISCI'); await p.click('.modal button:has-text("Avvia")');
-  await p.waitForSelector('text=/billing.*è di nuovo com’era/', { timeout: 15000 }); await p.waitForSelector('code:has-text("billing_before_")'); await shot('12g-db-replaced');
+  await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need a database")'); await p.waitForSelector('button[role=radio]:has-text("billing")', { timeout: 10000 });
+  await p.click('button[role=radio]:has-text("billing")'); await p.click('button:has-text("Next")'); await p.click('button:has-text("Next")'); await p.waitForSelector('text=/All set|Ready: read/', { timeout: 10000 });
+  await p.waitForSelector('label.opt.on:has-text("Replace billing")'); await p.click('button:has-text("Start the restore")');
+  if (!(await p.locator('.modal button:has-text("Start")').isDisabled())) throw new Error('replacing a database needs the typed confirmation');
+  await p.fill('.modal input.input', 'REPLACE'); await p.click('.modal button:has-text("Start")');
+  await p.waitForSelector('text=/billing.*is back as it was/', { timeout: 15000 }); await p.waitForSelector('code:has-text("billing_before_")'); await shot('12g-db-replaced');
   // a table was dropped: what the WAL found is offered at once; one click picks the table AND the point just before
-  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Ho eliminato o svuotato una tabella")');
+  await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I dropped or truncated a table")');
   await p.waitForSelector('.recentrow:has-text("orders")', { timeout: 10000 }); await shot('07b-recent-drops');
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
-  await p.click('.tree summary:has-text("Solo alcune partizioni")'); await p.waitForSelector('.tree button:has-text("orders_2026")'); await p.waitForSelector('.tree :text("vista")'); await shot('12e-partitions');
-  await p.click('.recentrow:has-text("orders")'); await p.waitForSelector('label.opt.on:has-text("Subito prima: public.orders eliminata")'); await shot('09b-when-suggested');
-  await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=/Tutto pronto|Pronto: leggi/', { timeout: 10000 }); await p.waitForSelector('.rplan:has-text("quarantena")');
+  await p.click('.tree summary:has-text("Only some partitions")'); await p.waitForSelector('.tree button:has-text("orders_2026")'); await p.waitForSelector('.tree :text("view")'); await shot('12e-partitions');
+  await p.click('.recentrow:has-text("orders")'); await p.waitForSelector('label.opt.on:has-text("Just before: public.orders dropped")'); await shot('09b-when-suggested');
+  await p.click('button:has-text("Next")'); await p.waitForSelector('text=/All set|Ready: read/', { timeout: 10000 }); await p.waitForSelector('.rplan:has-text("quarantine")');
   // default end: put back what is gone, in the same operation
-  await p.waitForSelector('label.opt.on:has-text("Rimetti a posto in appdb")'); await p.waitForSelector('.seg button[aria-pressed=true]:has-text("Solo ciò che manca")');
-  await p.click('button:has-text("Avvia il ripristino")'); await p.click('.modal button:has-text("Avvia")');
-  await p.waitForSelector('text=/di nuovo al suo posto in/', { timeout: 15000 }); await shot('12h-table-fixed');
-  assert(await p.locator('text=Ora scegli come rimetterlo').count() === 0, 'nothing left to do by hand');
+  await p.waitForSelector('label.opt.on:has-text("Put back into appdb")'); await p.waitForSelector('.seg button[aria-pressed=true]:has-text("Only what is missing")');
+  await p.click('button:has-text("Start the restore")'); await p.click('.modal button:has-text("Start")');
+  await p.waitForSelector('text=/back in place in/', { timeout: 15000 }); await shot('12h-table-fixed');
+  assert(await p.locator('text=Now choose below how to put it back').count() === 0, 'nothing left to do by hand');
   // the same with the quarantine copy only: the operator chooses how to put it back
-  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Ho eliminato o svuotato una tabella")');
-  await p.waitForSelector('.recentrow:has-text("orders")', { timeout: 10000 }); await p.click('.recentrow:has-text("orders")'); await p.click('button:has-text("Avanti")');
-  await p.waitForSelector('text=/Tutto pronto|Pronto: leggi/', { timeout: 10000 }); await p.click('label.opt:has-text("Solo una copia da controllare") input');
-  await p.click('button:has-text("Avvia il ripristino")'); await p.click('.modal button:has-text("Avvia")');
+  await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I dropped or truncated a table")');
+  await p.waitForSelector('.recentrow:has-text("orders")', { timeout: 10000 }); await p.click('.recentrow:has-text("orders")'); await p.click('button:has-text("Next")');
+  await p.waitForSelector('text=/All set|Ready: read/', { timeout: 10000 }); await p.click('label.opt:has-text("Only a copy to check") input');
+  await p.click('button:has-text("Start the restore")'); await p.click('.modal button:has-text("Start")');
   // put it back: orders no longer exists, so "put back what was dropped" is recommended; the preview comes by itself
-  await p.waitForSelector('text=Rimetti a posto', { timeout: 15000 }); await p.waitForSelector('label.opt.on:has-text("Rimetti al suo posto ciò che è stato eliminato") .badge:has-text("Consigliato")');
-  await p.click('summary:has-text("Cosa cambierebbe esattamente")', { timeout: 10000 }); await p.waitForSelector('text=Chiavi esterne da ricollegare'); await shot('12b-promote');
-  await p.click('label.opt:has-text("Sostituisci con la versione recuperata") input'); await p.waitForSelector('summary:has-text("Cosa cambierebbe esattamente")', { timeout: 10000 });
-  await p.getByRole('button', { name: 'Riporta', exact: true }).click();
-  if (!(await p.locator('.modal button:has-text("Riporta")').isDisabled())) throw new Error('replace needs the typed confirmation');
-  await p.fill('.modal input.input', 'SOSTITUISCI'); await shot('12d-replace-confirm');
-  await p.click('.modal button:has-text("Riporta")');
+  await p.waitForSelector('text=Put it back', { timeout: 15000 }); await p.waitForSelector('label.opt.on:has-text("Put back what was dropped") .badge:has-text("Recommended")');
+  await p.click('summary:has-text("What exactly would change")', { timeout: 10000 }); await p.waitForSelector('text=Foreign keys to re-attach'); await shot('12b-promote');
+  await p.click('label.opt:has-text("Replace with the recovered version") input'); await p.waitForSelector('summary:has-text("What exactly would change")', { timeout: 10000 });
+  await p.getByRole('button', { name: 'Bring back', exact: true }).click();
+  if (!(await p.locator('.modal button:has-text("Bring back")').isDisabled())) throw new Error('replace needs the typed confirmation');
+  await p.fill('.modal input.input', 'REPLACE'); await shot('12d-replace-confirm');
+  await p.click('.modal button:has-text("Bring back")');
   // the check before the swap: rows of a table not restored would point at nothing -> refused, nothing changed; the operator may accept it knowingly
-  await p.waitForSelector('text=Righe che resterebbero orfane', { timeout: 10000 }); await p.waitForSelector('text=public.items (order_id)'); await shot('12e-orphans-refused');
-  await p.click('button:has-text("Procedi comunque")'); if (!(await p.locator('.modal button:has-text("Procedi")').isDisabled())) throw new Error('allow orphans needs the typed confirmation');
-  await p.fill('.modal input.input', 'ORFANE'); await p.click('.modal button:has-text("Procedi")');
-  await p.waitForSelector('text=Riportato nel database', { timeout: 10000 }); await p.waitForSelector('text=lasciate non valide'); await shot('12c-promoted');
-  assert(await p.locator('text=Righe che resterebbero orfane').count() === 0, 'the orphan banner goes once the promotion succeeded');
+  await p.waitForSelector('text=Rows that would be orphaned', { timeout: 10000 }); await p.waitForSelector('text=public.items (order_id)'); await shot('12e-orphans-refused');
+  await p.click('button:has-text("Proceed anyway")'); if (!(await p.locator('.modal button:has-text("Proceed")').isDisabled())) throw new Error('allow orphans needs the typed confirmation');
+  await p.fill('.modal input.input', 'ORPHANS'); await p.click('.modal button:has-text("Proceed")');
+  await p.waitForSelector('text=Brought back into the database', { timeout: 10000 }); await p.waitForSelector('text=left NOT VALID'); await shot('12c-promoted');
+  assert(await p.locator('text=Rows that would be orphaned').count() === 0, 'the orphan banner goes once the promotion succeeded');
   // wrong rows: the mass DELETE is found by itself and preselected; compare row by row and put back only some rows
-  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Ho cancellato o modificato righe")');
+  await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I deleted or updated rows")');
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
-  await p.click('.tree button:has-text("orders") >> nth=0'); await p.click('button:has-text("Avanti")');
-  await p.waitForSelector('label.opt.on:has-text("Subito prima: 48")', { timeout: 10000 }); await shot('09c-rows-when');
-  await p.click('label.opt:has-text("L’ultimo istante salvato") input'); await p.waitForSelector('text=l’ultimo istante contiene già l’errore'); await p.click('label.opt:has-text("Subito prima: 48") input');
-  await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=/Tutto pronto|Pronto: leggi/', { timeout: 10000 });
-  await p.waitForSelector('label.opt.on:has-text("Riporta tutte le righe com’erano")'); await p.click('label.opt:has-text("Confronta e scegli io le righe") input');
-  await p.click('button:has-text("Avvia il ripristino")'); await p.click('.modal button:has-text("Avvia")');
-  await p.waitForSelector('text=Differenze trovate', { timeout: 15000 });   // the row comparison starts by itself
+  await p.click('.tree button:has-text("orders") >> nth=0'); await p.click('button:has-text("Next")');
+  await p.waitForSelector('label.opt.on:has-text("Just before: 48")', { timeout: 10000 }); await shot('09c-rows-when');
+  await p.click('label.opt:has-text("The latest saved point") input'); await p.waitForSelector('text=the latest point already contains the mistake'); await p.click('label.opt:has-text("Just before: 48") input');
+  await p.click('button:has-text("Next")'); await p.waitForSelector('text=/All set|Ready: read/', { timeout: 10000 });
+  await p.waitForSelector('label.opt.on:has-text("Bring back all rows as they were")'); await p.click('label.opt:has-text("Compare and pick the rows myself") input');
+  await p.click('button:has-text("Start the restore")'); await p.click('.modal button:has-text("Start")');
+  await p.waitForSelector('text=Differences found', { timeout: 15000 });   // the row comparison starts by itself
   await p.click('label:has-text("[200]") input'); await p.click('label:has-text("[1]") input'); await shot('12a-rows');
-  await p.click('button:has-text("Applica (2)")'); await p.click('.modal button:has-text("Applica")'); await p.waitForSelector('text=Righe recuperate', { timeout: 10000 });
+  await p.click('button:has-text("Apply (2)")'); await p.click('.modal button:has-text("Apply")'); await p.waitForSelector('text=Rows recovered', { timeout: 10000 });
   // default end for rows: every deleted / changed row back in the same operation
-  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Ho cancellato o modificato righe")');
+  await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I deleted or updated rows")');
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
-  await p.click('.tree button:has-text("orders") >> nth=0'); await p.click('button:has-text("Avanti")'); await p.waitForSelector('label.opt.on:has-text("Subito prima: 48")', { timeout: 10000 });
-  await p.click('button:has-text("Avanti")'); await p.waitForSelector('text=/Tutto pronto|Pronto: leggi/', { timeout: 10000 });
-  await p.click('button:has-text("Avvia il ripristino")'); await p.click('.modal button:has-text("Avvia")');
-  await p.waitForSelector('text=/Righe di .* riportate/', { timeout: 15000 }); await p.waitForSelector('code:has-text("pgarca_rowsafe_")'); await shot('12i-rows-fixed');
+  await p.click('.tree button:has-text("orders") >> nth=0'); await p.click('button:has-text("Next")'); await p.waitForSelector('label.opt.on:has-text("Just before: 48")', { timeout: 10000 });
+  await p.click('button:has-text("Next")'); await p.waitForSelector('text=/All set|Ready: read/', { timeout: 10000 });
+  await p.click('button:has-text("Start the restore")'); await p.click('.modal button:has-text("Start")');
+  await p.waitForSelector('text=/Rows of .* brought back/', { timeout: 15000 }); await p.waitForSelector('code:has-text("pgarca_rowsafe_")'); await shot('12i-rows-fixed');
   // whole server, default end: PRODUCTION itself goes back (stop, swap, start, primary again); the previous data directory is kept and can be given back
-  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Devo ricostruire tutto il server")');
-  await p.waitForSelector('label.opt.on:has-text("L’ultimo istante salvato")', { timeout: 10000 }); await p.click('button:has-text("Avanti")');
-  await p.waitForSelector('label.opt.on:has-text("Rimetti a posto il server di produzione")'); await p.waitForSelector('code:has-text("postgresql@16-main.service")', { timeout: 10000 });
-  await p.waitForSelector('text=WAL non ancora archiviati'); await p.waitForSelector('text=/standby ricevono i WAL.*vanno ricostruiti/');
-  if (await p.locator('text=Dove mettere la copia').count()) throw new Error('replacing production asks for no copy destination');
+  await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need to rebuild the whole server")');
+  await p.waitForSelector('label.opt.on:has-text("The latest saved point")', { timeout: 10000 }); await p.click('button:has-text("Next")');
+  await p.waitForSelector('label.opt.on:has-text("Repair the production server")'); await p.waitForSelector('code:has-text("postgresql@16-main.service")', { timeout: 10000 });
+  await p.waitForSelector('text=WAL not yet archived'); await p.waitForSelector('text=/standby server\\(s\\) stream from this server.*must be rebuilt/');
+  if (await p.locator('text=Where to put the copy').count()) throw new Error('replacing production asks for no copy destination');
   await shot('12j-server-fix-check');
-  await p.click('button:has-text("Avvia il ripristino")'); await p.waitForSelector('.modal >> text=al posto della produzione');
-  if (!(await p.locator('.modal button:has-text("Avvia")').isDisabled())) throw new Error('replacing production needs the typed confirmation');
-  await p.fill('.modal input', 'SOSTITUISCI'); await p.click('.modal button:has-text("Avvia")');
-  await p.waitForSelector('text=Il server di produzione è di nuovo com’era', { timeout: 15000 }); await p.waitForSelector('text=di nuovo primario dopo 14 s');
-  await p.waitForSelector('text=Cartelle conservate'); await shot('12k-server-fixed');
-  await p.click('.card:has-text("Cartelle conservate") button:has-text("Elimina")'); await p.fill('.modal input', 'main.pgarca-before-20260101000500'); await p.click('.modal button:has-text("Elimina")');
-  await p.waitForSelector('text=Cartelle conservate', { state: 'detached', timeout: 10000 });
+  await p.click('button:has-text("Start the restore")'); await p.waitForSelector('.modal >> text=in place of production');
+  if (!(await p.locator('.modal button:has-text("Start")').isDisabled())) throw new Error('replacing production needs the typed confirmation');
+  await p.fill('.modal input', 'REPLACE'); await p.click('.modal button:has-text("Start")');
+  await p.waitForSelector('text=The production server is back as it was', { timeout: 15000 }); await p.waitForSelector('text=primary again after 14 s');
+  await p.waitForSelector('text=Kept directories'); await shot('12k-server-fixed');
+  await p.click('.card:has-text("Kept directories") button:has-text("Delete")'); await p.fill('.modal input', 'main.pgarca-before-20260101000500'); await p.click('.modal button:has-text("Delete")');
+  await p.waitForSelector('text=Kept directories', { state: 'detached', timeout: 10000 });
   // the copy instead: asks where, and production is not touched
-  await p.click('button:has-text("Nuovo ripristino")'); await p.click('button.choice:has-text("Devo ricostruire tutto il server")'); await p.click('button:has-text("Avanti")');
-  await p.click('label:has-text("Solo una copia temporanea da consultare")'); await p.waitForSelector('text=Dove mettere la copia', { timeout: 10000 });
-  // ripristino e archivi: istanza di recupero (globale -> cluster, verifica, installazione) e destinazione dei backup (controllo, applicazione)
-  await p.goto(base + '/#/infra'); await p.waitForSelector('text=Ripristino e archivi'); await p.waitForSelector('text=Tutti i cluster');
-  await p.locator('tr:has-text("Tutti i cluster") button:has-text("Modifica")').click(); await p.waitForSelector('text=Dove gira l’istanza di recupero');
-  await p.fill('input[placeholder="/var/tmp/pg_arca_scratch"]', '/data/scratch'); await p.fill('input[placeholder="es. 55000"]', '55000'); await p.fill('input[placeholder="es. 55100"]', '55100');
-  await p.click('.modal button:has-text("Salva")'); await p.waitForSelector('text=Impostazioni salvate'); await p.waitForSelector('text=porte 55000-55100'); await shot('15-infra-eph');
-  await p.locator('tr:has-text("prodpg") button:has-text("Verifica")').click(); await p.waitForSelector('text=Il recupero non può partire da questo nodo', { timeout: 10000 }); await p.waitForSelector('text=Installare PostgreSQL 15'); await shot('16-infra-preflight');
-  await p.click('button:has-text("Installa PostgreSQL 15")'); await p.fill('.modal input >> nth=-1', 'INSTALL'); await p.click('.modal button:has-text("Installa") >> nth=-1'); await p.waitForSelector('text=Installazione dei binari', { timeout: 10000 });
-  await p.click('.modal button:has-text("Chiudi")');
-  await p.click('role=tab[name="Destinazione dei backup"]'); await p.waitForSelector('text=Dove finiscono repository e archivio WAL');
-  await p.locator('tr:has-text("Tutti i cluster") button:has-text("Modifica")').click(); await p.waitForSelector('text=Dove vengono scritti i backup');
+  await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need to rebuild the whole server")'); await p.click('button:has-text("Next")');
+  await p.click('label:has-text("Only a temporary copy to inspect")'); await p.waitForSelector('text=Where to put the copy', { timeout: 10000 });
+  // recovery & storage: recovery instance (global -> cluster, check, installation) and backup destination (check, apply)
+  await p.goto(base + '/#/infra'); await p.waitForSelector('text=Recovery & storage'); await p.waitForSelector('text=All clusters');
+  await p.locator('tr:has-text("All clusters") button:has-text("Edit")').click(); await p.waitForSelector('text=Where the recovery instance runs');
+  await p.fill('input[placeholder="/var/tmp/pg_arca_scratch"]', '/data/scratch'); await p.fill('input[placeholder="e.g. 55000"]', '55000'); await p.fill('input[placeholder="e.g. 55100"]', '55100');
+  await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Settings saved'); await p.waitForSelector('text=ports 55000-55100'); await shot('15-infra-eph');
+  await p.locator('tr:has-text("prodpg") button:has-text("Verify")').click(); await p.waitForSelector('text=Recovery cannot start from this node', { timeout: 10000 }); await p.waitForSelector('text=Install PostgreSQL 15'); await shot('16-infra-preflight');
+  await p.click('button:has-text("Install PostgreSQL 15")'); await p.fill('.modal input >> nth=-1', 'INSTALL'); await p.click('.modal button:has-text("Install") >> nth=-1'); await p.waitForSelector('text=Installing the binaries', { timeout: 10000 });
+  await p.click('.modal button:has-text("Close")');
+  await p.click('role=tab[name="Backup destination"]'); await p.waitForSelector('text=Where the repository and WAL archive go');
+  await p.locator('tr:has-text("All clusters") button:has-text("Edit")').click(); await p.waitForSelector('text=Where backups are written');
   await p.selectOption('.modal select >> nth=0', 'nfs'); await p.fill('input[placeholder="/mnt/backup/pgarca"]', '/mnt/backup/pgarca'); await p.fill('input[placeholder="/mnt/backup/wal/{env}/{cluster}"]', '/mnt/backup/wal/{env}/{cluster}');
-  assert(await p.locator('.modal option[disabled]:has-text("Anteprima")').count() >= 4, 'object stores are listed as preview and disabled');
-  await p.click('.modal button:has-text("Salva")'); await p.waitForSelector('text=Impostazioni salvate'); await shot('17-infra-dest');
-  await p.locator('tr:has-text("prodpg") button:has-text("Controlla e applica")').click(); await p.waitForSelector('text=/Destinazione dei backup . prodpg/');
-  assert(await p.locator('button:has-text("Applica ai nodi")').isDisabled(), 'apply needs a check first');
-  await p.click('button:has-text("Controlla su tutti i nodi")'); await p.waitForSelector('text=è su nfs4', { timeout: 15000 }); await p.waitForSelector('text=controllo riuscito', { timeout: 15000 });
-  await p.click('button:has-text("Applica ai nodi")'); await p.waitForSelector('text=Applicazione avviata', { timeout: 10000 }); await shot('18-infra-applied');
-  await p.click('.modal button:has-text("Chiudi")');
-  await p.click('.side button.navbtn:has-text("Tutti i cluster")'); await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Protezione dei dati');
+  assert(await p.locator('.modal option[disabled]:has-text("Preview")').count() >= 4, 'object stores are listed as preview and disabled');
+  await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Settings saved'); await shot('17-infra-dest');
+  await p.locator('tr:has-text("prodpg") button:has-text("Check and apply")').click(); await p.waitForSelector('text=/Backup destination . prodpg/');
+  assert(await p.locator('button:has-text("Apply to the nodes")').isDisabled(), 'apply needs a check first');
+  await p.click('button:has-text("Check on all nodes")'); await p.waitForSelector('text=is on nfs4', { timeout: 15000 }); await p.waitForSelector('text=check passed', { timeout: 15000 });
+  await p.click('button:has-text("Apply to the nodes")'); await p.waitForSelector('text=Apply started', { timeout: 10000 }); await shot('18-infra-applied');
+  await p.click('.modal button:has-text("Close")');
+  await p.click('.side button.navbtn:has-text("All clusters")'); await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Data protection');
   // ops tab, logs tab, preview tab
-  await tab('Operatività', 'Operazioni'); await p.waitForSelector('text=Registro operazioni'); await shot('13-ops');
-  await tab('Operatività', 'Log'); await p.waitForSelector('text=Log in tempo reale');
-  await tab('Accessi', 'HBA'); await p.waitForSelector('text=Regole gestite dalla console'); await p.waitForSelector('text=Repliche attive senza'); await shot('14-hba');
-  await tab('Operatività', 'Tuning'); await p.waitForSelector('text=16.0 GB di RAM'); await p.waitForSelector('tr:has-text("shared_buffers") >> text=4GB'); await shot('14e-tuning');
-  await p.click('tr:has-text("work_mem") button:has-text("Applica")'); await p.click('.modal button:has-text("Applica")'); await p.waitForSelector('text=Completata', { timeout: 10000 });
-  await tab('Accessi', 'HBA'); await p.waitForSelector('text=Regole gestite dalla console');
+  await tab('Maintenance', 'Operations'); await p.waitForSelector('text=Operation log'); await shot('13-ops');
+  await tab('Maintenance', 'Logs'); await p.waitForSelector('text=Live logs');
+  await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console'); await p.waitForSelector('text=Active replicas without'); await shot('14-hba');
+  await tab('Maintenance', 'Tuning'); await p.waitForSelector('text=16.0 GB RAM'); await p.waitForSelector('tr:has-text("shared_buffers") >> text=4GB'); await shot('14e-tuning');
+  await p.click('tr:has-text("work_mem") button:has-text("Apply")'); await p.click('.modal button:has-text("Apply")'); await p.waitForSelector('text=Succeeded', { timeout: 10000 });
+  await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console');
   // HBA assistant: suggestion, duplicate refusal, shadow warning, plan, apply
-  await p.click('.banner.warn button:has-text("Aggiungi")'); await p.waitForSelector('text=Replica da 10.0.2.7');
-  await p.click('button:has-text("Aggiungi una regola")');
-  await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/33'); await p.waitForSelector('text=formato CIDR');
-  await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/24'); await p.waitForSelector('text=può usare ogni database dalla rete 10.0.20.0/24');
-  await p.click('button:has-text("Aggiungi alla lista")'); await p.waitForSelector('td:has-text("dalla rete 10.0.20.0/24")');
+  await p.click('.banner.warn button:has-text("Add")'); await p.waitForSelector('text=Replication from 10.0.2.7');
+  await p.click('button:has-text("Add a rule")');
+  await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/33'); await p.waitForSelector('text=CIDR notation');
+  await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/24'); await p.waitForSelector('text=can use every database from network 10.0.20.0/24');
+  await p.click('button:has-text("Add to the list")'); await p.waitForSelector('td:has-text("from network 10.0.20.0/24")');
   await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.0.20.0/24');
-  await p.waitForSelector('text=Duplicata'); assert(await p.locator('button:has-text("Aggiungi alla lista")').isDisabled(), 'duplicate refused'); await shot('14b-hba-dup');
-  await p.click('button[aria-label=Chiudi]');
+  await p.waitForSelector('text=Duplicate'); assert(await p.locator('button:has-text("Add to the list")').isDisabled(), 'duplicate refused'); await shot('14b-hba-dup');
+  await p.click('button[aria-label=Close]');
   await p.selectOption('#hba-order', 'wide');
-  await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata'); await shot('14c-hba-plan');
+  await p.click('button:has-text("Check the effect")'); await p.waitForSelector('text=Simulated connection'); await shot('14c-hba-plan');
   await p.selectOption('#hba-order', 'specific');
-  await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata');
-  await p.click('button:has-text("Applica"):not([disabled]) >> nth=0'); await p.click('.modal button:has-text("Applica")');
-  await p.waitForSelector('text=applicato e verificato', { timeout: 15000 }); await shot('14d-hba-applied');
+  await p.click('button:has-text("Check the effect")'); await p.waitForSelector('text=Simulated connection');
+  await p.click('button:has-text("Apply"):not([disabled]) >> nth=0'); await p.click('.modal button:has-text("Apply")');
+  await p.waitForSelector('text=applied and verified', { timeout: 15000 }); await shot('14d-hba-applied');
   await p.waitForTimeout(2000);
   // temporary rule + adopt existing rules
-  await p.click('button:has-text("Aggiungi una regola")'); await p.fill('input[list=hba-users]', 'ext'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.9.9.0/24');
-  await p.selectOption('select[aria-label="Validità della regola"]', '8'); await p.click('button:has-text("Aggiungi alla lista")'); await p.waitForSelector('text=Temporanea · scade tra 8 h');
-  await p.click('button:has-text("Adotta nel blocco gestito")'); await p.waitForSelector('td:has-text("amministra")', { timeout: 3000 }).catch(() => {});
-  await shot('14e0-adopt'); assert.equal(await p.locator('button:has-text("Adotta nel blocco gestito")').count(), 0, 'adopted');
-  await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata'); await shot('14f-hba-adopt');
+  await p.click('button:has-text("Add a rule")'); await p.fill('input[list=hba-users]', 'ext'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.9.9.0/24');
+  await p.selectOption('select[aria-label="Rule validity"]', '8'); await p.click('button:has-text("Add to the list")'); await p.waitForSelector('text=Temporary · expires in 8 h');
+  await p.click('button:has-text("Adopt into the managed block")'); await p.waitForSelector('td:has-text("administ")', { timeout: 3000 }).catch(() => {});
+  await shot('14e0-adopt'); assert.equal(await p.locator('button:has-text("Adopt into the managed block")').count(), 0, 'adopted');
+  await p.click('button:has-text("Check the effect")'); await p.waitForSelector('text=Simulated connection'); await shot('14f-hba-adopt');
   // palette
-  await p.keyboard.press('Control+k'); await p.waitForSelector('[role=dialog][aria-label="Ricerca rapida"]'); await p.keyboard.type('registro'); await p.keyboard.press('Enter');
-  await p.waitForSelector('text=Registro attività'); await shot('15-audit');
+  await p.keyboard.press('Control+k'); await p.waitForSelector('[role=dialog][aria-label="Quick search"]'); await p.keyboard.type('audit'); await p.keyboard.press('Enter');
+  await p.waitForSelector('text=Audit log'); await shot('15-audit');
   // discovery
-  await p.goto(base + '/#/discovery'); await p.waitForSelector('text=Differenze di configurazione tra i nodi'); await p.waitForSelector('text=Da sistemare'); await shot('15a-discovery');
+  await p.goto(base + '/#/discovery'); await p.waitForSelector('text=Configuration differences between nodes'); await p.waitForSelector('text=To fix'); await shot('15a-discovery');
   // strategies
-  await p.goto(base + '/#/strategy'); await p.waitForSelector('text=cluster senza backup automatico'); await shot('15b-strategy');
-  await p.click('button:has-text("Applica i consigliati per ambiente")'); await p.waitForSelector('text=Tutti i cluster hanno una strategia attiva'); await shot('15c-strategy-applied');
-  await p.click('tr:has-text("prodpg") button:has-text("Assegna")'); await p.click('label.opt:has-text("Conservazione lunga")'); await p.click('.modal button:has-text("Salva")');
-  await p.waitForSelector('tr:has-text("prodpg"):has-text("Assegnata a questo cluster")');
-  await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Strategia di backup'); await p.waitForSelector('.card .badge:has-text("Conservazione lunga")'); await shot('15d-backup-strategy');
+  await p.goto(base + '/#/strategy'); await p.waitForSelector('text=without automatic backups'); await shot('15b-strategy');
+  await p.click('button:has-text("Apply the recommended ones per environment")'); await p.waitForSelector('text=Every cluster has an active policy'); await shot('15c-strategy-applied');
+  await p.click('tr:has-text("prodpg") button:has-text("Assign")'); await p.click('label.opt:has-text("Long retention")'); await p.click('.modal button:has-text("Save")');
+  await p.waitForSelector('tr:has-text("prodpg"):has-text("Assigned to this cluster")');
+  await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Backup policy'); await p.waitForSelector('.card .badge:has-text("Long retention")'); await shot('15d-backup-strategy');
   // a server announces itself (agent installed without a token) -> banner -> approve
   { const fp = 'e2efingerprint0000000001', secret = 'a'.repeat(64); const sh = require('crypto').createHash('sha256').update(secret).digest('hex');
     const r = await p.request.post(base + '/api/agent/request-join', { data: { fingerprint: fp, secret_hash: sh, node_name: 'e2e-new', agent_version: '2.0', discovery: { postgres_instances: [{ version: '16.4', data_directory: '/var/lib/postgresql/16/main', port: 5432, cluster_key: 'sysid:e2e-new-key', role: 'primary' }] } } });
     assert.equal(r.status(), 201);
-    await p.goto(base + '/#/'); await p.waitForSelector('text=Nuovo server rilevato: e2e-new', { timeout: 15000 }); await p.click('.join-banner button:has-text("Esamina")');
-    await p.waitForSelector('text=Aggiungere e2e-new?'); await p.selectOption('.modal select', 'dev'); await shot('15a-join');
-    await p.click('.modal button:has-text("Approva e collega")'); await p.waitForSelector('text=Server approvato', { timeout: 10000 });
+    await p.goto(base + '/#/'); await p.waitForSelector('text=New server detected: e2e-new', { timeout: 15000 }); await p.click('.join-banner button:has-text("Review")');
+    await p.waitForSelector('text=Add e2e-new?'); await p.selectOption('.modal select', 'dev'); await shot('15a-join');
+    await p.click('.modal button:has-text("Approve and connect")'); await p.waitForSelector('text=Server approved', { timeout: 10000 });
     const st = await p.request.post(base + '/api/agent/join-status', { data: { fingerprint: fp, secret } }); assert.equal((await st.json()).status, 'approved'); }
   // today + settings
-  await p.goto(base + '/#/today'); await p.waitForSelector('h1:has-text("Oggi")'); await p.waitForSelector('.banner', { timeout: 10000 }); await shot('16a-today');
-  await p.goto(base + '/#/settings'); await p.waitForSelector('text=Aggiungi canale'); await p.click('button:has-text("Aggiungi canale")');
-  await p.fill('input[aria-label="Nome del canale"]', 'Slack DBA'); await p.fill('input[aria-label="Indirizzo del webhook"]', 'https://hooks.example.com/services/T0/B0/abcd1234');
-  await p.click('button:text-is("Salva")'); await p.waitForSelector('text=Notifiche salvate'); await p.waitForSelector('button:has-text("Invia prova")');
-  await p.waitForSelector('text=Serve un secondo amministratore'); await shot('16b-settings');
+  await p.goto(base + '/#/today'); await p.waitForSelector('h1:has-text("Today")'); await p.waitForSelector('.banner', { timeout: 10000 }); await shot('16a-today');
+  await p.goto(base + '/#/settings'); await p.waitForSelector('text=Add channel'); await p.click('button:has-text("Add channel")');
+  await p.fill('input[aria-label="Channel name"]', 'Slack DBA'); await p.fill('input[aria-label="Webhook URL"]', 'https://hooks.example.com/services/T0/B0/abcd1234');
+  await p.click('button:text-is("Save")'); await p.waitForSelector('text=Notifications saved'); await p.waitForSelector('button:has-text("Send test")');
+  await p.waitForSelector('text=A second administrator is needed'); await shot('16b-settings');
   // users
-  await p.goto(base + '/#/users'); await p.waitForSelector('text=Nuovo utente'); await p.click('button:has-text("Nuovo utente")');
-  await p.fill('.modal input >> nth=0', 'operatore1'); await p.fill('.modal input[type=password]', 'operator-password-1'); await p.click('.modal button:has-text("Crea utente")');
+  await p.goto(base + '/#/users'); await p.waitForSelector('text=New user'); await p.click('button:has-text("New user")');
+  await p.fill('.modal input >> nth=0', 'operatore1'); await p.fill('.modal input[type=password]', 'operator-password-1'); await p.click('.modal button:has-text("Create user")');
   await p.waitForSelector('tr:has-text("operatore1")'); await shot('15e-users');
   // attach wizard
-  await p.goto(base + '/#/'); await p.click('button:has-text("Collega cluster") >> nth=0'); await p.waitForSelector('text=Con agent (consigliato)'); await p.click('text=Con agent (consigliato)');
-  await p.click('button:has-text("Genera comando")'); await p.waitForSelector('text=PG_ARCA_ENROLL_TOKEN'); await shot('16-attach');
+  await p.goto(base + '/#/'); await p.click('button:has-text("Connect cluster") >> nth=0'); await p.waitForSelector('text=With agent (recommended)'); await p.click('text=With agent (recommended)');
+  await p.click('button:has-text("Generate the install command")'); await p.waitForSelector('text=PG_ARCA_ENROLL_TOKEN'); await shot('16-attach');
   // operational machines: sidebar entry, list, detail, check as recovery host, use for recoveries
   await p.keyboard.press('Escape').catch(() => {});
   await p.goto(base + '/#/workers'); await p.waitForSelector('td:has-text("bk01")'); await shot('18a-workers');
-  await p.click('.side .citem:has-text("bk01")'); await p.waitForSelector('text=Dischi e condivisioni'); await p.waitForSelector('text=/backup');
-  await p.click('button:has-text("Verifica come host di recupero")'); await p.waitForSelector('text=Può eseguire i ripristini', { timeout: 15000 }); await shot('18b-worker');
-  await p.click('button:has-text("Usala per i ripristini")'); await p.click('.modal button:has-text("Usa questa macchina")'); await p.waitForSelector('text=nodo di recupero per tutti i cluster', { timeout: 10000 });
+  await p.click('.side .citem:has-text("bk01")'); await p.waitForSelector('text=Disks and shares'); await p.waitForSelector('text=/backup');
+  await p.click('button:has-text("Verify as recovery host")'); await p.waitForSelector('text=It can run restores', { timeout: 15000 }); await shot('18b-worker');
+  await p.click('button:has-text("Use it for restores")'); await p.click('.modal button:has-text("Use this host")'); await p.waitForSelector('text=recovery node for all clusters', { timeout: 10000 });
   // geo-redundancy: the pair, the DR strip on the standby site, endpoint + planned switchover through both DCS
-  await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("geo-dc2")'); await p.waitForSelector('text=Sito di replica (DR)'); await shot('19a-geo');
+  await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("geo-dc2")'); await p.waitForSelector('text=Standby site (DR)'); await shot('19a-geo');
   // DR readiness: one-click fixes through the site's DCS
-  await p.waitForSelector('.geoready'); await p.click('button:has-text("Attiva la riserva dall’archivio")'); await p.waitForSelector('text=Riserva dall’archivio in attivazione');
+  await p.waitForSelector('.geoready'); await p.click('button:has-text("Enable the archive fallback")'); await p.waitForSelector('text=Enabling the archive fallback');
   await p.waitForSelector('.geochecks li.ok:has-text("pg-arca-wal")', { timeout: 20000 }).catch(() => null);
-  await p.click('button:has-text("Attiva pg_rewind") >> nth=0'); await p.waitForSelector('text=pg_rewind in attivazione'); await shot('19a2-geo-ready');
-  await p.click('button:has-text("Switchover pianificato verso geo-dc2")'); await p.fill('.modal input.mono >> nth=0', 'dc2-haproxy'); await p.click('.modal button:has-text("Salva")');
-  await p.waitForSelector('.modal button:has-text("Avvia lo switchover")'); await p.fill('.modal input.input', 'SWITCHOVER'); await p.click('.modal button:has-text("Avvia lo switchover")');
-  await p.waitForSelector('.geojob:has-text("completato")', { timeout: 30000 }); await p.waitForSelector('.geosite.primary:has-text("geo-dc2")', { timeout: 15000 }); await shot('19b-geo-switched');
+  await p.click('button:has-text("Enable pg_rewind") >> nth=0'); await p.waitForSelector('text=Enabling pg_rewind'); await shot('19a2-geo-ready');
+  await p.click('button:has-text("Planned switchover to geo-dc2")'); await p.fill('.modal input.mono >> nth=0', 'dc2-haproxy'); await p.click('.modal button:has-text("Save")');
+  await p.waitForSelector('.modal button:has-text("Start the switchover")'); await p.fill('.modal input.input', 'SWITCHOVER'); await p.click('.modal button:has-text("Start the switchover")');
+  await p.waitForSelector('.geojob:has-text("completed")', { timeout: 30000 }); await p.waitForSelector('.geosite.primary:has-text("geo-dc2")', { timeout: 15000 }); await shot('19b-geo-switched');
   // pg_hba on a Patroni site: DCS only, previous versions kept by the console and restorable
   await p.goto(base + '/#/'); const g1 = await p.locator('.fleettable a:has(strong:text-is("geo-dc1"))').getAttribute('href'); await p.goto(base + '/' + g1 + '/hba');
-  await p.waitForSelector('text=Patroni non può aprire la connessione di replica locale', { timeout: 20000 }); await shot('14f2-hba-patroni-local');
-  await p.waitForSelector('text=Patroni · configurazione condivisa (DCS)'); await p.waitForSelector('text=Altre regole della lista nel DCS');
-  await p.click('button:has-text("Aggiungi una regola")'); await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '172.30.9.0/24');
-  await p.click('button:has-text("Aggiungi alla lista")'); await p.click('button:has-text("Verifica effetto")'); await p.waitForSelector('text=Connessione simulata');
-  await p.click('button:has-text("Applica a tutto il cluster")'); await p.click('.modal button:has-text("Applica")'); await p.waitForSelector('text=written to the DCS', { timeout: 15000 });
-  await p.waitForSelector('.card:has-text("Versioni precedenti") button:has-text("Ripristina")', { timeout: 15000 }); await shot('14g-hba-dcs');
-  await p.click('.card:has-text("Versioni precedenti") button:has-text("Ripristina") >> nth=0'); await p.click('.modal button:has-text("Ripristina nel DCS")');
-  await p.waitForSelector('text=Versione ripristinata nel DCS', { timeout: 15000 });
+  await p.waitForSelector('text=Patroni cannot open the local replication connection', { timeout: 20000 }); await shot('14f2-hba-patroni-local');
+  await p.waitForSelector('text=Patroni · shared configuration (DCS)'); await p.waitForSelector('text=Other rules in the DCS list');
+  await p.click('button:has-text("Add a rule")'); await p.fill('input[list=hba-users]', 'app'); await p.fill('input[placeholder="10.0.20.0/24"]', '172.30.9.0/24');
+  await p.click('button:has-text("Add to the list")'); await p.click('button:has-text("Check the effect")'); await p.waitForSelector('text=Simulated connection');
+  await p.click('button:has-text("Apply to the whole cluster")'); await p.click('.modal button:has-text("Apply")'); await p.waitForSelector('text=written to the DCS', { timeout: 15000 });
+  await p.waitForSelector('.card:has-text("Previous versions") button:has-text("Restore")', { timeout: 15000 }); await shot('14g-hba-dcs');
+  await p.click('.card:has-text("Previous versions") button:has-text("Restore") >> nth=0'); await p.click('.modal button:has-text("Restore in the DCS")');
+  await p.waitForSelector('text=Version restored in the DCS', { timeout: 15000 });
   // relationships: the standby site sits under its primary (auto); "no relationship" detaches it; a cluster without telemetry declared as replica by hand
   await p.goto(base + '/#/'); await p.waitForSelector('.fleettable tr.replicarow');
   const stbyName = (await p.locator('.fleettable tr.replicarow strong').first().innerText()).trim();
-  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button:has-text("Organizza")`); await p.check('.modal input[name=glm] >> nth=2'); await p.click('.modal button:has-text("Salva")');
+  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button:has-text("Organize")`); await p.check('.modal input[name=glm] >> nth=2'); await p.click('.modal button:has-text("Save")');
   await p.waitForFunction(() => !document.querySelector('.fleettable tr.replicarow'), null, { timeout: 15000 });
-  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button:has-text("Organizza")`); await p.check('.modal input[name=glm] >> nth=0'); await p.click('.modal button:has-text("Salva")');
+  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button:has-text("Organize")`); await p.check('.modal input[name=glm] >> nth=0'); await p.click('.modal button:has-text("Save")');
   await p.waitForSelector('.fleettable tr.replicarow', { timeout: 15000 });
-  await p.click('.fleettable tr:has(strong:text-is("pg-e2e-new")) button:has-text("Organizza")'); await p.check('.modal input[name=glm] >> nth=1');
-  await p.selectOption('.modal fieldset select', { label: 'prodpg · prod' }); await p.click('.modal button:has-text("Salva")');
+  await p.click('.fleettable tr:has(strong:text-is("pg-e2e-new")) button:has-text("Organize")'); await p.check('.modal input[name=glm] >> nth=1');
+  await p.selectOption('.modal fieldset select', { label: 'prodpg · prod' }); await p.click('.modal button:has-text("Save")');
   await p.waitForSelector('.fleettable tr.replicarow:has-text("pg-e2e-new")', { timeout: 15000 }); await shot('19c-manual-link');
-  await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("impostato a mano")'); await shot('19d-geo-manual');
+  await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("set by hand")'); await shot('19d-geo-manual');
   // mobile
   await p.setViewportSize({ width: 390, height: 800 }); await shot('17-mobile');
   console.log(errs.length ? 'ERRORS:\n' + errs.join('\n') : 'no page errors'); assert.strictEqual(errs.length, 0);

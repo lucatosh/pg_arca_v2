@@ -44,18 +44,18 @@ export interface Template { id: string; name: string; description: string; built
 
 const P = (o: Partial<BackupPolicy>): BackupPolicy => ({ ...DEFAULT_POLICY, enabled: true, ...o });
 export const BUILTIN_TEMPLATES: Template[] = [
-  { id: 'prod-critical', name: 'Produzione critica', builtin: true, description: 'Completo ogni settimana, incrementale ogni 4 ore, 4 catene conservate, verifica con prova di ripristino ogni giorno.',
+  { id: 'prod-critical', name: 'Critical production', builtin: true, description: 'Weekly full, incremental every 4 hours, 4 chains kept, daily verification with a test restore.',
     policy: P({ fullEveryHours: 168, incrEveryHours: 4, retentionFull: 4, verifyEveryHours: 24, verifyDeep: false, retryAfterMinutes: 15 }) },
-  { id: 'prod-standard', name: 'Produzione standard', builtin: true, description: 'Completo settimanale, incrementale giornaliero, 2 catene, verifica settimanale.',
+  { id: 'prod-standard', name: 'Standard production', builtin: true, description: 'Weekly full, daily incremental, 2 chains, weekly verification.',
     policy: P({ fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168 }) },
-  { id: 'preprod', name: 'Pre-produzione / integrazione', builtin: true, description: 'Completo settimanale, incrementale ogni 24 ore, 2 catene, verifica ogni due settimane.',
+  { id: 'preprod', name: 'Pre-production / integration', builtin: true, description: 'Weekly full, incremental every 24 hours, 2 chains, verification every two weeks.',
     policy: P({ fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 336 }) },
-  { id: 'dev-light', name: 'Sviluppo e test (leggero)', builtin: true, description: 'Un completo ogni settimana, nessun incrementale, 1 catena, nessuna verifica automatica.',
+  { id: 'dev-light', name: 'Development and test (light)', builtin: true, description: 'One full per week, no incrementals, 1 chain, no automatic verification.',
     policy: P({ fullEveryHours: 168, incrEveryHours: 0, retentionFull: 1, verifyEveryHours: 0 }) },
-  { id: 'compliance', name: 'Conservazione lunga (compliance)', builtin: true, description: 'Completo ogni giorno, incrementale ogni ora, 30 catene conservate, verifica approfondita settimanale.',
+  { id: 'compliance', name: 'Long retention (compliance)', builtin: true, description: 'Daily full, hourly incremental, 30 chains kept, weekly deep verification.',
     policy: P({ fullEveryHours: 24, incrEveryHours: 1, retentionFull: 30, verifyEveryHours: 168, verifyDeep: true, retryAfterMinutes: 10 }) },
 ];
-/** Suggested starting point per environment (shown in the UI as "consigliato"). */
+/** Suggested starting point per environment (shown in the UI as "recommended"). */
 export const SUGGESTED: Record<string, string> = { prod: 'prod-critical', prep: 'preprod', int: 'preprod', dev: 'dev-light', test: 'dev-light' };
 
 export type Scope = 'global' | 'env' | 'folder' | 'cluster';
@@ -125,7 +125,7 @@ export function mountPolicyRoutes(app: any, store: Store) {
       return 'ok' as const;
     });
     if (r === 'missing') return res.status(404).json({ error: 'not_found' });
-    if (r === 'in_use') return res.status(409).json({ error: 'template_in_use', message: 'Il modello è assegnato: assegna prima un altro modello.' });
+    if (r === 'in_use') return res.status(409).json({ error: 'template_in_use', message: 'The template is assigned: assign another template first.' });
     res.json({ ok: true, ...view() });
   });
 

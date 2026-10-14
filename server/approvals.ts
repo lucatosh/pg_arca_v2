@@ -26,11 +26,11 @@ export const advanced = (st: any) => ({ approvals: {} as Record<string, boolean>
 export const requiresApproval = (st: any, cluster: any, type: string, params: any) => !!advanced(st).approvals[cluster.environment] && isRisky(type, params);
 
 export function describeOp(type: string, params: any = {}): string {
-  const m: Record<string, string> = { destination_apply: `Cambio della destinazione dei backup${params.repo_path ? ' → ' + params.repo_path : ''}`, destination_drop_old: `Eliminazione della posizione precedente dei backup ${params.path ?? ''}`, hba_cluster_apply: 'Modifica delle regole di accesso (pg_hba) su tutto il cluster', hba_apply: 'Modifica delle regole di accesso (pg_hba)', hba_rollback: 'Ripristino delle regole di accesso precedenti', hba_restore: 'Ripristino di una versione precedente delle regole di accesso (DCS Patroni)', pg_set_param: `Cambio del parametro ${params.name ?? ''} = ${params.value ?? ''}`,
-    patroni_switchover: 'Switchover pianificato', patroni_failover: 'Failover forzato', patroni_restart: 'Riavvio via Patroni', pg_restart: 'Riavvio di PostgreSQL', patroni_reinit: 'Ricostruzione di una replica', archive_enable: 'Attivazione archiviazione WAL', patroni_config_patch: 'Modifica della configurazione Patroni', patroni_pause: 'Manutenzione Patroni',
-    restore_promote: 'Sostituzione di tabelle con quelle ripristinate', ephemeral_install: `Installazione dei binari PostgreSQL ${params.major ?? ''} per i ripristini`, restore_apply_rows: `Recupero righe in ${params.object ?? ''}`,
-    restore_kept_drop: `Eliminazione dei dati conservati ${params.path ?? ''}`, restore_db_swap: `Sostituzione del database ${params.original ?? ''} con ${params.restored ?? ''}` };
-  if (type === 'restore_instance' && params.replace_production) return 'Ripristino del server di produzione al suo posto (PostgreSQL fermato e riavviato sui dati ripristinati)';
+  const m: Record<string, string> = { destination_apply: `Backup destination change${params.repo_path ? ' → ' + params.repo_path : ''}`, destination_drop_old: `Deletion of the previous backup location ${params.path ?? ''}`, hba_cluster_apply: 'Access rule (pg_hba) change on the whole cluster', hba_apply: 'Access rule (pg_hba) change', hba_rollback: 'Rollback to the previous access rules', hba_restore: 'Restore of a previous version of the access rules (Patroni DCS)', pg_set_param: `Parameter change ${params.name ?? ''} = ${params.value ?? ''}`,
+    patroni_switchover: 'Planned switchover', patroni_failover: 'Forced failover', patroni_restart: 'Restart through Patroni', pg_restart: 'PostgreSQL restart', patroni_reinit: 'Replica reinitialization', archive_enable: 'Enable WAL archiving', patroni_config_patch: 'Patroni configuration change', patroni_pause: 'Patroni maintenance mode',
+    restore_promote: 'Replacement of tables with the restored ones', ephemeral_install: `Installation of the PostgreSQL ${params.major ?? ''} binaries for restores`, restore_apply_rows: `Row recovery in ${params.object ?? ''}`,
+    restore_kept_drop: `Deletion of kept data ${params.path ?? ''}`, restore_db_swap: `Replacement of database ${params.original ?? ''} with ${params.restored ?? ''}` };
+  if (type === 'restore_instance' && params.replace_production) return 'In-place restore of the production server (PostgreSQL stopped and restarted on the restored data)';
   return m[type] || type;
 }
 
@@ -44,12 +44,12 @@ export function mountAdvancedRoutes(app: any, store: any, audit: (d: any, e: any
   app.get('/api/advanced', (_req: any, res: any) => { const st = store.peek(); res.json({ ...view({ settings: st.settings }), }); });
   app.put('/api/advanced', async (req: any, res: any) => {
     const a = req.body?.approvals ?? store.peek().settings.advanced?.approvals ?? {};
-    if (typeof a !== 'object') return res.status(400).json({ error: 'invalid', message: 'approvals non valido' });
+    if (typeof a !== 'object') return res.status(400).json({ error: 'invalid', message: 'invalid approvals' });
     const join = req.body?.joinRequests === undefined ? ((store.peek().settings.advanced || {}).joinRequests !== false) : !!req.body.joinRequests;
     const next: Record<string, boolean> = {};
-    for (const [k, v] of Object.entries(a)) { if (!APPROVABLE_ENVS.includes(k)) return res.status(400).json({ error: 'invalid_env', message: 'Ambiente sconosciuto: ' + k }); if (v) next[k] = true; }
+    for (const [k, v] of Object.entries(a)) { if (!APPROVABLE_ENVS.includes(k)) return res.status(400).json({ error: 'invalid_env', message: 'Unknown environment: ' + k }); if (v) next[k] = true; }
     if (Object.keys(next).length && activeAdmins(store.peek().settings) < 2)
-      return res.status(409).json({ error: 'need_two_admins', message: 'Per attivare le approvazioni servono almeno due amministratori attivi: altrimenti nessuno potrebbe approvare.' });
+      return res.status(409).json({ error: 'need_two_admins', message: 'Enabling approvals needs at least two active administrators: otherwise nobody could approve.' });
     await store.mutate((d: any) => { d.settings.advanced = { ...(d.settings.advanced || {}), approvals: next, joinRequests: join }; audit(d, { actor: req.actor || 'admin', action: 'settings.advanced', status: 'OK', details: { approvals: Object.keys(next), joinRequests: join } }); });
     res.json(view(store.peek()));
   });

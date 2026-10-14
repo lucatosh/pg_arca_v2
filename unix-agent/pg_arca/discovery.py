@@ -199,16 +199,16 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     tc = scan.get("toolchain") or {}
     if not tc.get("psql"):
-        add("critical", "NO_PSQL", "psql non trovato", "L'agent usa psql per interrogare PostgreSQL ed eseguire backup e ripristini.", "Installa il pacchetto client di PostgreSQL.", "host")
+        add("critical", "NO_PSQL", "psql not found", "The agent uses psql to query PostgreSQL and to run backups and restores.", "Install the PostgreSQL client package.", "host")
     if not tc.get("pg_waldump"):
-        add("info", "NO_WALDUMP", "pg_waldump non trovato", "Senza pg_waldump non si possono cercare DROP/TRUNCATE nei WAL.", "Installa i binari del server PostgreSQL (postgresql-NN).", "host")
+        add("info", "NO_WALDUMP", "pg_waldump not found", "Without pg_waldump, DROP/TRUNCATE cannot be searched in the WAL.", "Install the PostgreSQL server binaries (postgresql-NN).", "host")
     if not tc.get("python_zstandard"):                         # the zstd COMMAND only serves the WAL archive: the backup chunks need the python module
-        add("warning", "NO_ZSTD", "Compressione zstd non disponibile per i backup", "I blocchi verranno compressi con zlib: misurato da 5 a 10 volte più lento per core (sul lab un backup di 10 GB ha richiesto 12 minuti a ~14 MB/s).", "Installa il pacchetto python3-zstandard (Debian/Ubuntu; EPEL su RHEL) oppure pip install zstandard per il python dell'agent.", "host")
+        add("warning", "NO_ZSTD", "zstd compression not available for backups", "Chunks will be compressed with zlib: measured 5 to 10 times slower per core (in the lab a 10 GB backup took 12 minutes at ~14 MB/s).", "Install the python3-zstandard package (Debian/Ubuntu; EPEL on RHEL) or pip install zstandard for the agent's Python.", "host")
     running = [i for i in scan.get("postgres_instances") or [] if i.get("running")]
     if len(running) > 1:
-        add("warning", "MULTI_INSTANCE", "Più istanze PostgreSQL in esecuzione su questo server",
-            "L'agent ne gestisce UNA (%s); le altre non vengono salvate né mostrate come cluster." % ", ".join("%s:%s" % (i.get("data_directory"), i.get("port")) for i in running),
-            "Installa un agent per ogni altra istanza: rilancia l'installer con PG_ARCA_INSTANCE=<nome> PG_ARCA_PGDATA=<cartella dati> (configurazione, stato e servizio separati: pg-arca-agent-<nome>). Per cambiare quella gestita da questo agent imposta pg_data nelle sue impostazioni.", "host")
+        add("warning", "MULTI_INSTANCE", "Several PostgreSQL instances running on this server",
+            "The agent manages ONE of them (%s); the others are neither backed up nor shown as clusters." % ", ".join("%s:%s" % (i.get("data_directory"), i.get("port")) for i in running),
+            "Install one agent per additional instance: run the installer again with PG_ARCA_INSTANCE=<name> PG_ARCA_PGDATA=<data directory> (separate configuration, state and service: pg-arca-agent-<name>). To change the one managed by this agent, set pg_data in its settings.", "host")
     for i in scan.get("postgres_instances") or []:
         tgt = i.get("data_directory", "")
         st = i.get("settings") or {}
@@ -219,7 +219,7 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
         except ValueError:
             major = 0
         if not i.get("readable_by_agent", True):
-            add("critical", "UNREADABLE", "Data directory non leggibile dall'agent", "Senza accesso ai file l'agent non può fare backup.", "Esegui l'agent come utente postgres (o root).", tgt)
+            add("critical", "UNREADABLE", "Data directory not readable by the agent", "Without access to the files the agent cannot take backups.", "Run the agent as the postgres user (or root).", tgt)
         cm = i.get("compat")
         if not cm and i.get("major_version"):
             try:
@@ -229,33 +229,33 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
                 cm = None
         cm = cm or {}
         for pr in cm.get("problems") or []:
-            title = {"unsupported": "PostgreSQL %s non supportato" % cm.get("label"), "legacy": "PostgreSQL %s in modalità legacy" % cm.get("label"),
-                     "newer": "PostgreSQL %s più recente di quelli verificati" % cm.get("label"), "eol": "PostgreSQL %s è a fine vita (EOL %s)" % (cm.get("label"), cm.get("eol_date"))}.get(pr["code"], pr["code"])
-            add(pr["severity"], "PG_" + pr["code"].upper(), title, pr["text"], "Pianifica l'aggiornamento a una versione supportata (16 o superiore)." if pr["code"] in ("unsupported", "legacy", "eol") else "Esegui un ripristino di prova (drill) prima di affidarti ai backup.", tgt)
+            title = {"unsupported": "PostgreSQL %s not supported" % cm.get("label"), "legacy": "PostgreSQL %s in legacy mode" % cm.get("label"),
+                     "newer": "PostgreSQL %s newer than the verified versions" % cm.get("label"), "eol": "PostgreSQL %s is end-of-life (EOL %s)" % (cm.get("label"), cm.get("eol_date"))}.get(pr["code"], pr["code"])
+            add(pr["severity"], "PG_" + pr["code"].upper(), title, pr["text"], "Plan an upgrade to a supported version (16 or later)." if pr["code"] in ("unsupported", "legacy", "eol") else "Run a test restore (drill) before relying on the backups.", tgt)
         if not i.get("running"):
-            add("warning", "NOT_RUNNING", "Istanza non in esecuzione", "I backup richiedono PostgreSQL attivo (i ripristini su cartella no).", "Avvia PostgreSQL.", tgt)
+            add("warning", "NOT_RUNNING", "Instance not running", "Backups need PostgreSQL running (restores into a directory do not).", "Start PostgreSQL.", tgt)
         mode = (ar.get("archive_mode") or "off").lower()
         if mode == "off":
-            add("warning", "ARCHIVE_OFF", "Archiviazione WAL spenta", "Senza WAL archiviati non esiste il ripristino a un istante preciso.", "archive_mode = on; archive_command = '/usr/local/bin/pg-arca-wal archive %p %f' (richiede un riavvio).", tgt)
+            add("warning", "ARCHIVE_OFF", "WAL archiving is off", "Without archived WAL there is no point-in-time recovery.", "archive_mode = on; archive_command = '/usr/local/bin/pg-arca-wal archive %p %f' (requires a restart).", tgt)
         elif ar.get("foreign_tool"):
-            add("warning", "ARCHIVE_FOREIGN", "L'archiviazione è gestita da %s" % ar["foreign_tool"], "Sostituire archive_command interrompe quella catena di backup.", "Valuta una migrazione guidata: non cambiare archive_command a caldo.", tgt)
+            add("warning", "ARCHIVE_FOREIGN", "Archiving is managed by %s" % ar["foreign_tool"], "Replacing archive_command breaks that backup chain.", "Consider a guided migration: do not change archive_command on the fly.", tgt)
         if (ctl.get("wal_level") or ar.get("wal_level")) == "minimal":
-            add("critical", "WAL_MINIMAL", "wal_level = minimal", "Con wal_level minimal non si può archiviare né replicare.", "wal_level = replica (richiede un riavvio).", tgt)
+            add("critical", "WAL_MINIMAL", "wal_level = minimal", "With wal_level minimal you can neither archive nor replicate.", "wal_level = replica (requires a restart).", tgt)
         if ctl.get("available") and not ctl.get("data_checksums") and (st.get("wal_log_hints") or "off") != "on":
-            add("info", "NO_CHECKSUMS", "Backup incrementali non abilitabili", "Servono data_checksums o wal_log_hints per distinguere le pagine cambiate; ora sono possibili solo backup completi.", "wal_log_hints = on (riavvio) oppure pg_checksums --enable a istanza ferma.", tgt)
+            add("info", "NO_CHECKSUMS", "Incremental backups cannot be enabled", "data_checksums or wal_log_hints is needed to tell changed pages apart; only full backups are possible now.", "wal_log_hints = on (restart) or pg_checksums --enable with the instance stopped.", tgt)
         if st.get("ssl") and st["ssl"] != "on":
-            add("warning", "SSL_OFF", "TLS spento", "Le connessioni non sono cifrate e le regole hostssl non possono corrispondere.", "ssl = on con certificato e chiave configurati.", tgt)
+            add("warning", "SSL_OFF", "TLS off", "Connections are not encrypted and hostssl rules cannot match.", "ssl = on with a certificate and key configured.", tgt)
         if (st.get("fsync") or "on") == "off" or (st.get("full_page_writes") or "on") == "off":
-            add("critical", "UNSAFE_DURABILITY", "fsync / full_page_writes disattivati", "Un crash può corrompere i dati e i backup fisici non sono consistenti.", "Riattiva fsync e full_page_writes.", tgt)
+            add("critical", "UNSAFE_DURABILITY", "fsync / full_page_writes disabled", "A crash can corrupt the data and physical backups are not consistent.", "Turn fsync and full_page_writes back on.", tgt)
     for pc in scan.get("patroni_clusters") or []:
         if not pc.get("rest_accessible", True) and pc.get("rest_url"):
-            add("warning", "PATRONI_REST", "API REST di Patroni non raggiungibile", "Switchover, failover e modifiche HA non sono possibili da qui.", "Controlla restapi.listen / credenziali.", pc.get("scope", ""))
+            add("warning", "PATRONI_REST", "Patroni REST API unreachable", "Switchover, failover and HA changes are not possible from here.", "Check restapi.listen / credentials.", pc.get("scope", ""))
     for ec in scan.get("etcd_clusters") or []:
         n = len(ec.get("members") or [])
         if n and n % 2 == 0:
-            add("warning", "ETCD_EVEN", "etcd con %d membri" % n, "Un numero pari di membri non aumenta la tolleranza ai guasti.", "Usa 3 o 5 membri.", ec.get("name", ""))
+            add("warning", "ETCD_EVEN", "etcd with %d members" % n, "An even number of members does not increase fault tolerance.", "Use 3 or 5 members.", ec.get("name", ""))
         if n == 1:
-            add("warning", "ETCD_SINGLE", "etcd con un solo membro", "Se si ferma, Patroni degrada il cluster.", "Usa 3 membri.", ec.get("name", ""))
+            add("warning", "ETCD_SINGLE", "etcd with a single member", "If it stops, Patroni degrades the cluster.", "Use 3 members.", ec.get("name", ""))
     order = {"critical": 0, "warning": 1, "info": 2}
     out.sort(key=lambda f: order[f["severity"]])
     return out

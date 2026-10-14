@@ -19,13 +19,14 @@ const GROUPS: string[][] = [['hba_apply', 'hba_restore', 'hba_expire', 'hba_roll
 const SINGLETON = ['pg_restart', 'backup_run', 'backup_expire', 'destination_migrate', 'destination_drop_old', 'backup_verify', 'archive_enable', 'restore_instance', 'restore_drill', 'patroni_switchover', 'patroni_failover', 'patroni_pause', 'patroni_config_patch', 'hba_apply', 'ephemeral_install', 'geo_promote', 'geo_demote'];
 
 export const OP_IT: Record<string, string> = {
-  backup_run: 'un backup', backup_expire: 'la pulizia dei backup scaduti', destination_migrate: 'la migrazione dei backup nella nuova destinazione', destination_drop_old: 'l’eliminazione della posizione precedente dei backup', backup_verify: 'una verifica dei backup', archive_enable: 'l’attivazione dell’archiviazione WAL',
-  restore_instance: 'un ripristino dell’istanza', restore_database: 'un ripristino di database', restore_object: 'un ripristino di oggetti', restore_promote: 'una promozione dalla quarantena', restore_db_swap: 'la sostituzione di un database con quello ripristinato', restore_kept_drop: 'l’eliminazione dei dati conservati da una sostituzione',
-  restore_drill: 'una prova di ripristino', restore_apply_rows: 'un recupero di righe', patroni_switchover: 'uno switchover', patroni_failover: 'un failover', patroni_restart: 'un riavvio', pg_restart: 'un riavvio di PostgreSQL',
-  patroni_reinit: 'la ricostruzione di una replica', patroni_pause: 'la pausa di Patroni', patroni_config_patch: 'una modifica della configurazione Patroni', hba_apply: 'una modifica di pg_hba', hba_restore: 'il ripristino di una versione di pg_hba', hba_expire: 'la rimozione delle regole pg_hba scadute', hba_rollback: 'il ripristino del pg_hba precedente', geo_archive_fallback: 'la configurazione della riserva dall’archivio',
-  ephemeral_install: 'un’installazione di PostgreSQL', restored_stop: 'l’arresto di una copia ripristinata', restored_start: 'l’avvio di una copia ripristinata', restored_resume: 'la conclusione del recupero di una copia', restored_drop: 'l’eliminazione di una copia ripristinata', geo_promote: 'la promozione del sito', geo_demote: 'il passaggio del sito a standby', restore_plan: 'la verifica di un piano di ripristino', backup_catalog: 'la lettura del catalogo',
+  backup_run: 'a backup', backup_expire: 'the cleanup of expired backups', destination_migrate: 'the migration of the backups to the new destination', destination_drop_old: 'the deletion of the previous backup location', backup_verify: 'a backup verification', archive_enable: 'enabling WAL archiving',
+  restore_instance: 'an instance restore', restore_database: 'a database restore', restore_object: 'an object restore', restore_promote: 'a promotion from quarantine', restore_db_swap: 'swapping a database with the restored one', restore_kept_drop: 'deleting data kept from a replacement',
+  restore_drill: 'a restore drill', restore_apply_rows: 'a row recovery', patroni_switchover: 'a switchover', patroni_failover: 'a failover', patroni_restart: 'a restart', pg_restart: 'a PostgreSQL restart',
+  patroni_reinit: 'a replica reinitialization', patroni_pause: 'pausing Patroni', patroni_config_patch: 'a Patroni configuration change', hba_apply: 'a pg_hba change', hba_restore: 'restoring a pg_hba version', hba_expire: 'removing expired pg_hba rules', hba_rollback: 'rolling back to the previous pg_hba', geo_archive_fallback: 'configuring the archive fallback',
+  ephemeral_install: 'a PostgreSQL installation', restored_stop: 'stopping a restored copy', restored_start: 'starting a restored copy', restored_resume: 'finishing a copy’s recovery', restored_drop: 'deleting a restored copy', geo_promote: 'the site promotion', geo_demote: 'the site demotion to standby', restore_plan: 'checking a restore plan', backup_catalog: 'reading the catalog',
 };
 const it = (t: string) => OP_IT[t] || t;
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export interface Conflict { error: 'conflict'; message: string; with: { id: string; type: string; status: string; createdBy: string; createdAt: string }; overridable: boolean }
 
@@ -34,30 +35,30 @@ export function conflictFor(operations: Operation[], clusterId: string, type: st
   const active = operations.filter(o => o.clusterId === clusterId && ACTIVE.has(o.status) && !(o.type === 'pg_restart' && o.params?.dry_run));
   const hit = (o: Operation, message: string, overridable = false): Conflict => ({ error: 'conflict', message, overridable,
     with: { id: o.id, type: o.type, status: o.status, createdBy: o.createdBy, createdAt: o.createdAt } });
-  const who = (o: Operation) => (o.createdBy === actor ? 'da te' : `da ${o.createdBy}`);
-  const state = (o: Operation) => (o.status === 'queued' ? 'è già in coda' : 'è già in corso');
+  const who = (o: Operation) => (o.createdBy === actor ? 'by you' : `by ${o.createdBy}`);
+  const state = (o: Operation) => (o.status === 'queued' ? 'is already queued' : 'is already running');
   for (const o of active) {
     const grp = GROUPS.find(g => g.includes(type));
-    if (grp && grp.includes(o.type) && o.type !== type) return hit(o, `C’è ${it(o.type)} che ${state(o)} su questo cluster (avviato ${who(o)}): ${it(type)} tocca la stessa configurazione. Attendi che finisca.`);
-    if ((SINGLETON.includes(type) || grp) && o.type === type) return hit(o, `C’è ${it(type)} che ${state(o)} su questo cluster (avviato ${who(o)}). Attendi che finisca o annullalo.`);
+    if (grp && grp.includes(o.type) && o.type !== type) return hit(o, `${cap(it(o.type))} ${state(o)} on this cluster (started ${who(o)}): ${it(type)} touches the same configuration. Wait until it finishes.`);
+    if ((SINGLETON.includes(type) || grp) && o.type === type) return hit(o, `${cap(it(type))} ${state(o)} on this cluster (started ${who(o)}). Wait until it finishes or cancel it.`);
     if ((type === 'destination_migrate' && o.type === 'backup_expire') || (type === 'backup_expire' && o.type === 'destination_migrate' && !o.params?.dry_run))
-      return hit(o, `${it(o.type)} ${state(o)} (avviata ${who(o)}): la pulizia e la migrazione lavorano sugli stessi backup. Attendi che finisca.`);
+      return hit(o, `${cap(it(o.type))} ${state(o)} (started ${who(o)}): cleanup and migration work on the same backups. Wait until it finishes.`);
     if (type === 'backup_expire' && BACKUP_SETS_READERS.includes(o.type) && o.type !== 'restore_plan' && o.type !== 'backup_catalog')
-      return hit(o, `La pulizia dei backup scaduti potrebbe eliminare il backup che sta usando ${it(o.type)} (avviato ${who(o)}): riprova quando è finito.`);
+      return hit(o, `The cleanup of expired backups could delete the backup that ${it(o.type)} is using (started ${who(o)}): try again when it has finished.`);
     if (BACKUP_SETS_READERS.includes(type) && o.type === 'backup_expire' && type !== 'restore_plan' && type !== 'backup_catalog')
-      return hit(o, `È in coda la pulizia dei backup scaduti (avviata ${who(o)}): potrebbe eliminare il backup da cui partiresti. Attendi che finisca.`);
+      return hit(o, `The cleanup of expired backups is queued (started ${who(o)}): it could delete the backup you would start from. Wait until it finishes.`);
     if (type === 'restore_promote' && o.type === 'restore_promote' && params?.stage_db && o.params?.stage_db === params.stage_db)
-      return hit(o, `La quarantena ${params.stage_db} è già in promozione (avviata ${who(o)}).`);
+      return hit(o, `Quarantine database ${params.stage_db} is already being promoted (started ${who(o)}).`);
     if (type === 'restore_promote' && o.type === 'restore_object' && params?.stage_db && o.params?.stage_db === params.stage_db)
-      return hit(o, `La quarantena ${params.stage_db} è ancora in costruzione (${it(o.type)} avviato ${who(o)}).`);
+      return hit(o, `Quarantine database ${params.stage_db} is still being built (${it(o.type)} started ${who(o)}).`);
     if (type === 'restore_object' && params?.stage_db && ['restore_object', 'restore_promote'].includes(o.type) && o.params?.stage_db === params.stage_db)
-      return hit(o, `La quarantena ${params.stage_db} è già usata da ${it(o.type)} (avviato ${who(o)}): scegli un altro nome.`);
+      return hit(o, `Quarantine database ${params.stage_db} is already used by ${it(o.type)} (started ${who(o)}): choose another name.`);
     if (type === 'restore_database' && o.type === 'restore_database' && params?.new_name && o.params?.new_name === params.new_name)
-      return hit(o, `Un altro ripristino sta già creando il database ${params.new_name} (avviato ${who(o)}).`);
+      return hit(o, `Another restore is already creating database ${params.new_name} (started ${who(o)}).`);
     if (HA_DISRUPTIVE.includes(type) && DATA_WORK.includes(o.type) && o.status !== 'queued' && !params?.force)
-      return hit(o, `Sul cluster è in corso ${it(o.type)} (avviato ${who(o)}): ${it(type)} lo interromperebbe. Attendi che finisca, oppure conferma che vuoi procedere comunque.`, true);
+      return hit(o, `${cap(it(o.type))} is running on the cluster (started ${who(o)}): ${it(type)} would interrupt it. Wait until it finishes, or confirm that you want to proceed anyway.`, true);
     if (DATA_WORK.includes(type) && HA_DISRUPTIVE.includes(o.type))
-      return hit(o, `È in coda o in corso ${it(o.type)} (avviato ${who(o)}): il cluster cambierà primario o verrà riavviato. Avvia ${it(type)} dopo.`);
+      return hit(o, `${cap(it(o.type))} is queued or running (started ${who(o)}): the cluster will change primary or be restarted. Start ${it(type)} afterwards.`);
   }
   return null;
 }

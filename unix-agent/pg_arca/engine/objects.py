@@ -864,12 +864,12 @@ def _slim(plan):
     out["inbound_fks"] = [{k: f.get(k) for k in ("name", "schema", "table", "ref_schema", "ref_table", "source")} for f in plan.get("inbound_fks") or []]
     out["outbound_fks"] = [{k: f.get(k) for k in ("name", "schema", "table", "ref_schema", "ref_table", "source")} for f in plan.get("outbound_fks") or []]
     out["statistics"] = [{k: x.get(k) for k in ("schema", "name", "table_schema", "table")} for x in plan.get("statistics") or []]
-    out["rebind"] = (["pubblicazione %s" % x["pub"] for x in plan.get("publications") or []] + ["regola %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_rules") or []]
-                     + ["policy %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_policies") or []]
-                     + ["trigger %s su %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_triggers") or []]
-                     + ["default di %s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []]
-                     + ["partizione %s.%s → %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan.get("attach") or []]
-                     + ["funzione %s" % f["sig"] for f in (plan.get("rowtype_funcs") or []) + (plan.get("body_funcs") or []) if f.get("def")])
+    out["rebind"] = (["publication %s" % x["pub"] for x in plan.get("publications") or []] + ["rule %s on %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_rules") or []]
+                     + ["policy %s on %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_policies") or []]
+                     + ["trigger %s on %s.%s" % (x["name"], x["schema"], x["table"]) for x in plan.get("foreign_triggers") or []]
+                     + ["default of %s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []]
+                     + ["partition %s.%s → %s.%s" % (a["schema"], a["name"], a["parent_schema"], a["parent"]) for a in plan.get("attach") or []]
+                     + ["function %s" % f["sig"] for f in (plan.get("rowtype_funcs") or []) + (plan.get("body_funcs") or []) if f.get("def")])
     for k in ("publications", "foreign_rules", "foreign_policies", "foreign_defaults", "rowtype_funcs", "body_funcs", "foreign_triggers"):
         out.pop(k, None)
     out.pop("old_outbound_fks", None)

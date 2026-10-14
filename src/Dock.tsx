@@ -18,7 +18,7 @@ type SlimOp = Op & { subtype?: string; background?: boolean };
 const label = (o: SlimOp) => `${OP_LABEL[o.type] || o.type}${o.subtype ? ` (${o.subtype})` : ''}`;
 const elapsed = (from: string, now: number) => { const s = Math.max(0, Math.round((now - Date.parse(from)) / 1000)); return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`; };
 
-/** Opens the page where the operation can be followed: the cluster's operation log (or Backup / Ripristino for the long data operations). */
+/** Opens the page where the operation can be followed: the cluster's operation log (or Backup / Restore for the long data operations). */
 function target(o: SlimOp): string | null {
   if (!o.clusterId || o.clusterId === 'unassigned') return null;
   const c = encodeURIComponent(o.clusterId);
@@ -53,7 +53,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
   // live clock only while it is visible and useful
   useEffect(() => { if (!open || !running.length) return; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [open, running.length]);
 
-  // Tell the user how their own operations ended (scheduled ones stay quiet: they are in the dock and in Oggi).
+  // Tell the user how their own operations ended (scheduled ones stay quiet: they are in the dock and on Today).
   const prev = useRef<Record<string, string> | null>(null);
   useEffect(() => {
     if (!q.data) return;
@@ -61,9 +61,9 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
     if (prev.current) for (const o of q.data.operations) {
       const was = prev.current[o.id];
       if (!was || isTerminal(was) || !isTerminal(o.status) || o.createdBy !== me || QUIET.includes(o.type) || o.background || (o.params?.dry_run && o.status === 'succeeded')) continue;
-      if (o.status === 'succeeded') toast(`${label(o)}: operazione completata`, 'ok');
-      else if (o.status === 'failed') toast(`${label(o)}: operazione non riuscita — ${itCheck((o.error || '').split('\n')[0]).slice(0, 160)}`, 'bad', 9000);
-      else if (o.status === 'cancelled') toast(`${label(o)}: operazione annullata`, 'info');
+      if (o.status === 'succeeded') toast(`${label(o)}: operation completed`, 'ok');
+      else if (o.status === 'failed') toast(`${label(o)}: operation failed — ${itCheck((o.error || '').split('\n')[0]).slice(0, 160)}`, 'bad', 9000);
+      else if (o.status === 'cancelled') toast(`${label(o)}: operation cancelled`, 'info');
     }
     prev.current = cur;
   }, [q.data, me]);
@@ -79,7 +79,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
 
   const cancel = async (o: SlimOp) => {
     setBusy(o.id);
-    try { await api('POST', `/api/operations/${o.id}/cancel`); toast('Annullamento richiesto', 'info'); }
+    try { await api('POST', `/api/operations/${o.id}/cancel`); toast('Cancellation requested', 'info'); }
     catch (e: any) { toast(e.body?.reason || e.message, 'bad'); }
     await revalidateOps(); setBusy(null);
   };
@@ -89,49 +89,49 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
   const pickFilt = (f: 'all' | 'failed' | 'ok') => { setFilt(f); write(FILT, f); };
   const chipClass = running.length ? 'live' : failedNew.length ? 'fail' : '';
   const one = running.length === 1 ? running[0] : null; const onePct = one ? pctOf(one.progress) : null;
-  const chipText = one ? `${label(one)}${onePct != null ? ` · ${onePct}%` : ' in corso'}` : running.length ? `${running.length} operazioni in corso` : failedNew.length ? `${failedNew.length} ${failedNew.length === 1 ? 'operazione fallita' : 'operazioni fallite'}` : 'Attività';
+  const chipText = one ? `${label(one)}${onePct != null ? ` · ${onePct}%` : ' running'}` : running.length ? `${running.length} operations running` : failedNew.length ? `${failedNew.length} ${failedNew.length === 1 ? 'operation failed' : 'operations failed'}` : 'Activity';
 
-  return <div className="dock" role="complementary" aria-label="Attività">
+  return <div className="dock" role="complementary" aria-label="Activity">
     {open ? <div className="dock-panel" id="dock-panel" onKeyDown={e => { if (e.key === 'Escape') toggle(false); }}>
-      <div className="dock-hd"><Icon n="activity" /><h2>Attività</h2>
-        <span className="small faint">{running.length ? `${running.length} in corso` : 'Nessuna operazione in corso'}</span>
-        <Button kind="ghost" sm className="icon" onClick={() => toggle(false)} aria-label="Chiudi il pannello attività" title="Chiudi (Esc)"><Icon n="down" /></Button></div>
+      <div className="dock-hd"><Icon n="activity" /><h2>Activity</h2>
+        <span className="small faint">{running.length ? `${running.length} running` : 'No operation running'}</span>
+        <Button kind="ghost" sm className="icon" onClick={() => toggle(false)} aria-label="Close the activity panel" title="Close (Esc)"><Icon n="down" /></Button></div>
       <div className="dock-body">
-        {running.length ? <div className="dock-sec">In corso</div> : null}
+        {running.length ? <div className="dock-sec">Running</div> : null}
         {running.map(o => {
           const p = o.progress; const pct = pctOf(p); const to = target(o);
           return <div className="dock-item" key={o.id}>
             <div className="t"><Icon n="refresh" spin /><strong>{label(o)}</strong><span className="end small faint nowrap">{elapsed(o.createdAt, now)}</span></div>
             <Progress pct={pct} />
-            <div className="small muted">{o.cancelRequested ? 'Annullamento in corso…' : p?.phase ? PHASE[p.phase] || p.phase : o.status === 'queued' ? 'In coda: parte appena l’agent è libero' : 'In esecuzione…'}</div>
+            <div className="small muted">{o.cancelRequested ? 'Cancelling…' : p?.phase ? PHASE[p.phase] || p.phase : o.status === 'queued' ? 'Queued: starts as soon as the agent is free' : 'Running…'}</div>
             <div className="m"><span>{names[o.clusterId] || o.clusterId}</span>{o.createdBy ? <span>da {o.createdBy}</span> : null}<span>{STATUS_LABEL[o.status] || o.status}</span></div>
-            <div className="acts">{to ? <Button sm icon="external" onClick={() => go(to)}>Apri</Button> : null}
+            <div className="acts">{to ? <Button sm icon="external" onClick={() => go(to)}>Open</Button> : null}
               <Button sm icon="logs" onClick={() => openOpLog(o.id, label(o))}>Log</Button>
-              {canAct && !o.cancelRequested ? <Button sm kind="danger" icon="stop" busy={busy === o.id} onClick={() => cancel(o)}>Annulla</Button> : null}</div>
+              {canAct && !o.cancelRequested ? <Button sm kind="danger" icon="stop" busy={busy === o.id} onClick={() => cancel(o)}>Cancel</Button> : null}</div>
           </div>;
         })}
-        {!running.length && !recent.length ? <div className="dock-item"><div className="muted small">Qui compaiono backup, ripristini e interventi mentre sono in corso e per un’ora dopo la fine. Puoi continuare a lavorare: il pannello si aggiorna da solo.</div></div> : null}
+        {!running.length && !recent.length ? <div className="dock-item"><div className="muted small">Backups, restores and other operations show up here while they run and for an hour after they end. Keep working: the panel updates by itself.</div></div> : null}
         <div className="dock-sec dock-tools">
-          <span>Terminate</span>
-          <select className="input sm" value={hours} onChange={e => pickHours(Number(e.target.value))} aria-label="Fascia oraria">{WINDOWS.map(w => <option key={w.h} value={w.h}>{w.label}</option>)}</select>
-          <span className="seg" role="group" aria-label="Esito">
-            {([['all', 'Tutte'], ['failed', `Fallite${failedAll.length ? ` (${failedAll.length})` : ''}`], ['ok', 'Riuscite']] as const).map(([k, t]) => <button key={k} aria-pressed={filt === k} onClick={() => pickFilt(k)}>{t}</button>)}</span>
+          <span>Finished</span>
+          <select className="input sm" value={hours} onChange={e => pickHours(Number(e.target.value))} aria-label="Time range">{WINDOWS.map(w => <option key={w.h} value={w.h}>{w.label}</option>)}</select>
+          <span className="seg" role="group" aria-label="Outcome">
+            {([['all', 'All'], ['failed', `Failed${failedAll.length ? ` (${failedAll.length})` : ''}`], ['ok', 'Succeeded']] as const).map(([k, t]) => <button key={k} aria-pressed={filt === k} onClick={() => pickFilt(k)}>{t}</button>)}</span>
         </div>
-        {!recent.length && (running.length || all.length) ? <div className="dock-item"><div className="muted small">{filt === 'failed' ? 'Nessuna operazione fallita in questa fascia.' : filt === 'ok' ? 'Nessuna operazione riuscita in questa fascia.' : 'Niente di terminato in questa fascia.'} <a href="#/history" onClick={() => toggle(false)}>Apri lo storico</a> per cercare più indietro.</div></div> : null}
+        {!recent.length && (running.length || all.length) ? <div className="dock-item"><div className="muted small">{filt === 'failed' ? 'No failed operation in this range.' : filt === 'ok' ? 'No successful operation in this range.' : 'Nothing finished in this range.'} <a href="#/history" onClick={() => toggle(false)}>Open the history</a> to search further back.</div></div> : null}
         {recent.map(o => {
           const to = target(o);
           return <div className="dock-item done" key={o.id}>
             <div className="t"><Icon n={o.status === 'succeeded' ? 'check' : o.status === 'failed' ? 'alert' : 'cancel'} /><strong>{label(o)}</strong><span className="end small faint nowrap">{ago(o.updatedAt)}</span>
-              <button className="x" onClick={() => dismiss([o.id])} aria-label={`Rimuovi dall’elenco: ${label(o)}`} title="Rimuovi dall’elenco (resta nello storico)"><Icon n="x" s={14} /></button></div>
+              <button className="x" onClick={() => dismiss([o.id])} aria-label={`Remove from the list: ${label(o)}`} title="Remove from the list (it stays in the history)"><Icon n="x" s={14} /></button></div>
             <div className="m"><span>{STATUS_LABEL[o.status] || o.status}</span><span>{names[o.clusterId] || o.clusterId}</span>{o.createdBy ? <span>da {o.createdBy}</span> : null}</div>
             {o.status === 'failed' && o.error ? <div className="err">{o.error}</div> : null}
-            <div className="acts">{to ? <Button sm icon="external" onClick={() => go(to)}>Dettagli</Button> : null}<Button sm icon="logs" onClick={() => openOpLog(o.id, label(o))}>Log</Button></div>
+            <div className="acts">{to ? <Button sm icon="external" onClick={() => go(to)}>Details</Button> : null}<Button sm icon="logs" onClick={() => openOpLog(o.id, label(o))}>Log</Button></div>
           </div>;
         })}
       </div>
-      <div className="dock-ft"><span className="small faint">Ctrl J apre e chiude</span><div className="grow" /><a className="small" href="#/history" onClick={() => toggle(false)}>Storico</a>{recent.length ? <Button sm kind="ghost" onClick={clear}>Svuota elenco</Button> : null}</div>
+      <div className="dock-ft"><span className="small faint">Ctrl J opens and closes</span><div className="grow" /><a className="small" href="#/history" onClick={() => toggle(false)}>History</a>{recent.length ? <Button sm kind="ghost" onClick={clear}>Clear list</Button> : null}</div>
     </div> : null}
-    <button className={`dock-chip ${chipClass}`} onClick={() => toggle()} aria-expanded={open} aria-controls="dock-panel" title="Attività (Ctrl J)">
+    <button className={`dock-chip ${chipClass}`} onClick={() => toggle()} aria-expanded={open} aria-controls="dock-panel" title="Activity (Ctrl J)">
       <span className="pip" /><span aria-live="polite">{chipText}</span><Icon n="down" className={open ? '' : 'flip'} />
     </button>
   </div>;

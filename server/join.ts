@@ -42,7 +42,7 @@ export function mountJoinRoutes(app: any, store: Store) {
 
   app.post('/api/agent/request-join', async (req: any, res: any) => {
     const b = req.body || {};
-    if (!joinEnabled(store.peek())) return res.status(403).json({ error: 'join_disabled', message: 'L’annuncio automatico dei server è disattivato: usa un token di iscrizione.' });
+    if (!joinEnabled(store.peek())) return res.status(403).json({ error: 'join_disabled', message: 'Server self-announcement is disabled: use an enrollment token.' });
     if (!FP.test(String(b.fingerprint || '')) || !HASH.test(String(b.secret_hash || '')) || !NAME.test(String(b.node_name || ''))) return res.status(400).json({ error: 'invalid_request' });
     const ip = ipOf(req); const now = Date.now();
     const out = await store.mutate(d => {
@@ -55,7 +55,7 @@ export function mountJoinRoutes(app: any, store: Store) {
         return { code: 200, body: { status: cur.status } };
       }
       const pend = list.filter((r: any) => r.status === 'pending');
-      if (pend.length >= MAX_PENDING || pend.filter((r: any) => r.ip === ip).length >= MAX_PER_IP) return { code: 429, body: { error: 'too_many_requests', message: 'Troppe richieste in attesa.' } };
+      if (pend.length >= MAX_PENDING || pend.filter((r: any) => r.ip === ip).length >= MAX_PER_IP) return { code: 429, body: { error: 'too_many_requests', message: 'Too many pending requests.' } };
       list.push({ id: newId('join'), fingerprint: b.fingerprint, secretHash: b.secret_hash, nodeName: b.node_name, ip, status: 'pending', createdAt: nowIso(), lastSeenAt: nowIso(),
         agentVersion: trunc(b.agent_version, 30), summary: { ...summarize(b.discovery), node_role: b.node_role === 'worker' ? 'worker' : undefined } });
       return { code: 201, body: { status: 'pending' } };
@@ -88,8 +88,8 @@ export function mountJoinRoutes(app: any, store: Store) {
     const out = await store.mutate(d => {
       const r = (d.settings.joinRequests || []).find((x: any) => x.id === req.params.id);
       if (!r) return { code: 404, body: { error: 'not_found' } };
-      if (r.status !== 'pending') return { code: 409, body: { error: 'not_pending', message: 'Richiesta già gestita.' } };
-      if (Object.values(d.nodes).some((n: any) => n.name === r.nodeName)) return { code: 409, body: { error: 'name_in_use', message: `Esiste già un server chiamato ${r.nodeName}.` } };
+      if (r.status !== 'pending') return { code: 409, body: { error: 'not_pending', message: 'Request already handled.' } };
+      if (Object.values(d.nodes).some((n: any) => n.name === r.nodeName)) return { code: 409, body: { error: 'name_in_use', message: `A server named ${r.nodeName} already exists.` } };
       if (b.asWorker || (r.summary?.node_role === 'worker' && !b.clusterId)) {          // operational machine: no cluster
         const id = newId('node');
         d.nodes[id] = { id, name: r.nodeName, kind: 'worker', tokenHash: r.secretHash, enrolledAt: nowIso(), agentVersion: r.agentVersion, remoteIp: r.ip, lastSeen: undefined, label: trunc(b.label, 120) || undefined } as NodeRecord;
@@ -102,7 +102,7 @@ export function mountJoinRoutes(app: any, store: Store) {
       if (b.clusterId && !cluster) return { code: 404, body: { error: 'cluster_not_found' } };
       if (!cluster) {
         const env = ['prod', 'prep', 'int', 'dev', 'test'].includes(b.environment) ? b.environment : null;
-        if (!env) return { code: 400, body: { error: 'environment_required', message: 'Scegli l’ambiente del nuovo cluster.' } };
+        if (!env) return { code: 400, body: { error: 'environment_required', message: 'Choose the environment of the new cluster.' } };
         const name = trunc(b.name, 60).trim() || r.summary?.patroni_scope || `pg-${r.nodeName}`;
         cluster = { id: newId('cl'), name, environment: env, clusterKey: key, source: 'agent', isSandbox: false, status: 'degraded', databases: [], hbaRules: [], features: {}, createdAt: nowIso() };
         d.clusters.push(cluster);

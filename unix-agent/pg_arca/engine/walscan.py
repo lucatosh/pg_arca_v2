@@ -305,7 +305,7 @@ def _scan_window(ctx, exe, multi, tli, names, extra, rmgrs, tmp_root, seg_size, 
                     # reaching the end of the written WAL is reported as an error by pg_waldump; anything else that looks like an incompatibility is real
                     if FATAL_RE.search(err) and not any(res.values()):
                         raise EngineError("PGA-WAL-060", "pg_waldump cannot read these segments: %s" % err.strip().splitlines()[-1][:300],
-                                          "use the pg_waldump of the same PostgreSQL major version as the WAL (Nodi → Percorsi e rilevamento)")
+                                          "use the pg_waldump of the same PostgreSQL major version as the WAL (Nodes → Paths and discovery)")
         return res
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -487,7 +487,7 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
     t0 = time.time()
     exe = ctx.conn.exe("pg_waldump")
     if os.path.sep in exe and not os.path.exists(exe):
-        raise EngineError("PGA-WAL-061", "pg_waldump not found (%s)" % exe, "install the PostgreSQL server binaries or set the path in Nodi → Percorsi e rilevamento")
+        raise EngineError("PGA-WAL-061", "pg_waldump not found (%s)" % exe, "install the PostgreSQL server binaries or set the path in Nodes → Paths and discovery")
     allsegs = ctx.wal.list_segments()
     if not allsegs:
         raise EngineError("PGA-WAL-002", "the WAL archive is empty")
@@ -538,7 +538,7 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
             if progress:
                 progress({"phase": "scan", "segments": done[0], "segments_total": len(segs), "events": sum(len(v) for v in found.values()), "msg": msg})
 
-        report("%d segmenti nella finestra, %d già in cache" % (len(segs), cached_n))
+        report("%d segments in the window, %d already cached" % (len(segs), cached_n))
 
         def work(w):
             tli, names, extra = w
@@ -567,7 +567,7 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
                             for n, evs in res.items():
                                 found[n] = evs
                             done[0] += len(res)
-                        report("scansione dei WAL in corso")
+                        report("scanning the WAL")
                         if cancel and cancel():
                             raise EngineError("PGA-OP-900", "analysis cancelled")
                         if budget_sec and time.time() - t0 > budget_sec:
@@ -681,7 +681,7 @@ def _dml_result(ctx, exe, events, times, segs, allsegs, scanned, cached_n, parti
     big = sorted((a for a in tot.values() if a["del"] + a["upd"] >= max(1, int(min_rows or 1000))), key=lambda a: lsn_to_int(a["lsn"]))
     big = big[-max(1, int(limit or 20)) * 2:]
     rel_names, _ = _catalog_names(ctx)
-    report("cerco l’esito delle transazioni trovate")
+    report("looking up the outcome of the transactions found")
     out = []
     for a in big:
         if cancel and cancel():

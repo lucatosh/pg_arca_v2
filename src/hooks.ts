@@ -120,7 +120,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
       if (!alive.current) return;
       setOp(r.operation); setError(null);
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; revalidateOps(); onDone?.(r.operation); return; }
-    } catch (e: any) { if (!alive.current) return; setError(e.body?.error === 'console_unreachable' ? 'Non riesco ad aggiornare lo stato: la console non risponde. L’operazione continua sul server; lo stato si aggiorna appena la console torna raggiungibile.' : e.message); }
+    } catch (e: any) { if (!alive.current) return; setError(e.body?.error === 'console_unreachable' ? 'Cannot refresh the status: the console is not responding. The operation keeps running on the server; the status updates as soon as the console is reachable again.' : e.message); }
     timer.current = setTimeout(() => poll(id), 1000);
   }, [onDone, setOp]);
 
@@ -136,7 +136,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
     try {
       const url = clusterId.startsWith('worker:') ? `/api/workers/${encodeURIComponent(clusterId.slice(7))}/operations` : `/api/clusters/${clusterId}/operations`;   // operational machines have their own endpoint
       const r = await api<{ operation: Op; approval?: any }>('POST', url, { type, params, nodeId: extra.nodeId }, { key: keyRef.current.key });
-      if (r.approval) { setOp(null); setBusy(false); keyRef.current = null; revalidate('/api/approvals'); toast('Richiesta inviata: serve l’approvazione di un altro amministratore (pagina Oggi).', 'info', 9000); return null; }
+      if (r.approval) { setOp(null); setBusy(false); keyRef.current = null; revalidate('/api/approvals'); toast('Request sent: another administrator must approve it (Today page).', 'info', 9000); return null; }
       setOp(r.operation); revalidateOps();
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); } else poll(r.operation.id);
       return r.operation;

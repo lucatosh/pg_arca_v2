@@ -22,15 +22,15 @@ export function advise(sys: { cpu: number; mem: number }, settings: Record<strin
   const work = Math.max(4 * MB, Math.min((ram - sb) / (maxConn * wmDiv) * (w === 'olap' ? 3 : 1), 1024 * MB));
   const maxWal = w === 'oltp' ? 4096 : w === 'mixed' ? 8192 : 16384;
   const out: [string, string, string, boolean][] = [
-    ['shared_buffers', fmtMem(sb), 'Un quarto della RAM: la cache di PostgreSQL. Il resto lo usa la cache del sistema.', true],
-    ['effective_cache_size', fmtMem(ecs), 'Tre quarti della RAM: aiuta il planner a scegliere gli indici. Non alloca memoria.', false],
-    ['maintenance_work_mem', fmtMem(maint), 'Per VACUUM e creazione indici (max 2GB).', false],
-    ['work_mem', fmtMem(work), `Per ogni ordinamento/hash, calcolato su ${maxConn} connessioni: più alto di così rischia di esaurire la RAM.`, false],
-    ['max_wal_size', `${maxWal}MB`, 'Meno checkpoint forzati sotto carico di scrittura; più spazio WAL e recovery un po’ più lunga.', false],
-    ['checkpoint_completion_target', '0.9', 'Distribuisce le scritture del checkpoint: meno picchi di I/O.', false],
-    ['wal_compression', 'on', 'Riduce i WAL (e lo spazio dell’archivio) con un costo CPU contenuto.', false],
+    ['shared_buffers', fmtMem(sb), 'A quarter of RAM: PostgreSQL’s own cache. The rest is used by the OS page cache.', true],
+    ['effective_cache_size', fmtMem(ecs), 'Three quarters of RAM: helps the planner choose indexes. Allocates no memory.', false],
+    ['maintenance_work_mem', fmtMem(maint), 'For VACUUM and index builds (max 2GB).', false],
+    ['work_mem', fmtMem(work), `Per sort/hash operation, sized for ${maxConn} connections: higher than this risks running out of RAM.`, false],
+    ['max_wal_size', `${maxWal}MB`, 'Fewer forced checkpoints under write load; more WAL space and a slightly longer crash recovery.', false],
+    ['checkpoint_completion_target', '0.9', 'Spreads checkpoint writes: fewer I/O spikes.', false],
+    ['wal_compression', 'on', 'Shrinks WAL (and archive space) at a modest CPU cost.', false],
   ];
-  if (cpu >= 4) out.push(['max_parallel_workers_per_gather', String(Math.min(4, Math.floor(cpu / 2))), 'Parallelismo delle query in base ai core.', false]);
+  if (cpu >= 4) out.push(['max_parallel_workers_per_gather', String(Math.min(4, Math.floor(cpu / 2))), 'Query parallelism based on the CPU cores.', false]);
   return out.map(([name, rec, why, restart]) => {
     const raw = settings[name];
     const cur = raw === undefined ? '—' : ['shared_buffers', 'effective_cache_size', 'work_mem', 'maintenance_work_mem', 'max_wal_size'].includes(name) ? fmtCur(name, raw) : String(raw);

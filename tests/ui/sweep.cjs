@@ -8,7 +8,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   for (const [vw, vh, tag] of [[1360, 860, 'd'], [390, 844, 'm']]) {
     const p = await (await b.newContext({ viewport: { width: vw, height: vh } })).newPage();
     p.on('pageerror', e => problems.push(`${tag} pageerror ${e.message}`));
-    await p.goto(base); await p.waitForSelector('text=Accedi');
+    await p.goto(base); await p.waitForSelector('text=Sign in');
     await p.fill('input[autocomplete=username]', 'admin'); await p.fill('input[type=password]', 'correct-horse-battery'); await p.click('button[type=submit]');
     await p.waitForTimeout(1500);
     const cid = await p.evaluate(async () => { const r = await fetch('/api/clusters'); const j = await r.json(); return (j.clusters.find(c => c.name === 'prodpg') || {}).id; });

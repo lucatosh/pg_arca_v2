@@ -63,18 +63,18 @@ export function analyze(rules: Rule[]): Issue[] {
   rules.forEach((r, i) => {
     for (let j = 0; j < i; j++) {
       const e = rules[j];
-      if (key(e) === key(r)) { out.push({ index: i, level: 'error', code: 'duplicate', with: j, message: `Duplicata della regola ${j + 1}.` }); break; }
+      if (key(e) === key(r)) { out.push({ index: i, level: 'error', code: 'duplicate', with: j, message: `Duplicate of rule ${j + 1}.` }); break; }
       if (covers(e, r)) {
         const same = (e.method === 'reject') === (r.method === 'reject');
-        out.push(same ? { index: i, level: 'warn', code: 'redundant', with: j, message: `Ridondante: la regola ${j + 1} (${e.address || 'locale'}) già copre questi accessi.` }
-                      : { index: i, level: 'error', code: 'shadowed', with: j, message: `Mai raggiunta: la regola ${j + 1} ${e.method === 'reject' ? 'respinge' : 'consente'} già questi accessi prima di questa.` });
+        out.push(same ? { index: i, level: 'warn', code: 'redundant', with: j, message: `Redundant: rule ${j + 1} (${e.address || 'local'}) already covers these connections.` }
+                      : { index: i, level: 'error', code: 'shadowed', with: j, message: `Never reached: rule ${j + 1} already ${e.method === 'reject' ? 'rejects' : 'allows'} these connections before this one.` });
         break;
       }
     }
     for (let j = i + 1; j < rules.length; j++) {
       const e = rules[j];
       if (!covers(r, e) && !covers(e, r) && intersects(r, e) && (r.method === 'reject') !== (e.method === 'reject'))
-        out.push({ index: i, level: 'info', code: 'overlap', with: j, message: `Si sovrappone alla regola ${j + 1} con esito opposto: vale quella più in alto.` });
+        out.push({ index: i, level: 'info', code: 'overlap', with: j, message: `Overlaps rule ${j + 1} with the opposite outcome: the higher one wins.` });
     }
   });
   return out;
@@ -94,28 +94,28 @@ export function sortRules<T extends Rule>(rules: T[], mode: 'specific' | 'wide' 
 }
 
 // ---------- plain-language description ----------
-const METHOD: Record<string, string> = { 'scram-sha-256': 'password SCRAM', md5: 'password MD5 (obsoleta)', password: 'password in chiaro (sconsigliata)', trust: 'SENZA password', peer: 'utente del sistema operativo (peer)', cert: 'certificato client', reject: 'RIFIUTATO', ident: 'ident', ldap: 'LDAP', gss: 'Kerberos', pam: 'PAM', radius: 'RADIUS', sspi: 'SSPI', bsd: 'BSD' };
-const who = (u: string) => toks(u).map(t => t === 'all' ? 'ogni utente' : t.startsWith('+') ? `i membri del ruolo ${t.slice(1)}` : `l’utente ${t}`).join(', ');
-const what = (d: string) => toks(d).map(t => t === 'all' ? 'ogni database' : t === 'replication' ? 'la replica' : t === 'sameuser' ? 'il database omonimo' : t === 'samerole' ? 'i database dei suoi ruoli' : `il database ${t}`).join(', ');
-const where = (a: string) => a === 'all' || a === '0.0.0.0/0' || a === '::/0' ? 'da qualsiasi indirizzo' : a === 'samehost' ? 'dallo stesso host' : a === 'samenet' ? 'dalla stessa subnet' : a === '127.0.0.1/32' || a === '::1/128' ? 'da questo stesso server (loopback)' : /\/(32|128)$/.test(a) ? `dall’host ${a.replace(/\/\d+$/, '')}` : validCidr(a) ? `dalla rete ${a}${hostCount(a)}` : `da ${a}`;
-function hostCount(a: string): string { const n = parseNet(a); if (!n || n.v !== 4) return ''; const c = Number(n.hi - n.lo + 1n); return c > 1 ? ` (${c.toLocaleString('it-CH')} indirizzi)` : ''; }
+const METHOD: Record<string, string> = { 'scram-sha-256': 'SCRAM password', md5: 'MD5 password (deprecated)', password: 'clear-text password (discouraged)', trust: 'NO password', peer: 'operating system user (peer)', cert: 'client certificate', reject: 'REJECTED', ident: 'ident', ldap: 'LDAP', gss: 'Kerberos', pam: 'PAM', radius: 'RADIUS', sspi: 'SSPI', bsd: 'BSD' };
+const who = (u: string) => toks(u).map(t => t === 'all' ? 'every user' : t.startsWith('+') ? `the members of role ${t.slice(1)}` : `user ${t}`).join(', ');
+const what = (d: string) => toks(d).map(t => t === 'all' ? 'every database' : t === 'replication' ? 'replication' : t === 'sameuser' ? 'the database with the user’s name' : t === 'samerole' ? 'the databases of its roles' : `database ${t}`).join(', ');
+const where = (a: string) => a === 'all' || a === '0.0.0.0/0' || a === '::/0' ? 'from any address' : a === 'samehost' ? 'from the same host' : a === 'samenet' ? 'from the same subnet' : a === '127.0.0.1/32' || a === '::1/128' ? 'from this server itself (loopback)' : /\/(32|128)$/.test(a) ? `from host ${a.replace(/\/\d+$/, '')}` : validCidr(a) ? `from network ${a}${hostCount(a)}` : `from ${a}`;
+function hostCount(a: string): string { const n = parseNet(a); if (!n || n.v !== 4) return ''; const c = Number(n.hi - n.lo + 1n); return c > 1 ? ` (${c.toLocaleString('en-GB')} addresses)` : ''; }
 export function describe(r: Rule): string {
-  const enc = r.type === 'hostssl' ? ', solo con TLS' : r.type === 'hostnossl' ? ', solo SENZA TLS' : r.type === 'host' ? ', con o senza TLS' : '';
+  const enc = r.type === 'hostssl' ? ', TLS only' : r.type === 'hostnossl' ? ', WITHOUT TLS only' : r.type === 'host' ? ', with or without TLS' : '';
   const m = METHOD[r.method] || r.method;
-  if (r.method === 'reject') return `Rifiuta ${who(r.user)} su ${what(r.database)}${r.type === 'local' ? ' dal socket locale' : ' ' + where(r.address)}${enc}.`;
-  if (r.type === 'local') return `${cap(who(r.user))} può usare ${what(r.database)} dal socket locale, autenticato con ${m}.`;
-  return `${cap(who(r.user))} può usare ${what(r.database)} ${where(r.address)}${enc}, autenticato con ${m}.`;
+  if (r.method === 'reject') return `Rejects ${who(r.user)} on ${what(r.database)}${r.type === 'local' ? ' from the local socket' : ' ' + where(r.address)}${enc}.`;
+  if (r.type === 'local') return `${cap(who(r.user))} can use ${what(r.database)} from the local socket, authenticated by ${m}.`;
+  return `${cap(who(r.user))} can use ${what(r.database)} ${where(r.address)}${enc}, authenticated by ${m}.`;
 }
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 export function tag(r: Rule): { label: string; kind: 'ok' | 'warn' | 'bad' | 'info' } {
-  if (r.method === 'reject') return { label: 'Blocco', kind: 'bad' };
-  if (r.method === 'trust') return { label: 'Senza password', kind: 'bad' };
-  if (toks(r.database).includes('replication')) return { label: 'Replica', kind: 'info' };
-  if (r.type === 'local') return { label: 'Locale', kind: 'info' };
-  if (r.user.includes('+') ) return { label: 'Gruppo', kind: 'info' };
-  if (isAll(r.address)) return { label: 'Aperta a tutti', kind: 'warn' };
-  if (r.type === 'host' || r.type === 'hostnossl') return { label: 'Non cifrata', kind: 'warn' };
-  return { label: 'Accesso', kind: 'ok' };
+  if (r.method === 'reject') return { label: 'Block', kind: 'bad' };
+  if (r.method === 'trust') return { label: 'No password', kind: 'bad' };
+  if (toks(r.database).includes('replication')) return { label: 'Replication', kind: 'info' };
+  if (r.type === 'local') return { label: 'Local', kind: 'info' };
+  if (r.user.includes('+') ) return { label: 'Group', kind: 'info' };
+  if (isAll(r.address)) return { label: 'Open to all', kind: 'warn' };
+  if (r.type === 'host' || r.type === 'hostnossl') return { label: 'Not encrypted', kind: 'warn' };
+  return { label: 'Access', kind: 'ok' };
 }
 
 // ---------- effective rows from pg_hba_file_rules -> Rule ----------
@@ -135,4 +135,4 @@ const UNTIL = /\s*\[until=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})Z\]/;
 export const untilOf = (comment?: string): number | null => { const m = UNTIL.exec(comment || ''); return m ? Date.parse(m[1] + ':00Z') : null; };
 export const stripUntil = (comment?: string) => (comment || '').replace(UNTIL, '').trim();
 export const withUntil = (comment: string | undefined, ms: number | null) => { const base = stripUntil(comment); return ms == null ? base : `${base} [until=${new Date(ms).toISOString().slice(0, 16)}Z]`.trim(); };
-export const untilLabel = (ms: number, now = Date.now()) => { const d = ms - now; if (d <= 0) return 'scaduta'; const m = Math.round(d / 60000); return m < 60 ? `scade tra ${m} min` : m < 2880 ? `scade tra ${Math.round(m / 60)} h` : `scade tra ${Math.round(m / 1440)} giorni`; };
+export const untilLabel = (ms: number, now = Date.now()) => { const d = ms - now; if (d <= 0) return 'expired'; const m = Math.round(d / 60000); return m < 60 ? `expires in ${m} min` : m < 2880 ? `expires in ${Math.round(m / 60)} h` : `expires in ${Math.round(m / 1440)} days`; };

@@ -8,7 +8,7 @@ import { go } from './router';
  * recovery / destination settings (one place to organise, one meaning everywhere).
  * ==================================================================================================================================================== */
 export const ENV_ORDER = ['prod', 'prep', 'int', 'dev', 'test'];
-export const ENV_LABEL: Record<string, string> = { prod: 'Produzione', prep: 'Pre-produzione', int: 'Integrazione', dev: 'Sviluppo', test: 'Test', demo: 'Demo' };
+export const ENV_LABEL: Record<string, string> = { prod: 'Production', prep: 'Pre-production', int: 'Integration', dev: 'Development', test: 'Test', demo: 'Demo' };
 export type Tone = 'ok' | 'warn' | 'bad';
 const RANK: Record<Tone, number> = { ok: 0, warn: 1, bad: 2 };
 export const worst = (a: Tone, b: Tone): Tone => (RANK[b] > RANK[a] ? b : a);
@@ -42,7 +42,7 @@ export function nestReplicas(clusters: any[]): any[] {
 /** One line on how a standby site is doing, for tooltips and the list. */
 export function replicaText(c: any): string {
   const g = c.geo || {};
-  const lag = g.lagBytes == null ? 'ritardo non misurabile' : g.lagBytes === 0 ? 'allineato' : `indietro di ${fmtBytes(g.lagBytes)}`;
+  const lag = g.lagBytes == null ? 'lag not measurable' : g.lagBytes === 0 ? 'in sync' : `${fmtBytes(g.lagBytes)} behind`;
   return g.problems?.length ? `${lag} · ${g.problems[0]}` : lag;
 }
 const fmtBytes = (b: number) => { const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0; let v = b; while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; } return `${v < 10 && i ? v.toFixed(1) : Math.round(v)} ${u[i]}`; };
@@ -93,7 +93,7 @@ export function useFold(prefix: string) {
 
 /** "3 · 1 critico" style counter, short enough for the sidebar. */
 export function Counter({ g }: { g: { count: number; bad: number; warn: number } }) {
-  return <span className="fcount">{g.bad ? <span className="b" title={`${g.bad} con problemi critici`}>{g.bad}</span> : null}{g.warn ? <span className="w" title={`${g.warn} da controllare`}>{g.warn}</span> : null}<span className="n">{g.count}</span></span>;
+  return <span className="fcount">{g.bad ? <span className="b" title={`${g.bad} with critical issues`}>{g.bad}</span> : null}{g.warn ? <span className="w" title={`${g.warn} to check`}>{g.warn}</span> : null}<span className="n">{g.count}</span></span>;
 }
 
 /** Sidebar tree. `current` = id of the cluster on screen (its groups open automatically). */
@@ -103,10 +103,10 @@ export function FleetTree({ clusters, health, current, query }: { clusters: any[
   const q = query.trim().toLowerCase();
   const hasCur = (n: FolderNode): boolean => n.clusters.some(c => c.id === current || c.replicas?.some((r: any) => r.id === current)) || n.children.some(hasCur);
   const one = (c: any, depth: number, replica = false) => <button key={c.id} className={`citem${replica ? ' replica' : ''}`} style={{ paddingLeft: 10 + depth * 12 }}
-    title={replica ? `${c.name} — sito di replica di ${c.geo.peers?.find((p: any) => p.role === 'primary')?.name || '?'}: ${replicaText(c)}` : `${c.name}${c.folder ? ` — ${c.folder}` : ''}`} aria-current={current === c.id ? 'page' : undefined}
-    onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>{replica ? <span className="branch" aria-hidden /> : null}<Dot kind={toneOf(c, health)} /><span className="n lbl">{c.name}</span>{c.geo?.role === 'standby' ? <span className="geotag lbl" title={`Sito di replica di ${c.geo.peers?.find((p: any) => p.role === 'primary')?.name || '?'}`}>DR</span> : c.geo?.role === 'primary' && c.geo?.peers?.length ? <span className="geotag p lbl" title="Sito primario con siti di replica">GEO</span> : null}{c.isSandbox ? <span className="faint small lbl">demo</span> : null}</button>;
+    title={replica ? `${c.name} — standby site of ${c.geo.peers?.find((p: any) => p.role === 'primary')?.name || '?'}: ${replicaText(c)}` : `${c.name}${c.folder ? ` — ${c.folder}` : ''}`} aria-current={current === c.id ? 'page' : undefined}
+    onClick={() => go(`c/${encodeURIComponent(c.id)}`)}>{replica ? <span className="branch" aria-hidden /> : null}<Dot kind={toneOf(c, health)} /><span className="n lbl">{c.name}</span>{c.geo?.role === 'standby' ? <span className="geotag lbl" title={`Standby site of ${c.geo.peers?.find((p: any) => p.role === 'primary')?.name || '?'}`}>DR</span> : c.geo?.role === 'primary' && c.geo?.peers?.length ? <span className="geotag p lbl" title="Primary site with standby sites">GEO</span> : null}{c.isSandbox ? <span className="faint small lbl">demo</span> : null}</button>;
   const item = (c: any, depth: number) => c.replicas?.length
-    ? <div key={c.id} className="geotree" role="group" aria-label={`${c.name} e i suoi siti di replica`}>{one(c, depth)}{c.replicas.map((r: any) => one(r, depth + 1, true))}</div>
+    ? <div key={c.id} className="geotree" role="group" aria-label={`${c.name} and its standby sites`}>{one(c, depth)}{c.replicas.map((r: any) => one(r, depth + 1, true))}</div>
     : one(c, depth);
   const folder = (n: FolderNode, env: string, depth: number): React.ReactNode => {
     const k = `${env}:${n.path}`; const open = q ? true : fold.isOpen(k, n.tone !== 'ok' || hasCur(n));

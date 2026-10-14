@@ -12,7 +12,7 @@ import { netState, onNet } from './api';
 import { toast } from './hooks';
 import { FleetTree, toneOf, primaryOf } from './Fleet';
 
-// Everything but the shell, "Oggi" and the first page is loaded on demand: a first paint of a few tens of KB, not the whole console.
+// Everything but the shell, "Today" and the first page is loaded on demand: a first paint of a few tens of KB, not the whole console.
 const Clusters = lazy(() => import('./pages/Clusters').then(m => ({ default: m.Clusters })));
 const ClusterView = lazy(() => import('./pages/ClusterView').then(m => ({ default: m.ClusterView })));
 const HistoryPage = lazy(() => import('./pages/History').then(m => ({ default: m.HistoryPage })));
@@ -38,7 +38,7 @@ export function App() {
 
 const rd = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
 const wr = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
-const PAGE_TITLE: Record<string, string> = { today: 'Oggi', clusters: 'Cluster', strategy: 'Strategie di backup', infra: 'Ripristino e archivi', discovery: 'Rilevamento', settings: 'Impostazioni', users: 'Utenti', audit: 'Registro attività', history: 'Storico operazioni', workers: 'Macchine operative', worker: 'Macchina operativa', geo: 'Georidondanza' };
+const PAGE_TITLE: Record<string, string> = { today: 'Today', clusters: 'Clusters', strategy: 'Backup policies', infra: 'Recovery & storage', discovery: 'Discovery', settings: 'Settings', users: 'Users', audit: 'Audit log', history: 'Operation history', workers: 'Worker hosts', worker: 'Worker host', geo: 'Geo-redundancy' };
 
 function Shell({ user, role, logout }: { user: string; role: string; logout: () => void }) {
   const route = useRoute();
@@ -77,63 +77,63 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
     <button className="navbtn" aria-current={route.page === page ? 'page' : undefined} onClick={() => go(to)} title={rail ? text : undefined}><Icon n={icon} /><span className="lbl">{text}</span>{extra}</button>;
 
   return <div className="shell" data-rail={rail ? '1' : '0'}>
-    <aside className="side" aria-label="Navigazione">
+    <aside className="side" aria-label="Navigation">
       <div className="brand"><span className="logo"><Icon n="ark" s={18} /></span><span className="name">pg_arca</span>
-        <button className="railtoggle" onClick={toggleRail} aria-label={rail ? 'Espandi la barra laterale' : 'Comprimi la barra laterale'} title={rail ? 'Espandi' : 'Comprimi'}><Icon n="panel" /></button></div>
+        <button className="railtoggle" onClick={toggleRail} aria-label={rail ? 'Expand the sidebar' : 'Collapse the sidebar'} title={rail ? 'Expand' : 'Collapse'}><Icon n="panel" /></button></div>
       {clusters.length ? (() => { const real = clusters.filter(c => !c.isSandbox); const t = real.map(c => toneOf(c, healthMap)); const bad = t.filter(x => x === 'bad').length, warn = t.filter(x => x === 'warn').length;
         const tone = bad ? 'bad' : warn ? 'warn' : 'ok';
-        return <button className={`fleetstate ${tone}`} onClick={() => go('today')} title="Stato complessivo: apri «Oggi» per le cause e i passi successivi"><Dot kind={tone} />
-          <span className="lbl">{bad ? `${bad} ${bad === 1 ? 'cluster critico' : 'cluster critici'}` : warn ? `${warn} da controllare` : 'Tutto in ordine'}</span><span className="lbl faint small">{real.length - bad - warn}/{real.length} ok</span></button>; })() : null}
+        return <button className={`fleetstate ${tone}`} onClick={() => go('today')} title="Overall status: open Today for causes and next steps"><Dot kind={tone} />
+          <span className="lbl">{bad ? `${bad} ${bad === 1 ? 'critical cluster' : 'critical clusters'}` : warn ? `${warn} need attention` : 'All good'}</span><span className="lbl faint small">{real.length - bad - warn}/{real.length} ok</span></button>; })() : null}
       <div className="sidescroll">
-      <div className="sgroup">Panoramica</div>
+      <div className="sgroup">Overview</div>
       <nav>
-        {nav('today', 'today', 'alert', 'Oggi', urgent ? <span className={`navcount ${hc?.critical ? 'bad' : 'warn'}`}>{urgent}</span> : null)}
-        {nav('clusters', '', 'layers', 'Tutti i cluster')}
+        {nav('today', 'today', 'alert', 'Today', urgent ? <span className={`navcount ${hc?.critical ? 'bad' : 'warn'}`}>{urgent}</span> : null)}
+        {nav('clusters', '', 'layers', 'All clusters')}
       </nav>
-      <div className="sgroup">Protezione</div>
-      <nav>{nav('strategy', 'strategy', 'shield', 'Strategie di backup')}{nav('infra', 'infra', 'restore', 'Ripristino e archivi')}{nav('geo', 'geo', 'swap', 'Georidondanza')}{nav('discovery', 'discovery', 'search', 'Rilevamento')}</nav>
-      <div className="sgroup">Amministrazione</div>
+      <div className="sgroup">Protection</div>
+      <nav>{nav('strategy', 'strategy', 'shield', 'Backup policies')}{nav('infra', 'infra', 'restore', 'Recovery & storage')}{nav('geo', 'geo', 'swap', 'Geo-redundancy')}{nav('discovery', 'discovery', 'search', 'Discovery')}</nav>
+      <div className="sgroup">Administration</div>
       <nav>
-        {role === 'admin' ? nav('settings', 'settings', 'settings', 'Impostazioni') : null}
-        {role === 'admin' ? nav('users', 'users', 'user', 'Utenti') : null}
-        {nav('history', 'history', 'activity', 'Storico operazioni')}
-        {nav('audit', 'audit', 'list', 'Registro attività')}
+        {role === 'admin' ? nav('settings', 'settings', 'settings', 'Settings') : null}
+        {role === 'admin' ? nav('users', 'users', 'user', 'Users') : null}
+        {nav('history', 'history', 'activity', 'Operation history')}
+        {nav('audit', 'audit', 'list', 'Audit log')}
       </nav>
-      <div className="sgroup">Cluster collegati{clusters.length ? ` (${clusters.length})` : ''}</div>
-      {clusters.length > 6 ? <input className="csearch" placeholder="Filtra per nome o cartella…" aria-label="Filtra i cluster" value={cq} onChange={e => setCq(e.target.value)} /> : null}
+      <div className="sgroup">Connected clusters{clusters.length ? ` (${clusters.length})` : ''}</div>
+      {clusters.length > 6 ? <input className="csearch" placeholder="Filter by name or folder…" aria-label="Filter clusters" value={cq} onChange={e => setCq(e.target.value)} /> : null}
       <div className="clist">
         {loading ? <div style={{ padding: 10 }}><div className="skeleton" style={{ height: 16 }} /></div> : null}
         {!loading ? <FleetTree clusters={clusters} health={healthMap} current={route.page === 'cluster' ? route.id : undefined} query={cq} /> : null}
-        {!loading && !clusters.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>Nessun cluster.</div> : null}
-        {!loading && clusters.length && !shown.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>Nessun risultato.</div> : null}
+        {!loading && !clusters.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>No clusters.</div> : null}
+        {!loading && clusters.length && !shown.length ? <div className="small lbl" style={{ padding: '6px 10px', color: 'var(--side-ink-2)' }}>No results.</div> : null}
       </div>
       <div className="sgroup row" style={{ paddingRight: 14 }}><span className="grow">Macchine operative{workers.length ? ` (${workers.length})` : ''}</span>
-        <button className="sgadd" onClick={() => go('workers')} title="Tutte le macchine operative e come aggiungerne una" aria-label="Macchine operative"><Icon n="plus" s={13} /></button></div>
+        <button className="sgadd" onClick={() => go('workers')} title="All worker hosts and how to add one" aria-label="Worker hosts"><Icon n="plus" s={13} /></button></div>
       <div className="wlist">
         {workers.map(w => <button key={w.id} className="citem" title={w.label || w.name} aria-current={route.page === 'worker' && route.id === w.id ? 'page' : undefined} onClick={() => go(`w/${encodeURIComponent(w.id)}`)}>
-          <Dot kind={w.online ? 'ok' : 'bad'} /><span className="n lbl">{w.name}</span><span className="faint small lbl">{w.roles.includes('repository') ? 'backup' : w.roles.includes('recovery') ? 'recupero' : ''}</span></button>)}
-        {!workers.length ? <button className="citem" onClick={() => go('workers')}><Icon n="server" s={14} /><span className="n lbl small" style={{ color: 'var(--side-ink-2)' }}>Backup server, host di recupero…</span></button> : null}
+          <Dot kind={w.online ? 'ok' : 'bad'} /><span className="n lbl">{w.name}</span><span className="faint small lbl">{w.roles.includes('repository') ? 'backup' : w.roles.includes('recovery') ? 'recovery' : ''}</span></button>)}
+        {!workers.length ? <button className="citem" onClick={() => go('workers')}><Icon n="server" s={14} /><span className="n lbl small" style={{ color: 'var(--side-ink-2)' }}>Backup servers, recovery hosts…</span></button> : null}
       </div>
       </div>
       <div className="foot">
         <span className="trunc who" title={user}><Icon n="user" s={14} /> {user}{role !== 'admin' ? <span className="faint"> · {role === 'viewer' ? 'sola lettura' : 'operatore'}</span> : null}</span>
         <span className="row gap-s">
-          <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={cycle} title={`Tema: ${th === 'auto' ? 'automatico' : th === 'dark' ? 'scuro' : 'chiaro'}`} aria-label="Cambia tema"><Icon n={th === 'dark' ? 'moon' : th === 'light' ? 'sun' : 'settings'} /></button>
-          <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={logout} title="Esci" aria-label="Esci"><Icon n="logout" /></button>
+          <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={cycle} title={`Theme: ${th === 'auto' ? 'automatic' : th === 'dark' ? 'dark' : 'light'}`} aria-label="Change theme"><Icon n={th === 'dark' ? 'moon' : th === 'light' ? 'sun' : 'settings'} /></button>
+          <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={logout} title="Sign out" aria-label="Sign out"><Icon n="logout" /></button>
         </span>
       </div>
     </aside>
     <div className="main">
       <NetBar />
       <div className="topbar">
-        <select className="input mobnav" aria-label="Vai a" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
-          <option value="">Tutti i cluster</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Oggi</option><option value="strategy">Strategie di backup</option><option value="infra">Ripristino e archivi</option><option value="discovery">Rilevamento</option><option value="workers">Macchine operative</option><option value="geo">Georidondanza</option><option value="history">Storico operazioni</option><option value="audit">Registro attività</option></select>
-        <div className="crumbs" aria-label="Posizione">
-          {route.page === 'cluster' ? <><a href="#/">Cluster</a>{(() => { const p = cur ? primaryOf(cur, clusters) : null; const base = p || cur;
-            return <>{base?.folder ? <><Icon n="chev" s={12} /><span className="faint trunc">{base.folder}</span></> : null}{p ? <><Icon n="chev" s={12} /><a className="trunc" href={`#/c/${encodeURIComponent(p.id)}`} title="Sito primario">{p.name}</a></> : null}</>; })()}<Icon n="chev" s={12} /><strong className="trunc">{cur?.name || '…'}</strong></> : <strong>{PAGE_TITLE[route.page] || ''}</strong>}
+        <select className="input mobnav" aria-label="Go to" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
+          <option value="">All clusters</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Today</option><option value="strategy">Backup policies</option><option value="infra">Recovery & storage</option><option value="discovery">Discovery</option><option value="workers">Worker hosts</option><option value="geo">Geo-redundancy</option><option value="history">Operation history</option><option value="audit">Audit log</option></select>
+        <div className="crumbs" aria-label="Location">
+          {route.page === 'cluster' ? <><a href="#/">Clusters</a>{(() => { const p = cur ? primaryOf(cur, clusters) : null; const base = p || cur;
+            return <>{base?.folder ? <><Icon n="chev" s={12} /><span className="faint trunc">{base.folder}</span></> : null}{p ? <><Icon n="chev" s={12} /><a className="trunc" href={`#/c/${encodeURIComponent(p.id)}`} title="Primary site">{p.name}</a></> : null}</>; })()}<Icon n="chev" s={12} /><strong className="trunc">{cur?.name || '…'}</strong></> : <strong>{PAGE_TITLE[route.page] || ''}</strong>}
         </div>
         <div className="grow" />
-        <button className="btn palbtn" onClick={() => setPal(true)} aria-label="Cerca cluster e azioni"><Icon n="search" /><span className="pt">Cerca cluster, azioni…</span><span className="kbd end">Ctrl K</span></button>
+        <button className="btn palbtn" onClick={() => setPal(true)} aria-label="Search clusters and actions"><Icon n="search" /><span className="pt">Search clusters, actions…</span><span className="kbd end">Ctrl K</span></button>
       </div>
       <main className="page" ref={pageRef}>
         {role === 'admin' ? <JoinBanner /> : null}
@@ -149,8 +149,8 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
           {route.page === 'workers' && <WorkersPage role={role} />}
           {route.page === 'geo' && <GeoPage role={role} />}
           {route.page === 'worker' && <WorkerView id={route.id!} role={role} />}
-          {route.page === 'settings' && (role === 'admin' ? <SettingsPage /> : <Empty icon="lock" title="Solo per gli amministratori" />)}
-          {route.page === 'users' && (role === 'admin' ? <UsersPage me={user} /> : <Empty icon="lock" title="Solo per gli amministratori" />)}
+          {route.page === 'settings' && (role === 'admin' ? <SettingsPage /> : <Empty icon="lock" title="Administrators only" />)}
+          {route.page === 'users' && (role === 'admin' ? <UsersPage me={user} /> : <Empty icon="lock" title="Administrators only" />)}
         </Suspense>
       </main>
     </div>
@@ -167,7 +167,7 @@ function Palette({ onClose, clusters, route, cycle }: { onClose: () => void; clu
     for (const c of clusters) a.push({ label: c.name, hint: c.environment, icon: 'db', run: () => go(`c/${encodeURIComponent(c.id)}`) });
     const cid = route.page === 'cluster' ? route.id : clusters[0]?.id;
     if (cid) for (const t of TAB_ITEMS) if (!t.preview) a.push({ label: `${clusters.find(c => c.id === cid)?.name || ''} › ${t.label}`, icon: t.icon || 'chev', run: () => go(`c/${encodeURIComponent(cid)}/${t.id}`) });
-    a.push({ label: 'Oggi: cosa richiede attenzione', icon: 'alert', run: () => go('today') }, { label: 'Tutti i cluster', icon: 'layers', run: () => go('') }, { label: 'Strategie di backup', icon: 'shield', run: () => go('strategy') }, { label: 'Ripristino e archivi: istanza di recupero e destinazione dei backup', icon: 'restore', run: () => go('infra') }, { label: 'Rilevamento', icon: 'search', run: () => go('discovery') }, { label: 'Macchine operative: backup server e host di recupero', icon: 'server', run: () => go('workers') }, { label: 'Georidondanza: siti primario e di replica', icon: 'swap', run: () => go('geo') }, { label: 'Storico operazioni', icon: 'activity', run: () => go('history') }, { label: 'Registro attività', icon: 'list', run: () => go('audit') }, { label: 'Mostra le attività in corso', hint: 'Ctrl J', icon: 'activity', run: () => window.dispatchEvent(new Event('arca:dock')) }, { label: 'Cambia tema', icon: 'settings', run: cycle });
+    a.push({ label: 'Today: what needs attention', icon: 'alert', run: () => go('today') }, { label: 'All clusters', icon: 'layers', run: () => go('') }, { label: 'Backup policies', icon: 'shield', run: () => go('strategy') }, { label: 'Recovery & storage: recovery instance and backup destination', icon: 'restore', run: () => go('infra') }, { label: 'Discovery', icon: 'search', run: () => go('discovery') }, { label: 'Worker hosts: backup servers and recovery hosts', icon: 'server', run: () => go('workers') }, { label: 'Geo-redundancy: primary and standby sites', icon: 'swap', run: () => go('geo') }, { label: 'Operation history', icon: 'activity', run: () => go('history') }, { label: 'Audit log', icon: 'list', run: () => go('audit') }, { label: 'Show running activity', hint: 'Ctrl J', icon: 'activity', run: () => window.dispatchEvent(new Event('arca:dock')) }, { label: 'Change theme', icon: 'settings', run: cycle });
     const s = q.trim().toLowerCase();
     return s ? a.filter(x => x.label.toLowerCase().includes(s)) : a;
   }, [q, clusters, route, cycle]);
@@ -175,24 +175,24 @@ function Palette({ onClose, clusters, route, cycle }: { onClose: () => void; clu
   useEffect(() => { ref.current?.children[i]?.scrollIntoView({ block: 'nearest' }); }, [i]);
   const pick = (n: number) => { const it = items[n]; if (it) { onClose(); it.run(); } };
   return <div className="modal-bg" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-    <div className="modal cmd" role="dialog" aria-label="Ricerca rapida" onKeyDown={e => {
+    <div className="modal cmd" role="dialog" aria-label="Quick search" onKeyDown={e => {
       if (e.key === 'Escape') onClose();
       else if (e.key === 'ArrowDown') { e.preventDefault(); setI(x => Math.min(items.length - 1, x + 1)); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); setI(x => Math.max(0, x - 1)); }
       else if (e.key === 'Enter') pick(i);
     }}>
-      <input className="input" autoFocus placeholder="Vai a un cluster o a una sezione…" value={q} onChange={e => setQ(e.target.value)} />
+      <input className="input" autoFocus placeholder="Go to a cluster or a section…" value={q} onChange={e => setQ(e.target.value)} />
       <ul ref={ref}>{items.map((it, n) => <li key={n}><button aria-selected={n === i} onMouseEnter={() => setI(n)} onClick={() => pick(n)}><Icon n={it.icon} /><span className="grow">{it.label}</span>{it.hint ? <span className="faint small">{it.hint}</span> : null}</button></li>)}
-        {!items.length ? <li className="faint" style={{ padding: 14 }}>Nessun risultato.</li> : null}</ul>
+        {!items.length ? <li className="faint" style={{ padding: 14 }}>No results.</li> : null}</ul>
     </div></div>;
 }
 
 /** One bar for the whole app while the console cannot be reached; it probes by itself and disappears when the console answers again. */
 function NetBar() {
   const [n, setN] = useState(netState()); const [, tick] = useState(0); const prev = useRef(netState().down);
-  useEffect(() => onNet(() => { const cur = netState(); if (prev.current && !cur.down) toast('Connessione con la console ripristinata', 'ok'); prev.current = cur.down; setN(cur); }), []);
+  useEffect(() => onNet(() => { const cur = netState(); if (prev.current && !cur.down) toast('Connection to the console restored', 'ok'); prev.current = cur.down; setN(cur); }), []);
   useEffect(() => { if (!n.down) return; const t = setInterval(() => tick(x => x + 1), 1000); return () => clearInterval(t); }, [n.down]);
   if (!n.down) return null;
   const s = Math.round((Date.now() - (n.since || Date.now())) / 1000);
-  return <div className="netbar" role="alert"><Icon n="alert" /><div className="grow"><strong>La console non risponde</strong> da {s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}: i dati a schermo possono essere vecchi e le azioni non partono. Riprovo da solo ogni pochi secondi; nulla di quello che hai inserito va perso.</div></div>;
+  return <div className="netbar" role="alert"><Icon n="alert" /><div className="grow"><strong>The console is not responding</strong> for {s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}: what is on screen may be stale and actions cannot start. Retrying every few seconds; nothing you entered is lost.</div></div>;
 }

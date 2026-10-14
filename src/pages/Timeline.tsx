@@ -2,7 +2,7 @@ import React, { useRef } from 'react';
 import { TYPE_LABEL, SetRow } from './Backup';
 
 export interface TlEvent { at: number; label: string }
-const fmt = (ms: number) => new Date(ms).toLocaleString('it-CH', { dateStyle: 'short', timeStyle: 'medium' });
+const fmt = (ms: number) => new Date(ms).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'medium' });
 
 /** The recovery timeline: backups as ticks, the recoverable window shaded, a draggable pointer for the target instant. */
 export function RecoveryTimeline({ sets, from, to, value, onChange, events = [], broken }: { sets: SetRow[]; from: number; to: number; value: number | null; onChange: (ms: number | null) => void; events?: TlEvent[]; broken?: boolean }) {
@@ -19,7 +19,7 @@ export function RecoveryTimeline({ sets, from, to, value, onChange, events = [],
   };
   const done = sets.filter(s => s.status === 'COMPLETE' && s.stop_time);
   return <div className="rt rtwrap">
-    <div className="track" ref={ref} role="slider" tabIndex={0} aria-label="Istante di ripristino" aria-valuemin={from} aria-valuemax={to} aria-valuenow={cur} aria-valuetext={value == null ? 'ultimo istante disponibile' : fmt(value)}
+    <div className="track" ref={ref} role="slider" tabIndex={0} aria-label="Recovery target" aria-valuemin={from} aria-valuemax={to} aria-valuenow={cur} aria-valuetext={value == null ? 'latest available point' : fmt(value)}
       onKeyDown={key} onPointerDown={e => { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); onChange(at(e.clientX)); }}
       onPointerMove={e => { if (e.buttons & 1) onChange(at(e.clientX)); }}>
       <div className="window" style={{ left: 0, right: 0 }} />
@@ -29,10 +29,10 @@ export function RecoveryTimeline({ sets, from, to, value, onChange, events = [],
     </div>
     <div className="axis"><span>{fmt(from)}</span><span>{fmt(from + span / 2)}</span><span>{fmt(to)}</span></div>
     <div className="row wrap small muted" style={{ marginTop: 8, gap: 16 }}>
-      <span><i className="tick F" style={{ position: 'static', display: 'inline-block', height: 12, width: 4, marginRight: 6 }} />Completo</span>
-      <span><i className="tick D" style={{ position: 'static', display: 'inline-block', height: 12, marginRight: 6 }} />Differenziale</span>
-      <span><i className="tick I" style={{ position: 'static', display: 'inline-block', height: 12, marginRight: 6 }} />Incrementale</span>
+      <span><i className="tick F" style={{ position: 'static', display: 'inline-block', height: 12, width: 4, marginRight: 6 }} />Full</span>
+      <span><i className="tick D" style={{ position: 'static', display: 'inline-block', height: 12, marginRight: 6 }} />Differential</span>
+      <span><i className="tick I" style={{ position: 'static', display: 'inline-block', height: 12, marginRight: 6 }} />Incremental</span>
       {events.length ? <span><i className="evt" style={{ position: 'static', display: 'inline-block', transform: 'rotate(45deg)', marginRight: 8 }} />DROP / TRUNCATE</span> : null}
-      {broken ? <span style={{ color: 'var(--bad)' }}>Attenzione: l’archivio WAL ha buchi, non tutto l’intervallo è recuperabile.</span> : null}
+      {broken ? <span style={{ color: 'var(--bad)' }}>Careful: the WAL archive has gaps, not the whole window is recoverable.</span> : null}
     </div></div>;
 }

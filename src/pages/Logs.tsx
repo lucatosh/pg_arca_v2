@@ -7,7 +7,7 @@ const KEEP = 600;       // entries held in memory
 const SHOW = 300;       // rows in the DOM: a log view must stay light however fast the stream is
 
 const Line = React.memo(function Line({ l }: { l: any }) {
-  return <div className={`logline ${l.level}`}><span className="faint">{new Date(l.timestamp).toLocaleTimeString('it-CH')}</span> [{l.nodeName}/{l.service}] {l.message}</div>;
+  return <div className={`logline ${l.level}`}><span className="faint">{new Date(l.timestamp).toLocaleTimeString('en-GB')}</span> [{l.nodeName}/{l.service}] {l.message}</div>;
 });
 
 /**
@@ -53,12 +53,12 @@ export function LogsTab({ c }: { c: any }) {
 
   const changeLevel = (v: string) => { setLevel(v); send({ type: 'filter', minLevel: v === 'DEBUG' ? 'all' : v }); };
   const togglePause = () => { const n = !paused; setPaused(n); send({ type: n ? 'pause' : 'resume' }); if (!n) send({ type: 'subscribe', clusterId: c.id }); };
-  return <Card title="Log in tempo reale" actions={<Badge kind={state === 'live' ? (paused ? 'warn' : 'ok') : 'warn'}>{state !== 'live' ? (state === 'connecting' ? 'Connessione…' : 'Riconnessione…') : paused ? 'In pausa' : 'Connesso'}</Badge>}>
-    <div className="stack"><div className="row wrap"><select className="input" style={{ width: 160 }} value={level} onChange={e => changeLevel(e.target.value)} aria-label="Livello minimo">{['DEBUG', 'INFO', 'WARN', 'ERROR'].map(l => <option key={l} value={l}>da {l}</option>)}</select>
-      <input className="input" style={{ maxWidth: 280 }} placeholder="Cerca nei log" value={search} onChange={e => setSearch(e.target.value)} /><div className="grow" />
-      <Button icon={paused ? 'play' : 'pause'} onClick={togglePause}>{paused ? 'Riprendi' : 'Pausa'}</Button><Button onClick={() => { setLines([]); setDropped(0); }}>Svuota</Button></div>
+  return <Card title="Live logs" actions={<Badge kind={state === 'live' ? (paused ? 'warn' : 'ok') : 'warn'}>{state !== 'live' ? (state === 'connecting' ? 'Connecting…' : 'Reconnecting…') : paused ? 'Paused' : 'Connected'}</Badge>}>
+    <div className="stack"><div className="row wrap"><select className="input" style={{ width: 160 }} value={level} onChange={e => changeLevel(e.target.value)} aria-label="Minimum level">{['DEBUG', 'INFO', 'WARN', 'ERROR'].map(l => <option key={l} value={l}>{l} and above</option>)}</select>
+      <input className="input" style={{ maxWidth: 280 }} placeholder="Search the logs" value={search} onChange={e => setSearch(e.target.value)} /><div className="grow" />
+      <Button icon={paused ? 'play' : 'pause'} onClick={togglePause}>{paused ? 'Resume' : 'Pause'}</Button><Button onClick={() => { setLines([]); setDropped(0); }}>Clear</Button></div>
       <div className="logbox" ref={box} onScroll={() => { const b = box.current!; stick.current = b.scrollHeight - b.scrollTop - b.clientHeight < 40; }}>
         {shown.length ? shown.map(l => <Line key={l.id} l={l} />) :
-          <span className="faint">Nessuna riga. I log completi arrivano dagli agent solo mentre questa pagina è aperta (pochi secondi dopo l’apertura); warning ed errori arrivano sempre.</span>}</div>
-      <div className="small faint">Ultime {SHOW} righe{dropped ? ` · ${dropped} saltate perché il flusso era troppo veloce` : ''}. Il log completo di PostgreSQL resta sul server.</div></div></Card>;
+          <span className="faint">No lines. Full logs come from the agents only while this page is open (a few seconds after opening it); warnings and errors always arrive.</span>}</div>
+      <div className="small faint">Last {SHOW} lines{dropped ? ` · ${dropped} skipped because the stream was too fast` : ''}. The full PostgreSQL log stays on the server.</div></div></Card>;
 }

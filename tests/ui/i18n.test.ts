@@ -1,43 +1,26 @@
 import assert from 'assert';
+import fs from 'fs';
+import path from 'path';
 import { itCheck, itFix } from '../../src/i18n';
-assert.strictEqual(itCheck('/var/tmp/pg_arca_scratch: 26.5 GiB free, about 16.1 GiB needed'), '/var/tmp/pg_arca_scratch: 26.5 GiB liberi, ne servono circa 16.1 GiB');
-assert.strictEqual(itCheck("PostgreSQL 15 binaries found in /usr/lib/postgresql/15/bin (this node's own)"), 'binari di PostgreSQL 15 trovati in /usr/lib/postgresql/15/bin (quelli del nodo)');
-assert.strictEqual(itCheck('all 172377 backup chunks needed are present in the repository'), 'tutti i 172377 blocchi di backup necessari sono nel repository');
-assert.match(itCheck('not enough space on the volume of /srv (scratch of the recovery instance (extraction, WAL read-ahead, dump) + data directory of the live cluster (restored database / quarantine copy)): 5 GiB free, about 9 GiB needed'), /^spazio insufficiente sul volume di \/srv \(cartella temporanea .* \+ cartella dati .*\): 5 GiB liberi, ne servono circa 9 GiB$/);
-assert.strictEqual(itCheck('something new from a newer agent'), 'something new from a newer agent');
-assert.strictEqual(itFix('make sure it has about 3 GiB free'), 'assicurati che abbia circa 3 GiB liberi');
-assert.strictEqual(itCheck("the agent's user (postgres) cannot create restore destination /srv/restore_big: /srv is not writable for it"), 'l’utente dell’agent (postgres) non può creare la destinazione del ripristino /srv/restore_big: /srv non è scrivibile per lui');
-assert.match(itFix('create it for the agent: mkdir -p /srv/x && chown postgres: /srv/x (or choose a destination under a directory it owns)'), /^creala per l’agent: mkdir -p/);
-assert.match(itCheck('the recovery host cannot reach the cluster that receives the result (172.30.1.2:5432): timeout expired'), /^l’host di recupero non raggiunge/);
-// exact texts the agent produces (engine/granular.py) for things created after the backup and for owners/privileges
-assert.match(itCheck("database 'new_db' is not in backup 20261011-234032F: it was created after that backup, so it is rebuilt from the WAL alone (size unknown in advance)"), /^il database 'new_db' non è nel backup 20261011-234032F: è stato creato dopo/);
-assert.match(itCheck("object 'public.t_new' is not in backup 20261011-234032F: it was created after that backup and is rebuilt from the WAL"), /^l’oggetto 'public\.t_new' non è nel backup/);
-assert.match(itCheck("object 'public.t_new' is not in backup 20261011-234032F and it does not exist in old_db now: it comes back only if it was created after that backup (and dropped since)"), /oggi non esiste in old_db: torna solo se/);
-assert.match(itCheck("schema 'x y' has no tables in backup 20261011-234032F: it was created after that backup and is rebuilt from the WAL"), /^lo schema 'x y' non è nel backup/);
-assert.match(itCheck('roles missing on this server (gone_role): object owners and privileges were NOT restored; create the roles and restore again to keep them'), /^ruoli assenti su questo server \(gone_role\)/);
-assert.match(itFix('check the name: a wrong one is only found after the recovery; tables created and dropped after the backup are listed by the WAL forensics'), /^controlla il nome/);
-assert.match(itCheck('PostgreSQL was started by hand (outside systemd) while the agent is a systemd service: restarting it from the agent would tie the database to the agent\'s service. Restart it the way it was started (or put it under systemd)'), /^PostgreSQL è stato avviato a mano/);
-assert.match(itCheck("the swap needs about 6354 locks in one transaction, the server's lock table has 1920 slots shared by all sessions (max_locks_per_transaction x connections): it would fail with 'out of shared memory'. Raise max_locks_per_transaction (restart needed) to at least 488, or restore and promote in smaller groups of tables"), /^lo scambio richiede circa 6354 lock.*almeno 488/);
-assert.match(itCheck('the recovery would replay CREATE TABLESPACE for /srv/ts_new (created after the base backup, at 0/3000028): PostgreSQL replays it on that ABSOLUTE path and removes what it finds there - on this server that is the live tablespace. Refused on this server.'), /^il recupero rigiocherebbe la creazione del tablespace in \/srv\/ts_new/);
-// logical replication subscriptions in restored copies (engine/restore.py, engine/granular.py)
-assert.match(itCheck("the copy keeps the logical replication subscriptions replica_db.sub_orders (slot sub_orders): they do not run in the copy, but DROP SUBSCRIPTION there connects to the publisher and DROPS production's slot"), /^la copia conserva le sottoscrizioni di replica logica replica_db\.sub_orders \(slot sub_orders\): .*CANCELLA lo slot di produzione$/);
-assert.match(itFix('in the copy, before anything else: ALTER SUBSCRIPTION <name> DISABLE; ALTER SUBSCRIPTION <name> SET (slot_name = NONE)'), /^nella copia, prima di ogni altra cosa: ALTER SUBSCRIPTION/);
-assert.match(itCheck("logical replication subscriptions restored DISABLED and detached from the publisher's slot (sub_orders): dropping them is safe; to make this copy a subscriber create a NEW slot on the publisher and ALTER SUBSCRIPTION ... SET (slot_name = '<new>') ... ENABLE"), /^sottoscrizioni di replica logica ripristinate DISATTIVATE/);
-assert.match(itCheck('a recovered column has the row type of table app.addr, which does not exist now: select that table too (it is not created by itself)'), /^una colonna recuperata ha come tipo la riga della tabella app\.addr/);
-assert.match(itCheck('column app.prod_snap.item has the row type of a replaced table (app.prod): it keeps the OLD copy\'s type, so that copy cannot be dropped without it; to move it: ALTER TABLE "app"."prod_snap" ALTER COLUMN "item" TYPE app.prod USING "item"::text::app.prod (rewrites that table)'), /^la colonna app\.prod_snap\.item ha come tipo la riga/);
-assert.match(itCheck('app.prod_label(app.prod) recreated for the recovered table; the old version (app.prod_label(app.prod_old_20261012)) is still used by other objects and was kept'), /^app\.prod_label\(app\.prod\) ricreata/);
-// backup destination and migration checks
-assert.equal(itCheck('writable by the agent (postgres): exclusive create, fsync and atomic rename work (3.1 ms)'), 'scrivibile dall’agent (postgres): creazione esclusiva, fsync e rinomina atomica funzionano (3.1 ms)');
-assert.match(itCheck("the PostgreSQL server cannot write there as archive_command would: ERROR:  program \"x\" failed"), /^il server PostgreSQL non può scrivere lì/);
-assert.match(itCheck('/mnt/b is on nfs4 (srv:/x)'), /^\/mnt\/b è su nfs4 \(srv:\/x\)$/);
-assert.match(itCheck('/srv/b is on ext4'), /^\/srv\/b è su ext4$/);
-assert.match(itCheck('repository + WAL archive: 1.2 GiB to copy, 30.0 GiB free (28.8 GiB after)'), /^repository e archivio WAL: 1\.2 GiB da copiare/);
-assert.match(itCheck('the current location /old holds 3 backup set(s): after the change they stay there, still read by restores, and can be migrated in the background'), /^la posizione attuale \/old contiene 3 backup/);
-assert.match(itFix('chmod o-rwx /srv/b (or enable repository encryption)'), /^chmod o-rwx \/srv\/b \(oppure attiva/);
-assert.match(itCheck('app.sessions is UNLOGGED: its rows are in no backup (PostgreSQL does not log them), so the recovered copy is empty - the live table is kept as it is'), /^app\.sessions è UNLOGGED/);
+
+// agent messages are English and pass through unchanged
+assert.strictEqual(itCheck('/var/tmp/pg_arca_scratch: 26.5 GiB free, about 16.1 GiB needed'), '/var/tmp/pg_arca_scratch: 26.5 GiB free, about 16.1 GiB needed');
+assert.strictEqual(itFix('make sure it has about 3 GiB free'), 'make sure it has about 3 GiB free');
+assert.strictEqual(itCheck(null), '');
+assert.strictEqual(itFix(undefined), '');
+
+// the UI is English: no Italian left in the string literals / JSX text of src/ (comments are ignored)
+const IT = /[àèéìòù]|\b(della|delle|degli|dello|nella|nelle|questo|questa|quando|perché|sono|vengono|viene|cartella|ripristino|ripristina|nessun|nessuna|impostazioni|scegli|annulla|chiudi|salva|elimina|attiva|riprova|aggiorna|indietro|avanti|utente|errore|fallita|completato|in corso|non è)\b/i;
+const files: string[] = [];
+const walk = (d: string) => { for (const f of fs.readdirSync(d)) { const p = path.join(d, f); if (fs.statSync(p).isDirectory()) walk(p); else if (/\.(ts|tsx)$/.test(f)) files.push(p); } };
+walk(path.join(path.dirname(new URL(import.meta.url).pathname), '../../src'));
+const bad: string[] = [];
+for (const f of files) {
+  const src = fs.readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
+  src.split('\n').forEach((line, i) => {
+    const texts = [...line.matchAll(/'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`|>([^<>{}\n]+)</g)].map(m => m[1] ?? m[2] ?? m[3] ?? m[4] ?? '');
+    for (const t of texts) if (IT.test(t)) bad.push(`${path.relative(process.cwd(), f)}:${i + 1}: ${t.slice(0, 100)}`);
+  });
+}
+assert.deepStrictEqual(bad, [], 'Italian text left in the UI:\n' + bad.join('\n'));
 console.log('i18n OK');
-// orphan refusal before the swap (engine/objects.py PGA-GEN-096) and the warning when the operator accepted it
-assert.strictEqual(itCheck('PGA-GEN-096: promotion not done, nothing was changed: 1 row(s) of public.orders (customer_id) would reference public.customers rows that are not in the restored copy; 2 row(s) of public.lines (order_id) would reference public.orders rows that no longer exist'),
-  'promozione non eseguita, nulla è stato cambiato: 1 righe di public.orders (customer_id) punterebbero a righe di public.customers che non sono nella copia ripristinata; 2 righe di public.lines (order_id) punterebbero a righe di public.orders che non esistono più');
-assert.strictEqual(itCheck('foreign keys left NOT VALID on purpose (allow_orphans): public.items -> public.orders: 3 row(s)'), 'chiavi esterne lasciate non valide di proposito (righe orfane accettate): public.items -> public.orders: 3 righe');
-console.log('i18n orphans OK');
