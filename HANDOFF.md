@@ -157,6 +157,46 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### 14/10 21:57 — FERMO su richiesta dell'utente (utilizzo finito). Da riprendere da qui, sul ramo `release/1.0.0-rc.1`
+**1. Build di release (priorità dell'utente)**
+- Il pull di `rockylinux:9` si è piantato più di 10 minuti nel passo .rpm. Correzione 33176fb: l'.rpm si costruisce in un'immagine EL9 già presente sull'host (`pg-arca-lab-rocky:9`), con limiti di tempo su pull e build.
+- Build rilanciata alle 19:51 UTC dal worktree `~/rc1` (commit 33176fb), output in `~/release-rc1`, log `~/lablogs/release-rc1.log`. Alle 19:57 UTC era ancora nei test. NON verificato che sia finita.
+- Al ritorno:
+  - `tail ~/lablogs/release-rc1.log` deve finire con «artifacts in»;
+  - se è finita, copiare sul PC: `scp -r lab@192.168.1.179:release-rc1 "$HOME\Downloads\pg-arca-1.0.0-rc.1"`. I comandi per l'utente sono in `TEST-INSTALLAZIONE.md`;
+  - poi `cd ~/rc1 && tools/lab/release-test.sh ~/release-rc1` (CT nuovi sul Proxmox).
+
+**2. Analisi hy-rm «WAL archiving is failing» + 239 copie divergenti.** L'utente ha chiesto di capire e correggere il prodotto, NON di riparare il lab. Stato del lab, NON toccato:
+- hyb1 è il primario di hy-rm, su TL 12. Archiviatore fermo dalle 13:11 UTC con 1380 errori: `PGA-WAL-031` su `0000000A0000000000000011` (in archivio 32d9dadb…, archiviato alle 11:53:50 UTC dall'altro ramo; locale 2defcc8d…). In coda anche 0000000A…12/13/14.
+- hy1 (hy-mi) è su TL 13, standby che non può seguire: «highest timeline 12 of the primary is behind recovery timeline 13». Il PostgreSQL di hy2 è fermo.
+
+Ricostruzione (orari UTC; fonti: audit, `~/lablogs/hy-dr3.log`, log PG di hyb1, date dei file nell'archivio NFS `/mnt/arca/wal/hy`, leggibile solo come postgres):
+- **(a) Prima del fix 0d2eb45** (deploy alle 12:58:57): fork con lo stesso numero di timeline, TL 10 usata da due server.
+  - Il ramo morto ha archiviato `0000000A…11` alle 11:53.
+  - Alle 13:02 il blocco è stato tolto a mano, spostando SOLO la history del ramo morto: i suoi segmenti sono rimasti in archivio, e hyb1 si blocca su di essi da 7 ore.
+  - Le 228 copie di `00000007.history` vengono da prima della deduplica (stesso commit).
+  - **Difetto del prodotto**: manca un modo guidato per ritirare un intero ramo morto (history + segmenti di quella timeline). Oggi la UI segnala l'errore ma non offre una soluzione per i segmenti.
+- **(b) Dopo il fix**: test DR.
+  - 13:10:17 sito hy-mi spento.
+  - 13:11:48 failover automatico: hy-rm promosso → TL 12.
+  - 13:12:10 hy-mi riacceso. Patroni di hy-mi (cluster NON standby nel suo DCS, che era giù insieme al sito) ha ripreso la TL 12 dall'archivio con restore_command, poi ha **promosso hy1 → TL 13 alle 13:12:42**: SPLIT-BRAIN di circa 65 s.
+  - La console ha retrocesso hy-mi solo alle 13:13:47 (geo_demote, riallineamento automatico).
+  - Riallineamento fallito: TL 13 contro TL 12, `rejoinError` alle 13:19:25 (testo troncato, da leggere).
+  - **Difetto del prodotto**: dopo un failover automatico manca il **fencing** del vecchio sito primario quando torna.
+- **(c) Anomalia**: nella testata del cluster il badge dice «Healthy» mentre l'archiviazione è in errore critico (la barra laterale invece lo mostra rosso). Da allineare.
+
+Correzioni proposte (da fare sul ramo release):
+- **F1 fencing**:
+  - al primo heartbeat di un agent di un sito da cui c'è stato un failover, la console gli fa subito mettere `standby_cluster` nel suo DCS, prima che Patroni promuova (solo DCS, rispetta la regola);
+  - in più, opzionale e da proporre all'utente perché è configurazione locale di Patroni: hook `pre_promote` di Patroni che chiede alla console se il sito può essere primario.
+  - Test: scenario-hy `dr` con verifica «nessuna nuova timeline sul vecchio sito».
+- **F2 ritiro del ramo morto**:
+  - op/azione UI che, data una timeline in conflitto, sposta in `conflicts/dead-branch-<tli>/` la history e i segmenti di quella timeline che non coincidono con il server sopravvissuto;
+  - poi l'archiviatore riparte da solo;
+  - spiegazione nel briefing.
+- **F3**: il badge della testata del cluster deve tenere conto degli allarmi critici (archiviazione in errore).
+- **Da verificare**: `conflicts/` ha 9 voci per `0000000A…11`. Controllare se hanno hash diversi (servers/tentativi diversi) o se la deduplica non funziona: il comando di elenco è stato interrotto.
+
 ### Sessione 14/10 notte: prima versione ufficiale 1.0.0-rc.1 (richiesta utente: «è il momento di una prima versione ufficiale?»)
 - **Decisione**: sì, ma come **release candidate** (1.0.0-rc.1), non GA. Due prodotti, una versione. Niente riscrittura in Go (l'agent Python 3.6 solo stdlib è voluto). Criteri per la GA in `RELEASE.md` (matrice 14-18 verde, NFS/SMB veri, installazione/upgrade/rollback su VM pulite, revisione di sicurezza, backup dello stato della console provato, guida rivista).
 - **Versione unica**: file `VERSION` → `package.json`, agent (`__version__`, `AGENT_VERSION = __version__`), `/api/health` (`version`), barra laterale sotto il nome. `tools/release/set-version.sh`, `tests/server/version.test.ts` (in `npm test`).
