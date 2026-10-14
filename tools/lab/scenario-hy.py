@@ -181,6 +181,11 @@ if "dr" in WHICH:
     s, d = call("PUT", "/api/geo/policy/%s" % key, {"autoFailover": True, "confirmSec": 30, "maxLossMB": 16, "autoRejoin": True})
     check("automatic failover on (30 s, max 16 MB)", s == 200, json.dumps(d)[:300])
     p0 = primary_site(); sb = "b" if p0 == "a" else "a"
+    if p0 == "b":                                    # the disaster is simulated on the Docker site: bring the primary back there first
+        s, d = call("POST", "/api/geo/switchover", {"from": C["b"]["id"], "to": C["a"]["id"], "confirm": "SWITCHOVER"})
+        if check("switchover to hy-mi before the disaster", s == 202, json.dumps(d)[:300]):
+            j, sec = wait_job(d["job"]["id"]); check("switchover in %d s" % sec, j.get("status") == "succeeded", j.get("error") or "")
+        p0 = primary_site()
     if p0 != "a":
         log("   (primary is %s: the disaster is simulated on the Docker site only, switch back first)" % p0)
     else:

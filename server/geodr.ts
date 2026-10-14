@@ -144,6 +144,8 @@ async function runFailover(store: Store, id: string, a: { key: string; from: str
     const p = await submitTo(store, a.to, 'geo_promote', { confirm: 'PROMUOVI', slot_for_peer: geoSlotFor(fromName) }, `geo:${id}:promote`, a.actor);
     const pr = await waitOp(store, p.id, 240_000);
     if (pr.status !== 'succeeded') throw new Error(`promozione di ${toName} non riuscita: ${pr.error || pr.status}`);
+    // the new primary keeps seeing the shared archive (restore_command in its DCS): a later promotion of either site never re-uses a timeline number
+    submitTo(store, a.to, 'geo_archive_fallback', { enable: true }, `geo:${id}:archive-primary`, a.actor).catch(() => undefined);
     const fork = (pr.result as any)?.timeline ? { timeline: (pr.result as any).timeline } : {};
     await store.mutate(d => { (d.settings.geoFailovers ||= {})[a.key] = { from: a.from, to: a.to, fromName, toName, at: nowIso(), forkLsn: s1?.lsn || null, lossBytes: loss, auto: a.auto, jobId: id, ...fork };
       ops.audit(d, { clusterId: a.to, actor: a.actor, action: a.auto ? 'geo.failover.auto' : 'geo.failover', status: 'OK', details: { from: fromName, to: toName, lossBytes: loss } }); });

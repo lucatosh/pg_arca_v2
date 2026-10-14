@@ -164,7 +164,7 @@ import { deriveCluster } from '../../server/view';
   {
     const st3 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'geor-')));
     const P = (extra: any = {}) => ({ postgres: { alive: true, is_in_recovery: false, version: '16.4', current_lsn: '0/9000000', system_identifier: '42', timeline: 1, settings: { max_connections: '200' }, slots: [{ name: 'geo_b', active: true }], hba_patroni_local: { ok: true }, ...extra.pg },
-      patroni: { accessible: true, scope: 'a', local_node: { role: 'leader' }, permanent_slots: extra.perm ?? ['geo_b'], use_pg_rewind: true, members: [{ name: 'a1', host: 'a1' }] }, backup: { recent_sets: [{ status: 'COMPLETE', type: 'full', start_time: new Date().toISOString() }] } });
+      patroni: { accessible: true, scope: 'a', local_node: { role: 'leader' }, permanent_slots: extra.perm ?? ['geo_b'], use_pg_rewind: true, members: [{ name: 'a1', host: 'a1' }], ...(extra.norc ? {} : { recovery_restore_command: 'pg-arca-wal get %f %p' }) }, backup: { recent_sets: [{ status: 'COMPLETE', type: 'full', start_time: new Date().toISOString() }] } });
     const S = (extra: any = {}) => ({ postgres: { alive: true, is_in_recovery: true, version: extra.version || '16.4', current_lsn: '0/9000000', system_identifier: '42', timeline: 1, settings: { max_connections: extra.maxc || '200' }, replay_ts: now(), wal_receiver: { status: 'streaming', sender_host: 'x', sender_port: 5000, silent_sec: 1 }, hba_patroni_local: { ok: true } },
       patroni: { accessible: true, scope: 'b', local_node: { role: 'standby_leader' }, use_pg_rewind: true, standby_cluster: { host: extra.host || 'a-haproxy', port: 5000, primary_slot_name: 'geo_b', ...(extra.rc ? { restore_command: 'pg-arca-wal get %f %p' } : {}) } } });
     await st3.mutate(d => { d.clusters.push({ id: 'A', name: 'site-a', environment: 'prod', source: 'agent', geoEndpoint: { host: 'a-haproxy', port: 5000 } } as any, { id: 'B', name: 'site-b', environment: 'prod', source: 'agent', geoEndpoint: { host: 'b-haproxy', port: 5000 } } as any);
@@ -173,12 +173,14 @@ import { deriveCluster } from '../../server/view';
     const rd = () => geoReadiness(st3.peek(), geoGroups(st3.peek())[0]);
     let r = rd(); assert.strictEqual(r.status, 'ready', JSON.stringify(r.checks.filter(c => c.level !== 'ok'))); assert.strictEqual(r.rpoSec, 0); assert.strictEqual(r.lastTest!.seconds, 7);
     // the lab-style traps, one at a time
+    await st3.mutate(d => { d.nodes.a1.snapshot = P({ norc: true }); });
+    assert.strictEqual(rd().checks.find(c => c.id === 'archive_primary')!.level, 'warn', 'a primary site that cannot see the shared archive may re-use a timeline number');
     await st3.mutate(d => { d.nodes.a1.snapshot = P({ perm: [] }); });
     r = rd(); assert.strictEqual(r.status, 'not_ready'); assert(r.checks.some(c => c.id === 'slot' && c.level === 'bad' && /non è permanente/.test(c.text)));
     await st3.mutate(d => { d.nodes.a1.snapshot = P(); d.nodes.b1.snapshot = S({ host: 'a1', rc: true, maxc: '100' }); });
     r = rd(); assert(r.checks.some(c => c.id === 'upstream' && c.level === 'warn')); assert(r.checks.some(c => c.id === 'param:max_connections' && c.level === 'bad'));
     await st3.mutate(d => { d.nodes.b1.snapshot = S({ version: '15.6' }); });
-    r = rd(); assert(r.checks.some(c => c.id === 'version' && c.level === 'bad')); assert(r.checks.some(c => c.id === 'archive' && c.level === 'info'));
+    r = rd(); assert(r.checks.some(c => c.id === 'version' && c.level === 'bad')); assert(r.checks.some(c => c.id === 'archive' && c.level === 'warn'));
     const app3 = new MiniApp(); app3.use((req: any, _r: any, next: any) => { req.actor = 'mario'; req.role = 'admin'; return next(); }); mountGeoRoutes(app3, st3);
     assert.strictEqual((await app3.call('PUT', '/api/geo/settings', { body: { rpoSec: 0 } })).status, 400);
     assert.strictEqual((await app3.call('PUT', '/api/geo/settings', { body: { rpoSec: 30 } })).status, 200);
@@ -241,6 +243,9 @@ import { deriveCluster } from '../../server/view';
     assert.strictEqual(rj()!.status, 'succeeded', JSON.stringify(rj()!.steps)); assert(rj()!.divergedBytes > 0 && /scartati/.test(rj()!.steps[0].text)); assert(rj()!.steps.some((x: any) => /STESSA timeline/.test(x.text)), 'the forced rewind is said');
     assert(st4.peek().settings.geoFailovers[key].rejoinedAt);
     // e) loss above the limit: an AUTOMATIC failover stops and asks a person
+    // the promoted site was also asked to keep seeing the shared archive (restore_command in its DCS, fire-and-forget)
+    assert(st4.peek().operations.some(o => o.type === 'geo_archive_fallback' && o.clusterId === 'r' && o.params.enable === true), 'the new primary keeps seeing the archive');
+    await st4.mutate(d => { for (const o of d.operations) if (o.status === 'queued') o.status = 'succeeded'; });
     await st4.mutate(d => { d.settings.geoJobs = {}; delete d.settings.geoFailovers; d.settings.geoLastPrimary[key] = { clusterId: 'r', name: 'hy-rm', lsn: '0/9000000', at: now() };
       d.nodes.m1.snapshot = { ...d.nodes.m1.snapshot, postgres: { ...d.nodes.m1.snapshot.postgres, current_lsn: '0/7000100', wal_receiver: { status: 'waiting', sender_host: '192.168.1.232', sender_port: 5000, silent_sec: 90 } } }; });
     up.r1 = false; up.m1 = true; await tick(200_000); await tick(230_000);

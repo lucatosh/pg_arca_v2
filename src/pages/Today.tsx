@@ -3,6 +3,8 @@ import { api } from '../api';
 import { Badge, Banner, Button, Card, Skeleton, ago } from '../ui';
 import { revalidate, toast, useQuery } from '../hooks';
 import { go } from '../router';
+import { OP_LABEL } from './shared';
+import { itCheck } from '../i18n';
 
 const SEV: Record<string, { label: string; kind: 'bad' | 'warn' | 'info' }> = { critical: { label: 'Urgente', kind: 'bad' }, warning: { label: 'Da controllare', kind: 'warn' }, info: { label: 'Informazione', kind: 'info' } };
 const TYPE: Record<string, string> = { backup_run: 'Backup', backup_verify: 'Verifica', backup_expire: 'Pulizia', restore_instance: 'Ripristino', restore_database: 'Ripristino', restore_object: 'Ripristino', restore_promote: 'Riporta tabella', hba_apply: 'Regole di accesso', pg_set_param: 'Parametro' };
@@ -36,9 +38,9 @@ export function TodayPage({ me, role }: { me: string; role: string }) {
           <p className="small muted" style={{ margin: '4px 0 6px' }}>{i.cause}</p>
           {i.action ? <Button sm onClick={() => open(i)}>{i.action.label}</Button> : null}</div>)}</div></Card> : null}
       {d.last24h.failures.length ? <Card title="Operazioni fallite nelle ultime 24 ore"><div className="tablewrap"><table className="t"><tbody>
-        {d.last24h.failures.map((f: any) => <tr key={f.id}><td>{TYPE[f.type] || f.type}</td><td className="muted">{f.error || '—'}</td><td className="num small muted">{ago(f.at)}</td><td className="num"><Button sm onClick={() => go(`c/${encodeURIComponent(f.clusterId)}/operations`)}>Apri</Button></td></tr>)}</tbody></table></div></Card> : null}
+        {d.last24h.failures.map((f: any) => <tr key={f.id}><td>{TYPE[f.type] || OP_LABEL[f.type] || f.type}</td><td className="muted">{f.error ? itCheck(f.error) : '—'}</td><td className="num small muted">{ago(f.at)}</td><td className="num"><Button sm onClick={() => go(`c/${encodeURIComponent(f.clusterId)}/operations`)}>Apri</Button></td></tr>)}</tbody></table></div></Card> : null}
       {(d.last24h.refusals || []).length ? <details className="card" style={{ padding: '10px 16px' }}><summary className="small" style={{ cursor: 'pointer' }}>{d.last24h.refused} {d.last24h.refused === 1 ? 'operazione rifiutata' : 'operazioni rifiutate'} dai controlli (nulla è stato cambiato)</summary>
-        <div className="tablewrap"><table className="t"><tbody>{d.last24h.refusals.map((f: any) => <tr key={f.id}><td>{TYPE[f.type] || f.type}</td><td className="muted small">{f.error || '—'}</td><td className="num small muted">{ago(f.at)}</td></tr>)}</tbody></table></div></details> : null}
+        <div className="tablewrap"><table className="t"><tbody>{d.last24h.refusals.map((f: any) => <tr key={f.id}><td>{TYPE[f.type] || OP_LABEL[f.type] || f.type}</td><td className="muted small">{f.error ? itCheck(f.error) : '—'}</td><td className="num small muted">{ago(f.at)}</td></tr>)}</tbody></table></div></details> : null}
       <Card title="Cluster"><div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>Ambiente</th><th>Ripristino misurato</th><th>Stato</th></tr></thead><tbody>
         {d.clusters.map((c: any) => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}><td><strong>{c.name}</strong>{c.folder ? <span className="faint small"> · {c.folder}</span> : null}</td><td>{c.environment}</td><td className="small">{c.rto ? <span title={`Prova del ${new Date(c.rto.at).toLocaleDateString('it-CH')}`}>{c.rto.seconds >= 120 ? `${Math.round(c.rto.seconds / 60)} min` : `${Math.round(c.rto.seconds)} s`}</span> : <span className="muted">mai provato</span>}</td>
           <td>{c.worst === 'ok' ? <Badge kind="ok">In ordine</Badge> : <Badge kind={SEV[c.worst].kind}>{c.issues} {c.issues === 1 ? 'segnalazione' : 'segnalazioni'}</Badge>}</td></tr>)}

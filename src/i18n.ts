@@ -9,6 +9,9 @@ const ROLE: Record<string, string> = {
 const roles = (s: string) => s.split(' + ').map(r => ROLE[r] || r).join(' + ');
 const SRC: Record<string, string> = { configured: 'configurati', "this node's own": 'quelli del nodo', 'installed package': 'pacchetto installato', 'installed by pg_arca': 'installati da pg_arca' };
 const RULES: Rule[] = [
+  [/^interrupted: the agent restarted while '(.+?)' was running; the outcome is unknown and the operation was NOT repeated automatically\. Check the cluster state, then resubmit if needed\.?$/, m => `interrotta: l’agent è ripartito mentre «${m[1]}» era in corso; l’esito non è noto e l’operazione NON è stata ripetuta da sola. Controlla lo stato del cluster e, se serve, rilanciala.`],
+  [/^Patroni refused the restart of (\S+) \((\d+)\): (.+)$/, m => `Patroni ha rifiutato il riavvio di ${m[1]} (${m[2]}): ${/bootstrap from leader/.test(m[3]) ? 'il membro si sta ancora ricostruendo dal leader, riprova quando ha finito' : m[3]}`],
+  [/^(?:PGA-WAL-033: )?timeline history (\S+) already in the archive with DIFFERENT content .*quarantined as (\S+)$/, m => `PGA-WAL-033: la storia della timeline ${m[1]} è già nell’archivio con un contenuto DIVERSO: due server si sono promossi sullo stesso numero di timeline (split-brain tra siti, o promozione senza accesso all’archivio). PostgreSQL non archivia più nulla finché non si risolve; la copia in arrivo è in ${m[2]}.`],
   // replacement of the production server (engine/replace.py): warnings and the steps done
   [/^(\d+) standby server\(s\) stream from this server: after the replacement they follow a past timeline and must be rebuilt from it$/, m => `${m[1]} standby ricevono i WAL da questo server: dopo la sostituzione seguono una timeline passata e vanno ricostruiti da questo server`],
   [/^pg_ctl stop -m fast \(unit (.+) now inactive\)$/, m => `PostgreSQL fermato (pg_ctl stop -m fast; servizio ${m[1]} ora inattivo)`],

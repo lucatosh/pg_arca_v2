@@ -667,7 +667,28 @@ class OperationExecutor:
             raise OpError("cannot read the Patroni configuration (%s)" % st)
         sc = cfg.get("standby_cluster")
         if not isinstance(sc, dict) or not sc:
-            raise OpError("this cluster is not a standby site (no standby_cluster in its DCS)")
+            # a PRIMARY site: restore_command in postgresql.recovery_conf (Patroni writes it whenever a member starts as a follower, also a former leader
+            # restarting after a crash). With it, a promotion sees the timeline history files in the shared archive and never re-uses a timeline number
+            # the other site already took (two different timelines with one number: rewind impossible, the archiver blocked on the history file).
+            exe = shutil.which("pg-arca-wal") or "/usr/local/bin/pg-arca-wal"
+            cmd = "%s get %%f %%p" % exe
+            rc = ((cfg.get("postgresql") or {}).get("recovery_conf") or {})
+            if p.get("enable"):
+                if not os.path.exists(exe):
+                    raise OpError("pg-arca-wal is not installed on this node: install the agent with the WAL helper first")
+                if rc.get("restore_command") and rc.get("restore_command") != cmd and not p.get("replace_foreign"):
+                    raise OpError("postgresql.recovery_conf already has a different restore_command (%s): not replaced" % str(rc.get("restore_command"))[:120])
+                new_rc = dict(rc, restore_command=cmd)
+            else:
+                new_rc = dict(rc, restore_command=None)
+            st, d = self.patroni.patch_config({"postgresql": {"recovery_conf": new_rc}})
+            if st >= 300:
+                raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
+            st2, cfg2 = self.patroni.get_config()
+            got = (((cfg2.get("postgresql") or {}).get("recovery_conf") or {}).get("restore_command")) if st2 == 200 and isinstance(cfg2, dict) else "?"
+            if bool(got) != bool(p.get("enable")):
+                raise OpError("verification failed: postgresql.recovery_conf.restore_command is %r in the DCS" % got)
+            return {"restore_command": got, "where": "postgresql.recovery_conf", "note": "used by every member that starts as a follower (a former leader too): a promotion then picks a timeline number free in the shared archive"}
         if p.get("enable"):
             exe = shutil.which("pg-arca-wal") or "/usr/local/bin/pg-arca-wal"
             if not os.path.exists(exe):
@@ -696,6 +717,9 @@ class OperationExecutor:
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$", host):
             raise OpError("invalid host of the other site")
         sc = {"host": host, "port": port, "create_replica_methods": ["basebackup"]}
+        exe = shutil.which("pg-arca-wal") or "/usr/local/bin/pg-arca-wal"
+        if os.path.exists(exe) and p.get("archive_fallback", True):
+            sc["restore_command"] = "%s get %%f %%p" % exe            # catches up from the shared archive too, and sees every timeline history there
         if p.get("primary_slot_name"):
             if not re.match(r"^[a-z0-9_]{1,63}$", str(p["primary_slot_name"])):
                 raise OpError("invalid slot name")

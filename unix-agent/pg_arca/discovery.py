@@ -719,7 +719,8 @@ class ClusterDiscoveryEngine:
                         "maximum_lag_on_failover": dd.get("maximum_lag_on_failover"),
                         "synchronous_mode": (dd.get("synchronous_mode") or False),
                         "use_pg_rewind": (dd.get("postgresql") or {}).get("use_pg_rewind"),
-                        "parameters": (dd.get("postgresql") or {}).get("parameters", {})}
+                        "parameters": (dd.get("postgresql") or {}).get("parameters", {}),
+                        "recovery_conf": (dd.get("postgresql") or {}).get("recovery_conf") or {}}
 
             scope = cfg.get("scope") or (cd.get("scope") if isinstance(cd, dict) else None)
             out.append({

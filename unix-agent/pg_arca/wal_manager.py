@@ -231,8 +231,16 @@ class WalManager:
             if stored == raw_sha:
                 return True, existing, raw_sha, "already archived (identical content)"
             qdir = os.path.join(self.wal_dir, "conflicts")
-            qname = "%s.%s.%d" % (name, raw_sha[:12], int(time.time()))
-            shutil.copyfile(src_path, os.path.join(qdir, qname))
+            # PostgreSQL retries the archive_command every minute: the same incoming content is quarantined ONCE, not once per retry
+            prev = [x for x in (os.listdir(qdir) if os.path.isdir(qdir) else []) if x.startswith("%s.%s." % (name, raw_sha[:12]))]
+            qname = prev[0] if prev else "%s.%s.%d" % (name, raw_sha[:12], int(time.time()))
+            if not prev:
+                shutil.copyfile(src_path, os.path.join(qdir, qname))
+            if is_history:
+                raise WalArchiveError("PGA-WAL-033", "timeline history %s already in the archive with DIFFERENT content (stored %s.. vs incoming %s..): two servers promoted "
+                                      "themselves to the same timeline number (a split-brain between sites, or a server promoted without access to this archive). "
+                                      "PostgreSQL stops archiving until this is solved; incoming copy quarantined as conflicts/%s"
+                                      % (name, stored[:12], raw_sha[:12], qname))
             raise WalArchiveError("PGA-WAL-031", "DIVERGENT content for %s (stored %s.. vs incoming %s..): possible split-brain; incoming copy quarantined as conflicts/%s" % (name, stored[:12], raw_sha[:12], qname))
 
         tmp = os.path.join(self.wal_dir, ".%s.tmp.%d" % (name, os.getpid()))

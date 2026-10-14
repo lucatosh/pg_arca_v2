@@ -140,6 +140,8 @@ class Runtime(object):
                     pgc = cfg.get("postgresql") if isinstance(cfg.get("postgresql"), dict) else {}
                     view["use_pg_rewind"] = pgc.get("use_pg_rewind")          # without it (or without wal_log_hints / checksums) a diverged old leader is never re-aligned
                     view["use_slots"] = pgc.get("use_slots")
+                    rcf = pgc.get("recovery_conf") if isinstance(pgc.get("recovery_conf"), dict) else {}
+                    view["recovery_restore_command"] = rcf.get("restore_command")      # a primary site that sees the shared archive never re-uses a timeline number
             except Exception:
                 pass
         return view

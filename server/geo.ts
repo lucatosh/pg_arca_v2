@@ -245,7 +245,7 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
       fix: 'punta standby_cluster.host a un indirizzo che segue il leader (HAProxy, VIP, DNS gestito da Patroni)' });
     else if (s.upstream) add({ id: 'upstream', level: 'ok', site: s.name, text: at(`replica da ${s.upstream.host}:${s.upstream.port}, indirizzo che segue il leader`) });
     // archive fallback: with restore_command the standby site can catch up from the WAL archive when streaming is not possible (slot lost, long WAN outage)
-    if (sv.standby_cluster && !sv.standby_cluster.restore_command) add({ id: 'archive', level: 'info', site: s.name, clusterId: s.clusterId, action: 'archive_fallback', text: at('nessun restore_command nello standby_cluster: senza streaming non può recuperare dall’archivio WAL'),
+    if (sv.standby_cluster && !sv.standby_cluster.restore_command) add({ id: 'archive', level: 'warn', site: s.name, clusterId: s.clusterId, action: 'archive_fallback', text: at('nessun restore_command nello standby_cluster: senza streaming non può recuperare dall’archivio WAL'),
       fix: 'aggiungi standby_cluster.restore_command (es. pg-arca-wal get %f %p) per recuperare dall’archivio condiviso' });
     else if (sv.standby_cluster?.restore_command) add({ id: 'archive', level: 'ok', site: s.name, text: at('riserva dall’archivio WAL attiva (restore_command nello standby_cluster)') });
     // after a promotion this site IS the database: without archiving there is no point-in-time restore any more (the shared archive stops at the failover)
@@ -276,6 +276,13 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
     if (!s.endpoint) add({ id: 'dr_endpoint', level: 'bad', site: s.name, text: `${s.name}: failover automatico attivo ma l’indirizzo con cui gli altri siti lo raggiungono non è indicato: dopo il failover ${prim.name} non potrebbe diventare sua replica da solo`, fix: `indicalo in Georidondanza → «Indirizzo di ${s.name}»` });
     else add({ id: 'dr_endpoint', level: 'ok', site: s.name, text: `${s.name}: failover automatico attivo (conferma ${pol.confirmSec} s, perdita massima ${pol.maxLossMB} MB)${pol.autoRejoin ? ', vecchio primario riallineato da solo' : ''}` });
   }
+  // the primary site must see the shared archive too (restore_command in postgresql.recovery_conf): when it comes back after a failover and promotes
+  // itself it then picks a timeline number the other site has not used. Without it two timelines share a number: Patroni and pg_rewind cannot tell
+  // them apart, the old site needs a full rebuild and the archiver of the new primary blocks on the history file.
+  if (pv.accessible && !pv.standby_cluster && !pv.recovery_restore_command) add({ id: 'archive_primary', level: 'warn', site: prim.name, clusterId: prim.clusterId, action: 'archive_fallback',
+    text: `${prim.name}: nessun restore_command (postgresql.recovery_conf): se torna dopo un failover può riusare lo stesso numero di timeline dell’altro sito, e allora va ricostruito per intero e l’archiviazione si blocca`,
+    fix: 'attiva «Recupero dall’archivio» anche sul sito primario (restore_command nel suo DCS)' });
+  else if (pv.accessible && !pv.standby_cluster) add({ id: 'archive_primary', level: 'ok', site: prim.name, text: `${prim.name}: vede l’archivio condiviso (restore_command): una sua promozione non può riusare un numero di timeline` });
   if (pv.accessible && pv.use_pg_rewind !== true) add({ id: 'rewind', level: 'warn', site: prim.name, clusterId: prim.clusterId, action: 'enable_rewind', text: `${prim.name}: pg_rewind spento: un vecchio primario non potrà diventare sito di replica senza ricostruzione`, fix: 'postgresql.use_pg_rewind: true nel DCS' });
   if (ppg.hba_patroni_local?.ok === false) add({ id: 'hba_local', level: 'bad', site: prim.name, text: `${prim.name}: pg_hba non consente a Patroni la replica locale`, fix: ppg.hba_patroni_local.suggest?.[0] });
   // backups: one catalogue for the database, recent, usable from the DR site too
@@ -380,6 +387,7 @@ export async function runSwitchover(store: Store, job: { id: string; from: strin
     const p = await submitTo(store, job.to, 'geo_promote', { confirm: 'PROMUOVI', slot_for_peer: slot }, `geo:${job.id}:promote`, job.actor);
     const pr = await waitOp(store, p.id, 240_000);
     if (pr.status !== 'succeeded') throw new Error(`promozione di ${to.name} non riuscita: ${pr.error || pr.status}`);
+    submitTo(store, job.to, 'geo_archive_fallback', { enable: true }, `geo:${job.id}:archive-primary`, job.actor).catch(() => undefined);   // keeps seeing the shared archive (timeline numbers)
     await step(`4/4 completato: ${to.name} è il sito primario, ${from.name} replica da lui`, 'succeeded', { finishedAt: nowIso() });
     await store.mutate(d2 => ops.audit(d2, { clusterId: job.to, actor: job.actor, action: 'geo.switchover', status: 'OK', details: { from: job.from, to: job.to } }));
   } catch (e: any) {
