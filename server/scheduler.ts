@@ -13,7 +13,7 @@ import { geoOf } from './geo';
 import { destinationFor } from './destinations';
 import { isTerminal } from './ops';
 
-import { type BackupPolicy, DEFAULT_POLICY, validatePolicy, resolvePolicy } from './policies';
+import { type BackupPolicy, DEFAULT_POLICY, validatePolicy, resolvePolicy, inWindow } from './policies';
 export { type BackupPolicy, DEFAULT_POLICY, validatePolicy };
 
 const online = (n: NodeRecord, now: number) => !!n.lastSeen && now - Date.parse(n.lastSeen) < 45_000;
@@ -74,7 +74,9 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     }
 
     const needFull = !Number.isFinite(lastFull) || now - lastFull >= pol.fullEveryHours * h;
-    if (needFull) {
+    const heavyOk = inWindow(pol, now) || !Number.isFinite(lastFull);              // a cluster with NO full yet is protected right away, window or not
+    // a full that is due outside the hours the policy allows for heavy work waits for the window; incrementals keep going meanwhile
+    if (needFull && heavyOk) {
       const bucket = Math.floor(now / (pol.fullEveryHours * h));
       // a full that failed in this bucket is retried through a new key after the back-off (attempt counter)
       const attempts = myOps.filter(o => o.idempotencyKey.startsWith(`sched:${c.id}:full:${bucket}`)).length;
@@ -91,7 +93,7 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
       if (await submit('backup_expire', { retention_full: pol.retentionFull }, `sched:${c.id}:expire:${lastOk.id}`)) continue;
     }
     // periodic verification (optionally by really recovering the newest set)
-    if (pol.verifyEveryHours) {
+    if (pol.verifyEveryHours && inWindow(pol, now)) {
       const bucket = Math.floor(now / (pol.verifyEveryHours * h));
       if (sets.length && await submit('backup_verify', { deep: pol.verifyDeep, restore_test: true }, `sched:${c.id}:verify:${bucket}`)) continue;
     }

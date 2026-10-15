@@ -35,6 +35,7 @@ The console and every message it shows are in English (the agent's checks, warni
 | Prometheus metrics (`/metrics`, bearer token, off by default) | Done | tests: `metrics.test.ts` |
 | Console state snapshots (daily, 14 kept, `/api/health.stateSnapshot`) | Done | tests: `store.test.ts` |
 | API tokens for automation (bearer, per-token role and expiry, revocable, audited as `token:<label>`) | Done | tests: `apitokens.test.ts`, e2e |
+| Heavy-work hours per policy (fulls and verifications only in the window, e.g. 22→06; incrementals always; first full at once) | Done | `scheduler.test.ts` |
 | Read rate limit per policy (scheduled backups never saturate production storage; `read_limit_mb_s` on the operation, token bucket shared by the worker threads) | Done; checked on a real full backup (15 MB/s honoured) | `scheduler.test.ts`, `test_walsummary.py::Limiter` |
 | Backup policies per folder / environment / cluster (suggested and custom templates, inheritance) | Works: resolved on every scheduler tick, no copies | `tests/server/policies.test.ts`, `tests/ui/e2e.cjs` |
 | pg_hba management (Patroni: DCS ONLY, the file is never read or written; otherwise the file; lock-out simulation, verification with `pg_hba_file_rules`, previous versions / rollback) | Agent tested on real PostgreSQL 16 (simulated Patroni that rewrites and reloads); DCS on the Patroni lab tested on 11/10 (9/9) before the latest changes, to be rerun with `tools/lab/hba-all.sh` | `unix-agent/tests/test_hba*.py`, `tests/server/hba.test.ts`, `tests/ui/hbalogic.test.ts` |

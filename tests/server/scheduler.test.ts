@@ -12,6 +12,14 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   const WEEK = 168 * 3600_000; const sameBucket = Math.floor(now / WEEK) === Math.floor((now + 31 * 60_000) / WEEK);
   assert(!validatePolicy({ ...DEFAULT_POLICY, fullEveryHours: 1 }).ok);
   assert(!validatePolicy({ ...DEFAULT_POLICY, incrEveryHours: 200 }).ok);
+  { // heavy-work window: a due full waits for the window (incrementals do not); a cluster with no full at all is protected at once
+    const { inWindow } = await import('../../server/policies');
+    const at = (hr: number) => { const d = new Date(); d.setHours(hr, 30, 0, 0); return d.getTime(); };
+    const w = { ...DEFAULT_POLICY, windowStart: 22, windowEnd: 6 };
+    assert(inWindow(w, at(23)) && inWindow(w, at(2)) && !inWindow(w, at(12)) && !inWindow(w, at(6)) && inWindow(w, at(22)));
+    assert(inWindow({ ...DEFAULT_POLICY, windowStart: 9, windowEnd: 17 }, at(12)) && !inWindow({ ...DEFAULT_POLICY, windowStart: 9, windowEnd: 17 }, at(20)));
+    assert(inWindow({ ...DEFAULT_POLICY, windowStart: 3, windowEnd: 3 }, at(12)), 'equal hours = no window');
+  }
   assert(!validatePolicy({ ...DEFAULT_POLICY, readLimitMBs: -1 }).ok); assert.strictEqual((validatePolicy({ ...DEFAULT_POLICY, readLimitMBs: '80' }) as any).policy.readLimitMBs, 80);
   const pol = validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 168, incrEveryHours: 24, readLimitMBs: 80 }) as any;
   await st.mutate(d => {
@@ -65,6 +73,23 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   await st2.mutate(d => { d.operations = []; d.nodes['s'].snapshot.postgres.wal_receiver.status = 'waiting'; });
   await schedulerTick(st2, t + 2000);
   assert.strictEqual(st2.peek().operations[0].nodeId, 'p', 'standby not streaming: back to the primary');
+}
+// heavy-work window: with a full older than the policy, a window that excludes this hour holds the full back (an incremental is taken instead);
+// a window that includes it lets the full through; a cluster with no full at all is protected whatever the window
+{
+  const st3 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'sch3-')));
+  const t = Date.now(); const hr = new Date(t).getHours();
+  const closed = { windowStart: (hr + 2) % 24, windowEnd: (hr + 4) % 24 }, open = { windowStart: (hr + 23) % 24, windowEnd: (hr + 2) % 24 };
+  const mk = (w: any) => (validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 24, incrEveryHours: 6, ...w }) as any).policy;
+  await st3.mutate(d => {
+    d.clusters.push({ id: 'c3', name: 'c3', environment: 'prod', source: 'agent', backupPolicy: mk(closed) } as any);
+    d.nodes['w'] = { id: 'w', name: 'pgw', clusterId: 'c3', lastSeen: iso(t), snapshot: { postgres: { alive: true, is_in_recovery: false }, backup: { recent_sets: [{ status: 'COMPLETE', type: 'full', start_time: iso(t - 30 * 3600_000) }] } } } as any;
+  });
+  let k = await schedulerTick(st3, t); assert(k.length === 1 && k[0].includes(':incr:'), 'outside the window: the due full waits, an incremental runs: ' + JSON.stringify(k));
+  await st3.mutate(d => { d.operations = []; d.clusters[0].backupPolicy = mk(open); });
+  k = await schedulerTick(st3, t + 1000); assert(k.length === 1 && k[0].includes(':full:'), 'inside the window: the full runs: ' + JSON.stringify(k));
+  await st3.mutate(d => { d.operations = []; d.clusters[0].backupPolicy = mk(closed); d.nodes['w'].snapshot.backup.recent_sets = []; });
+  k = await schedulerTick(st3, t + 2000); assert(k.length === 1 && k[0].includes(':full:'), 'no full at all: protected now, window or not');
 }
 console.log('ALL SCHEDULER TESTS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

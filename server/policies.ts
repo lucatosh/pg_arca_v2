@@ -20,6 +20,9 @@ export interface BackupPolicy {
   preferStandby?: boolean;
   /** Read rate limit for scheduled backups, MB/s of the data directory (0 = none): keeps a backup from saturating production storage. */
   readLimitMBs?: number;
+  /** Full backups and verifications only between these hours of the console's clock (0-23; end exclusive; wraps over midnight; equal = no window). Incrementals are not constrained. */
+  windowStart?: number;
+  windowEnd?: number;
   retryAfterMinutes: number;
 }
 export const DEFAULT_POLICY: BackupPolicy = { enabled: false, fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168, verifyDeep: false, retryAfterMinutes: 30 };
@@ -37,6 +40,8 @@ export function validatePolicy(p: any): { ok: true; policy: BackupPolicy } | { o
       verifyDeep: !!p.verifyDeep,
       preferStandby: !!p.preferStandby,
       readLimitMBs: n(p.readLimitMBs ?? 0, 0, 100000, 'readLimitMBs'),
+      windowStart: n(p.windowStart ?? 0, 0, 23, 'windowStart'),
+      windowEnd: n(p.windowEnd ?? 0, 0, 23, 'windowEnd'),
       retryAfterMinutes: n(p.retryAfterMinutes ?? DEFAULT_POLICY.retryAfterMinutes, 5, 1440, 'retryAfterMinutes'),
     };
     if (out.incrEveryHours && out.incrEveryHours >= out.fullEveryHours) return { ok: false, error: 'incrEveryHours must be smaller than fullEveryHours' };
@@ -165,4 +170,12 @@ export function mountPolicyRoutes(app: any, store: Store) {
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
     res.json(resolvePolicy(st, c));
   });
+}
+
+/** Is `now` inside the policy's heavy-work window (console local time)? No window (start == end, or unset) = always. */
+export function inWindow(pol: BackupPolicy, now: number): boolean {
+  const a = pol.windowStart ?? 0, b = pol.windowEnd ?? 0;
+  if (a === b) return true;
+  const hr = new Date(now).getHours();
+  return a < b ? hr >= a && hr < b : hr >= a || hr < b;
 }
