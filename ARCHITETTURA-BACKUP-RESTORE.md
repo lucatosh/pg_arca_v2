@@ -247,7 +247,7 @@ Un backup pg_arca è: lettura sequenziale del datadir (I/O) → hash blake2b per
 6. Backup server: esito del check senza motivi né rimedi.
 
 ### Piano (ordine di valore, con criterio di misura)
-1. **Bench sul lab** della finestra scorrevole (prima/dopo, `bench_backup.py` e `bench_restore.py`, datadir 10 GB misto): numeri in questo documento.
+1. **Bench sul lab** della finestra scorrevole (prima/dopo, `bench_backup.py` e `bench_restore.py`, datadir 10 GB misto): numeri in questo documento. *Prima misura (15/10, locale, 2 vCPU, 450 MB uniformi, `process_max=4`): lotti 9,0 s / 50 MB/s, finestra 9,4 s / 48 MB/s → nessuna differenza (CPU-bound su 2 core, file di taglia simile). Il beneficio atteso vale solo con più core e un datadir sbilanciato: da misurare sul lab prima di dichiararlo.*
 2. **Incrementale senza leggere tutto**: su PG ≥ 17 usare i WAL summaries (`summarize_wal=on`, `pg_wal_summary_contents`) per saltare i file senza blocchi cambiati; sulle versioni precedenti un pre-filtro per relazione da `pg_stat_*`? no: non affidabile. Criterio: byte letti dal datadir per un incrementale su cluster scarico ≈ byte dei file cambiati.
 3. **S3/MinIO nativo** (`engine/storage/` con interfaccia locale/S3; stesso CAS; test con MinIO sul lab). Criterio: backup+restore+verify+GC verdi su MinIO; cifratura lato client invariata.
 4. **Pre-flight del backup da standby** lato console: se la destinazione è «locale» e il nodo scelto è una replica, dirlo *prima* di partire (oggi si scopre in < 1 min con `PGA-WAL-021`).
