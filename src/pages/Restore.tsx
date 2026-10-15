@@ -23,6 +23,21 @@ type Target = { mode: 'latest' } | { mode: 'time'; ms: number } | { mode: 'lsn';
 const STEPS = ['Situation', 'What', 'When', 'Check', 'Restore'];
 const KIND_LABEL: Record<string, string> = { DROP: 'Object dropped or rewritten', TRUNCATE: 'Table truncated', 'DROP DATABASE': 'Database dropped' };
 const tzName = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return 'locale'; } };
+/** A restore time typed the one unambiguous way: "2026-10-15 21:32:41", 24 h, local time (the browser's date-time field showed "10/15/2026, 07:54 PM"
+ *  on an English browser - a restore point read as October or as the 10th is a day of data). What it understood is said right under it. */
+function WhenInput({ ms, onChange }: { ms: number; onChange: (ms: number) => void }) {
+  const fmt = (v: number) => localInput(v).replace('T', ' ');
+  const [txt, setTxt] = useState(fmt(ms)); const [bad, setBad] = useState(false);
+  useEffect(() => { setTxt(fmt(ms)); setBad(false); }, [ms]);
+  const parse = (t: string) => { const m = /^\s*(\d{4})-(\d{1,2})-(\d{1,2})[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/.exec(t); if (!m) return NaN;
+    const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)); return d.getMonth() === +m[2] - 1 && d.getDate() === +m[3] ? d.getTime() : NaN; };
+  const commit = () => { const v = parse(txt); if (Number.isFinite(v)) { setBad(false); if (v !== ms) onChange(v); } else setBad(true); };
+  return <div className="stack-s"><div className="row gap-s">
+    <input className="input mono" style={{ maxWidth: 230 }} value={txt} placeholder="YYYY-MM-DD HH:MM:SS" aria-label="Date and time, year-month-day hours:minutes:seconds" aria-invalid={bad}
+      onChange={e => { setTxt(e.target.value); setBad(!Number.isFinite(parse(e.target.value))); }} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); }} />
+    {[[-60, '−1 min'], [-1, '−1 s'], [1, '+1 s'], [60, '+1 min']].map(([d, t]) => <Button key={t as string} sm kind="ghost" onClick={() => onChange(ms + (d as number) * 1000)}>{t}</Button>)}</div>
+    <span className="small" style={{ color: bad ? 'var(--bad)' : 'var(--ink-3)' }}>{bad ? 'Write it as year-month-day hours:minutes:seconds, 24 h (for example 2026-10-15 21:30:00).' : `= ${dt(ms)}`}</span></div>;
+}
 const localInput = (ms: number) => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 19); };
 const ago2 = (ms: number) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
 const shortName = (id: string) => { const p = splitId(id); return p.slice(1).join('.') || id; };
@@ -233,7 +248,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
           {tgt?.mode === 'time' ? <div className="stack-s" style={{ marginTop: 6 }} onClick={e => e.preventDefault()}>
             <div className="row wrap gap-s">{[[15, '15 minutes ago'], [60, '1 hour ago'], [240, '4 hours ago'], [1440, 'this time yesterday']].map(([m, t]) => <Button key={m} sm onClick={() => setTgt({ mode: 'time', ms: Math.max(from, Date.now() - (m as number) * 60000) })}>{t}</Button>)}</div>
             <Field label={`Date and time (${tzName()})`} error={!okWhen ? 'Outside the recoverable window: from ' + fmtWhen(from) + ' to now.' : null}>
-              <input className="input" type="datetime-local" step={1} min={localInput(from)} max={localInput(to)} value={localInput(tgt.ms)} onChange={e => { const ms = new Date(e.target.value).getTime(); if (Number.isFinite(ms)) setTgt({ mode: 'time', ms }); }} /></Field>
+              <WhenInput ms={tgt.ms} onChange={ms => setTgt({ mode: 'time', ms })} /></Field>
           </div> : <div className="small muted">Pick a date and time: you can go back to any point from {fmtWhen(from)} to now.</div>}</div></label>
       </div>
       {selDb && !selDb.late && selDb.first_stop && tgt?.mode === 'time' && tgt.ms < Date.parse(selDb.first_stop) ? <Banner kind="warn" title={`${db} appears in the backups only since ${fmtWhen(Date.parse(selDb.first_stop))}`}>It may not exist yet at this point in time: in that case the restore stops and says so.</Banner> : null}

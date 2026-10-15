@@ -57,7 +57,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button[role=radio]:has-text("appdb")'); await shot('07-restore-what'); await p.click('button:has-text("Next")');
   // when: the latest point is preselected (and recommended) for a whole database
   await p.waitForSelector('text=To which point in time?'); assert(await p.locator('label.opt.on:has-text("The latest saved point") .badge:has-text("Recommended")').count() === 1, 'latest preselected');
-  await p.click('label.opt:has-text("A specific point in time") input'); await p.click('button:has-text("1 hour ago")'); await p.waitForSelector('input[type=datetime-local]');
+  await p.click('label.opt:has-text("A specific point in time") input'); await p.click('button:has-text("1 hour ago")'); await p.waitForSelector('input[aria-label^="Date and time"]');
   await p.click('summary:has-text("Find the exact moment")'); await p.waitForSelector('[role=slider]'); await shot('08-timeline');
   const tr = await p.locator('.rt .track').boundingBox();
   await p.mouse.click(tr.x + tr.width * 0.55, tr.y + 30); await p.waitForTimeout(200); await shot('09-timeline-picked');
