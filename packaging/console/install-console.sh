@@ -212,6 +212,8 @@ $TLS_LINES
 #PG_ARCA_ALLOWED_ORIGINS=
 # Key that encrypts stored credentials. Default: generated once in $DATA_DIR/secret.key (it is part of --backup-state).
 #PG_ARCA_SECRET_KEY=
+# Prometheus: set a token to enable GET /metrics (scrapers send Authorization: Bearer <token>). Unset = metrics off.
+#PG_ARCA_METRICS_TOKEN=
 ENV
   chown root:"$SVC_USER" "$ENV_FILE"; chmod 0640 "$ENV_FILE"; umask 022
 else

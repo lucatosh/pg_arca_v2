@@ -53,6 +53,7 @@ Plain http is accepted, and the installer says so: use it only on a lab network.
 | `PG_ARCA_ALLOWED_ORIGINS` | — | other browser origins allowed on the live-log websocket |
 | `PG_ARCA_SECRET_KEY` | generated in the state directory | key that encrypts stored credentials (direct clusters, notification channels) |
 | `PG_ARCA_ADMIN_USER`, `PG_ARCA_ADMIN_PASSWORD` | — | create the administrator without the setup code (automation; 12 characters minimum) |
+| `PG_ARCA_METRICS_TOKEN` | — (metrics off) | enables `GET /metrics` (Prometheus text format) for scrapers sending `Authorization: Bearer <token>`: cluster status, findings, backup age, archiver failures, WAL gaps/conflicts, replication lag, nodes and workers online, operations of the last 24 h |
 
 After a change: `systemctl restart pg-arca-console`. The installer never overwrites this file; options given to a later run (`--port`, `--listen`, `--tls-cert`) change only their own line.
 
@@ -117,6 +118,7 @@ To restore on a new host: install the same release, `systemctl stop pg-arca-cons
 | Status, versions, address | `sudo /opt/pg-arca-console/current/install-console.sh --status` |
 | Logs | `journalctl -u pg-arca-console -f`; on a node `journalctl -u pg-arca-agent -f` |
 | Health check for monitoring | `GET /api/health` → `{"ok":true,"version":"…"}` (no authentication) |
+| Prometheus metrics | `GET /metrics` with `Authorization: Bearer $PG_ARCA_METRICS_TOKEN` (see settings); alert on `pg_arca_cluster_status >= 2`, `time() - pg_arca_cluster_last_backup_timestamp_seconds > 86400`, `pg_arca_cluster_archiver_failed_total` increasing |
 | Uninstall the console | `install-console.sh --uninstall` (keeps the state); `--uninstall --purge --yes` deletes it |
 | Uninstall an agent | `sudo PG_ARCA_UNINSTALL=1 /usr/share/pg-arca-agent/install-agent.sh` (or the console's `install.sh`); keeps backups unless `PG_ARCA_PURGE=1` |
 

@@ -139,7 +139,7 @@ export function bootstrapAdminFromEnv(store: Store) {
 export function requireAdmin(store: Store) {
   return (req: Request, res: Response, next: NextFunction) => {
     const p = req.path.toLowerCase();          // Express routes case-insensitively: '/API/users' must not slip past a case-sensitive gate
-    if (p.startsWith('/api/auth/') || p.startsWith('/api/agent/') || p === '/api/health' || !p.startsWith('/api/')) return next();
+    if (p.startsWith('/api/auth/') || p.startsWith('/api/agent/') || p === '/api/health' || p === '/api/metrics' || !p.startsWith('/api/')) return next();   // /api/metrics has its own bearer token
     if (!store.peek().settings.admin) return res.status(428).json({ error: 'setup_required', message: 'Create the administrator account first.' });
     const u = sessionUser(req);
     if (!u) return res.status(401).json({ error: 'unauthenticated' });

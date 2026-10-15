@@ -30,6 +30,7 @@ import { startGeoMonitor } from './server/geodr';
 import { buildDemoCluster } from './server/demo';
 import { makeAsyncSafe, asyncErrorHandler } from './server/asyncsafe';
 import { APP_ROOT, APP_VERSION } from './server/version';
+import { mountMetricsRoutes } from './server/metrics';
 
 const app = express();
 app.set('case sensitive routing', true);
@@ -101,6 +102,7 @@ mountAgentRoutes(app, store, {
 mountOperatorRoutes(app, store, { directExec: direct.exec });
 mountClusterRoutes(app, store, direct, buildDemoCluster);
 mountPlatformRoutes(app, store);
+mountMetricsRoutes(app, store);
 mountPolicyRoutes(app, store);
 mountScopedRoutes(app, store);
 mountDestinationRoutes(app, store);
