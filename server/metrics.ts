@@ -8,7 +8,7 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { Store } from './store';
-import { evaluate } from './health';
+import { evaluate, objectives } from './health';
 import { APP_VERSION } from './version';
 
 const ONLINE_MS = 45_000;
@@ -40,6 +40,8 @@ export function renderMetrics(st: any, now = Date.now()): string {
   head('pg_arca_cluster_nodes', 'gauge', 'Nodes with an agent, by online state.');
   head('pg_arca_cluster_replication_lag_bytes', 'gauge', 'Replay lag of each replica as the primary sees it.');
   head('pg_arca_cluster_size_bytes', 'gauge', 'Sum of the database sizes reported by the primary.');
+  head('pg_arca_cluster_rpo_seconds', 'gauge', 'Recovery point: upper bound of the transactions not in the WAL archive yet (-1 = unbounded: archiving failing or off; absent = unknown).');
+  head('pg_arca_cluster_rto_estimate_seconds', 'gauge', 'Recovery time estimated from the last disaster-recovery drill, scaled to the current size (absent = never measured).');
   const sevRank: Record<string, number> = { critical: 2, warning: 1, info: 0 };
   for (const c of clusters) {
     const mine = nodes.filter(n => n.clusterId === c.id && n.kind !== 'worker');
@@ -65,6 +67,9 @@ export function renderMetrics(st: any, now = Date.now()): string {
     line('pg_arca_cluster_nodes', { ...L(c), state: 'online' }, online.length); line('pg_arca_cluster_nodes', { ...L(c), state: 'offline' }, mine.length - online.length);
     for (const r of (pg.replication || []) as any[]) if (r?.application_name) line('pg_arca_cluster_replication_lag_bytes', { ...L(c), replica: r.application_name }, Number(r.replay_lag_bytes || 0));
     const size = ((pg.databases || []) as any[]).reduce((a, d) => a + Number(d?.size || 0), 0); if (size) line('pg_arca_cluster_size_bytes', L(c), size);
+    const ob = objectives(st, c.id, now);
+    if (ob) { if (ob.rpo.seconds != null) line('pg_arca_cluster_rpo_seconds', L(c), ob.rpo.seconds); else if (ob.rpo.state === 'bad') line('pg_arca_cluster_rpo_seconds', L(c), -1);
+      if (ob.rto.estimateSeconds != null) line('pg_arca_cluster_rto_estimate_seconds', L(c), ob.rto.estimateSeconds); }
   }
 
   head('pg_arca_workers', 'gauge', 'Worker hosts (backup servers, recovery hosts), by online state.');
