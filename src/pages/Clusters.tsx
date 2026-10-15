@@ -9,26 +9,30 @@ import { statusKind } from '../App';
 import { buildFleet, toneOf, useFold, FolderNode, replicaText } from '../Fleet';
 import { useHealth } from './Today';
 import { GeoLinkField, LinkMode, linkModeOf, saveGeoLink } from '../GeoLink';
+import { ProtectionLine } from '../Protection';
 
 const ENVS = [['prod', 'Production'], ['prep', 'Pre-production'], ['int', 'Integration'], ['dev', 'Development'], ['test', 'Test']];
 const stratOf = (c: any, pol: any) => {
   if (c.isSandbox || c.source === 'direct') return <span className="muted">—</span>;
   const e = pol?.clusters?.find((x: any) => x.id === c.id)?.effective; if (!pol) return <span className="muted">…</span>;
-  return e?.policy ? <Badge kind="ok" title={summarize(e.policy)}>{e.source.templateName || 'Custom'}</Badge> : <a href="#/strategy" onClick={ev => ev.stopPropagation()}><Badge kind="warn">None</Badge></a>;
+  return e?.policy ? <Badge kind="ok" title={summarize(e.policy)}>{e.source.templateName || 'Custom'}</Badge> : <a href="#/strategy" onClick={ev => ev.stopPropagation()} title="No backup schedule: backups only when started by hand"><Badge kind="warn">No schedule</Badge></a>;
 };
-const modeOf = (c: any) => c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Connection only</Badge> : <Badge kind="accent">Agent</Badge>;
+// the agent is the normal case: only the exceptions are marked, next to the name (the Mode column made the table overflow)
+const modeOf = (c: any) => c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge title="Plain PostgreSQL connection: monitoring only, no backups">Connection only</Badge> : null;
 
 export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]; loading: boolean; demoAvailable: boolean }) {
   const [wiz, setWiz] = useDraft('attach:open', false); const pol = useQuery<any>('/api/policies', { interval: 20000 }).data; const [org, setOrg] = useDraft<any>('organize:open', null);
   const real = clusters.filter(c => !c.isSandbox);
-  const down = clusters.filter(c => c.status !== 'healthy').length;
+  // one source for every status in the console (the briefing): the KPI used to count c.status while the sidebar used the findings
+  const hb = useHealth(30000).data; const prot = ((hb?.clusters || []) as any[]).filter((x: any) => x.protection && x.protection.state !== 'none');
+  const protectedN = prot.filter((x: any) => x.protection.state === 'ok').length; const unprot = prot.filter((x: any) => x.protection.state === 'bad').length;
   const restoreDemo = async () => { try { await api('POST', '/api/clusters/demo'); revalidate('/api/clusters'); } catch (e: any) { toast(e.message, 'bad'); } };
   return <>
     <div className="pagehead"><div className="grow"><h1>Clusters</h1><p className="sub">All the PostgreSQL clusters managed by this console.</p></div>
       <Button kind="primary" icon="plus" onClick={() => setWiz(true)}>Connect cluster</Button></div>
     {clusters.length ? <div className="grid g4 kpis">
       <Card><div className="kpi"><span className="v">{clusters.length}</span><span className="l">Connected clusters</span></div></Card>
-      <Card><div className="kpi"><span className="v">{clusters.length - down}<span className="faint" style={{ fontSize: 14 }}> / {clusters.length}</span></span><span className="l">Healthy</span></div></Card>
+      <Card><div className="kpi"><span className="v" style={unprot ? { color: 'var(--bad)' } : undefined}>{protectedN}<span className="faint" style={{ fontSize: 14 }}> / {prot.length}</span></span><span className="l">{unprot ? `Protected · ${unprot} not protected` : 'Protected (restorable, no open problem)'}</span></div></Card>
       <Card><div className="kpi"><span className="v">{clusters.reduce((a, c) => a + (c.haState?.nodes?.length || 0), 0)}</span><span className="l">Nodes</span></div></Card>
       <Card><div className="kpi"><span className="v">{bytes(clusters.reduce((a, c) => a + (c.totalSizeBytes || 0), 0))}</span><span className="l">Managed data</span></div></Card>
     </div> : null}
@@ -48,6 +52,7 @@ export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]
 function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; onOrganize: (c: any) => void }) {
   const isAdmin = useRole() === 'admin';
   const h = useHealth(30000).data; const health = Object.fromEntries(((h?.clusters || []) as any[]).map((c: any) => [c.id, c.worst]));
+  const prot = Object.fromEntries(((h?.clusters || []) as any[]).map((c: any) => [c.id, c.protection]));
   const groups = buildFleet(clusters, health); const fold = useFold('arca.fleet.table');
   // a standby site holds a copy of its primary: it counts for nodes, not again for data size
   const size = (n: FolderNode): number => n.clusters.reduce((a, c) => a + (c.totalSizeBytes || 0), 0) + n.children.reduce((a, x) => a + size(x), 0);
@@ -59,8 +64,8 @@ function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; 
       {replica && parentEnv && c.environment && c.environment !== parentEnv ? <span className="faint small">· {c.environment}</span> : null}
       {replica ? <span className="geotag" title="Standby site (standby cluster): receives data from the primary above">DR</span> : c.replicas?.length ? <span className="geotag p" title={`Primary site, replicated to ${c.replicas.map((r: any) => r.name).join(', ')}`}>GEO</span> : null}</span></td>
     <td className={replica ? 'stcell' : undefined} title={replica ? `Standby of ${c.geo.peers?.find((p: any) => p.role === 'primary')?.name}: ${replicaText(c)}` : undefined}><span className="small">{replica ? <>Standby{c.geo.link === 'manual' ? ' (set by hand)' : ''} · <span style={{ color: c.geo.health === 'ok' ? undefined : `var(--${c.geo.health})` }}>{replicaText(c)}</span></> : health[c.id] === 'critical' ? <span style={{ color: 'var(--bad)', fontWeight: 600 }}>Critical problems</span> : health[c.id] === 'warning' ? <span style={{ color: 'var(--warn)' }}>Needs attention</span> : c.status === 'healthy' ? 'Healthy' : c.status === 'degraded' ? 'Degraded' : c.status}{replica && (health[c.id] === 'critical' || health[c.id] === 'warning') ? <span className="faint"> · {health[c.id] === 'critical' ? 'critical problems' : 'needs attention'}</span> : null}</span></td>
-    <td>{modeOf(c)}</td><td>{stratOf(c, pol)}</td><td title={c.pgVersion || undefined}>{c.pgVersion ? String(c.pgVersion).split(' ')[0] : '—'}</td>
-    <td className="num">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num">{bytes(c.totalSizeBytes)}</td><td className="num">{num(c.tps)}</td>
+    <td className="protcell">{c.isSandbox || c.source === 'direct' ? modeOf(c) : <ProtectionLine p={prot[c.id]} />}</td><td>{stratOf(c, pol)}</td><td className="wideonly" title={c.pgVersion || undefined}>{c.pgVersion ? String(c.pgVersion).split(' ')[0] : '—'}</td>
+    <td className="num">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num">{bytes(c.totalSizeBytes)}</td><td className="num wideonly">{num(c.tps)}</td>
     <td className="num">{c.isSandbox || !isAdmin ? null : <button className="btn ghost sm" onClick={e => { e.stopPropagation(); onOrganize(c); }} title="Environment, folder and replication relationship">Organize…</button>}</td></tr>;
   const row = (c: any, depth: number) => [one(c, depth), ...(c.replicas || []).map((r: any) => one(r, depth + 1, true, c.environment))];
   const folder = (n: FolderNode, env: string, depth: number): React.ReactNode[] => {
@@ -70,7 +75,7 @@ function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; 
       ...(open ? [...n.children.flatMap(ch => folder(ch, env, depth + 1)), ...n.clusters.flatMap(c => row(c, depth + 1))] : [])];
   };
   return <div className="tablewrap"><table className="t fleettable">
-    <thead><tr><th>Cluster</th><th>Status</th><th>Mode</th><th>Backup</th><th>PostgreSQL</th><th className="num">Nodes</th><th className="num">Size</th><th className="num">TPS</th><th /></tr></thead>
+    <thead><tr><th>Cluster</th><th>Status</th><th>Protection</th><th title="Backup policy (schedule and retention)">Policy</th><th className="wideonly">PostgreSQL</th><th className="num">Nodes</th><th className="num">Size</th><th className="num wideonly">TPS</th><th /></tr></thead>
     <tbody>{groups.flatMap(g => {
       const k = `env:${g.env}`; const open = fold.isOpen(k, true);
       return [<tr key={k} className={`erow ${g.tone}`} onClick={() => fold.toggle(k, true)}><td colSpan={9}><span className="row gap-s"><Icon n={open ? 'down' : 'chev'} s={13} /><span className={`envmark ${g.env}`} /><strong>{g.label}</strong><Dot kind={g.tone} />{summary(g)}<span className="small faint"> · {nodes(g.root)} {nodes(g.root) === 1 ? 'node' : 'nodes'} · {bytes(size(g.root))}</span></span></td></tr>,

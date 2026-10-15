@@ -5,7 +5,7 @@ import { Op, readDraft, revalidate, toast, useDraft, useOpRunner, useQuery, isTe
 import { go } from '../router';
 import { statusKind } from '../App';
 import { useHealth } from './Today';
-import { InstallCommand, OP_LABEL, OpPanel, Result, statusBadge } from './shared';
+import { InstallCommand, OP_LABEL, OpPanel, PHASE, Result, statusBadge } from './shared';
 const BackupTab = lazy(() => import('./Backup').then(m => ({ default: m.BackupTab })));
 const RestoreTab = lazy(() => import('./Restore').then(m => ({ default: m.RestoreTab })));
 const LogsTab = lazy(() => import('./Logs').then(m => ({ default: m.LogsTab })));
@@ -17,12 +17,9 @@ import { NodePanel } from './NodePanel';
 import { ProtectionRibbon } from './Ribbon';
 import { TAB_ITEMS, TAB_GROUPS, groupOf } from '../tabs';
 import { GeoLinkModal } from '../GeoLink';
+import { ProtectionLine } from '../Protection';
 
-const PREVIEW_TEXT: Record<string, string> = {
-  ldap: 'Synchronization of users and groups from LDAP / Active Directory to PostgreSQL roles. Not available yet.',
-  rbac: 'Console roles and permissions. Today there is a single administrator.',
-  templates: 'Policies and templates that apply to several clusters. Not available yet.',
-};
+const PREVIEW_TEXT: Record<string, string> = {};
 
 export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const q = useQuery<{ cluster: any }>(`/api/clusters/${encodeURIComponent(id)}`, { interval: 5000 });
@@ -30,7 +27,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const [gl, setGl] = useState(false); const allClusters: any[] = useQuery<any>('/api/clusters').data?.clusters || []; const useRoleIsAdmin = useRole() === 'admin';
   const c = q.data?.cluster; const cur = TAB_ITEMS.some(t => t.id === tab) ? tab! : 'overview'; const grp = groupOf(cur);
   // the header badge must agree with the health findings (the sidebar already does): a cluster whose WAL archiving is failing is not "Healthy"
-  const hw = useHealth(30000).data?.clusters?.find((x: any) => x.id === id)?.worst as string | undefined;
+  const hc = useHealth(30000).data?.clusters?.find((x: any) => x.id === id); const hw = hc?.worst as string | undefined;
   if (q.error?.status === 404) return <Empty icon="db" title="Cluster not found" action={<Button onClick={() => go('')}>Back to the list</Button>}>It may have been detached.</Empty>;
   if (!c) return <div className="stack"><Skeleton h={30} w={260} /><Skeleton h={120} /></div>;
   const doDetach = async () => {
@@ -43,10 +40,12 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   return <>
     <div className="pagehead">
       <div className="grow"><div className="row wrap"><h1>{c.name}</h1><Badge kind={statusKind(eff)} title={hw === 'critical' || hw === 'warning' ? 'There are open findings for this cluster: see Today, or the banners below' : undefined}>{eff === 'healthy' ? 'Healthy' : eff === 'degraded' ? 'Degraded' : eff === 'critical' ? 'Critical problems' : eff}</Badge>
-        {c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Connection only</Badge> : <Badge kind="accent">Agent</Badge>}</div>
-        <p className="sub">{c.environment} · PostgreSQL {c.pgVersion || '—'} · timeline {c.activeTimeline || '—'}</p></div>
+        {c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Connection only</Badge> : null}</div>
+        <p className="sub">{c.environment} · PostgreSQL {c.pgVersion || '—'}</p>
+        {agentic && hc?.protection ? <div style={{ marginTop: 6 }}><ProtectionLine p={hc.protection} long /></div> : null}</div>
+      {agentic && cur !== 'restore' ? <Button kind="primary" icon="restore" onClick={() => go(`c/${encodeURIComponent(id)}/restore`)} title="Restore a table, rows, a database or the whole server">Restore…</Button> : null}
       <Button icon="refresh" busy={spin} title="Reloads the status of the cluster, nodes, backups and operations right away" onClick={async () => { setSpin(true); const k = encodeURIComponent(id); await Promise.all([revalidate(`/api/clusters/${k}`), revalidate('/api/clusters'), revalidate('/api/nodes'), revalidate(`/api/clusters/${k}/backups`), revalidate(`/api/operations?clusterId=${k}`)]); setSpin(false); toast('Status refreshed', 'ok'); }}>Refresh</Button>
-      <Button icon="trash" onClick={() => setDetach(true)}>Detach</Button></div>
+      <Button kind="ghost" icon="trash" onClick={() => setDetach(true)} title="Stop managing this cluster from the console (PostgreSQL and the backups are not touched)">Detach…</Button></div>
     {c.isSandbox ? <Banner kind="info" title="Demo cluster">Sample data: operations are not executed. You can delete it once you have connected a real cluster.</Banner> : null}
     {agentic ? <AgentUpdateBanner clusterId={c.id} /> : null}
     {agentic ? <ProtectionRibbon c={c} /> : null}
@@ -84,7 +83,7 @@ function Overview({ c, agentic }: { c: any; agentic: boolean }) {
   const b = useQuery<any>(agentic ? `/api/clusters/${encodeURIComponent(c.id)}/backups` : null, { interval: 15000 });
   const bk = b.data?.backup;
   return <div className="stack-l">
-    <div className="grid g4 kpis"><Kpi v={c.haState?.nodes?.length ?? 0} l="Nodes" /><Kpi v={bytes(c.totalSizeBytes)} l="Data size" /><Kpi v={num(c.tps)} l="Transactions per second" /><Kpi v={c.currentLSN || '—'} l="Current LSN" /></div>
+    <div className="grid g3 kpis"><Kpi v={c.haState?.nodes?.length ?? 0} l="Nodes" /><Kpi v={bytes(c.totalSizeBytes)} l="Data size" /><Kpi v={num(c.tps)} l="Transactions per second" /></div>
     {agentic ? <Card title="Data protection">
       {b.loading ? <Skeleton h={40} /> : !b.data?.agent ? <p className="muted">No agent connected.</p> : !bk?.configured ? <Banner kind="warn" title="Backups not configured yet">Open the Backup tab to enable WAL archiving and take the first backup.</Banner> :
         <div className="row wrap gap-l"><div><div className="kpi"><span className="v">{bk.last_backup ? ago(bk.last_backup.stop_time) : 'never'}</span><span className="l">Last backup</span></div></div>
@@ -109,7 +108,7 @@ function Nodes({ c }: { c: any }) {
   const mint = async (nodeName?: string) => { setBusy(true); try { const t: any = await api('POST', '/api/enrollment-tokens', { label: `${c.name} +${nodeName || 'node'}`, clusterId: c.id, ttlMinutes: 60 }, { key: 'tok-' + Date.now() }); setTok(nodeName ? { ...t, node: nodeName } : t); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
   return <div className="stack-l">
     {nodes.some(n => n.source === 'patroni') ? <Banner kind="info" title={`${nodes.filter(n => n.source === 'patroni').length} cluster nodes do not have the agent yet`}>Patroni sees them, but managing them (backup, restore, access) needs the agent. If the only node with an agent goes down, backups and restores do not start. Use “Install agent” next to each node: the command is already bound to this cluster.</Banner> : null}
-    <Card title="Cluster members" actions={<Badge>{c.haState?.managedByPatroni ? `Patroni cluster · ${nodes.length} nodes` : nodes.length > 1 ? `${nodes.length} independent servers` : "Single instance"}</Badge>} pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Node</th><th>Role</th><th>State</th><th className="num">Lag</th><th className="num">CPU</th><th className="num">Memory</th><th className="num">Connections</th><th /></tr></thead>
+    <Card title="Cluster members" actions={<span className="row gap-s">{c.activeTimeline || c.currentLSN ? <span className="small faint" title="Where the cluster's WAL is now: timeline (increases at each promotion) and current WAL position">timeline {c.activeTimeline || '—'} · LSN {c.currentLSN || '—'}</span> : null}<Badge>{c.haState?.managedByPatroni ? `Patroni cluster · ${nodes.length} nodes` : nodes.length > 1 ? `${nodes.length} independent servers` : "Single instance"}</Badge></span>} pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Node</th><th>Role</th><th>State</th><th className="num">Lag</th><th className="num">CPU</th><th className="num">Memory</th><th className="num">Connections</th><th /></tr></thead>
       <tbody>{nodes.map(n => <tr key={n.name}><td><span className="row gap-s"><Dot kind={n.online ? 'ok' : 'bad'} /><strong>{n.name}</strong>{n.source === 'patroni' ? (isAdmin && !c.isSandbox ? <PendingJoin name={n.name}><Badge kind="warn" title="Seen by Patroni: without an agent, no backups, restores or changes can be done on this node">no agent</Badge><Button sm icon="plus" disabled={busy} onClick={() => mint(n.name)}>Install agent</Button></PendingJoin> : <Badge kind="warn" title="Seen by Patroni: without an agent, no backups, restores or changes can be done on this node">no agent</Badge>) : null}</span><div className="faint small">{n.host}:{n.port}{n.memberName && n.memberName !== n.name ? <span title="The name Patroni knows this node by (its member name differs from the hostname)"> · Patroni: {n.memberName}</span> : null}</div></td>
         <td><Badge kind={n.role === 'primary' ? 'accent' : undefined}>{n.role === 'primary' ? 'Primary' : n.role === 'sync_standby' ? 'Sync standby' : n.role === 'standby_leader' ? 'Standby leader' : 'Replica'}</Badge></td>
         <td>{n.online ? n.state : 'offline'}</td><td className="num">{n.role === 'primary' ? '—' : bytes(n.replicationLagBytes)}</td>
@@ -234,17 +233,25 @@ function ActivityStrip({ id }: { id: string }) {
   const q = useQuery<{ activity: { id: string; what: string; status: string; createdBy: string; createdAt: string; progress: string | null }[] }>(`/api/clusters/${encodeURIComponent(id)}/activity`, { interval: 5000 });
   const a = q.data?.activity || [];
   if (!a.length) return null;
-  return <div className="activitystrip" role="status"><Icon n="activity" s={14} /><span className="small"><strong>Running on this cluster:</strong> {a.map((x, i) => <span key={x.id}>{i ? ' · ' : ''}{x.what} <span className="faint">({x.status === 'queued' ? 'queued' : x.progress || 'running'}, {x.createdBy}, {ago(x.createdAt)})</span></span>)}</span>
+  return <div className="activitystrip" role="status"><Icon n="activity" s={14} /><span className="small"><strong>Running on this cluster:</strong> {a.map((x, i) => <span key={x.id}>{i ? ' · ' : ''}{OP_LABEL[(x as any).type] || x.what} <span className="faint">({x.status === 'queued' ? 'queued' : (x.progress && (PHASE[x.progress] || x.progress)) || 'running'}, {x.createdBy}, {ago(x.createdAt)})</span></span>)}</span>
     <button className="btn ghost sm" onClick={() => window.dispatchEvent(new Event('arca:dock'))}>Details</button></div>;
 }
 
 /** Agents of this cluster running other code than the console serves: console features may be missing there (an old agent ignores what it does not know). */
 function AgentUpdateBanner({ clusterId }: { clusterId: string }) {
   const q = useQuery<{ nodes: any[] }>('/api/nodes', { interval: 30000 });
+  const h = useQuery<{ version?: string }>('/api/health', { interval: 300000 });
+  const [show, setShow] = useState(false);
   const old = (q.data?.nodes || []).filter(n => n.clusterId === clusterId && n.agentOutdated);
   if (!old.length) return null;
-  const cmds = Array.from(new Set(old.map(n => n.upgradeCommand).filter(Boolean)));
-  return <Banner kind="warn" title={old.length === 1 ? `The agent on ${old[0].name} needs an update` : `The agents on ${old.map(n => n.name).join(', ')} need an update`}>
-    <p style={{ marginTop: 0 }}>They run a different version from the console: some features (restores included) may be missing or behave as before. Updating does not touch PostgreSQL, the backups or the agent configuration; the agent restarts within a few seconds.</p>
-    <p className="small">Run as root {old.length > 1 ? 'on each of these servers' : `on ${old[0].name}`}:</p>{cmds.map(c => <CopyBlock key={c} text={c} />)}</Banner>;
+  const cmds = Array.from(new Set(old.map(n => n.upgradeCommand).filter(Boolean))) as string[];
+  const local = cmds.some(c => /https?:\/\/(localhost|127\.0\.0\.1)[:/]/.test(c));          // the servers cannot reach a console on localhost
+  const vers = Array.from(new Set(old.map(n => n.agentVersion || '?'))).join(', ');
+  // one line by default: it used to be a 150 px banner on every tab of the cluster, pushing the restore wizard below the fold
+  return <div className="activitystrip" role="status"><Icon n="alert" s={14} />
+    <span className="small"><strong>{old.length === 1 ? `The agent on ${old[0].name} is outdated` : `${old.length} agents are outdated (${old.map(n => n.name).join(', ')})`}</strong> <span className="faint">({vers} → {h.data?.version || 'this console'}): some features may be missing until it is updated; updating does not touch PostgreSQL or the backups.</span></span>
+    <button className="btn ghost sm" onClick={() => setShow(!show)} aria-expanded={show}>{show ? 'Hide' : 'Show the update command'}</button>
+    {show ? <div style={{ flexBasis: '100%' }}>{local ? <p className="small">The console address is <code>localhost</code>, which the servers cannot reach: set the address the servers use in <a href="#/settings">Settings → Console address</a>, then the command appears here.</p>
+      : <><p className="small" style={{ margin: '6px 0' }}>Run as root {old.length > 1 ? 'on each of these servers' : `on ${old[0].name}`}:</p>{cmds.map(c => <CopyBlock key={c} text={c} />)}</>}</div> : null}
+  </div>;
 }

@@ -30,7 +30,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=Migration completed', { timeout: 15000 }); await shot('04d-migration-done');
   await p.click('.modal >> nth=0 >> button:has-text("Close")'); await p.waitForSelector('text=Previous location still used by restores', { state: 'detached', timeout: 20000 });
   { const b = p.locator('button:has-text("Disaster recovery drill")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster restored in 13 minutes', { timeout: 10000 }); await shot('04b-drill'); } }
-  await p.click('button:has-text("Start backup")'); await p.waitForSelector('text=Copying data'); await p.waitForSelector('.activitystrip:has-text("a backup")', { timeout: 8000 }); await shot('05-backup-running');
+  await p.click('button:has-text("Start backup")'); await p.waitForSelector('text=Copying data'); await p.waitForSelector('.activitystrip:has-text("Backup (Copying data")', { timeout: 8000 }); await shot('05-backup-running');
   // the dock's Log opens a floating window with THIS operation's log (not the database log): movable, minimisable, closable
   await p.click('.dock-chip'); await p.click('.dock-item button:has-text("Log")'); await p.waitForSelector('.oplog'); await p.waitForSelector('.oplog-body .ln', { timeout: 8000 });
   assert(/Backup/.test(await p.locator('.oplog-hd .nm').innerText()), 'log window is titled with the operation');
@@ -64,7 +64,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=/All set|Ready: read/', { timeout: 10000 }); await p.waitForSelector('.preflight.warn');
   await p.click('summary:has-text("Technical details")'); await p.waitForSelector('.spacebars .vol'); await p.waitForSelector('.placement code:has-text("/var/tmp/pg_arca_scratch")'); await shot('11-plan');
   // the END of the job is chosen here: by default the recovered database REPLACES appdb (the tool finishes the job); the copy path keeps the name field
-  await p.waitForSelector('label.opt.on:has-text("Replace appdb with the recovered one") .badge:has-text("Recommended")'); await shot('11a-end-choice');
+  await p.waitForSelector('label.opt.on.risky:has-text("Replace appdb with the recovered one") .badge:has-text("Terminates the open sessions on appdb")'); await shot('11a-end-choice');
   await p.click('label.opt:has-text("Only a copy to check") input'); await p.waitForSelector('.field:has-text("New database name") input');
   // a taken destination name is a blocker: the start button stays disabled
   const nameIn = p.locator('.field:has-text("New database name") input');

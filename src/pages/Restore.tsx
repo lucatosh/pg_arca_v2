@@ -183,7 +183,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   };
 
   const whatTxt = scope === 'instance' ? 'the whole server' : scope === 'database' ? <>database <strong>{db}</strong></> : objs.length === 1 ? <>{splitId(obj).length === 2 ? 'schema' : 'table'} <strong>{shortName(obj)}</strong> in {splitId(obj)[0]}</> : <><strong>{objs.length}</strong> objects in {db}</>;
-  const whenTxt = !tgt ? '—' : tgt.mode === 'latest' ? (selDropped ? 'just before it was dropped' : 'to the latest saved point') : tgt.mode === 'time' ? <>as it was on <strong>{new Date(tgt.ms).toLocaleString('en-GB')}</strong></> : <>just before: <strong>{tgt.label}</strong></>;
+  const whenTxt = !tgt ? '—' : tgt.mode === 'latest' ? (selDropped ? 'just before it was dropped' : 'to the latest saved point') : tgt.mode === 'time' ? <>as it was on <strong>{dt(tgt.ms)}</strong></> : <>just before: <strong>{tgt.label}</strong></>;
   const reachable = (i: number) => i < step && !running && !exec.op && (i !== 1 || intent !== 'cluster');
 
   return <div className="stack-l">
@@ -422,7 +422,7 @@ function PlanView({ p, scope }: { p: any; scope: Scope }) {
         : <Banner kind="ok" title="Restore possible">The base backup and the required WAL are available.</Banner>}
     {p.preflight?.checks?.length ? <Preflight pf={p.preflight} /> : null}
     <SpaceBars vols={p.space} />
-    <dl className="kv"><dt>Target</dt><dd>{p.target === 'end of archive' ? 'latest available' : Number.isFinite(Date.parse(p.target)) ? new Date(p.target).toLocaleString('en-GB') : p.target}</dd>
+    <dl className="kv"><dt>Target</dt><dd>{p.target === 'end of archive' ? 'latest available' : Number.isFinite(Date.parse(p.target)) ? dt(p.target) : p.target}</dd>
       <dt>Base backup</dt><dd><span className="mono">{p.set}</span></dd>
       <dt>Chain</dt><dd className="mono small">{(p.chain || []).join(' → ')}</dd>
       {scope === 'instance' ? <><dt>Data to extract</dt><dd>{bytes(p.bytes)} in {num(p.files)} files</dd></> : <><dt>Data to extract</dt><dd>{bytes(p.extract_bytes)} of the cluster’s {bytes(p.cluster_bytes)}{saved != null ? <> — <strong>{saved}% less</strong></> : null}</dd></>}
@@ -577,10 +577,13 @@ function EndChoice({ fin, setFin, kind, db, exists, newName, mode, setMode, gone
   const fixText = kind === 'database' ? (exists ? `Open sessions on ${db} are terminated and the recovered database takes its name. The current one is kept as ${db}_before_<date> so you can go back.` : 'The dropped database comes back exactly as it was, under the same name.')
     : kind === 'rows' ? 'Re-inserts the deleted rows and reverts the updated ones to their value at that point. Rows inserted later are kept. The current versions are first saved into a safety table.'
     : mode === 'missing_only' ? 'Only what no longer exists comes back, under its own name; what exists stays as it is.' : mode === 'replace' ? 'The current versions are renamed (kept, so you can go back) and the recovered ones take their place, with foreign keys and views re-attached.' : 'The recovered versions appear next to the current ones with the _pitr_<date> suffix: nothing existing is touched.';
+  // what the in-place choice does to what is running now: said on the option itself (an independent review found the replacement of a live
+  // database pre-selected with a plain "Recommended" badge, looking exactly like the harmless copy)
+  const impact = kind === 'database' && exists ? `Terminates the open sessions on ${db}` : kind === 'objects' && mode === 'replace' ? 'Renames the current tables (kept)' : null;
   const copyTitle = kind === 'database' ? `Only a copy to check (${newName || '…'})` : kind === 'rows' ? 'Compare and pick the rows myself' : 'Only a copy to check (quarantine database)';
   return <Field label="When done"><div className="stack-s" role="radiogroup" aria-label="When done">
-    <label className={`opt ${fin === 'fix' ? 'on' : ''}`}><input type="radio" name="fin" checked={fin === 'fix'} onChange={() => setFin('fix')} /><div className="grow">
-      <div><strong>{fixTitle}</strong> <Badge kind="ok">Recommended</Badge></div><div className="small muted">{fixText}</div>
+    <label className={`opt ${fin === 'fix' ? 'on' : ''} ${impact ? 'risky' : ''}`}><input type="radio" name="fin" checked={fin === 'fix'} onChange={() => setFin('fix')} /><div className="grow">
+      <div><strong>{fixTitle}</strong> {impact ? <Badge kind="bad">{impact}</Badge> : <Badge kind="ok">Recommended</Badge>}</div><div className="small muted">{fixText}</div>
       {fin === 'fix' && kind === 'objects' ? <div className="seg" style={{ marginTop: 6 }} role="group" aria-label={`How to put back ${what}`}>
         <button aria-pressed={mode === 'missing_only'} onClick={e => { e.preventDefault(); setMode('missing_only'); }}>Only what is missing{gone === true ? ' (recommended)' : ''}</button>
         <button aria-pressed={mode === 'replace'} onClick={e => { e.preventDefault(); setMode('replace'); }}>Replace the current ones{gone === false ? ' (recommended)' : ''}</button>
@@ -592,8 +595,8 @@ function EndChoice({ fin, setFin, kind, db, exists, newName, mode, setMode, gone
 
 function ServerEnd({ fin, setFin, patroni }: { fin: 'fix' | 'copy'; setFin: (v: 'fix' | 'copy') => void; patroni: boolean }) {
   return <Field label="When done"><div className="stack-s" role="radiogroup" aria-label="When done">
-    <label className={`opt ${fin === 'fix' ? 'on' : ''} ${patroni ? 'dis' : ''}`}><input type="radio" name="sfin" disabled={patroni} checked={fin === 'fix'} onChange={() => setFin('fix')} /><div className="grow">
-      <div><strong>Repair the production server</strong> {!patroni ? <Badge kind="ok">Recommended</Badge> : null}</div>
+    <label className={`opt ${fin === 'fix' ? 'on' : ''} ${patroni ? 'dis' : 'risky'}`}><input type="radio" name="sfin" disabled={patroni} checked={fin === 'fix'} onChange={() => setFin('fix')} /><div className="grow">
+      <div><strong>Repair the production server</strong> {!patroni ? <Badge kind="bad">Stops PostgreSQL · short downtime</Badge> : null}</div>
       <div className="small muted">{patroni ? 'Not available on a Patroni cluster: there you restore a database or a table (they go back into the running cluster), or rebuild the cluster from a copy.' : 'Production itself goes back to how it was: same server, same port, primary again. Short downtime; the current data is kept in a safety directory.'}</div></div></label>
     <label className={`opt ${fin === 'copy' ? 'on' : ''}`}><input type="radio" name="sfin" checked={fin === 'copy'} onChange={() => setFin('copy')} /><div className="grow">
       <div><strong>Only a temporary copy to inspect</strong></div><div className="small muted">Started next to production on another port, isolated: production is not touched.</div></div></label>

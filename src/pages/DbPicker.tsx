@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Badge, Icon, bytes } from '../ui';
+import { Badge, Icon, bytes, dt } from '../ui';
 
 /** WAL timestamps come as "2026-10-11 01:36:04.742818 UTC": make them parseable everywhere (ms, ISO). */
 export function parseWalTime(s?: string | null): number {
@@ -7,7 +7,7 @@ export function parseWalTime(s?: string | null): number {
   const m = String(s).match(/^(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d:\d\d)(?:\.(\d{1,6}))?\s*(?:UTC|Z|\+00(?::?00)?)?$/);
   return m ? Date.parse(`${m[1]}T${m[2]}.${(m[3] || '0').padEnd(3, '0').slice(0, 3)}Z`) : Date.parse(s);
 }
-export const fmtWhen = (ms: number) => new Date(ms).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+export const fmtWhen = (ms: number) => dt(ms);
 
 export type CatDb = { name: string; oid: number | string; size: number; connectable?: boolean; tables?: number; objects?: number; matviews?: number; schemas?: number; in_latest?: boolean; last_set?: string; last_stop?: string; first_stop?: string; late?: boolean };
 /** Object paths `db.schema.name` as the agent reads them: a part with a dot or a quote is double-quoted (db."sales.eu".orders). */

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Button, Card } from '../ui';
+import { Badge, Button, Card, tm } from '../ui';
 import { useDraft } from '../hooks';
 
 const SEV: Record<string, number> = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3, FATAL: 4 };
@@ -7,7 +7,7 @@ const KEEP = 600;       // entries held in memory
 const SHOW = 300;       // rows in the DOM: a log view must stay light however fast the stream is
 
 const Line = React.memo(function Line({ l }: { l: any }) {
-  return <div className={`logline ${l.level}`}><span className="faint">{new Date(l.timestamp).toLocaleTimeString('en-GB')}</span> [{l.nodeName}/{l.service}] {l.message}</div>;
+  return <div className={`logline ${l.level}`}><span className="faint">{tm(l.timestamp)}</span> [{l.nodeName}/{l.service}] {l.message}</div>;
 });
 
 /**

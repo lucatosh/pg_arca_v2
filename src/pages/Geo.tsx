@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { api, uid } from '../api';
-import { Badge, Banner, Button, Card, Confirm, Dot, Empty, Field, Icon, Modal, Skeleton, ago, bytes } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, Dot, Empty, Field, Icon, Modal, Skeleton, ago, bytes, dt, tm } from '../ui';
 import { revalidate, toast, useQuery } from '../hooks';
 import { go } from '../router';
 
@@ -35,7 +35,7 @@ export function GeoPage({ role }: { role: string }) {
       d.groups.map(g => <GroupCard key={g.sysid} g={g} role={role} running={d.jobs.some(j => j.status === 'running')} />)}
     {d?.jobs?.length ? <Card title="Site role changes"><div className="stack">{d.jobs.map(j => <div key={j.id} className="geojob">
       <div className="row wrap gap-s"><strong>{JOB_LABEL[j.type || 'switchover'] || j.type}: {j.fromName} → {j.toName}</strong><Badge kind={(JOB_ST[j.status] || [j.status, 'accent'])[1]}>{(JOB_ST[j.status] || [j.status])[0]}</Badge><div className="grow" /><span className="small faint">{j.createdBy}, {ago(j.createdAt)}</span></div>
-      <ol className="small">{j.steps.map((s, i) => <li key={i}>{s.text} <span className="faint">({new Date(s.at).toLocaleTimeString('en-GB')})</span></li>)}</ol></div>)}</div></Card> : null}
+      <ol className="small">{j.steps.map((s, i) => <li key={i}>{s.text} <span className="faint">({tm(s.at)})</span></li>)}</ol></div>)}</div></Card> : null}
   </>;
 }
 
@@ -178,9 +178,9 @@ function DrPanel({ g, role, prim, onPromote }: { g: Group; role: string; prim?: 
     {w && w.downSince ? <Banner kind="bad" title={`Primary site ${w.primaryName} has not responded for ${down} s`}
       actions={role === 'admin' && cand ? <><Button sm kind="danger" onClick={() => onPromote(cand)}>Promote {cand.name} now…</Button>{p.autoFailover && !w.snoozedUntil ? <Button sm onClick={snoozeIt}>False alarm: wait 30 min</Button> : null}</> : null}>
       <div>The console has not heard from it{w.lastSeenSec != null ? ` for ${w.lastSeenSec} s` : ''} and {w.witnesses.standbyName} no longer receives WAL from it: two independent confirmations.</div>
-      <div className="small" style={{ marginTop: 4 }}>{w.snoozedUntil ? `Automatic failover suspended until ${new Date(w.snoozedUntil).toLocaleTimeString('en-GB')}.` : p.autoFailover ? (w.actInSec ? `Automatic failover to ${w.candidateName} in ${w.actInSec} s, unless the situation changes.` : `Automatic failover to ${w.candidateName} running or just decided.`) : 'Automatic failover is off: you decide on the promotion.'}</div></Banner>
+      <div className="small" style={{ marginTop: 4 }}>{w.snoozedUntil ? `Automatic failover suspended until ${dt(w.snoozedUntil)}.` : p.autoFailover ? (w.actInSec ? `Automatic failover to ${w.candidateName} in ${w.actInSec} s, unless the situation changes.` : `Automatic failover to ${w.candidateName} running or just decided.`) : 'Automatic failover is off: you decide on the promotion.'}</div></Banner>
       : w?.note && !f ? <div className="small muted"><Icon n="info" s={13} /> {w.note}</div> : null}
-    {f && !f.rejoinedAt ? <Banner kind="warn" title={`${f.toName} has been the primary site since ${new Date(f.at).toLocaleString('en-GB')} (${f.auto ? 'automatic failover' : 'manual promotion'})`}>
+    {f && !f.rejoinedAt ? <Banner kind="warn" title={`${f.toName} has been the primary site since ${dt(f.at)} (${f.auto ? 'automatic failover' : 'manual promotion'})`}>
       {f.lossBytes != null ? <div>Estimated data lost: {f.lossBytes === 0 ? 'none' : `about ${bytes(f.lossBytes)} of WAL`} compared with the last known position of {f.fromName}.</div> : null}
       <div>{g.sites.find(s => s.clusterId === f.from)?.online ? `${f.fromName} is back: ${p.autoRejoin ? 'pg_arca is rejoining it as a standby site' : 'demote it to standby site (it must not accept writes)'}.` : `${f.fromName} is still unreachable: ${p.autoRejoin ? `when it comes back, pg_arca turns it into a standby site of ${f.toName} by itself` : 'when it comes back it must be demoted to standby site'}.`}</div>
       {f.rejoinError ? <div className="small" style={{ color: 'var(--bad)' }}>Last rejoin attempt: {f.rejoinError}</div> : null}</Banner> : null}

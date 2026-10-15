@@ -290,6 +290,33 @@ export function isRefusal(err: string, type = ''): boolean {
   return type === 'restore_plan';                                              // a plan that says "no" is its answer, not a failure
 }
 
+/** "Is this cluster protected?" answered in one place, for the cluster list, the cluster header and Today (an independent UX review found the
+ *  answer spread over five screens with contradicting colours). state: ok | warn | bad | none (not backed up by this console: demo, direct
+ *  connection, a standby site whose backups are taken on its primary). The words are built by the page (relative times stay current). */
+export function protectionOf(st: any, clusterId: string, issues: Issue[], now = Date.now()) {
+  const c = (st.clusters as any[]).find(x => x.id === clusterId);
+  if (!c || c.isSandbox || c.source === 'direct') return { state: 'none' as const, reason: 'not_managed' };
+  const nodes = Object.values(st.nodes || {}).filter((n: any) => n.clusterId === clusterId) as any[];
+  const bk = (nodes.filter(n => n.snapshot?.backup?.configured).sort((a, b) => (b.snapshot.backup.sets || 0) - (a.snapshot.backup.sets || 0))[0])?.snapshot?.backup;
+  const sets: any[] = (bk?.recent_sets || []).filter((s: any) => s.status === 'COMPLETE');
+  const at = (s: any) => s ? (s.stop_time || s.start_time || null) : null;
+  const lastBackupAt = at(sets[sets.length - 1]); const fulls = sets.filter(s => s.type === 'full'); const lastFullAt = at(fulls[fulls.length - 1]);
+  const ob = objectives(st, clusterId, now);
+  const offs = nodes.map(n => n.snapshot?.offsite).filter((o: any) => o?.configured && o.enabled);
+  const offLast = Math.max(0, ...offs.map((o: any) => Number(o.last_ok) || 0));
+  const mine = issues.filter(i => i.clusterId === clusterId);
+  const KEY = new Set(['no_backup', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
+  const relevant = mine.filter(i => KEY.has(i.code));
+  const standbySite = !sets.length && nodes.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader');
+  const state = standbySite ? 'none' as const
+    : !sets.length || relevant.some(i => i.severity === 'critical') || ob?.rpo.state === 'bad' ? 'bad' as const
+    : relevant.some(i => i.severity === 'warning') || ob?.rpo.state === 'warn' ? 'warn' as const : 'ok' as const;
+  return { state, reason: standbySite ? 'standby_site' : undefined, lastBackupAt, lastFullAt, backups: sets.length,
+    rpoSeconds: ob?.rpo.seconds ?? null, rpoState: ob?.rpo.state || 'unknown', archiving: ob?.rpo.state === 'bad' && ob?.rpo.seconds == null ? (/off/.test(ob.rpo.text) ? 'off' : 'failing') : 'ok',
+    rtoSeconds: ob?.rto.estimateSeconds ?? null, offsiteAt: offs.length ? (offLast ? new Date(offLast * 1000).toISOString() : null) : undefined,
+    problems: relevant.slice(0, 3).map(i => ({ code: i.code, severity: i.severity, title: i.title })) };
+}
+
 export function briefing(st: any, now = Date.now()) {
   const issues = evaluate(st, now);
   const counts = { critical: 0, warning: 0, info: 0 } as Record<Severity, number>;
@@ -299,7 +326,8 @@ export function briefing(st: any, now = Date.now()) {
   const clusters = (st.clusters as any[]).filter(c => !c.isSandbox && c.source !== 'direct').map(c => {
     const mine = issues.filter(i => i.clusterId === c.id);
     const dr = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'restore_drill' && o.status === 'succeeded').pop();
-    return { id: c.id, name: c.name, environment: c.environment, folder: c.folder || '', issues: mine.length, worst: mine[0]?.severity || 'ok', rto: dr?.result?.rto_seconds != null ? { seconds: dr.result.rto_seconds, at: dr.updatedAt, bytes: dr.result.data_bytes } : null };
+    return { id: c.id, name: c.name, environment: c.environment, folder: c.folder || '', issues: mine.length, worst: mine[0]?.severity || 'ok', rto: dr?.result?.rto_seconds != null ? { seconds: dr.result.rto_seconds, at: dr.updatedAt, bytes: dr.result.data_bytes } : null,
+      protection: protectionOf(st, c.id, issues, now) };
   });
   return {
     generatedAt: new Date(now).toISOString(), status: counts.critical ? 'critical' : counts.warning ? 'warning' : 'ok', counts, issues, clusters,

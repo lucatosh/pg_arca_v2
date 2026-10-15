@@ -53,7 +53,8 @@ export function useQuery<T = any>(key: string | null, opts: { interval?: number 
 type Toast = { id: number; kind: 'ok' | 'bad' | 'info'; text: string };
 let toasts: Toast[] = []; const tsubs = new Set<() => void>(); let tid = 1;
 export function toast(text: string, kind: Toast['kind'] = 'info', ms = 4500) {
-  const t = { id: tid++, kind, text }; toasts = [...toasts, t].slice(-4); tsubs.forEach(f => f());
+  if (toasts.some(x => x.text === text && x.kind === kind)) return;                        // the same message twice (page + activity) is shown once
+  const t = { id: tid++, kind, text }; toasts = [...toasts, t].slice(-2); tsubs.forEach(f => f());   // at most two at a time: they must never hide the page
   setTimeout(() => { toasts = toasts.filter(x => x.id !== t.id); tsubs.forEach(f => f()); }, ms);
 }
 export function dismissToast(id: number) { toasts = toasts.filter(x => x.id !== id); tsubs.forEach(f => f()); }
@@ -95,14 +96,14 @@ export function clearDrafts(prefix: string) {
 /** useState that survives unmounting. key null = an ordinary useState. secret: never written to sessionStorage (passwords, tokens). */
 export function useDraft<T>(key: string | null, init: T | (() => T), opts: { secret?: boolean } = {}): [T, (v: T | ((p: T) => T)) => void] {
   const [v, setV] = useState<T>(() => { if (key) { const d = readDraft<T>(key); if (d !== undefined) return d; } return typeof init === 'function' ? (init as () => T)() : init; });
-  const keyRef = useRef(key); keyRef.current = key;
+  const keyRef = useRef<string | null>(key); keyRef.current = key;
   const set = useCallback((x: T | ((p: T) => T)) => setV(prev => { const n = typeof x === 'function' ? (x as (p: T) => T)(prev) : x; if (keyRef.current) writeDraft(keyRef.current, n, !opts.secret); return n; }), [opts.secret]);
   // cleared elsewhere (saved, cancelled, applied): a component still on screen goes back to its initial value
   const initRef = useRef(init); initRef.current = init;
   useEffect(() => { const f = (prefix: string) => { const k = keyRef.current; if (k && (k === prefix || k.startsWith(prefix + ':'))) { const i = initRef.current; setV(typeof i === 'function' ? (i as () => T)() : i); } };
     draftResets.add(f); return () => { draftResets.delete(f); }; }, []);
   // the same component shown for another entity (another cluster): take that entity's draft
-  const seen = useRef(key);
+  const seen = useRef<string | null>(key);
   useEffect(() => { if (seen.current === key) return; seen.current = key; const d = key ? readDraft<T>(key) : undefined; setV(d !== undefined ? d : typeof init === 'function' ? (init as () => T)() : init); }, [key]);
   return [v, set];
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Badge, Banner, Button, Card, Field, Skeleton } from '../ui';
+import { Badge, Banner, Button, Card, Field, Skeleton, dt } from '../ui';
 import { revalidate, toast, useDraft, useOpRunner, useRole } from '../hooks';
 
 type Row = { key: string; label: string; kind: string; detected: string | number; override?: string | number | null; effective: string | number; source: string; check?: { ok: boolean; message?: string } | null };
@@ -78,7 +78,7 @@ export function OffsiteCopy({ clusterId, nodes }: { clusterId: string; nodes: an
   const form: Offsite = f || { ...OFF_EMPTY, ...(saved || {}), secret_key: '' };
   const set = (k: keyof Offsite, v: any) => setF({ ...form, [k]: v });
   const busy = rd.busy || wr.busy || sy.busy;
-  const when = (t?: number | null) => (t ? new Date(t * 1000).toLocaleString() : '—');
+  const when = (t?: number | null) => (t ? dt(t * 1000) : '—');
   return <Card title="Offsite copy (S3-compatible object storage)" actions={nodes.length > 1 ? <select value={nodeId} onChange={e => setNodeId(e.target.value)} aria-label="Node">{nodes.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}</select> : null}>
     <div className="stack">
       <p className="muted small">The agent of this node mirrors the backup repository and the WAL archive into a bucket (AWS S3, MinIO, Ceph, …) in the background: packs first, then the backup sets, then WAL; what expires locally is deleted there after six hours; nothing is ever deleted while the local storage looks empty. Backups and archiving keep writing locally at full speed. Configure it on the node that holds (or mounts) the repository — one node per shared repository.</p>

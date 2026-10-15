@@ -4,7 +4,7 @@ import { Icon, Button, Progress, ago } from './ui';
 import { Op, OPS_SLIM_KEY, isTerminal, revalidateOps, toast, useQuery, useRole } from './hooks';
 import { go } from './router';
 import { openOpLog } from './OpLog';
-import { OP_LABEL, PHASE, STATUS_LABEL, pctOf } from './pages/shared';
+import { OP_LABEL, PHASE, STATUS_LABEL, pctOf, hintFor } from './pages/shared';
 import { WINDOWS } from './pages/History';
 import { itCheck } from './i18n';
 
@@ -14,7 +14,7 @@ const KEY = 'arca.dock'; const SEEN = 'arca.dock.seen'; const WIN = 'arca.dock.w
 const read = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const write = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
 
-type SlimOp = Op & { subtype?: string; background?: boolean };
+type SlimOp = Op & { subtype?: string; background?: boolean; readonly?: boolean };
 const label = (o: SlimOp) => `${OP_LABEL[o.type] || o.type}${o.subtype ? ` (${o.subtype})` : ''}`;
 const elapsed = (from: string, now: number) => { const s = Math.max(0, Math.round((now - Date.parse(from)) / 1000)); return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`; };
 
@@ -40,7 +40,9 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
   // Poll fast only while something runs; otherwise a slow heartbeat is enough (the query also pauses with the tab hidden and skips unchanged payloads).
   const [fast, setFast] = useState(false);
   const q = useQuery<{ operations: SlimOp[] }>(OPS_SLIM_KEY, { interval: fast ? 2000 : 8000 });
-  const all = (q.data?.operations || []).filter(o => !QUIET.includes(o.type) && !o.background);       // background = lookups the page makes on its own (not worth a card or a toast)
+  // background = lookups the page makes on its own; readonly = operations that change nothing (reading settings, listing, planning): the page
+  // that asked shows the answer, a card or a toast for them is noise (an independent UX review found toasts covering the buttons on most screens)
+  const all = (q.data?.operations || []).filter(o => !QUIET.includes(o.type) && !o.background && !o.readonly);
   const running = all.filter(o => !isTerminal(o.status));
   const gset = useMemo(() => new Set(gone), [gone]);
   const finished = all.filter(o => isTerminal(o.status) && Date.parse(o.updatedAt || o.createdAt) >= now - hours * 3_600_000 && !gset.has(o.id));
@@ -60,10 +62,11 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
     const cur: Record<string, string> = {}; for (const o of q.data.operations) cur[o.id] = o.status;
     if (prev.current) for (const o of q.data.operations) {
       const was = prev.current[o.id];
-      if (!was || isTerminal(was) || !isTerminal(o.status) || o.createdBy !== me || QUIET.includes(o.type) || o.background || (o.params?.dry_run && o.status === 'succeeded')) continue;
-      if (o.status === 'succeeded') toast(`${label(o)}: operation completed`, 'ok');
-      else if (o.status === 'failed') toast(`${label(o)}: operation failed — ${itCheck((o.error || '').split('\n')[0]).slice(0, 160)}`, 'bad', 9000);
-      else if (o.status === 'cancelled') toast(`${label(o)}: operation cancelled`, 'info');
+      if (!was || isTerminal(was) || !isTerminal(o.status) || o.createdBy !== me || QUIET.includes(o.type) || o.background || o.readonly || (o.params?.dry_run && o.status === 'succeeded')) continue;
+      // successes: the page that started it shows the outcome and the chip says it; only what needs attention pops up
+      if (o.status === 'failed') { const first = itCheck((o.error || '').split('\n')[0]); const hint = hintFor(o.error); const code = (/PGA-[A-Z]+-\d+/.exec(first) || [])[0];
+        toast(`${label(o)} failed: ${hint ? `${hint}${code ? ` (${code})` : ''}` : first.slice(0, 180)}`, 'bad', 9000); }
+      else if (o.status === 'cancelled') toast(`${label(o)}: cancelled`, 'info');
     }
     prev.current = cur;
   }, [q.data, me]);
@@ -104,7 +107,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
             <div className="t"><Icon n="refresh" spin /><strong>{label(o)}</strong><span className="end small faint nowrap">{elapsed(o.createdAt, now)}</span></div>
             <Progress pct={pct} />
             <div className="small muted">{o.cancelRequested ? 'Cancelling…' : p?.phase ? PHASE[p.phase] || p.phase : o.status === 'queued' ? 'Queued: starts as soon as the agent is free' : 'Running…'}</div>
-            <div className="m"><span>{names[o.clusterId] || o.clusterId}</span>{o.createdBy ? <span>da {o.createdBy}</span> : null}<span>{STATUS_LABEL[o.status] || o.status}</span></div>
+            <div className="m"><span>{names[o.clusterId] || o.clusterId}</span>{o.createdBy ? <span>by {o.createdBy}</span> : null}<span>{STATUS_LABEL[o.status] || o.status}</span></div>
             <div className="acts">{to ? <Button sm icon="external" onClick={() => go(to)}>Open</Button> : null}
               <Button sm icon="logs" onClick={() => openOpLog(o.id, label(o))}>Log</Button>
               {canAct && !o.cancelRequested ? <Button sm kind="danger" icon="stop" busy={busy === o.id} onClick={() => cancel(o)}>Cancel</Button> : null}</div>
@@ -123,7 +126,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
           return <div className="dock-item done" key={o.id}>
             <div className="t"><Icon n={o.status === 'succeeded' ? 'check' : o.status === 'failed' ? 'alert' : 'cancel'} /><strong>{label(o)}</strong><span className="end small faint nowrap">{ago(o.updatedAt)}</span>
               <button className="x" onClick={() => dismiss([o.id])} aria-label={`Remove from the list: ${label(o)}`} title="Remove from the list (it stays in the history)"><Icon n="x" s={14} /></button></div>
-            <div className="m"><span>{STATUS_LABEL[o.status] || o.status}</span><span>{names[o.clusterId] || o.clusterId}</span>{o.createdBy ? <span>da {o.createdBy}</span> : null}</div>
+            <div className="m"><span>{STATUS_LABEL[o.status] || o.status}</span><span>{names[o.clusterId] || o.clusterId}</span>{o.createdBy ? <span>by {o.createdBy}</span> : null}</div>
             {o.status === 'failed' && o.error ? <div className="err">{o.error}</div> : null}
             <div className="acts">{to ? <Button sm icon="external" onClick={() => go(to)}>Details</Button> : null}<Button sm icon="logs" onClick={() => openOpLog(o.id, label(o))}>Log</Button></div>
           </div>;

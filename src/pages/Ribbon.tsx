@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery } from '../hooks';
-import { ago, dt } from '../ui';
+import { ago, dt, dday } from '../ui';
 import { go } from '../router';
 
 const RANK: Record<string, number> = { full: 3, diff: 2, incr: 1 };
@@ -26,7 +26,7 @@ export function ProtectionRibbon({ c }: { c: any }) {
     : wal === 'ok' ? `You can go back to any point between ${dt(new Date(first!).toISOString())} and now.`
     : wal === 'bad' ? 'The WAL has gaps: point-in-time recovery is limited.' : `Without archived WAL you can only go back to backup points (last ${ago(last.stop_time)}).`;
   return <button type="button" className="ribbon" onClick={() => go(`c/${encodeURIComponent(c.id)}/restore`)} aria-label={`Data protection: ${msg}`}>
-    <div className="cells" aria-hidden="true">{cells.map((x, i) => <i key={i} className={`${x.type || 'none'} ${x.today ? 'today' : ''}`} title={`${new Date(x.start).toLocaleDateString('en-GB')}: ${x.type ? `${x.n} backup (${NAME[x.type]})` : 'no backups'}`} />)}</div>
+    <div className="cells" aria-hidden="true">{cells.map((x, i) => <i key={i} className={`${x.type || 'none'} ${x.today ? 'today' : ''}`} title={`${dday(x.start)}: ${x.type ? `${x.n} backup (${NAME[x.type]})` : 'no backups'}`} />)}</div>
     <div className={`wal ${wal}`} aria-hidden="true" />
     <div className="cap"><span>{msg}</span><span className="muted">30 days · WAL {wal === 'ok' ? 'continuous' : wal === 'bad' ? 'with gaps' : 'not archived'}</span></div>
   </button>;

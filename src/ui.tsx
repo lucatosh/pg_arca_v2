@@ -30,7 +30,14 @@ export function Icon({ n, s = 16, className, spin }: { n: string; s?: number; cl
 export function bytes(n?: number | null): string { if (n == null || !isFinite(n)) return '—'; const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; let i = 0; let v = Math.abs(n); while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; } return `${(n < 0 ? -v : v).toFixed(v >= 100 || i === 0 ? 0 : 1)} ${u[i]}`; }
 export function dur(sec?: number | null): string { if (sec == null) return '—'; const s = Math.round(sec); if (s < 60) return `${s}s`; if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`; return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`; }
 export function ago(iso?: string | null, now = Date.now()): string { if (!iso) return '—'; const s = (now - Date.parse(iso)) / 1000; if (!isFinite(s)) return '—'; if (s < 0) return 'now'; if (s < 60) return `${Math.floor(s)}s ago`; if (s < 3600) return `${Math.floor(s / 60)} min ago`; if (s < 86400) return `${Math.floor(s / 3600)} h ago`; return `${Math.floor(s / 86400)} d ago`; }
-export const dt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'medium' }) : '—');
+/** ONE date format in the whole console: "15 Oct 2026, 20:53:35 CEST" (day and month never ambiguous, 24 h, the time zone said): a restore
+ *  point read as 09/10 or 10/09 is a day of data (an independent review found six formats, US and European mixed). */
+const DT_OPTS: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZoneName: 'short' };
+export const dt = (iso?: string | number | Date | null) => { if (iso == null || iso === '') return '—'; const d = new Date(iso as any); return isNaN(d.getTime()) ? '—' : d.toLocaleString('en-GB', DT_OPTS); };
+/** Day only, same convention: "15 Oct 2026". */
+export const dday = (iso?: string | number | Date | null) => { if (iso == null || iso === '') return '—'; const d = new Date(iso as any); return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }); };
+/** Time of day only, same convention (logs, step lists). */
+export const tm = (iso?: string | number | Date | null) => { if (iso == null || iso === '') return '—'; const d = new Date(iso as any); return isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('en-GB', { hour12: false }); };
 export const num = (n?: number | null) => (n == null ? '—' : n.toLocaleString('en-GB'));
 
 /* ---------- components ---------- */
@@ -63,7 +70,7 @@ export function Modal({ title, onClose, children, footer, wide, locked }: { titl
   // mount effect depended on it, every poll would re-run it and .focus() would YANK the cursor to the dialog's first input while the
   // person is typing in another field - and steal the text selection right before a Ctrl+C / Ctrl+V. Focus is set exactly once.
   const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
-  const lockedRef = useRef(locked); lockedRef.current = locked;
+  const lockedRef = useRef<boolean | undefined>(locked); lockedRef.current = locked;
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLElement>('input,select,textarea,button.primary')?.focus();

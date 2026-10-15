@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Skeleton, ago } from '../ui';
+import { Badge, Banner, Button, Card, Skeleton, ago, dday } from '../ui';
 import { revalidate, toast, useQuery } from '../hooks';
 import { go } from '../router';
 import { OP_LABEL } from './shared';
@@ -43,7 +43,7 @@ export function TodayPage({ me, role }: { me: string; role: string }) {
       {(d.last24h.refusals || []).length ? <details className="card" style={{ padding: '10px 16px' }}><summary className="small" style={{ cursor: 'pointer' }}>{d.last24h.refused} {d.last24h.refused === 1 ? 'operation refused' : 'operations refused'} by the checks (nothing was changed)</summary>
         <div className="tablewrap"><table className="t"><tbody>{d.last24h.refusals.map((f: any) => <tr key={f.id}><td>{TYPE[f.type] || OP_LABEL[f.type] || f.type}</td><td className="muted small">{f.error ? itCheck(f.error) : '—'}</td><td className="num small muted">{ago(f.at)}</td></tr>)}</tbody></table></div></details> : null}
       <Card title="Cluster"><div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>Environment</th><th>Measured restore time</th><th>Status</th></tr></thead><tbody>
-        {d.clusters.map((c: any) => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}><td><strong>{c.name}</strong>{c.folder ? <span className="faint small"> · {c.folder}</span> : null}</td><td>{c.environment}</td><td className="small">{c.rto ? <span title={`Drill of ${new Date(c.rto.at).toLocaleDateString('en-GB')}`}>{c.rto.seconds >= 120 ? `${Math.round(c.rto.seconds / 60)} min` : `${Math.round(c.rto.seconds)} s`}</span> : <span className="muted">never tested</span>}</td>
+        {d.clusters.map((c: any) => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}><td><strong>{c.name}</strong>{c.folder ? <span className="faint small"> · {c.folder}</span> : null}</td><td>{c.environment}</td><td className="small">{c.rto ? <span title={`Drill of ${dday(c.rto.at)}`}>{c.rto.seconds >= 120 ? `${Math.round(c.rto.seconds / 60)} min` : `${Math.round(c.rto.seconds)} s`}</span> : <span className="muted">never tested</span>}</td>
           <td>{c.worst === 'ok' ? <Badge kind="ok">OK</Badge> : <Badge kind={SEV[c.worst].kind}>{c.issues} {c.issues === 1 ? 'issue' : 'issues'}</Badge>}</td></tr>)}
         {!d.clusters.length ? <tr><td colSpan={4} className="muted">No cluster with a connected agent.</td></tr> : null}</tbody></table></div></Card></>}
   </>;

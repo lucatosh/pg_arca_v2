@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, get, uid } from '../api';
-import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago, dt } from '../ui';
 import { clearDrafts, isTerminal, Op, revalidate, toast, useDraft, useQuery } from '../hooks';
 import { AccessNeed, Issue, Rule, accessCoverage, analyze, clusterNeeds, covers, describe, fill, fromEffective, key, sortRules, stripUntil, tag, untilLabel, untilOf, validCidr, withUntil } from '../hbaLogic';
 
@@ -265,7 +265,7 @@ function RuleLine({ r, n, issues, manual, onMove, onRemove }: { r: Row; n: numbe
   const t = tag(r);
   return <tr>
     <td className="num muted">{n}</td>
-    <td><div className="row wrap gap-s"><Badge kind={t.kind}>{t.label}</Badge>{untilOf(r.comment) != null ? <Badge kind="warn" title={new Date(untilOf(r.comment)!).toLocaleString('en-GB')}>Temporary · {untilLabel(untilOf(r.comment)!)}</Badge> : null}<span>{describe(r)}</span></div>
+    <td><div className="row wrap gap-s"><Badge kind={t.kind}>{t.label}</Badge>{untilOf(r.comment) != null ? <Badge kind="warn" title={dt(untilOf(r.comment)!)}>Temporary · {untilLabel(untilOf(r.comment)!)}</Badge> : null}<span>{describe(r)}</span></div>
       {stripUntil(r.comment) ? <div className="small muted">{stripUntil(r.comment)}</div> : null}
       {issues.map((x, k) => <div key={k} className={`small ${x.level === 'error' ? 'hba-err' : x.level === 'warn' ? 'hba-warn' : 'muted'}`}><Icon n={x.level === 'info' ? 'info' : 'alert'} s={13} /> {x.message}</div>)}</td>
     <td className="mono small muted">{r.type} {r.database} {r.user} {r.address || ''} {r.method}</td>
@@ -442,10 +442,10 @@ function DcsHistory({ c, rev, onDone }: { c: any; rev: string; onDone: () => voi
   return <Card title="Previous versions" actions={<span className="small muted">Kept by the console · last 15</span>} pad={false}>
     {!items.length ? <div className="bd"><p className="muted small">No changes made from here yet. After each change the previous list stays available to go back.</p></div> :
       <div className="tablewrap"><table className="t"><thead><tr><th>Replaced on</th><th>By</th><th className="num">Rules</th><th /></tr></thead><tbody>
-        {items.map(x => <tr key={x.index}><td>{new Date(x.at).toLocaleString('en-GB')} <span className="faint small">({ago(x.at)})</span>{x.seed ? <Badge title="Rules in effect before the list was in the DCS">before the DCS</Badge> : null}</td><td>{x.by}</td><td className="num">{x.rules}</td>
+        {items.map(x => <tr key={x.index}><td>{dt(x.at)} <span className="faint small">({ago(x.at)})</span>{x.seed ? <Badge title="Rules in effect before the list was in the DCS">before the DCS</Badge> : null}</td><td>{x.by}</td><td className="num">{x.rules}</td>
           <td className="num"><Button sm icon="restore" onClick={() => { setPick(x); setForce(false); setErr(null); }}>Restore…</Button></td></tr>)}</tbody></table></div>}
     {pick ? <Modal title="Restore this version?" onClose={() => setPick(null)} footer={<><div className="grow" /><Button onClick={() => setPick(null)}>Cancel</Button><Button kind="primary" busy={busy} onClick={go}>Restore in the DCS</Button></>}>
-      <div className="stack"><p>The list replaced on {new Date(pick.at).toLocaleString('en-GB')} goes back into the Patroni DCS and every member reloads it. Before writing, the agent checks that no active connection (replicas, local administration) gets blocked; the current list is kept among the previous versions.</p>
+      <div className="stack"><p>The list replaced on {dt(pick.at)} goes back into the Patroni DCS and every member reloads it. Before writing, the agent checks that no active connection (replicas, local administration) gets blocked; the current list is kept among the previous versions.</p>
         <pre className="out">{pick.list.join('\n')}</pre>
         {err ? <Banner kind="bad">{err}{/lock out/.test(err) ? <label className="check" style={{ marginTop: 8 }}><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />I know what I am doing: restore anyway</label> : null}</Banner> : null}</div></Modal> : null}
   </Card>;

@@ -112,6 +112,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .badge.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; } .badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .badge.bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; } .badge.info { background: var(--info-soft); color: var(--info); border-color: transparent; } .badge.accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; display: inline-block; } .dot.ok { background: #3fbf6b; box-shadow: 0 0 0 3px rgba(63,191,107,.16); } .dot.warn { background: #e0a030; box-shadow: 0 0 0 3px rgba(224,160,48,.18); } .dot.bad { background: #e5584f; box-shadow: 0 0 0 3px rgba(229,88,79,.2); }
+.protline { display: inline-flex; align-items: baseline; gap: 8px; line-height: 1.35; } .protline .dot { position: relative; top: -1px; }
 
 table.t { width: 100%; border-collapse: collapse; }
 table.t th { text-align: left; font-weight: 600; color: var(--ink-3); font-size: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; background: var(--surface); position: sticky; top: 0; z-index: 1; }
@@ -245,6 +246,7 @@ pre.out { background: var(--surface-2); border: 1px solid var(--line); padding: 
 
 /* ---- strategy ---- */
 .opt { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; } .opt.on { border-color: var(--accent); background: var(--accent-soft); } .opt input { margin-top: 4px; }
+.opt.risky.on { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, var(--surface)); }
 .opt.dis { opacity: .55; cursor: not-allowed; }
 .opt-body { margin: -4px 0 4px 26px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: var(--r); }
 .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline dotted; }
@@ -366,7 +368,7 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .side .wlist { padding: 0 10px 6px; max-height: 30vh; overflow: auto; flex: none; }
 .side .sgadd { background: none; border: 0; color: var(--side-ink-2); cursor: pointer; padding: 2px; border-radius: 5px; display: grid; place-items: center; } .side .sgadd:hover { color: #fff; background: var(--side-hover); }
 .shell[data-rail="1"] .sgadd { display: none; }
-.activitystrip { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: var(--r); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); }
+.activitystrip { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 14px; border-radius: var(--r); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); }
 .activitystrip > span { flex: 1; min-width: 0; }
 /* fleet tree: environment > folder > cluster, each level with its worst state */
 .fleet { display: flex; flex-direction: column; gap: 2px; }
@@ -414,6 +416,11 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .side .sidescroll .clist { flex: none; overflow: visible; }
 .side .sidescroll .wlist { max-height: none; overflow: visible; }
 .fleettable td strong { white-space: nowrap; }
+/* The list must fit without sideways scrolling (an independent review found the names cut off): numbers never wrap, the protection
+   sentence takes two short lines (headline, then the details), and the least decisive columns give way first on narrower screens. */
+.fleettable td.num, .fleettable th.num { white-space: nowrap; }
+.fleettable td.protcell { min-width: 220px; max-width: 340px; } .fleettable td.protcell .protline .faint { display: block; font-size: 12px; }
+@media (max-width: 1360px) { .fleettable .wideonly { display: none; } }
 
 .geolinkf { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px 12px; margin: 0; display: grid; gap: 6px; }
 .geolinkf legend { font-weight: 600; padding: 0 6px; font-size: 13px; }

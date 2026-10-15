@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { get } from './api';
-import { Icon, Button, Progress } from './ui';
+import { Icon, Button, Progress, tm } from './ui';
 import { isTerminal, toast } from './hooks';
 import { OP_LABEL, PHASE, STATUS_LABEL, pctOf } from './pages/shared';
 
@@ -10,7 +10,7 @@ export type LogLine = { at: string; text: string; kind: 'status' | 'log' };
 const EVT = 'arca:oplog'; const POS = 'arca.oplog.geom';
 export const openOpLog = (id: string, title?: string) => window.dispatchEvent(new CustomEvent(EVT, { detail: { id, title } }));
 const readGeom = () => { try { const g = JSON.parse(localStorage.getItem(POS) || ''); if (g && typeof g.x === 'number') return g; } catch { /* default */ } return null; };
-const hhmmss = (iso: string) => new Date(iso).toLocaleTimeString('en-GB', { hour12: false });
+const hhmmss = (iso: string) => tm(iso);
 const STATUS_TEXT: Record<string, string> = { queued: 'queued', leased: 'assigned to the agent', running: 'running', succeeded: 'succeeded', failed: 'failed', cancelled: 'cancelled', expired: 'expired' };
 const lineText = (l: LogLine) => {
   if (l.kind === 'status') { const [st, ...rest] = l.text.split(': '); return `${STATUS_TEXT[st] ? STATUS_TEXT[st][0].toUpperCase() + STATUS_TEXT[st].slice(1) : st}${rest.length ? ' — ' + rest.join(': ') : ''}`; }

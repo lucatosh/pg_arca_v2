@@ -8,6 +8,7 @@
  * while data work runs" rule (a failover may be urgent); the others are never right.
  */
 import type { Operation } from './store';
+import { OP_SPECS } from './optypes';
 
 const ACTIVE = new Set(['queued', 'leased', 'running']);
 const BACKUP_SETS_READERS = ['restore_instance', 'restore_database', 'restore_object', 'restore_drill', 'backup_verify', 'restore_plan', 'backup_catalog'];
@@ -65,6 +66,7 @@ export function conflictFor(operations: Operation[], clusterId: string, type: st
 
 /** What is running or waiting on a cluster, for the "who is doing what" strip of the cluster page. */
 export function activityOf(operations: Operation[], clusterId: string) {
-  return operations.filter(o => o.clusterId === clusterId && ACTIVE.has(o.status) && !(o.params as any)?.background)
+  // what changes nothing (reading settings, listing, planning) is not "running on this cluster" for the DBAs who look at the strip
+  return operations.filter(o => o.clusterId === clusterId && ACTIVE.has(o.status) && !(o.params as any)?.background && OP_SPECS[o.type]?.mutating !== false)
     .map(o => ({ id: o.id, type: o.type, what: it(o.type), status: o.status, createdBy: o.createdBy, createdAt: o.createdAt, progress: o.progress?.phase || null, nodeId: o.nodeId }));
 }

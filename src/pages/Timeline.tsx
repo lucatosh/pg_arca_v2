@@ -1,8 +1,11 @@
 import React, { useRef } from 'react';
 import { TYPE_LABEL, SetRow } from './Backup';
+import { dt } from '../ui';
 
 export interface TlEvent { at: number; label: string }
-const fmt = (ms: number) => new Date(ms).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'medium' });
+const fmt = (ms: number) => dt(ms);
+/** The axis has three labels side by side: day and minute are enough there (the full point is in the slider value). */
+const axis = (ms: number) => new Date(ms).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
 
 /** The recovery timeline: backups as ticks, the recoverable window shaded, a draggable pointer for the target instant. */
 export function RecoveryTimeline({ sets, from, to, value, onChange, events = [], broken }: { sets: SetRow[]; from: number; to: number; value: number | null; onChange: (ms: number | null) => void; events?: TlEvent[]; broken?: boolean }) {
@@ -27,7 +30,7 @@ export function RecoveryTimeline({ sets, from, to, value, onChange, events = [],
       {events.map((e, i) => <div key={i} className="evt" style={{ left: `${pct(e.at)}%` }} title={e.label} />)}
       <div className="ptr" style={{ left: `${Math.min(pct(cur), 99.3)}%` }} />
     </div>
-    <div className="axis"><span>{fmt(from)}</span><span>{fmt(from + span / 2)}</span><span>{fmt(to)}</span></div>
+    <div className="axis"><span>{axis(from)}</span><span>{axis(from + span / 2)}</span><span>{axis(to)}</span></div>
     <div className="row wrap small muted" style={{ marginTop: 8, gap: 16 }}>
       <span><i className="tick F" style={{ position: 'static', display: 'inline-block', height: 12, width: 4, marginRight: 6 }} />Full</span>
       <span><i className="tick D" style={{ position: 'static', display: 'inline-block', height: 12, marginRight: 6 }} />Differential</span>

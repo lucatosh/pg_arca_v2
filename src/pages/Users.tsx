@@ -17,7 +17,7 @@ export function UsersPage({ me }: { me: string }) {
         <td>{u.disabled ? <Badge kind="warn">Disabled</Badge> : <Badge kind="ok">Active</Badge>}</td>
         <td className="num">{u.bootstrap ? null : <div className="row gap-s" style={{ justifyContent: 'flex-end' }}>
           <Button sm onClick={() => act(() => api('PATCH', `/api/users/${encodeURIComponent(u.user)}`, { disabled: !u.disabled }), u.disabled ? 'User re-enabled' : 'User disabled')}>{u.disabled ? 'Re-enable' : 'Disable'}</Button>
-          {u.source === 'ldap' ? null : <Button sm onClick={() => setReset(u.user)}>New password</Button>}<Button sm kind="ghost" aria-label={`Delete ${u.user}`} onClick={() => setDel(u.user)}>Delete</Button></div>}</td></tr>)}</tbody></table></div>}</Card>
+          {u.source === 'ldap' ? null : <Button sm onClick={() => setReset(u.user)}>New password</Button>}<Button sm kind="danger" aria-label={`Delete ${u.user}`} onClick={() => setDel(u.user)}>Delete</Button></div>}</td></tr>)}</tbody></table></div>}</Card>
     <Card title="What each role can do"><dl className="kv">{Object.entries(ROLE).map(([k, [l, d]]) => <React.Fragment key={k}><dt>{l}</dt><dd>{d}</dd></React.Fragment>)}</dl></Card>
     <ApiTokens />
     <Directory />
