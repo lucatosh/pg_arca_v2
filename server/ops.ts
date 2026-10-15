@@ -17,7 +17,7 @@ import path from 'path';
  *    ago while the agent was offline must not fire when it reconnects).
  */
 import { laneOf, OP_SPECS } from './optypes';
-import { Store, Operation, OpStatus, AppState, newId, nowIso } from './store';
+import { Store, Operation, OpStatus, AppState, newId, nowIso, loadSecretKey, encrypt, decrypt } from './store';
 
 export const MAX_ATTEMPTS = 5;
 const TERMINAL: OpStatus[] = ['succeeded', 'failed', 'expired', 'cancelled'];
@@ -114,14 +114,33 @@ function setResult(op: Operation, result: any) {
 /** The operation as the API returns it: with its full result, also when that lives in a side file. */
 export function withResult(op: Operation): Operation {
   const ref = (op as any).resultRef;
-  if (!ref || !resultsDir) return op;
-  try { return { ...op, result: JSON.parse(fs.readFileSync(path.join(resultsDir, path.basename(ref)), 'utf8')) }; }
-  catch { return op; }                                      // file gone: the summary is what is left
+  if (!ref || !resultsDir) return redactOp(op);
+  try { return redactOp({ ...op, result: JSON.parse(fs.readFileSync(path.join(resultsDir, path.basename(ref)), 'utf8')) }); }
+  catch { return redactOp(op); }                            // file gone: the summary is what is left
 }
 function dropResultFiles(ops: Operation[]) {
   if (!resultsDir) return;
   for (const o of ops) { const ref = (o as any).resultRef; if (ref) { try { fs.unlinkSync(path.join(resultsDir, path.basename(ref))); } catch { /* already gone */ } } }
 }
+
+/** Credentials that travel in operation parameters (object-storage keys of offsite_set, the password of an explicit delivery address). An operation
+ *  record lives for days in the state file, its snapshots and backups, and is readable by every role: these fields are stored encrypted with the
+ *  console key (sealParams, at submission), handed to the agent in clear (unsealParams, at lease) and never returned by the API (redactParams). */
+const SECRET_FIELDS: [string, string][] = [['offsite', 'access_key'], ['offsite', 'secret_key'], ['into', 'password']];
+const SEALED = 'sealed:';
+const mapSecrets = (params: any, f: (v: string) => string): any => {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return params;
+  let out = params;
+  for (const [a, b] of SECRET_FIELDS) {
+    const v = out?.[a]?.[b];
+    if (typeof v === 'string' && v !== '') out = { ...out, [a]: { ...out[a], [b]: f(v) } };
+  }
+  return out;
+};
+export function sealParams(dir: string, params: any): any { return mapSecrets(params, v => (v.startsWith(SEALED) ? v : SEALED + encrypt(loadSecretKey(dir), v))); }
+export function unsealParams(dir: string, params: any): any { return mapSecrets(params, v => { if (!v.startsWith(SEALED)) return v; try { return decrypt(loadSecretKey(dir), v.slice(SEALED.length)); } catch { return ''; } }); }
+export function redactParams(params: any): any { return mapSecrets(params, () => '•••'); }
+export const redactOp = <T extends { params?: any }>(op: T): T => (op && op.params ? { ...op, params: redactParams(op.params) } : op);
 
 function push(op: Operation, status: OpStatus, note?: string) {
   op.status = status;
@@ -143,7 +162,7 @@ export function submit(store: Store, input: SubmitInput): Promise<{ op: Operatio
     const key = input.idempotencyKey || newId('auto');
     const existing = draft.operations.find(o => o.idempotencyKey === key);
     if (existing) {
-      if (existing.type !== input.type || existing.clusterId !== input.clusterId || stable(existing.params) !== stable(input.params || {})) {
+      if (existing.type !== input.type || existing.clusterId !== input.clusterId || stable(redactParams(existing.params)) !== stable(redactParams(input.params || {}))) {
         throw Object.assign(new Error('idempotency key reused with a different request'), { code: 'IDEMPOTENCY_CONFLICT' });
       }
       return { op: existing, created: false };
@@ -151,7 +170,7 @@ export function submit(store: Store, input: SubmitInput): Promise<{ op: Operatio
     const ts = nowIso();
     const op: Operation = {
       id: newId('op'), idempotencyKey: key, type: input.type, clusterId: input.clusterId, nodeId: input.nodeId,
-      params: input.params || {}, status: 'queued', createdAt: ts, updatedAt: ts,
+      params: sealParams(store.dir, input.params || {}), status: 'queued', createdAt: ts, updatedAt: ts,
       createdBy: input.createdBy || 'admin', attempts: 0, ttlSeconds: input.ttlSeconds ?? 900,
       history: [{ at: ts, status: 'queued' }],
     };

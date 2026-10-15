@@ -40,3 +40,12 @@ e.nodes.n1.snapshot.cluster_key = { a: 1 }; reconcileCluster(e, 'n1'); assert.eq
 // 3. a cluster that already has another identity is never overwritten or merged
 const f: any = mk(); f.clusters[0].clusterKey = 'sysid:1'; reconcileCluster(f, 'n1'); assert.equal(f.clusters[0].clusterKey, 'sysid:1'); assert.equal(f.clusters.length, 5);
 console.log('reconcile tests OK');
+
+// 5. a node approved into another ENVIRONMENT that reports production's key is not merged into production (it could be a compromised dev host):
+//    refused and audited, both clusters stay; same environment merges as before
+{ const f: any = mk(); f.clusters.find((c: any) => c.id === 'cl-a').environment = 'prod'; f.clusters.find((c: any) => c.id === 'cl-b').environment = 'dev';
+  reconcileCluster(f, 'n1'); reconcileCluster(f, 'n2');
+  assert.ok(f.clusters.some((c: any) => c.id === 'cl-a') && f.clusters.some((c: any) => c.id === 'cl-b'), 'no cross-environment merge');
+  assert.equal(f.nodes.n2.clusterId, 'cl-b'); assert.ok(f.audit.some((a: any) => a.action === 'cluster.merge_refused' && a.details.otherEnvironment === 'prod'));
+  f.clusters.find((c: any) => c.id === 'cl-b').environment = 'prod'; reconcileCluster(f, 'n2'); assert.ok(!f.clusters.some((c: any) => c.id === 'cl-a'), 'same environment: merged'); }
+console.log('reconcile OK');

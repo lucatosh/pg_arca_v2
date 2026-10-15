@@ -169,7 +169,12 @@ import { requiredRole } from '../../server/auth';
   assert(!JSON.stringify(put.body).includes('secretXYZ9'), 'the secret URL is never returned'); assert(put.body.webhooks[0].urlMasked.endsWith('XYZ9'));
   assert.strictEqual(requiredRole('GET', '/api/notifications'), 'admin'); assert.strictEqual(requiredRole('PUT', '/api/notifications'), 'admin'); assert.strictEqual(requiredRole('GET', '/api/briefing'), 'viewer');
   const tick = async (t: number) => { await store.mutate(d => { (d.nodes.n1 as any).lastSeen = iso(t); (d.nodes.n3 as any).lastSeen = iso(t); }); return notifyTick(store, t, send); };
-  let r = await tick(now); assert.strictEqual(sent.length, 1); assert(r[wid].sent >= 3); assert(/archiver|WAL|Slot/i.test(sent[0].body.text));
+  assert(!JSON.stringify(store.peek().settings.notifications).includes('secretXYZ9'), 'the URL is encrypted at rest (state file, snapshots, backups)');
+  // a URL saved in clear by an earlier release keeps working and is re-encrypted on the next save
+  await store.mutate(d => { d.settings.notifications.webhooks[0].url = 'https://hooks.example/services/T0/B0/secretXYZ9'; });
+  assert.strictEqual((await call('PUT', '/api/notifications', { reminderHours: 24, webhooks: [{ id: wid, name: 'Slack DBA', format: 'slack', minSeverity: 'critical', enabled: true }] })).status, 200);
+  assert(String(store.peek().settings.notifications.webhooks[0].url).startsWith('enc:'));
+  let r = await tick(now); assert.strictEqual(sent.length, 1); assert(r[wid].sent >= 3); assert.strictEqual(sent[0].url, 'https://hooks.example/services/T0/B0/secretXYZ9', 'sent to the real URL'); assert(/archiver|WAL|Slot/i.test(sent[0].body.text));
   assert(!sent[0].body.text.includes('good-db'));
   r = await tick(now + 60_000); assert.strictEqual(sent.length, 1, 'nothing new -> nothing sent');
   r = await tick(now + 25 * 3600_000); assert.strictEqual(sent.length, 2, 'reminder after 24h'); assert(/Still open/.test(sent[1].body.text));

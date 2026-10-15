@@ -134,8 +134,9 @@ class Conn {
       let m: Tlv;
       try { m = readTlv(this.buf, 0); } catch { return; }                           // incomplete message: wait for more
       this.buf = this.buf.subarray(m.end);
-      const parts = readSeq(m.body); if (parts.length < 2) continue;
-      const id = readInt(parts[0]); const op = parts[1];
+      let id: number, op: Tlv;
+      try { const parts = readSeq(m.body); if (parts.length < 2) continue; id = readInt(parts[0]); op = parts[1]; }
+      catch (e: any) { this.fail(new Error(`malformed answer from the directory (${e?.message || e})`)); return; }     // a bad server must not crash the console
       const w = this.waiters.get(id); if (!w) continue;
       w.msgs.push(op);
       if (op.tag !== 0x64 && op.tag !== 0x73) { this.waiters.delete(id); w.resolve(w.msgs); }     // entries and references keep the request open

@@ -6,12 +6,17 @@
  *  - the webhook URL is a secret (Slack URLs embed a token): it is never returned to the browser, only a masked form
  */
 import crypto from 'crypto';
-import { Store, nowIso } from './store';
+import { Store, nowIso, loadSecretKey, encrypt, decrypt } from './store';
 import { audit } from './ops';
 import { evaluate, Issue, Severity, SEV_RANK } from './health';
 
 export interface Webhook { id: string; name: string; url: string; format: 'generic' | 'slack'; minSeverity: Severity; enabled: boolean }
 export type Sender = (url: string, body: any) => Promise<{ ok: boolean; status?: number; error?: string }>;
+/** Webhook URLs usually carry a secret (Slack/Teams tokens): stored encrypted with the console key (`enc:` prefix), decrypted only to send. A URL stored in
+ *  clear by an earlier release still works and is re-encrypted the next time the channels are saved. */
+const ENC = 'enc:';
+export const sealUrl = (dir: string, url: string) => (url.startsWith(ENC) ? url : ENC + encrypt(loadSecretKey(dir), url));
+export const openUrl = (dir: string, url: string) => { if (!url.startsWith(ENC)) return url; try { return decrypt(loadSecretKey(dir), url.slice(ENC.length)); } catch { return ''; } };
 
 export const defaultSender: Sender = async (url, body) => {
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 8000);
@@ -55,7 +60,7 @@ export async function notifyTick(store: Store, now = Date.now(), send: Sender = 
     const curKeys = new Set(cur.map(i => i.key));
     const resolved = Object.entries(known).filter(([k]) => !curKeys.has(k)).map(([k, v]: any) => ({ key: k, title: v.title, clusterName: v.clusterName }));
     if (!opened.length && !reminders.length && !resolved.length) continue;
-    const r = await send(w.url, payload(w, { opened, reminders, resolved }));
+    const r = await send(openUrl(store.dir, w.url), payload(w, { opened, reminders, resolved }));
     await store.mutate(d => {
       const all = (d.settings.notifyState ||= {});
       const s = (all[w.id] ||= { issues: {} });
@@ -82,7 +87,7 @@ export function mountNotifyRoutes(app: any, store: Store, send: Sender = default
     const s = store.peek().settings; const cfg = s.notifications || { webhooks: [], reminderHours: 24 };
     return { reminderHours: cfg.reminderHours || 24, webhooks: (cfg.webhooks || []).map((w: Webhook) => {
       const ns = (s.notifyState || {})[w.id] || {};
-      return { id: w.id, name: w.name, urlMasked: maskUrl(w.url), format: w.format, minSeverity: w.minSeverity, enabled: w.enabled, lastOk: ns.lastOk, lastError: ns.lastError, open: Object.keys(ns.issues || {}).length };
+      return { id: w.id, name: w.name, urlMasked: maskUrl(openUrl(store.dir, w.url)), format: w.format, minSeverity: w.minSeverity, enabled: w.enabled, lastOk: ns.lastOk, lastError: ns.lastError, open: Object.keys(ns.issues || {}).length };
     }) };
   };
   app.get('/api/notifications', (_req: any, res: any) => res.json(view()));
@@ -96,12 +101,12 @@ export function mountNotifyRoutes(app: any, store: Store, send: Sender = default
     const next: Webhook[] = [];
     for (const w of list) {
       const old = prev.find(p => p.id === w.id);
-      const url = w.url ?? old?.url;
+      const url = w.url ?? (old ? openUrl(store.dir, old.url) : undefined);
       const e = validUrl(url);
       if (e || !String(w.name || '').trim() || String(w.name).length > 60) return res.status(400).json({ error: 'invalid_webhook', message: e || 'Name required (max 60 characters).' });
       if (!['generic', 'slack'].includes(w.format)) return res.status(400).json({ error: 'invalid_format' });
       if (!['critical', 'warning', 'info'].includes(w.minSeverity)) return res.status(400).json({ error: 'invalid_severity' });
-      next.push({ id: old?.id || 'wh_' + crypto.randomBytes(5).toString('hex'), name: String(w.name).trim(), url, format: w.format, minSeverity: w.minSeverity, enabled: w.enabled !== false });
+      next.push({ id: old?.id || 'wh_' + crypto.randomBytes(5).toString('hex'), name: String(w.name).trim(), url: sealUrl(store.dir, url), format: w.format, minSeverity: w.minSeverity, enabled: w.enabled !== false });
     }
     await store.mutate(d => {
       d.settings.notifications = { webhooks: next, reminderHours: rh };
@@ -114,7 +119,7 @@ export function mountNotifyRoutes(app: any, store: Store, send: Sender = default
   app.post('/api/notifications/test', async (req: any, res: any) => {
     const w = (store.peek().settings.notifications?.webhooks || []).find((x: Webhook) => x.id === req.body?.id);
     if (!w) return res.status(404).json({ error: 'not_found' });
-    const r = await send(w.url, payload(w, { opened: [], reminders: [], resolved: [], test: true }));
+    const r = await send(openUrl(store.dir, w.url), payload(w, { opened: [], reminders: [], resolved: [], test: true }));
     res.status(r.ok ? 200 : 502).json(r.ok ? { ok: true } : { ok: false, error: r.error });
   });
 }

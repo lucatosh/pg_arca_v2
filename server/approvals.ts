@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import { sealParams } from './ops';
+import { hbaOpenRule } from './optypes';
 /**
  * Four-eyes approval for risky operations, configurable per environment (settings.advanced.approvals = { prod: true, ... }).
  * A risky operation requested on a protected environment is NOT executed: it becomes a pending request that a DIFFERENT admin must approve
@@ -9,6 +11,7 @@ export const APPROVABLE_ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 
 /** What counts as risky: it changes live access, live parameters, the HA topology or overwrites/deletes live data. */
 export function isRisky(type: string, params: any = {}): boolean {
+  if ((type === 'hba_apply' || type === 'hba_cluster_apply' || type === 'hba_restore') && hbaOpenRule(params.rules)) return true;   // trust / clear-text password towards the network: four-eyes
   if (type === 'pg_restart' && params.dry_run) return false;                 // only says HOW it would restart
   if (type === 'restore_db_swap' && params.dry_run) return false;
   if (type === 'restore_database' && params.replace_original) return true;
@@ -57,12 +60,12 @@ export function mountAdvancedRoutes(app: any, store: any, audit: (d: any, e: any
 }
 
 /** Create (or return the existing) pending request for the same user action (same Idempotency-Key). */
-export async function requestApproval(store: any, audit: (d: any, e: any) => void, a: { cluster: any; type: string; params: any; nodeId?: string; ttlSeconds?: number; key: string; actor: string }) {
+export async function requestApproval(store: any, audit: (d: any, e: any) => void, a: { cluster: any; type: string; params: any; nodeId?: string; ttlSeconds?: number; key: string; actor: string; owner?: string }) {
   const st = store.peek();
   const dup = (st.settings.approvalRequests || []).find((r: any) => r.status === 'pending' && r.idempotencyKey === a.key);
   if (dup) return dup;
-  const rec = { id: 'apr_' + crypto.randomBytes(5).toString('hex'), status: 'pending', clusterId: a.cluster.id, clusterName: a.cluster.name, environment: a.cluster.environment, type: a.type, params: a.params,
-    nodeId: a.nodeId, ttlSeconds: a.ttlSeconds, idempotencyKey: a.key, requestedBy: a.actor, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), summary: describeOp(a.type, a.params) };
+  const rec = { id: 'apr_' + crypto.randomBytes(5).toString('hex'), status: 'pending', clusterId: a.cluster.id, clusterName: a.cluster.name, environment: a.cluster.environment, type: a.type, params: sealParams(store.dir, a.params),
+    nodeId: a.nodeId, ttlSeconds: a.ttlSeconds, idempotencyKey: a.key, requestedBy: a.actor, requestedByOwner: a.owner || undefined, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), summary: describeOp(a.type, a.params) };
   await store.mutate((d: any) => { const l = (d.settings.approvalRequests ||= []); l.push(rec); if (l.length > 200) l.splice(0, l.length - 200);
     audit(d, { clusterId: a.cluster.id, actor: a.actor, action: 'approval.requested', status: 'OK', details: { id: rec.id, type: a.type, summary: rec.summary } }); });
   return rec;

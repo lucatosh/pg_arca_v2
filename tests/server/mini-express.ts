@@ -12,13 +12,13 @@ export class MiniApp {
   get(p: string, h: H) { this.add('GET', p, h); } post(p: string, h: H) { this.add('POST', p, h); }
   delete(p: string, h: H) { this.add('DELETE', p, h); } patch(p: string, h: H) { this.add('PATCH', p, h); } put(p: string, h: H) { this.add('PUT', p, h); }
   disable() {}
-  async call(method: string, url: string, opts: { body?: any; headers?: Record<string, string> } = {}) {
+  async call(method: string, url: string, opts: { body?: any; headers?: Record<string, string>; ip?: string } = {}) {
     const [pathname, qs] = url.split('?');
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(opts.headers || {})) headers[k.toLowerCase()] = v;
     if (opts.body !== undefined) { headers['content-type'] ||= 'application/json'; headers['content-length'] ||= String(JSON.stringify(opts.body).length); }
     const req: any = { method, path: pathname, url, headers, body: opts.body ?? {}, query: Object.fromEntries(new URLSearchParams(qs || '')),
-      params: {}, socket: { remoteAddress: '10.9.9.9' }, protocol: 'http', secure: false };
+      params: {}, socket: { remoteAddress: opts.ip || '10.9.9.9' }, ip: opts.ip, protocol: 'http', secure: false };
     let status = 200, payload: any, done: () => void; const finished = new Promise<void>(r => (done = r));
     const outHeaders: Record<string, string> = {};
     const res: any = {

@@ -33,14 +33,14 @@ import { mountAuthRoutes, mountApiTokenRoutes, requireAdmin, requiredRole, can }
   // every mutating route that is mounted: print its required role so a human can review, and never leave one open to viewers by accident
   for (const r of app.routes.filter(r => r.method !== 'GET')) {
     const sample = r.re.source.replace(/^\^|\$$/g, '').replace(/\(\[\^\/\]\+\)/g, 'x').replace(/\\\//g, '/');
-    if (sample.startsWith('/api/auth/') || sample.startsWith('/api/agent/')) continue;
+    if (['/api/auth/setup', '/api/auth/login', '/api/auth/logout', '/api/auth/change-password'].includes(sample) || sample.startsWith('/api/agent/')) continue;
     assert.notEqual(requiredRole(r.method, sample), 'viewer', `${r.method} ${sample} must not be open to viewers`);
   }
 
   const setup = await call('POST', '/api/auth/setup', { username: 'admin', password: PW }); const A = setup.headers['set-cookie'].split(';')[0];
   // no mounted API route may answer without a session, except the explicit public ones (login, agent gateway, liveness)
   const SAMPLE = (r: any) => r.re.source.replace(/^\^|\$$/g, '').replace(/\(\[\^\/\]\+\)/g, 'x').replace(/\\\//g, '/');
-  for (const r of app.routes) { const u = SAMPLE(r); if (!u.startsWith('/api/') || u.startsWith('/api/auth/') || u.startsWith('/api/agent/') || u === '/api/health') continue;
+  for (const r of app.routes) { const u = SAMPLE(r); if (!u.startsWith('/api/') || ['/api/auth/status', '/api/auth/setup', '/api/auth/login', '/api/auth/logout'].includes(u) || u.startsWith('/api/agent/') || u === '/api/health') continue;
     const x = await call(r.method, u, r.method === 'GET' ? undefined : {}); assert.equal(x.status, 401, `${r.method} ${u} must require login (got ${x.status})`); }
   assert.equal((await call('POST', '/api/users', { username: 'constructor', password: 'long-enough-password', role: 'viewer' }, A)).status, 400);
   assert.equal((await call('DELETE', '/api/users/constructor', undefined, A)).status, 404);

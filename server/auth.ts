@@ -22,11 +22,15 @@ const sessions = new Map<string, { user: string; exp: number }>();
  *  everybody else behind the same proxy / NAT; plus a loose cap per source address against guessing across many user names. Entries expire on their own. */
 const failures = new Map<string, { n: number; until: number; last: number }>();
 const ipWindow = new Map<string, { n: number; since: number }>();
-const IP_MAX_FAILS = 30, IP_WINDOW_MS = 10 * 60_000;
+/** ...and a cap per user name whatever the source address: a guesser behind a proxy that forwards a different X-Forwarded-For on every request
+ *  (or many addresses) still gets at most USER_MAX_FAILS attempts on one account per window. */
+const userWindow = new Map<string, { n: number; since: number }>();
+const IP_MAX_FAILS = 30, IP_WINDOW_MS = 10 * 60_000, USER_MAX_FAILS = 50;
 function pruneFailures(now: number) {
-  if (failures.size + ipWindow.size < 5000) return;
+  if (failures.size + ipWindow.size + userWindow.size < 5000) return;
   for (const [k, v] of failures) if (now - v.last > 3600_000) failures.delete(k);
   for (const [k, v] of ipWindow) if (now - v.since > IP_WINDOW_MS) ipWindow.delete(k);
+  for (const [k, v] of userWindow) if (now - v.since > IP_WINDOW_MS) userWindow.delete(k);
 }
 let DUMMY: { salt: string; hash: string } | null = null;          // an unknown user costs the same scrypt as a known one: no user enumeration by timing
 
@@ -138,18 +142,21 @@ export function bootstrapAdminFromEnv(store: Store) {
   }
 }
 
-/** Gate for operator-facing /api routes. Agent routes and auth routes are exempt. */
+const PUBLIC_AUTH = new Set(['/api/auth/status', '/api/auth/setup', '/api/auth/login', '/api/auth/logout', '/api/auth/change-password']);
+/** Gate for operator-facing /api routes. Agent routes and the sign-in routes are exempt. */
 export function requireAdmin(store: Store) {
   return (req: Request, res: Response, next: NextFunction) => {
     const p = req.path.toLowerCase();          // Express routes case-insensitively: '/API/users' must not slip past a case-sensitive gate
-    if (p.startsWith('/api/auth/') || p.startsWith('/api/agent/') || p === '/api/health' || p === '/api/metrics' || !p.startsWith('/api/')) return next();   // /api/metrics has its own bearer token
+    // public: only the sign-in routes themselves (status, setup, login, logout, change-password - the last checks its own session), the agent gateway
+    // (node token), liveness and /api/metrics (its own bearer token). Everything else under /api/auth/ (the directory settings) is gated like any route.
+    if (PUBLIC_AUTH.has(p) || p.startsWith('/api/agent/') || p === '/api/health' || p === '/api/metrics' || !p.startsWith('/api/')) return next();
     if (!store.peek().settings.admin) return res.status(428).json({ error: 'setup_required', message: 'Create the administrator account first.' });
     let u = sessionUser(req); let role: Role | null = u ? roleOf(store, u) : null;
     if (!u) {
       // automation (CI, Ansible, scripts): a bearer API token created by an administrator, with its own role and expiry; actor = "token:<label>"
       const t = apiTokenOf(store, req);
       if (t === 'bad') return res.status(401).json({ error: 'unauthenticated', message: 'API token unknown, revoked or expired.' });
-      if (t) { u = `token:${t.label}`; role = t.role; touchApiToken(store, t.id); }
+      if (t) { u = `token:${t.label}`; role = t.role; (req as any).tokenOwner = t.createdBy; touchApiToken(store, t.id); }
     }
     if (!u) return res.status(401).json({ error: 'unauthenticated' });
     if (!role) return res.status(401).json({ error: 'unauthenticated' });          // user removed or disabled while logged in
@@ -257,34 +264,40 @@ export function mountAuthRoutes(app: any, store: Store) {
     const { username, password } = req.body || {};
     const uname = typeof username === 'string' ? username.slice(0, 64) : '?';
     const fk = ip + '\u0000' + uname.toLowerCase();
-    const f = failures.get(fk); const w = ipWindow.get(ip);
+    const f = failures.get(fk); const w = ipWindow.get(ip); const uw = userWindow.get(uname.toLowerCase());
     const ipBlocked = !!w && now - w.since < IP_WINDOW_MS && w.n >= IP_MAX_FAILS;
-    if ((f && f.until > now) || ipBlocked) {
-      const until = ipBlocked ? w!.since + IP_WINDOW_MS : f!.until;
+    const userBlocked = !!uw && now - uw.since < IP_WINDOW_MS && uw.n >= USER_MAX_FAILS;
+    if ((f && f.until > now) || ipBlocked || userBlocked) {
+      const until = ipBlocked ? w!.since + IP_WINDOW_MS : userBlocked ? uw!.since + IP_WINDOW_MS : f!.until;
       return res.status(429).json({ error: 'too_many_attempts', retryAfterSeconds: Math.ceil((until - now) / 1000) });
     }
+    const charge = () => {                                                              // one more failed attempt from this address on this account
+      const n = (failures.get(fk)?.n || 0) + 1;
+      failures.set(fk, { n, until: now + Math.min(60_000, 500 * 2 ** n), last: now });
+      const w2 = ipWindow.get(ip); if (!w2 || now - w2.since >= IP_WINDOW_MS) ipWindow.set(ip, { n: 1, since: now }); else w2.n++;
+      const u2 = userWindow.get(uname.toLowerCase()); if (!u2 || now - u2.since >= IP_WINDOW_MS) userWindow.set(uname.toLowerCase(), { n: 1, since: now }); else u2.n++;
+    };
     const st = store.peek().settings; const adm = st.admin;
     const local: UserRec | undefined = typeof username === 'string' ? (adm && username === adm.user ? adm : own(st.users, username)) : undefined;
     const rec = local && local.source !== 'ldap' ? local : undefined;                   // a directory user has no local password
     const pw = typeof password === 'string' ? password : '';
     const good = verifyPassword(pw, rec || (DUMMY ||= hashPassword('pg_arca-dummy-password')));
     let ok = !!rec && typeof password === 'string' && !!roleOf(store, username) && good;
-    let viaLdap: { dn: string; role: Role; groups: string[] } | null = null;
+    let viaLdap: { dn: string; role: Role; groups: string[] } | null = null; let viaLdapTried = false;
     const ldapCfg = ldapConfig(store);
     if (!ok && !rec && ldapCfg && typeof username === 'string' && pw) {                 // not a local account: ask the directory
       if (local?.disabled) { /* disabled here wins over the directory */ } else {
+        charge(); viaLdapTried = true;                                                  // counted BEFORE asking the directory: parallel attempts cannot multiply the bind calls
         const r = await authenticateLdap(ldapCfg, username, pw);
         if (r.ok && r.role && r.dn) { viaLdap = { dn: r.dn, role: r.role, groups: r.groups || [] }; ok = true; }
         else if (r.error === 'directory_unavailable' || r.error === 'no_role') {
-          await store.mutate(d => audit(d, { actor: uname, action: 'auth.login', status: 'FAILED', details: { ip, ldap: r.error, detail: r.detail } }));
-          return res.status(r.error === 'no_role' ? 403 : 503).json({ error: r.error, message: r.error === 'no_role' ? 'The directory knows you, but no group of yours is mapped to a console role.' : `The directory cannot be reached: ${r.detail || ''}`.trim() });
+          await store.mutate(d => audit(d, { actor: uname, action: 'auth.login', status: 'FAILED', details: { ip, ldap: r.error, detail: r.detail } }));   // the detail (host names, certificate errors) stays in the audit log, for administrators
+          return res.status(r.error === 'no_role' ? 403 : 503).json({ error: r.error, message: r.error === 'no_role' ? 'The directory knows you, but no group of yours is mapped to a console role.' : 'The directory cannot be reached right now: ask an administrator (the reason is in the audit log).' });
         }
       }
     }
     if (!ok) {
-      const n = (f?.n || 0) + 1;
-      failures.set(fk, { n, until: now + Math.min(60_000, 500 * 2 ** n), last: now });
-      if (!w || now - w.since >= IP_WINDOW_MS) ipWindow.set(ip, { n: 1, since: now }); else w.n++;
+      if (!viaLdapTried) charge();
       await store.mutate(d => audit(d, { actor: uname, action: 'auth.login', status: 'FAILED', details: { ip } }));
       return res.status(401).json({ error: 'invalid_credentials' });
     }

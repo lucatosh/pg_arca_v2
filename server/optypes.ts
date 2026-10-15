@@ -144,6 +144,18 @@ function targetErr(p: Record<string, any>): string | null {
   return null;
 }
 const hbaRulesErr = (p: Record<string, any>): string | null => (!Array.isArray(p.rules) || p.rules.length > 200 || p.rules.some((r: any) => !r || typeof r !== 'object')) ? 'rules must be a list of at most 200 objects' : null;
+/** A rule that opens the server to the network without a password (trust) or with a clear-text one (password), outside the host itself: an
+ *  administrator's decision, never an operator's. Returns the offending rule's text, or null. */
+export function hbaOpenRule(rules: any): string | null {
+  if (!Array.isArray(rules)) return null;
+  const localAddr = (a: string) => /^(127\.\d+\.\d+\.\d+(\/\d+)?|::1(\/\d+)?|localhost|samehost)$/i.test(a);
+  for (const r of rules) {
+    if (!r || typeof r !== 'object') continue;
+    const m = String(r.method || '').toLowerCase(), t = String(r.type || '').toLowerCase(), a = String(r.address || '').trim();
+    if ((m === 'trust' || m === 'password') && t !== 'local' && !localAddr(a)) return `${t || 'host'} ${r.database ?? 'all'} ${r.user ?? 'all'} ${a || '(no address)'} ${m}`;
+  }
+  return null;
+}
 const stageErr = (p: any) => !/^pgarca_stage_[A-Za-z0-9_$]{1,50}$/.test(String(p.stage_db ?? '')) ? 'stage_db must be a pg_arca quarantine database' : (!specOk(String(p.object ?? ''), [3]) ? 'object must be database.schema.name' : null);
 const keysErr = (p: any) => {
   for (const f of ['restore_keys', 'delete_keys']) {
@@ -250,14 +262,14 @@ Object.assign(OP_SPECS, {
 } as Record<string, OpSpec>);
 
 /** Lane of an operation type: 'data' ops (backup/restore) run in parallel to 'control' ops (HA, parameters). */
-export const laneOf = (type: string): string => OP_SPECS[type]?.laneKey || OP_SPECS[type]?.lane || 'control';
+export const laneOf = (type: string): string => (Object.prototype.hasOwnProperty.call(OP_SPECS, type) && (OP_SPECS[type]?.laneKey || OP_SPECS[type]?.lane)) || 'control';
 
 /** Parameters the console itself resolves when it hands an operation to the agent (withEphemeral): a client must not be able to pre-fill them,
  *  because they carry a directory the agent will run binaries from. */
 const RESERVED_PARAMS = ['ephemeral'];
 export function validateOp(type: string, params: Record<string, any>): string | null {
-  const spec = OP_SPECS[type];
-  if (!spec) return `unsupported operation '${type}'`;
+  const spec = Object.prototype.hasOwnProperty.call(OP_SPECS, type) ? OP_SPECS[type] : undefined;     // 'constructor', 'toString': not operations
+  if (!spec || typeof spec.validate !== 'function') return `unsupported operation '${type}'`;
   const p = params || {};
   if (typeof p === 'object' && !Array.isArray(p)) for (const k of RESERVED_PARAMS) if (k in p) return `${k} is set by the console, not by the client`;
   return spec.validate(p);

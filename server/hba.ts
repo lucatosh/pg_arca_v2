@@ -1,5 +1,5 @@
 /** pg_hba management API: rule templates (customisable, with variables) and propagation of one rule set to every node of a cluster. */
-import { validateOp } from './optypes';
+import { hbaOpenRule, validateOp } from './optypes';
 import type { Request, Response } from 'express';
 import { Store } from './store';
 import * as ops from './ops';
@@ -81,8 +81,10 @@ export function mountHbaRoutes(app: any, store: Store) {
     if (!key) return res.status(400).json({ error: 'idempotency_key_required' });
     const { rules, baseRevs = {}, force = false, adopt = false } = req.body || {};
     if (!Array.isArray(rules) || rules.length > 200) return res.status(400).json({ error: 'invalid_rules' });
+    const open = hbaOpenRule(rules);
+    if (open && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: `Only an administrator can open the server to the network without a password or with a clear-text one: ${open}` });
     const bodyOut = { rules, baseRevs, force: !!force, adopt: !!adopt };
-    if (requiresApproval(st, c, 'hba_cluster_apply', {})) {
+    if (requiresApproval(st, c, 'hba_cluster_apply', bodyOut)) {
       const rec = await requestApproval(store, ops.audit, { cluster: c, type: 'hba_cluster_apply', params: bodyOut, key, actor: (req as any).actor || 'admin' });
       return res.status(202).json({ approval: rec, message: 'Risky operation in a protected environment: another administrator must approve it.' });
     }

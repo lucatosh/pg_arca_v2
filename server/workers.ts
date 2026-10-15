@@ -110,7 +110,7 @@ export function mountWorkerRoutes(app: any, store: Store) {
     if (!online(n)) return res.status(409).json({ error: 'node_offline', message: `${n.name} is not reachable.` });
     try {
       const { op, created } = await ops.submit(store, { type, clusterId: workerCid(n.id), nodeId: n.id, params, idempotencyKey: key, createdBy: actor(req), ttlSeconds: ttlSeconds ?? 600 });
-      res.status(created ? 202 : 200).json({ operation: op, replayed: !created });
+      res.status(created ? 202 : 200).json({ operation: ops.redactOp(op), replayed: !created });
     } catch (e: any) {
       if (e.code === 'IDEMPOTENCY_CONFLICT') return res.status(422).json({ error: 'idempotency_conflict', message: e.message });
       throw e;

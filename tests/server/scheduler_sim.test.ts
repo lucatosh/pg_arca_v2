@@ -86,7 +86,7 @@ class SimDate extends RealDate {                // the whole console lives in si
         assert(t - lastOk <= incrH * H + slack || recentFail(lastOk), `no successful backup for ${((t - lastOk) / H).toFixed(1)} h without failures (${ctx(t)})` + dump());
         const lastFull = okFulls[okFulls.length - 1];
         assert(t - lastFull <= fullH * H + Math.max(slack, 3 * H + outage(lastFull)) + 2 * H || recentFail(lastFull + fullH * H - H), `no full for ${((t - lastFull) / H).toFixed(1)} h (${ctx(t)})` + dump());
-      } else assert(t - t0 <= 2.5 * H || fails.length, `no first full after ${((t - t0) / H).toFixed(1)} h (${ctx(t)})`);
+      } else assert(t - t0 <= 2.5 * H + (offlineUntil > t0 ? offlineUntil - Math.max(offlineSince, t0) : 0) || fails.length, `no first full after ${((t - t0) / H).toFixed(1)} h (${ctx(t)}) offline ${offlineSince ? `${((offlineSince - t0) / H).toFixed(1)}h→${((offlineUntil - t0) / H).toFixed(1)}h` : 'never'}` + dump());
     }
     console.log(`  fullH=${fullH} incrH=${incrH} failP=${failP}: ${okFulls.length} fulls, ${okAny.length} backups, ${fails.length} failures, ${(offlineTotal / H).toFixed(0)} h offline in 30 days`);
   }

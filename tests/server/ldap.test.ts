@@ -104,6 +104,10 @@ function fakeDirectory(opts: { tls?: { key: Buffer; cert: Buffer } } = {}) {
   const call = (m: string, u: string, body?: any, cookie?: string) => app.call(m, u, { body, headers: cookie ? { cookie } : {} });
   const setup = await call('POST', '/api/auth/setup', { username: 'admin', password: 'correct-horse-battery' }); const A = setup.headers['set-cookie'].split(';')[0];
   assert.strictEqual(requiredRole('GET', '/api/auth/ldap'), 'admin'); assert.strictEqual(requiredRole('PUT', '/api/auth/ldap'), 'admin'); assert.strictEqual(requiredRole('POST', '/api/auth/ldap/test'), 'admin');
+  // the directory settings are under /api/auth/ but are NOT sign-in routes: without a session (or with a lower role) they are refused, otherwise
+  // anyone on the network could point the console at their own directory with defaultRole admin and sign in as administrator
+  for (const [m, u, b] of [['GET', '/api/auth/ldap', undefined], ['PUT', '/api/auth/ldap', { enabled: false }], ['POST', '/api/auth/ldap/test', { username: 'a', password: 'b' }]] as const)
+    assert.strictEqual((await call(m, u, b)).status, 401, `${m} ${u} anonymous`);
   assert.strictEqual((await call('PUT', '/api/auth/ldap', { enabled: true, url: 'nope' }, A)).status, 400);
   const cfg = { enabled: true, url: `ldap://127.0.0.1:${dir2.port}`, bindDN: 'cn=console,ou=services,dc=corp,dc=example', bindPassword: 'svc-pass', baseDN: 'ou=people,dc=corp,dc=example', userFilter: '(uid={user})',
     roleMap: [{ group: 'cn=dba,ou=groups,dc=corp,dc=example', role: 'admin' }], defaultRole: 'viewer' };
@@ -134,6 +138,14 @@ function fakeDirectory(opts: { tls?: { key: Buffer; cert: Buffer } } = {}) {
   dir2.close();
   await new Promise(r => setTimeout(r, 50));
   const dn = await call('POST', '/api/auth/login', { username: 'alice', password: 'alice-secret-1' }); assert.strictEqual(dn.status, 503, JSON.stringify(dn.body));
+  assert(!/ECONNREFUSED|getaddrinfo|127\.0\.0\.1/.test(JSON.stringify(dn.body)), 'the reason stays in the audit log, not in the anonymous answer: ' + JSON.stringify(dn.body));
   assert(store.peek().audit.some((a: any) => a.action === 'ldap.configure') && store.peek().audit.some((a: any) => a.action === 'auth.login' && a.details?.ldap === true));
+  // a directory (or whoever sits between) answering garbage must not crash the console: the sign-in fails cleanly
+  { const bad = net.createServer(sk => { sk.on('data', () => sk.write(Buffer.from([0x30, 0x03, 0x02, 0x05, 0x00]))); });
+    await new Promise<void>(r => bad.listen(0, '127.0.0.1', () => r())); const port = (bad.address() as any).port;
+    let crashed: any = null; const h = (e: any) => { crashed = e; }; process.on('uncaughtException', h);
+    const r = await authenticateLdap({ enabled: true, url: `ldap://127.0.0.1:${port}`, baseDN: 'dc=x', userFilter: '(uid={user})', bindDN: 'cn=a', bindPassword: 'b', timeoutMs: 2000 } as any, 'alice', 'pw');
+    await new Promise(r => setTimeout(r, 50)); process.off('uncaughtException', h); bad.close();
+    assert.strictEqual(crashed, null, 'no uncaught exception'); assert.strictEqual(r.ok, false); assert(/malformed/.test(String(r.detail)), JSON.stringify(r)); }
   console.log('ldap OK');
 })().catch(e => { console.error('FAIL', e); process.exit(1); });

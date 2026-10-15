@@ -12,7 +12,7 @@ import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { Store, NodeRecord, sha256, newSecret, newId, nowIso } from './store';
 import * as ops from './ops';
-import { OP_SPECS, validateOp } from './optypes';
+import { OP_SPECS, validateOp, hbaOpenRule } from './optypes';
 import { requiresApproval, requestApproval } from './approvals';
 import { applyDestination } from './destinations';
 import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
@@ -67,6 +67,17 @@ const KEY_RE = /^(patroni|sysid):[A-Za-z0-9_.:\/-]{1,120}$/;
  * identifier) the cluster adopts it, and clusters that turn out to be the same database are merged: nodes, operations, direct connection and policy
  * assignment move to the keeper (the one with more history, else the older). Runs inside a mutate. Never touches sandbox clusters.
  */
+/** Progress reported by an agent, kept small: strings cut, at most 40 keys, nested objects dropped (cutting the JSON text instead left an unparsable string -> 500 on every report of a long message). */
+function boundedProgress(p: any): any {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(p).slice(0, 40)) {
+    if (typeof v === 'string') out[k] = v.slice(0, 600);
+    else if (typeof v === 'number' || typeof v === 'boolean' || v === null) out[k] = v;
+    else if (Array.isArray(v)) out[k] = v.slice(0, 20).map(x => (typeof x === 'string' ? x.slice(0, 200) : typeof x === 'number' || typeof x === 'boolean' ? x : null));
+  }
+  return out;
+}
+const DISCOVERY_MAX = 512 * 1024;
 export function reconcileCluster(d: any, nodeId: string) {
   const n = d.nodes[nodeId]; const key = n?.snapshot?.cluster_key;
   if (!n?.clusterId || typeof key !== 'string' || !KEY_RE.test(key)) return;
@@ -75,8 +86,12 @@ export function reconcileCluster(d: any, nodeId: string) {
   n.clusterKey = key;
   if (!mine.clusterKey) mine.clusterKey = key;
   if (mine.clusterKey !== key) return;                // an unrelated database now answers on this node: leave it to the operator
+  // same database, same environment: merged by itself. Across environments (a node approved into "dev" that suddenly claims production's identity) nothing
+  // moves: a node must not be able to join another environment's cluster by reporting its key; the operator re-registers it where it belongs.
   const dups = d.clusters.filter((c: any) => c.id !== mine.id && !c.isSandbox && c.clusterKey === key);
   if (!dups.length) return;
+  const foreign = dups.filter((c: any) => c.environment !== mine.environment);
+  if (foreign.length) { ops.audit(d, { clusterId: mine.id, actor: 'system', action: 'cluster.merge_refused', status: 'REFUSED', details: { node: n.name, key, otherCluster: foreign[0].id, otherEnvironment: foreign[0].environment } }); return; }
   const hist = (c: any) => d.operations.filter((o: any) => o.clusterId === c.id).length;
   const all = [mine, ...dups].sort((a: any, b: any) => hist(b) - hist(a) || Date.parse(a.createdAt || '') - Date.parse(b.createdAt || ''));
   const keep = all[0];
@@ -148,6 +163,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       if (t.kind === 'worker' || b.node_role === 'worker') {                    // operational machine: no database, no cluster
         if (t.clusterId) return { err: 'token_for_cluster' as const };
         const existing = Object.values(d.nodes).find(n => n.name === nodeName && n.kind === 'worker');
+        if (existing?.firstHeartbeatAt && !reuse) return { err: 'node_exists' as const };
         const id = existing?.id || newId('node');
         d.nodes[id] = { ...(existing || {}), id, name: nodeName, kind: 'worker', tokenHash: sha256(secret), enrolledAt: existing?.enrolledAt || nowIso(), clusterId: undefined,
           agentVersion: String(b.agent_version || ''), remoteIp: req.socket.remoteAddress || '', discovery: b.discovery || {}, lastSeen: nowIso(), label: t.label || existing?.label } as NodeRecord;
@@ -170,6 +186,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
         d.clusters.push(cluster);
       }
       const existing = Object.values(d.nodes).find(n => n.name === nodeName && n.clusterId === cluster!.id);
+      if (existing?.firstHeartbeatAt && !reuse) return { err: 'node_exists' as const };    // a reporting node keeps its secret: revoke it first (Nodes page) to enroll a replacement under the same name
       const id = existing?.id || newId('node');
       d.nodes[id] = {
         ...(existing || {}), id, name: nodeName, tokenHash: sha256(secret), enrolledAt: existing?.enrolledAt || nowIso(),
@@ -181,7 +198,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       refreshCluster(d, cluster.id);
       return { ok: true as const, nodeId: id, clusterId: cluster.id, kind: 'db' };
     });
-    if ('err' in result) return res.status(result.err === 'invalid_token' ? 401 : 403).json({ error: result.err });
+    if ('err' in result) return res.status(result.err === 'invalid_token' ? 401 : result.err === 'node_exists' ? 409 : 403).json({ error: result.err, ...(result.err === 'node_exists' ? { message: `A node named ${nodeName} already reports to the console: revoke it on the Nodes page before enrolling a replacement with the same name.` } : {}) });
     res.status(201).json({ node_id: result.nodeId, cluster_id: result.clusterId, node_kind: result.kind, agent_token: secret, heartbeat_interval: 10 });
   });
 
@@ -216,7 +233,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
           n.prevXact = { total, at: nowMs };
         }
       }
-      if (b.discovery) n.discovery = b.discovery;
+      if (b.discovery && typeof b.discovery === 'object' && JSON.stringify(b.discovery).length <= DISCOVERY_MAX) n.discovery = b.discovery;    // bounded: it is persisted on every heartbeat
       if (n.kind === 'worker') return;                     // operational machine: no cluster to derive
       reconcileCluster(d, node.id);
       if (n.clusterId) refreshCluster(d, n.clusterId);
@@ -239,7 +256,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       if (store.peek().operations.some(o => o.nodeId === node.id && o.status === 'queued')) todo = await ops.lease(store, node.id, max);
     }
     const myCluster = store.peek().clusters.find((c: any) => c.id === store.peek().nodes[node.id]?.clusterId);
-    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, stanza: myCluster?.geoStanza || null, node_kind: store.peek().nodes[node.id]?.kind === 'worker' ? 'worker' : 'db', log_mode: logModeFor(node.clusterId), ops: todo.map(o => ({ id: o.id, type: o.type, params: withEphemeral(store, o), attempt: o.attempts, cluster_id: o.clusterId })) });
+    res.json({ ok: true, server_time: nowIso(), heartbeat_interval: 10, stanza: myCluster?.geoStanza || null, node_kind: store.peek().nodes[node.id]?.kind === 'worker' ? 'worker' : 'db', log_mode: logModeFor(node.clusterId), ops: todo.map(o => ({ id: o.id, type: o.type, params: ops.unsealParams(store.dir, withEphemeral(store, o)), attempt: o.attempts, cluster_id: o.clusterId })) });
   });
 
   // ---- log ingest (authenticated, size-bounded) -----------------------------
@@ -259,7 +276,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
     const { status, result, error, progress } = req.body || {};
     if (!['running', 'succeeded', 'failed'].includes(status)) return res.status(400).json({ error: 'invalid_status' });
     const r = await ops.report(store, node.id, req.params.id, status, result, error ? String(error).slice(0, 4000) : undefined, 120,
-      status === 'running' && progress && typeof progress === 'object' ? JSON.parse(JSON.stringify(progress).slice(0, 4000)) : undefined);
+      status === 'running' && progress && typeof progress === 'object' ? boundedProgress(progress) : undefined);
     if (r.ok && status === 'succeeded' && (r.op?.type === 'hba_apply' || r.op?.type === 'hba_restore' || r.op?.type === 'hba_expire')) await recordHbaHistory(store, { ...r.op, result });
     // A backup on a STANDBY waits for the stop segment in the shared archive, but only the primary can close it: ask the primary to
     // switch its WAL segment the moment the backup enters the wal phase (idempotent: one wal_switch per backup, replayed reports reuse it).
@@ -380,6 +397,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     // an explicit delivery address (`into`) sends restored data, with the credentials given, to any reachable host: for administrators only (the UI never
     // sends one; the console fills it in for a central recovery host)
     if (params?.into !== undefined && params?.into !== null && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can deliver a restore to an explicit address (into).' });
+    if (type === 'hba_apply' || type === 'hba_restore') { const open = hbaOpenRule(params?.rules); if (open && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: `Only an administrator can open the server to the network without a password or with a clear-text one: ${open}` }); }
     if (type === 'geo_demote') {                                              // the site may only follow a registered peer site: the agent connects there with the cluster's replication credentials
       const me = geoOf(st, cluster.id); const eps = (me?.peers || []).map((p: any) => p.endpoint).filter(Boolean);
       if (!eps.some((e: any) => e.host === String(params.host) && Number(e.port) === Number(params.port))) return res.status(409).json({ error: 'not_a_peer', message: 'A site can only be demoted under a registered peer site (Geo-redundancy → “Address of …”): the address given is not one.' });
@@ -387,7 +405,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     const spec = OP_SPECS[type];
     if (type === 'pg_set_param' && !params.force) { const g = geoParamGuard(st, cluster.id, String(params.name), params.value); if (g) return res.status(409).json({ error: 'geo_standby_lower', message: g, overridable: true }); }
     if (requiresApproval(st, cluster, type, params)) {
-      const reqRec = await requestApproval(store, ops.audit, { cluster, type, params, nodeId, ttlSeconds, key, actor: actorOf(req) });
+      const reqRec = await requestApproval(store, ops.audit, { cluster, type, params, nodeId, ttlSeconds, key, actor: actorOf(req), owner: (req as any).tokenOwner });
       return res.status(202).json({ approval: reqRec, message: 'Risky operation in a protected environment: another administrator must approve it.' });
     }
     const r = await execute(cluster, type, params, nodeId, ttlSeconds, key, actorOf(req));
@@ -408,7 +426,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
         if (spec.lane === 'data') return { code: 409, body: { error: 'agent_required', message: 'Backup, restore and PITR run on the database host: install the agent on a node of this cluster (agentless attach cannot read the data directory).' } };
         if (!deps.directExec) return { code: 501, body: { error: 'direct_not_available' } };
         const { op, created } = await ops.runLocal(store, { type, clusterId: cluster.id, params, idempotencyKey: key, createdBy: actor }, () => deps.directExec!(cluster, type, params));
-        return { code: created ? 202 : 200, body: { operation: op, replayed: !created } };
+        return { code: created ? 202 : 200, body: { operation: ops.redactOp(op), replayed: !created } };
       }
       // agent-backed: choose the executing node
       const nodes = Object.values(st.nodes).filter(n => n.clusterId === cluster.id);
@@ -470,7 +488,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       if (type === 'pg_restart' && (target.snapshot?.patroni?.accessible || target.snapshot?.patroni?.configured))
         return { code: 409, body: { error: 'patroni_managed', message: 'This node is managed by Patroni: restart it through Patroni (High availability tab → Restart), never behind its back.' } };
       const { op, created } = await ops.submit(store, { type, clusterId: cluster.id, nodeId: target.id, params, idempotencyKey: key, createdBy: actor, ttlSeconds });
-      return { code: created ? 202 : 200, body: { operation: op, replayed: !created } };
+      return { code: created ? 202 : 200, body: { operation: ops.redactOp(op), replayed: !created } };
     } catch (e: any) {
       if (e.code === 'IDEMPOTENCY_CONFLICT') return { code: 422, body: { error: 'idempotency_conflict', message: e.message } };
       throw e;
@@ -491,7 +509,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
   // ---- four-eyes approvals --------------------------------------------------
   const pendingView = () => {
     const now = Date.now(); const list = (store.peek().settings.approvalRequests || []) as any[];
-    return list.map(r => (r.status === 'pending' && Date.parse(r.expiresAt) < now ? { ...r, status: 'expired' } : r)).slice(-50).reverse();
+    return list.map(r => ops.redactOp(r.status === 'pending' && Date.parse(r.expiresAt) < now ? { ...r, status: 'expired' } : r)).slice(-50).reverse();
   };
   app.get('/api/approvals', (_req: Request, res: Response) => res.json({ approvals: pendingView() }));
   const decide = async (req: Request, res: Response, how: 'approve' | 'reject' | 'cancel') => {
@@ -501,7 +519,8 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (rec.status !== 'pending') return res.status(409).json({ error: 'not_pending', message: 'The request has already been handled.' });
     if (Date.parse(rec.expiresAt) < Date.now()) { await store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); if (r) r.status = 'expired'; }); return res.status(409).json({ error: 'expired', message: 'The request has expired: submit it again.' }); }
     if (how === 'cancel' && rec.requestedBy !== actor && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only the requester (or an administrator) can cancel it.' });
-    if (how === 'approve' && rec.requestedBy === actor) return res.status(403).json({ error: 'self_approval', message: 'You cannot approve your own request: another administrator is needed.' });
+    const owner = (req as any).tokenOwner;                                     // an API token approves on behalf of the administrator who created it: no four-eyes with one's own token
+    if (how === 'approve' && (rec.requestedBy === actor || (owner && rec.requestedBy === owner) || (String(rec.requestedBy).startsWith('token:') && rec.requestedByOwner && rec.requestedByOwner === (owner || actor)))) return res.status(403).json({ error: 'self_approval', message: 'You cannot approve your own request: another administrator is needed.' });
     const done = (status: string) => store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); r.status = status; r.decidedBy = actor; r.decidedAt = nowIso();
       ops.audit(d, { clusterId: rec.clusterId, actor, action: 'approval.' + how, status: 'OK', details: { id, type: rec.type, requestedBy: rec.requestedBy } }); });
     if (how !== 'approve') { await done(how === 'reject' ? 'rejected' : 'cancelled'); return res.json({ ok: true }); }
@@ -570,7 +589,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
         cancelRequested: !!o.cancelRequested, progress: o.progress || null, subtype: o.params && typeof o.params.type === 'string' ? o.params.type : undefined, background: o.params && o.params.background === true ? true : undefined,
         error: o.error ? String(o.error).slice(0, 400) : undefined })) });
     }
-    res.json({ operations: list.slice(-200).reverse() });
+    res.json({ operations: list.slice(-200).reverse().map(ops.redactOp) });
   });
 
   /** Operation history (retention: settings.activity.retentionDays, default 7). ?status=all|failed|succeeded &hours=1..(retention*24) &clusterId &search &limit(≤500) &offset */

@@ -52,6 +52,10 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   // once pat1's agent reports, the token seen in the install command cannot take over pat1's identity any more (the secret would be replaced)
   assert.strictEqual((await call('POST', '/api/agent/heartbeat', { snapshot: {}, max_ops: 0 }, { authorization: `Bearer ${e1b.body.agent_token}`, 'x-arca-node': e1b.body.node_id })).status, 200);
   assert.strictEqual((await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat1', discovery: disc2 })).status, 403, 're-enroll refused after the first heartbeat');
+  { // ...and neither can a NEW token (a cluster's key is easy to learn) take over the identity of a node that reports: the secret stays with its owner
+    const tok3 = await call('POST', '/api/enrollment-tokens', { label: 'again', environment: 'prod' }, H());
+    const hj = await call('POST', '/api/agent/enroll', { enrollment_token: tok3.body.token, node_name: 'pat1', discovery: disc2 });
+    assert.strictEqual(hj.status, 409, JSON.stringify(hj.body)); assert.strictEqual(hj.body.error, 'node_exists'); }
   assert.strictEqual((await call('POST', '/api/agent/heartbeat', { snapshot: {}, max_ops: 0 }, { authorization: `Bearer ${e1b.body.agent_token}`, 'x-arca-node': e1b.body.node_id })).status, 200, 'the node keeps its secret');
   const e2 = await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat2', discovery: disc2 }); assert.strictEqual(e2.status, 201);
   assert.strictEqual(e1.body.cluster_id, e2.body.cluster_id);
@@ -100,6 +104,16 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'succeeded', result: { segment: 'x' } }, A())).status, 200);
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'succeeded', result: { segment: 'x' } }, A())).status, 200);  // duplicate report ok
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'failed', error: 'x' }, A())).status, 409);
+  { // credentials inside operation parameters (offsite keys) are sealed at rest and in every API view, and reach the agent in clear, once
+    const off = { type: 's3', endpoint: 'https://s3.example.net', bucket: 'b', prefix: 'p', access_key: 'AKIAEXAMPLE', secret_key: 'wJalrXUtnFEMI-SECRET' };
+    const so = await call('POST', `/api/clusters/${cl.id}/operations`, { type: 'offsite_set', params: { offsite: off } }, H({ 'idempotency-key': 'off-1' }));
+    assert.strictEqual(so.status, 202, JSON.stringify(so.body)); assert.strictEqual(so.body.operation.params.offsite.secret_key, '•••'); assert.strictEqual(so.body.operation.params.offsite.bucket, 'b');
+    const raw = JSON.stringify(store.peek()); assert(!raw.includes('wJalrXUtnFEMI-SECRET') && !raw.includes('AKIAEXAMPLE'), 'never in clear in the state');
+    for (const u of ['/api/operations', `/api/operations?clusterId=${cl.id}`, `/api/operations/${so.body.operation.id}`]) assert(!JSON.stringify((await call('GET', u, undefined, H())).body).includes('SECRET'), u);
+    const rp = await call('POST', `/api/clusters/${cl.id}/operations`, { type: 'offsite_set', params: { offsite: off } }, H({ 'idempotency-key': 'off-1' })); assert.strictEqual(rp.status, 200); assert.strictEqual(rp.body.replayed, true, 'idempotent replay still matches');
+    const hb3 = await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 1 }, A());
+    assert.strictEqual(hb3.body.ops.length, 1); assert.deepStrictEqual(hb3.body.ops[0].params.offsite, off, 'the agent gets the real keys');
+    await call('POST', `/api/agent/ops/${hb3.body.ops[0].id}/report`, { status: 'succeeded', result: {} }, A()); }
   assert.strictEqual((await call('GET', `/api/operations/${rid}`, undefined, H())).body.operation.status, 'succeeded');
   { // a backup running on a STANDBY: the moment it reports the wal phase, the console asks the PRIMARY to switch its WAL segment (once)
     const t3 = await call('POST', '/api/enrollment-tokens', { label: 's', environment: 'prod' }, H());
@@ -176,5 +190,8 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   // login + brute-force throttle
   assert.strictEqual((await call('POST', '/api/auth/login', { username: 'admin', password: 'wrong-password-1' })).status, 401);
   assert.strictEqual((await call('POST', '/api/auth/login', { username: 'admin', password: 'correct-horse-battery' })).status, 429);
+  // ...and per account whatever the source address: a guesser rotating X-Forwarded-For (or addresses) is capped on one user name too
+  { let last = 0; for (let i = 0; i < 60 && last !== 429; i++) last = (await app.call('POST', '/api/auth/login', { body: { username: 'admin', password: 'wrong-password-x' }, headers: {}, ip: `10.9.${i >> 8}.${i & 255}` })).status;
+    assert.strictEqual(last, 429, 'per-user cap reached from many addresses'); }
   console.log('ALL API TESTS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -5,7 +5,8 @@ import { mountHbaRoutes, HBA_TEMPLATES, HBA_SUGGESTED, recordHbaHistory, hbaTarg
 import { validateOp } from '../../server/optypes';
 import { hbaExpiryTick } from '../../server/scheduler';
 (async () => {
-  const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'hba-'))); const app = new MiniApp(); mountHbaRoutes(app, store);
+  const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'hba-'))); const app = new MiniApp();
+  let role = 'admin'; app.use((req: any, _r: any, next: any) => { req.actor = 'mario'; req.role = role; return next(); }); mountHbaRoutes(app, store);
   const now = new Date().toISOString();
   await store.mutate(d => {
     d.clusters.push({ id: 'k1', name: 'k1', environment: 'prod', source: 'agent', haState: { managedByPatroni: false } } as any, { id: 'k2', name: 'k2', environment: 'prod', source: 'agent', haState: { managedByPatroni: true } } as any,
@@ -29,6 +30,15 @@ import { hbaExpiryTick } from '../../server/scheduler';
   assert.strictEqual((await call('POST', '/api/clusters/demo/hba/apply', { rules }, k)).status, 409);
   assert.strictEqual((await call('POST', '/api/clusters/dir/hba/apply', { rules }, k)).status, 409);
   assert.strictEqual((await call('POST', '/api/clusters/nope/hba/apply', { rules }, k)).status, 404);
+  { // opening the server to the network without a password (trust) or with a clear-text one: administrators only; local trust stays an operator's call
+    await finish();
+    const open = [{ type: 'host', database: 'all', user: 'all', address: '0.0.0.0/0', method: 'trust' }];
+    role = 'operator';
+    const o = await call('POST', '/api/clusters/k1/hba/apply', { rules: open }, { 'idempotency-key': 'open-1' }); assert.strictEqual(o.status, 403, JSON.stringify(o.body)); assert(/0\.0\.0\.0\/0 trust/.test(o.body.message));
+    assert.strictEqual((await call('POST', '/api/clusters/k1/hba/apply', { rules: [{ type: 'host', database: 'all', user: 'all', address: '10.0.0.0/8', method: 'password' }] }, { 'idempotency-key': 'open-2' })).status, 403);
+    assert.strictEqual((await call('POST', '/api/clusters/k1/hba/apply', { rules: [{ type: 'host', database: 'all', user: 'all', address: '127.0.0.1/32', method: 'trust' }, { type: 'local', database: 'all', user: 'postgres', method: 'trust' }] }, { 'idempotency-key': 'open-3' })).status, 202, 'local trust is not an opening to the network');
+    role = 'admin'; await finish();
+    assert.strictEqual((await call('POST', '/api/clusters/k1/hba/apply', { rules: open }, { 'idempotency-key': 'open-4' })).status, 202); }
   assert.strictEqual(validateOp('hba_apply', { rules: 'x' }) !== null, true); assert.strictEqual(validateOp('hba_apply', { rules: [], base_rev: 'zz' }) !== null, true); assert.strictEqual(validateOp('hba_plan', { rules: [] }), null);
   // a second pg_hba change while one is still queued is refused (another DBA): who and since when
   const busy = await call('POST', '/api/clusters/k1/hba/apply', { rules: [] }, { 'idempotency-key': 'h-busy' }); assert.strictEqual(busy.status, 409); assert.strictEqual(busy.body.error, 'conflict');

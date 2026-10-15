@@ -4,7 +4,7 @@ import { Store, loadSecretKey } from '../../server/store';
 import { DirectDriver } from '../../server/direct';
 import { mountAgentRoutes, mountOperatorRoutes } from '../../server/agents';
 import { mountClusterRoutes, seedDemoOnFirstRun } from '../../server/clusters';
-import { mountAuthRoutes, requireAdmin, requiredRole } from '../../server/auth';
+import { mountApiTokenRoutes, mountAuthRoutes, requireAdmin, requiredRole } from '../../server/auth';
 import { mountAdvancedRoutes, isRisky } from '../../server/approvals';
 import { audit } from '../../server/ops';
 import { mountHbaRoutes } from '../../server/hba';
@@ -13,7 +13,7 @@ import { mountHbaRoutes } from '../../server/hba';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apr-')); const store = new Store(dir), app = new MiniApp(); const direct = new DirectDriver(store, loadSecretKey(dir));
   const demo = () => ({ id: 'cluster-demo', name: 'DEMO', environment: 'dev', isSandbox: true, databases: [], haState: { nodes: [] } });
   app.use(requireAdmin(store));
-  mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec }); mountClusterRoutes(app, store, direct, demo); mountAdvancedRoutes(app, store, audit); mountHbaRoutes(app, store);
+  mountAuthRoutes(app, store); mountApiTokenRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec }); mountClusterRoutes(app, store, direct, demo); mountAdvancedRoutes(app, store, audit); mountHbaRoutes(app, store);
   await seedDemoOnFirstRun(store, demo);
   const call = (m: string, u: string, body?: any, cookie?: string, key?: string) => app.call(m, u, { body, headers: { ...(cookie ? { cookie } : {}), ...(key ? { 'idempotency-key': key } : {}) } });
   const PW = 'correct-horse-battery';
@@ -49,6 +49,13 @@ import { mountHbaRoutes } from '../../server/hba';
   // an admin cannot approve their own request
   r = await call('POST', '/api/clusters/prod1/operations', { type: 'hba_rollback', params: {} }, A2, 'k4'); assert.equal(r.status, 202); const id2 = r.body.approval.id;
   r = await call('POST', `/api/approvals/${id2}/approve`, {}, A2); assert.equal(r.status, 403); assert.equal(r.body.error, 'self_approval');
+  // ...nor with an API token of their own (the token acts for its creator), in either direction
+  { const tk = (await call('POST', '/api/api-tokens', { label: 'ci', role: 'admin' }, A2)).body.token; const T = { authorization: 'Bearer ' + tk };
+    r = await app.call('POST', `/api/approvals/${id2}/approve`, { body: {}, headers: T }); assert.equal(r.status, 403); assert.equal(r.body.error, 'self_approval');
+    r = await app.call('POST', '/api/clusters/prod1/operations', { body: { type: 'hba_rollback', params: {} }, headers: { ...T, 'idempotency-key': 'k4t' } }); assert.equal(r.status, 202); const id3 = r.body.approval.id;
+    r = await call('POST', `/api/approvals/${id3}/approve`, {}, A2); assert.equal(r.status, 403, 'request made with my token, approved with my session'); assert.equal(r.body.error, 'self_approval');
+    assert.equal((await call('POST', `/api/approvals/${id3}/approve`, {}, A)).status, 200, 'another administrator can');
+    await store.mutate(d => { for (const o of d.operations) if (o.createdBy === 'token:ci') o.status = 'succeeded'; }); }
   assert.equal((await call('POST', `/api/approvals/${id2}/cancel`, {}, A2)).status, 200, 'the requester can withdraw');
   // expiry
   r = await call('POST', '/api/clusters/prod1/operations', setp, O, 'k5'); const id3 = r.body.approval.id;
