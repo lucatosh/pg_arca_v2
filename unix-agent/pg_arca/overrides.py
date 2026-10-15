@@ -23,6 +23,7 @@ SPEC = [
     ("scratch_dir", "wdir", "Scratch directory (test restores)"),
     ("patroni_url", "url", "Patroni REST URL"),
     ("wal_archive_async", "bool", "Asynchronous WAL archiving (local spool, pushed by the agent)"),
+    ("process_max", "int", "Parallel workers for backup copy and restore extraction"),
 ]
 # set by the console when a destination changes (not edited by hand, not listed in the settings screen): earlier locations, read only
 HIDDEN = [
@@ -37,6 +38,14 @@ _FORBIDDEN_WRITE = ("/", "/etc", "/proc", "/sys", "/dev", "/boot", "/bin", "/sbi
 _FORBIDDEN_UNDER = ("/etc", "/proc", "/sys", "/dev", "/boot", "/bin", "/sbin", "/usr", "/lib", "/lib64", "/root")
 _IDENT = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _HOST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+
+
+def _default_process_max():
+    try:
+        from pg_arca.engine.ctx import default_process_max
+        return default_process_max()
+    except Exception:
+        return 4
 
 
 class OverrideError(ValueError):
@@ -90,6 +99,14 @@ def validate(key, value):
         if not _HOST.match(s):
             raise OverrideError("invalid host")
         return s
+    if kind == "int":
+        try:
+            n = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise OverrideError("a whole number is required")
+        if not 1 <= n <= 64:
+            raise OverrideError("1 to 64")
+        return n
     if kind == "bool":
         v = value if isinstance(value, bool) else str(value).strip().lower()
         if v in (True, "true", "on", "yes", "1"):
@@ -188,7 +205,7 @@ def describe(config, runtime=None):
                 "pg_user": (getattr(getattr(runtime, "db", None), "user", None) or "postgres") if runtime else "postgres", "pg_bin_dir": inst.get("bin_dir") or inst.get("bindir") or "",
                 "repo_path": "/var/lib/pgarca/repo", "wal_archive_dir": "/var/lib/pgarca/wal", "scratch_dir": "/var/tmp/pg_arca_scratch",
                 "patroni_url": ("http://127.0.0.1:%s" % runtime.patroni_info["restapi_port"]) if runtime and getattr(runtime, "patroni_info", None) else "",
-                "wal_archive_async": "false"}
+                "wal_archive_async": "false", "process_max": str(_default_process_max())}
     env_keys = {"pg_data": "PG_ARCA_PGDATA", "repo_path": "PG_ARCA_REPO", "wal_archive_dir": "WAL_ARCHIVE_DIR", "patroni_url": "PATRONI_URL", "pg_port": "PGPORT"}
     out = []
     for key, kind, label in SPEC:

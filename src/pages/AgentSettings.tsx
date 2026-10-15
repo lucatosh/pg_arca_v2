@@ -10,6 +10,7 @@ const HINT: Record<string, string> = {
   repo_path: 'Where the agent writes backups. It cannot be a system directory.',
   wal_archive_dir: 'Where the agent archives WAL. It must be reachable from every node if you want to restore anywhere.',
   patroni_url: 'Usually detected automatically. Needed only if the Patroni API is not on this server.',
+  process_max: 'Threads that compress and copy during a backup and extract during a restore. Each one is a core taken from PostgreSQL while it runs: the default is half the cores (2 to 8). Raise it on a big server with a fast destination, lower it if backups slow production down.',
   wal_archive_async: 'archive_command parks each segment in a local spool and returns at once; the agent pushes the spool into the archive in parallel. For WAL rates the synchronous archive_command cannot sustain. A segment in the spool is not in the archive yet: it is lost if this host is lost before it is pushed (the console shows the spool and counts it in the recovery point). Leave off unless the archiver falls behind.',
 };
 

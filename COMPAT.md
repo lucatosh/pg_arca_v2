@@ -60,6 +60,9 @@ Every item below was an assumption found in the code; it is now detected or conf
 
 Known limits (not solved): `unix_socket_directories` with several entries uses the first existing one; 16/32 kB blocks in the tuning UI (units are assumed to be 8 kB); systemd services with `ProtectSystem=full` cannot write a `pg_hba.conf` under `/etc` outside the directories reopened by the installer; automatic binary installation does not cover SUSE.
 
+## Parallelism — 15/10
+- `process_max` (worker threads of the backup copy and the restore extraction): default = half the cores, between 2 and 8 (`default_process_max()`); set per node from the console (Status → Nodes → Paths and discovery) between 1 and 64. Every worker compresses on its own core: raise it on big servers with fast destinations, lower it when backups slow production down. Database restores dump with as many `pg_dump` workers as the `jobs` parameter (default 2).
+
 ## Repository format — 15/10
 - Format 2 (every repository written by 1.0.0-rc.1 and later): chunks in pack files `cas/packs/<id>.pack` with an index `<id>.idx`; see `ARCHITETTURA-BACKUP-RESTORE.md` §7g. Format 1 (one file per chunk under `cas/aa/bb/`) is read, deduplicated against and garbage-collected by the same engine; a format-1 repository is marked `format: 2` in `repo.json` the first time this engine opens it and new chunks go to packs. There is no conversion step and nothing to run.
 - One way: an agent older than format 2 does not read packs. Never point a development build older than 15/10 at a repository written by rc.1 (it reports `PGA-REPO-014 chunk missing`). Agents of the same release on every node is the supported setup; the console shows outdated agents.
