@@ -205,9 +205,12 @@ class PgSession(object):
 _DUMP_ZSTD = {}
 
 
-def run_dump(conn, args, timeout=None, cancel=None):
+def run_dump(conn, args, timeout=None, cancel=None, jobs=1):
     """pg_dump -Fc of the recovered data, compressed with zstd level 1 when the tool is PostgreSQL 16+ and was built with it (MEASURED on a 300 MB database: 3.5 s with the former
-    -Z 3 -> 1.1 s, and a smaller file), plain -Z 1 otherwise. `args` must not carry -Fc / -Z. The dump is a scratch file read once by pg_restore: speed matters, size does not."""
+    -Z 3 -> 1.1 s, and a smaller file), plain -Z 1 otherwise. `args` must not carry -Fc / -Z. The dump is a scratch file read once by pg_restore: speed matters, size does not.
+    jobs > 1: directory format with that many pg_dump workers (`-Fd -j`, one table per worker: a whole database dumps several times faster on a
+    multi-core host); the `-f` target in `args` is then a directory, which pg_restore -j reads just the same."""
+    fmt = ["-Fc"] if jobs <= 1 else ["-Fd", "-j", str(int(jobs))]
     exe = conn.exe("pg_dump") if conn else "pg_dump"
     if exe not in _DUMP_ZSTD:
         ok = False
@@ -219,11 +222,27 @@ def run_dump(conn, args, timeout=None, cancel=None):
             ok = False
         _DUMP_ZSTD[exe] = ok
     if _DUMP_ZSTD[exe]:
-        rc, out, err = run_tool(conn, "pg_dump", ["-Fc", "--compress=zstd:1"] + list(args), timeout=timeout, cancel=cancel)
+        rc, out, err = run_tool(conn, "pg_dump", fmt + ["--compress=zstd:1"] + list(args), timeout=timeout, cancel=cancel)
         if rc == 0 or not re.search(r"zstd|compress", err or "", re.I):
             return rc, out, err
         _DUMP_ZSTD[exe] = False                       # built without zstd: do not try again
-    return run_tool(conn, "pg_dump", ["-Fc", "-Z", "1"] + list(args), timeout=timeout, cancel=cancel)
+        _rm_dump_target(args)
+    return run_tool(conn, "pg_dump", fmt + ["-Z", "1"] + list(args), timeout=timeout, cancel=cancel)
+
+
+def _rm_dump_target(args):
+    """A directory-format dump that failed half-way must not be in the way of the retry (pg_dump -Fd refuses a non-empty directory)."""
+    import shutil
+    for i, a in enumerate(args):
+        if a == "-f" and i + 1 < len(args) and os.path.isdir(args[i + 1]):
+            shutil.rmtree(args[i + 1], ignore_errors=True)
+
+
+def dump_size(path):
+    """Bytes of a dump: a file (-Fc) or the directory of a parallel dump (-Fd)."""
+    if os.path.isdir(path):
+        return sum(os.path.getsize(os.path.join(path, f)) for f in os.listdir(path) if os.path.isfile(os.path.join(path, f)))
+    return os.path.getsize(path)
 
 
 def run_tool(conn, prog, args, timeout=None, input_text=None, extra_env=None, cancel=None):

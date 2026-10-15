@@ -15,7 +15,7 @@ from pg_arca.engine.backup import build_chain
 from pg_arca.engine import objects as objmod, restorecheck
 from pg_arca.engine.catalog import find_object
 from pg_arca.engine.ephemeral import Ephemeral, TargetNotReached
-from pg_arca.engine.pgsession import PgConn, PgSession, run_dump, run_tool
+from pg_arca.engine.pgsession import PgConn, PgSession, dump_size, run_dump, run_tool
 from pg_arca.engine.restore import check_wal_for_chain, flush_current_wal, choose_set, count_targets, estimate, merge_chain, sparse_filter, system_db_oids
 from pg_arca.engine.util import EngineError, human, lsn_to_int, now_utc, parse_target_time, quote_ident, sql_lit, target_time_to_dt, wal_name, wal_segno
 
@@ -693,11 +693,12 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         if progress:
             progress({"phase": "transfer"})
         dumpfile = os.path.join(tmp, "db.dump")
-        rc, out, err = run_dump(eph.conn(db), eph.conn(db).args() + ["-f", dumpfile, "-d", db], cancel=cancel)
+        rc, out, err = run_dump(eph.conn(db), eph.conn(db).args() + ["-f", dumpfile, "-d", db], cancel=cancel, jobs=max(1, int(jobs)))
         if rc != 0:
             raise EngineError("PGA-GEN-070", "pg_dump from the recovered instance failed: %s" % err.strip()[:600],
                               "the sparse extraction may lack a page needed by this database; retry with a different base set")
-        info["dump_bytes"] = os.path.getsize(dumpfile)
+        info["dump_bytes"] = dump_size(dumpfile)
+        info["dump_jobs"] = max(1, int(jobs))
         _check_cancel(cancel)
         props = db_props(eph, db)
         warns = []

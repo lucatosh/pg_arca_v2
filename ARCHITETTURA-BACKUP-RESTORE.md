@@ -278,6 +278,9 @@ Un backup pg_arca è: lettura sequenziale del datadir (I/O) → hash blake2b per
 
 **Stato delle prove**: `tests/test_walsummary.py` (7, sessione finta: copertura, mappatura riga → file/chunk, piano, lettura sparsa); `tests/test_wal_summary_pg.py` con PostgreSQL 17+ reale (incrementale che non legge la tabella grande, restore byte-per-byte, troncamento, tabella nuova, fallback con `summarize_wal` off) **non ancora eseguito: qui c'è solo PG 16** → nella matrice del lab (`tools/lab/matrix.sh`, versioni 17 e 18). Finché non passa lì, la funzione è **[non provata su PG17 reale]**; su PG ≤ 16 e con summaries off il percorso è quello di prima (suite PG16 verdi).
 
+### 7i. Trasferimento del database ripristinato in parallelo — 15/10
+`run_dump(jobs>1)` usa `pg_dump -Fd -j N` (formato directory, un worker per tabella) invece di `-Fc` monoprocesso; `pg_restore -j` leggeva già in parallelo. Misura locale (2 vCPU, 4 tabelle, 332 MB): `-Fc` 1,3 s, `-Fd -j2` 0,6 s. Su host multi-core con database multi-tabella il guadagno cresce; con una sola tabella grande non cambia nulla (un worker per tabella). Il limite della fase `transfer` resta `pg_restore` (indici, vincoli).
+
 ## 8. Registro delle modifiche
 
 | Data | Modifica | Provato |
