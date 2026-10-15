@@ -213,13 +213,13 @@ class OffsiteTests(unittest.TestCase):
         self.assertTrue(self.m.sync()["ok"])
         pre = self.prefix + "/"
         bad = ["wal/../../../../tmp/pga-evil", "repo/../evil", "repo//abs", "evil/x", "wal/./x", "wal/a/../../x", "repo/" + "x"]
+        before = set(self._client().list().keys()) if REAL else set()        # what the mirror itself uploaded
         for k in bad:
             self._inject(pre + k, b"evil")
         # a real server may normalize or refuse some of these names on upload: count what the bucket really holds
         held = set(self._client().list().keys()) if REAL else set(bad)
         hostile = [k for k in held if k in bad and k != "repo/x"]
-        legit = {"wal/000000010000000000000009.zst", "wal/000000010000000000000009.zst.meta"}
-        normalized = sorted(held - set(bad) - legit)                   # names the server rewrote on upload ('wal/./x' -> 'wal/x'): harmless, inside the tree
+        normalized = sorted(held - set(bad) - before)                   # names the server rewrote on upload ('wal/./x' -> 'wal/x'): harmless, inside the tree
         self.assertTrue(all(k.split("/", 1)[0] in ("wal", "repo") and ".." not in k.split("/") for k in normalized), normalized)
         existing = os.path.join(self.wal, "000000010000000000000009.zst")
         os.remove(os.path.join(self.wal, "000000010000000000000009.zst.meta"))             # the archive lost one file: that one is fetched
