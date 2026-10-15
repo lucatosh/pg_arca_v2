@@ -100,7 +100,12 @@ class WalSummaryTests(unittest.TestCase):
                                                                           hdr(pages[0]) if pages else None, hdr(pages[-1]) if pages else None)
                     except OSError as e:
                         return str(e)
-                logtail = open(os.path.join(F.base, "ws-restored.log")).read()[-1500:]
+                logtail = open(os.path.join(F.base, "ws-restored.log")).read()[-2500:]
+                src_x = T.q("ws", "SELECT xmin::text, count(*) FROM newt GROUP BY 1")
+                rst = q2("SELECT pg_is_in_recovery(), pg_last_wal_replay_lsn(), pg_get_wal_replay_pause_state(), pg_current_snapshot()")
+                rst_x = q2("SELECT pg_xact_status('%s'::xid8)" % src_x[0][0]) if src_x else None
+                sets = "full %s..%s incr %s..%s" % (full.get("start_lsn"), full.get("stop_lsn"), incr.get("start_lsn"), incr.get("stop_lsn"))
+                logtail = "%s | source xmin %s | restored state %s xact %s | %s" % (sets, src_x, rst, rst_x, logtail)
                 self.fail("SOURCE %s | RESTORED %s | manifest chunks %s | LOG %s" % (head(src), head(os.path.join(dest, newt_rel)), (ent or {}).get("chunks"), logtail))
                 self.fail("newt has %s rows; rel %s; incremental entry %s; full entry %s; source size %s; wal_summaries %s; restored size %s" % (
                     got, newt_rel, {k: (v if k != "chunks" else len(v)) for k, v in (ent or {}).items()}, bool(full_ent),
