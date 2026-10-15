@@ -152,6 +152,16 @@ class SparseRead(unittest.TestCase):
         e2, s2 = unread_entry(st)
         self.assertEqual((e2["chunks"], e2["size"], e2["kind"], s2["bytes_not_read"]), ([], len(data), "pages", len(data)))
 
+    def test_contradiction_only_inside_the_summarized_range(self):
+        path = os.path.join(self.d, "rel2")
+        with open(path, "wb") as f:
+            f.write(self._page(100) + b"\x00" * BLCKSZ + self._page(9000) + self._page(500))
+        self.assertIsNone(ws.contradiction(path, 1000, 5000), "LSN 9000 is after the backup start: not a contradiction; zero page ignored")
+        with open(path, "ab") as f:
+            f.write(self._page(3000))
+        self.assertEqual(ws.contradiction(path, 1000, 5000), 4, "page 4 changed inside [1000, 5000)")
+        self.assertIsNone(ws.contradiction(os.path.join(self.d, "nope"), 0, 1))
+
     def test_vanished_file_is_skipped(self):
         class St(object):
             st_size, st_mode, st_mtime = 0, 0o100600, 0

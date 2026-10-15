@@ -157,6 +157,29 @@ def plan_files(files, changes, parent_files):
     return skip, partial, full
 
 
+def contradiction(path, prev_lsn, start_lsn):
+    """First page of `path` whose LSN lies in [prev_lsn, start_lsn): a change inside the summarized range the summaries did not report.
+    Pages newer than start_lsn are writes made after this backup started (covered by WAL replay) and say nothing about the summaries.
+    Returns the page number or None (also None when the file vanished)."""
+    from pg_arca.engine.pgdata import ZEROPAGE, page_lsn
+    try:
+        with open(path, "rb") as f:
+            n = 0
+            while True:
+                buf = f.read(4 * 1048576)
+                if not buf:
+                    return None
+                for j in range(0, len(buf), 8192):
+                    pg = buf[j:j + 8192]
+                    if len(pg) == 8192 and pg != ZEROPAGE:
+                        l = page_lsn(pg)
+                        if prev_lsn <= l < start_lsn:
+                            return n
+                    n += 1
+    except (IOError, OSError):
+        return None
+
+
 def sample(skip, k=None):
     """Files to scan in full as a check of the summaries: 1 % of the skipped ones, between 3 and 50."""
     if not skip:

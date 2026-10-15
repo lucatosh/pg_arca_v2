@@ -521,10 +521,10 @@ def _plan_with_summaries(ctx, sess, repo, parent, tli, prev_lsn, start_lsn, file
     # the check: a few files the summaries call unchanged, scanned the old way; one changed page there and the summaries are not used
     for rel in walsummary.sample(skip):
         item = next(x for x in paged if x[0] == rel)
-        entry, st = backup_file(repo, rel, item[1], item[2], prev_lsn, True)
-        if entry is not None and entry["chunks"]:
-            log("error", "PGA-INC-014: WAL summaries say %s is unchanged since %s but %d chunk(s) carry newer pages: summaries NOT used for this backup "
-                         "(every page scanned). Check summarize_wal and wal_summary_keep_time; report this if it repeats" % (rel, parent["id"], len(entry["chunks"])))
+        bad = walsummary.contradiction(item[1], prev_lsn, lsn_to_int(start_lsn))
+        if bad is not None:
+            log("error", "PGA-INC-014: WAL summaries say %s is unchanged since %s but its page %d was modified in that range: summaries NOT used for this backup "
+                         "(every page scanned). Check summarize_wal and wal_summary_keep_time; report this if it repeats" % (rel, parent["id"], bad))
             return set(), {}, {"used": False, "reason": "sample check failed on %s" % rel}
     info = {"used": True, "ranges": len(chain), "files_unread": len(skip), "files_partial": len(partial), "files_full": len(full),
             "bytes_unread": sum(x[2].st_size for x in paged if x[0] in set(skip))}
