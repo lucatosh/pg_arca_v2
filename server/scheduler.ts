@@ -10,6 +10,7 @@ import * as ops from './ops';
 import { hbaTarget } from './hba';
 import { conflictFor } from './conflicts';
 import { geoOf } from './geo';
+import { destinationFor } from './destinations';
 import { isTerminal } from './ops';
 
 import { type BackupPolicy, DEFAULT_POLICY, validatePolicy, resolvePolicy } from './policies';
@@ -26,8 +27,15 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     const pol: BackupPolicy | undefined = resolvePolicy(st, c).policy || undefined;
     if (!pol?.enabled || c.isSandbox || c.source === 'direct') continue;
     const nodes = Object.values(st.nodes).filter(n => n.clusterId === c.id && online(n, now));
-    // prefer the primary: archive_mode=on is only guaranteed there; standbys need archive_mode=always
-    const target = nodes.find(n => n.snapshot?.postgres?.is_in_recovery === false) || undefined;
+    // the primary by default (archive_mode=on is only guaranteed there). With preferStandby and a SHARED destination (NFS/SMB) a healthy streaming
+    // standby takes the load instead: the console asks the primary to switch its WAL segment when the backup reaches the WAL phase.
+    const primary = nodes.find(n => n.snapshot?.postgres?.is_in_recovery === false) || undefined;
+    let target = primary;
+    if (pol.preferStandby && primary) {
+      const shared = (destinationFor(st, c).dest?.type || 'local') !== 'local';
+      const standby = shared ? nodes.find(n => n.snapshot?.postgres?.alive === true && n.snapshot?.postgres?.is_in_recovery === true && n.snapshot?.postgres?.wal_receiver?.status === 'streaming') : undefined;
+      if (standby) target = standby;
+    }
     if (!target) continue;
     const myOps = st.operations.filter(o => o.clusterId === c.id);
     if (myOps.some(o => !isTerminal(o.status) && ['backup_run', 'backup_verify', 'backup_expire', 'restore_instance', 'restore_database', 'restore_object', 'restore_promote', 'restore_drill'].includes(o.type))) continue;

@@ -43,5 +43,26 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
     const s6 = await tick(now + 25 * 3600_000 + 60_000); assert(s6.length === 1 && s6[0].includes(':tsfull:24601:'), JSON.stringify(s6));
     const s6op = st.peek().operations.find(o => o.idempotencyKey === s6[0])!; assert.strictEqual(s6op.params.type, 'full'); }
   // offline primary -> nothing; demo/direct clusters ignored
-  console.log('ALL SCHEDULER TESTS PASSED');
+  
+// preferStandby: a scheduled backup goes to a healthy streaming standby ONLY when the destination is shared; otherwise (local per-node archive) the primary
+{
+  const st2 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'sch2-')));
+  const polS = (validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 168, incrEveryHours: 24, preferStandby: true }) as any).policy;
+  assert.strictEqual(polS.preferStandby, true);
+  const t = Date.now();
+  await st2.mutate(d => {
+    d.clusters.push({ id: 'c2', name: 'c2', environment: 'prod', source: 'agent', backupPolicy: polS } as any);
+    d.nodes['p'] = { id: 'p', name: 'pgp', clusterId: 'c2', lastSeen: iso(t), snapshot: { postgres: { alive: true, is_in_recovery: false }, backup: { recent_sets: [] } } } as any;
+    d.nodes['s'] = { id: 's', name: 'pgs', clusterId: 'c2', lastSeen: iso(t), snapshot: { postgres: { alive: true, is_in_recovery: true, wal_receiver: { status: 'streaming' } }, backup: { recent_sets: [] } } } as any;
+  });
+  await schedulerTick(st2, t);
+  assert.strictEqual(st2.peek().operations[0].nodeId, 'p', 'no shared destination: the primary backs up');
+  await st2.mutate(d => { d.operations = []; (d.settings as any).scoped = { destination: { 'cluster:c2': { type: 'nfs', repoPath: '/mnt/bk/repo', walPath: '/mnt/bk/wal', requireMount: true } } }; });
+  await schedulerTick(st2, t + 1000);
+  assert.strictEqual(st2.peek().operations[0].nodeId, 's', 'shared destination: the streaming standby backs up');
+  await st2.mutate(d => { d.operations = []; d.nodes['s'].snapshot.postgres.wal_receiver.status = 'waiting'; });
+  await schedulerTick(st2, t + 2000);
+  assert.strictEqual(st2.peek().operations[0].nodeId, 'p', 'standby not streaming: back to the primary');
+}
+console.log('ALL SCHEDULER TESTS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

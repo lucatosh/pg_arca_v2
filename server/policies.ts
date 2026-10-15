@@ -16,6 +16,8 @@ export interface BackupPolicy {
   retentionFull: number;       // 1..365
   verifyEveryHours: number;    // 0 = off
   verifyDeep: boolean;
+  /** Take scheduled backups on a healthy streaming standby (the primary carries no load). Honoured only when the cluster's backup destination is shared (NFS/SMB): a standby cannot see a local-per-node archive. */
+  preferStandby?: boolean;
   retryAfterMinutes: number;
 }
 export const DEFAULT_POLICY: BackupPolicy = { enabled: false, fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168, verifyDeep: false, retryAfterMinutes: 30 };
@@ -31,6 +33,7 @@ export function validatePolicy(p: any): { ok: true; policy: BackupPolicy } | { o
       retentionFull: n(p.retentionFull ?? DEFAULT_POLICY.retentionFull, 1, 365, 'retentionFull'),
       verifyEveryHours: n(p.verifyEveryHours ?? DEFAULT_POLICY.verifyEveryHours, 0, 720, 'verifyEveryHours'),
       verifyDeep: !!p.verifyDeep,
+      preferStandby: !!p.preferStandby,
       retryAfterMinutes: n(p.retryAfterMinutes ?? DEFAULT_POLICY.retryAfterMinutes, 5, 1440, 'retryAfterMinutes'),
     };
     if (out.incrEveryHours && out.incrEveryHours >= out.fullEveryHours) return { ok: false, error: 'incrEveryHours must be smaller than fullEveryHours' };

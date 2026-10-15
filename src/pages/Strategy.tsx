@@ -4,7 +4,7 @@ import { Badge, Banner, Button, Card, Empty, Field, Icon, Modal, Skeleton } from
 import { revalidate, toast, useQuery, clearDrafts, useDraft } from '../hooks';
 import { go } from '../router';
 
-interface Policy { enabled: boolean; fullEveryHours: number; incrEveryHours: number; retentionFull: number; verifyEveryHours: number; verifyDeep: boolean; retryAfterMinutes: number }
+interface Policy { enabled: boolean; fullEveryHours: number; incrEveryHours: number; retentionFull: number; verifyEveryHours: number; verifyDeep: boolean; retryAfterMinutes: number; preferStandby?: boolean }
 interface Tpl { id: string; name: string; description: string; builtin: boolean; policy: Policy }
 interface Source { scope: string; key: string; templateId?: string; templateName?: string; disabled?: boolean }
 interface PView { templates: Tpl[]; suggested: Record<string, string>; assignments: Record<string, { templateId?: string; policy?: Policy; disabled?: boolean }>; folders: string[]; clusters: { id: string; name: string; environment: string; folder: string; source: string; effective: { policy: Policy | null; source: Source } }[] }
@@ -15,7 +15,7 @@ const BLANK: Policy = { enabled: true, fullEveryHours: 168, incrEveryHours: 24, 
 const hrs = (h: number) => (h <= 0 ? 'never' : h % 168 === 0 ? `${h / 168 === 1 ? 'week' : `${h / 168} weeks`}` : h % 24 === 0 ? `${h / 24 === 1 ? 'day' : `${h / 24} days`}` : `${h} hours`);
 export function summarize(p: Policy | null): string {
   if (!p) return 'No automatic backups';
-  return [`full every ${hrs(p.fullEveryHours)}`, p.incrEveryHours ? `incremental every ${hrs(p.incrEveryHours)}` : 'full only', `${p.retentionFull} ${p.retentionFull === 1 ? 'chain' : 'chains'} kept`, p.verifyEveryHours ? `verify every ${hrs(p.verifyEveryHours)}${p.verifyDeep ? ' (deep)' : ''}` : 'no verification'].join(' · ');
+  return [`full every ${hrs(p.fullEveryHours)}`, p.incrEveryHours ? `incremental every ${hrs(p.incrEveryHours)}` : 'full only', `${p.retentionFull} ${p.retentionFull === 1 ? 'chain' : 'chains'} kept`, p.verifyEveryHours ? `verify every ${hrs(p.verifyEveryHours)}${p.verifyDeep ? ' (deep)' : ''}` : 'no verification', ...(p.preferStandby ? ['from a standby when possible'] : [])].join(' · ');
 }
 /** Approximate worst-case data loss given the schedule (WAL archiving makes the real figure smaller). */
 const rpoText = (p: Policy | null) => (!p ? '' : `At most ${hrs(p.incrEveryHours || p.fullEveryHours)} between two backups; with archived WAL, restores reach the last segment.`);
@@ -39,6 +39,7 @@ function PolicyForm({ p, setP }: { p: Policy; setP: (p: Policy) => void }) {
     <Field label="Verify every (hours)" hint="0 = never. Includes a test restore."><input className="input" type="number" min={0} max={720} value={p.verifyEveryHours} onChange={n('verifyEveryHours')} /></Field>
     <Field label="Retry after an error (minutes)"><input className="input" type="number" min={5} max={720} value={p.retryAfterMinutes} onChange={n('retryAfterMinutes')} /></Field></div>
     <label className="check"><input type="checkbox" checked={p.verifyDeep} onChange={e => setP({ ...p, verifyDeep: e.target.checked })} />Deep verification (reads back every chunk: slower)</label>
+    <label className="check"><input type="checkbox" checked={!!p.preferStandby} onChange={e => setP({ ...p, preferStandby: e.target.checked })} /><span>Take scheduled backups on a streaming standby when possible <span className="small muted">— the primary carries no load; used only when the backup destination is a shared NFS/SMB (a standby cannot see a per-node local archive), otherwise the primary</span></span></label>
     <p className="small muted">{summarize(p)}</p></div>;
 }
 
