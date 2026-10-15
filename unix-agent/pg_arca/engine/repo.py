@@ -12,6 +12,7 @@ only after one global sync(), and chunks written by a crashed run are re-verifie
 
 import errno
 import fcntl
+import json
 import os
 import socket
 import threading
@@ -509,6 +510,33 @@ class Repo(object):
                 pass
             return False
         return True
+
+    RETIRED = "retired.json"
+    RETIRED_MAX = 20000
+
+    def retire(self, sets=(), packs=()):
+        """Journal of what retention and garbage collection removed ON PURPOSE (set ids per stanza, pack names). Read by the offsite
+        rehydrate so that 'download what is missing' does not bring back what was deleted deliberately. Kept inside the repository and never
+        mirrored: when the storage itself is lost the journal goes with it and everything is downloaded again, as it should be."""
+        sets, packs = list(sets), list(packs)
+        if not sets and not packs:
+            return
+        p = os.path.join(self.path, self.RETIRED)
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                j = json.load(f)
+        except (IOError, OSError, ValueError):
+            j = {}
+        ss = j.setdefault("sets", {}).setdefault(self.stanza, [])
+        ss.extend(x for x in sets if x not in ss)
+        j["sets"][self.stanza] = ss[-self.RETIRED_MAX:]
+        pk = j.setdefault("packs", [])
+        pk.extend(x for x in packs if x not in pk)
+        j["packs"] = pk[-self.RETIRED_MAX:]
+        tmp = p + ".tmp.%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(j, f)
+        os.rename(tmp, p)
 
     def stale_set_dirs(self, older_than=86400):
         """Set directories without meta.json older than `older_than` seconds: a start that failed before writing its meta (or an empty

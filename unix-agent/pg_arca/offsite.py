@@ -317,16 +317,57 @@ class Mirror(object):
             return None
         return path
 
-    def rehydrate(self, what="all", progress=None, cancel=None):
+    def retained_on_purpose(self):
+        """What this node removed ON PURPOSE and the bucket still keeps for its grace period: WAL below the archive's retention floor,
+        sets expired by retention, packs dropped by garbage collection. A predicate on object keys. Read from the LOCAL repository and
+        archive only: when they are lost, so is this knowledge, and everything counts as missing."""
+        floor, seg = 0, int(self.config.get("wal_segment_size") or 16 * 1024 * 1024)
+        wal = self.config.get("wal_archive_dir")
+        try:
+            with open(os.path.join(wal, ".retention_floor.json"), "r", encoding="utf-8") as f:
+                fj = json.load(f)
+            floor, seg = int(fj.get("segno") or 0), int(fj.get("seg_size") or seg)
+        except (IOError, OSError, ValueError, TypeError):
+            pass
+        sets, packs = {}, set()
+        try:
+            with open(os.path.join(self.config.get("repo_path") or "", "retired.json"), "r", encoding="utf-8") as f:
+                rj = json.load(f)
+            sets = dict((st, set(ids)) for st, ids in (rj.get("sets") or {}).items())
+            packs = set(rj.get("packs") or [])
+        except (IOError, OSError, ValueError, TypeError, AttributeError):
+            pass
+        per_id = 0x100000000 // seg if seg else 0
+
+        def retained(k):
+            if k.startswith("wal/") and floor and per_id:
+                n = k[4:]
+                if len(n) >= 24 and all(ch in "0123456789ABCDEF" for ch in n[:24]) and not n.endswith(".history"):
+                    return int(n[8:16], 16) * per_id + int(n[16:24], 16) < floor
+                return False
+            parts = k.split("/")
+            if len(parts) >= 5 and parts[0] == "repo" and parts[1] == "stanza" and parts[3] == "backup":
+                return parts[4] in sets.get(parts[2], ())
+            if len(parts) == 4 and parts[:3] == ["repo", "cas", "packs"]:
+                return parts[3].rsplit(".", 1)[0] in packs
+            return False
+        return retained
+
+    def rehydrate(self, what="all", progress=None, cancel=None, include_retained=False):
         """Download from the offsite copy what the local repository / archive lacks (what: all | repo | wal). Local files are never overwritten:
-        a differing local file is reported, not replaced."""
+        a differing local file is reported, not replaced. What this node removed on purpose (retention, garbage collection) and the bucket
+        still keeps for its grace period is not brought back unless include_retained (found on the lab: 8 GB of WAL that retention had just
+        removed came back with a 'download what is missing')."""
         cfg = self.cfg()
         if not cfg:
             raise S3Error(0, "NotConfigured", "no offsite copy is configured on this node")
         c = client_for(cfg)
         remote = c.list("")
         local = self.local_inventory()
-        keys = sorted((k for k in remote if k not in local and (what == "all" or k.startswith(what + "/"))), key=lambda k: (_order(k), k))
+        retained = (lambda k: False) if include_retained else self.retained_on_purpose()
+        missing = [k for k in remote if k not in local and (what == "all" or k.startswith(what + "/"))]
+        skipped = [k for k in missing if retained(k)]
+        keys = sorted((k for k in missing if not retained(k)), key=lambda k: (_order(k), k))
         differ = [k for k in remote if k in local and local[k] != remote[k]]
         total = sum(remote[k] for k in keys)
         done = 0
@@ -348,8 +389,8 @@ class Mirror(object):
                 progress({"phase": "rehydrate", "downloaded": got, "to_download": len(keys), "bytes": done, "bytes_total": total})
         if refused:
             self.log("warn", "offsite rehydrate: %d object(s) refused (name outside the repository/archive or a local file in the way), e.g. %s" % (len(refused), refused[0]))
-        return {"downloaded": got, "bytes": done, "already_local": len(remote) - len(keys) - len(differ), "differ": differ[:20], "differ_count": len(differ),
-                "refused": refused[:20], "refused_count": len(refused)}
+        return {"downloaded": got, "bytes": done, "already_local": len(remote) - len(missing) - len(differ), "differ": differ[:20], "differ_count": len(differ),
+                "refused": refused[:20], "refused_count": len(refused), "retained_skipped": len(skipped), "retained_bytes": sum(remote[k] for k in skipped)}
 
     # ---- background thread
     def start(self, interval=INTERVAL_SEC):

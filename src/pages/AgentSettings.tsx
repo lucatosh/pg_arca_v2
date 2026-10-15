@@ -106,11 +106,11 @@ export function OffsiteCopy({ clusterId, nodes }: { clusterId: string; nodes: an
       {saved ? <div className="row gap-s wrap">
         <Button sm disabled={busy} onClick={() => sy.run('offsite_sync', {}, { nodeId })}>Sync now</Button>
         <Button sm disabled={busy} onClick={() => sy.run('offsite_sync', { dry_run: true }, { nodeId })}>What would be uploaded?</Button>
-        <Button sm disabled={busy || role === 'viewer'} onClick={() => sy.run('offsite_rehydrate', { what: 'all' }, { nodeId })} title="Downloads into the local repository and WAL archive every object of the copy that is missing here (disaster recovery of the backup storage)">Download what is missing here</Button>
+        <Button sm disabled={busy || role === 'viewer'} onClick={() => sy.run('offsite_rehydrate', { what: 'all' }, { nodeId })} title="Downloads into the local repository and WAL archive every object of the copy that is missing here (disaster recovery of the backup storage). What retention removed here on purpose is not brought back.">Download what is missing here</Button>
       </div> : null}
       {wr.error ? <Banner kind="bad" title="Not saved">{wr.error}</Banner> : null}{wr.op?.status === 'failed' ? <Banner kind="bad" title="Not saved">{wr.op.error}</Banner> : null}
       {sy.op?.status === 'failed' ? <Banner kind="bad" title="Sync failed">{sy.op.error}</Banner> : null}
-      {out ? <Banner kind="ok" title={out.dry_run ? `${out.to_upload} objects (${Math.round((out.bytes_to_upload || 0) / 1048576)} MB) would be uploaded, ${out.to_delete} deleted` : out.downloaded != null ? `${out.downloaded} objects downloaded (${Math.round((out.bytes || 0) / 1048576)} MB)${out.differ_count ? `; ${out.differ_count} differ from the local copy and were left alone` : ''}` : `${out.uploaded} objects uploaded (${Math.round((out.uploaded_bytes || 0) / 1048576)} MB), ${out.deleted} deleted${out.failed ? `, ${out.failed} failed` : ''}`} /> : null}
+      {out ? <Banner kind="ok" title={out.dry_run ? `${out.to_upload} objects (${Math.round((out.bytes_to_upload || 0) / 1048576)} MB) would be uploaded, ${out.to_delete} deleted` : out.downloaded != null ? `${out.downloaded} objects downloaded (${Math.round((out.bytes || 0) / 1048576)} MB)${out.differ_count ? `; ${out.differ_count} differ from the local copy and were left alone` : ''}${out.retained_skipped ? `; ${out.retained_skipped} removed here on purpose by retention (${Math.round((out.retained_bytes || 0) / 1048576)} MB) were not brought back` : ''}` : `${out.uploaded} objects uploaded (${Math.round((out.uploaded_bytes || 0) / 1048576)} MB), ${out.deleted} deleted${out.failed ? `, ${out.failed} failed` : ''}`} /> : null}
     </div>
   </Card>;
 }

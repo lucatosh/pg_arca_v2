@@ -1416,7 +1416,7 @@ class OperationExecutor:
     def h_offsite_rehydrate(self, p):
         from pg_arca.s3 import S3Error
         try:
-            return self._mirror().rehydrate(what=str(p.get("what") or "all"), progress=self._progress, cancel=self._cancelled)
+            return self._mirror().rehydrate(what=str(p.get("what") or "all"), progress=self._progress, cancel=self._cancelled, include_retained=bool(p.get("include_retained")))
         except S3Error as e:
             raise OpError(str(e))
 

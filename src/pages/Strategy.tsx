@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Empty, Field, Icon, Modal, Skeleton } from '../ui';
-import { revalidate, toast, useQuery, clearDrafts, useDraft } from '../hooks';
+import { revalidate, toast, useQuery, clearDrafts, useDraft, revalidateMatching } from '../hooks';
 import { go } from '../router';
 
 interface Policy { enabled: boolean; fullEveryHours: number; incrEveryHours: number; retentionFull: number; verifyEveryHours: number; verifyDeep: boolean; retryAfterMinutes: number; retentionDays?: number; preferStandby?: boolean; readLimitMBs?: number; windowStart?: number; windowEnd?: number; rpoTargetMinutes?: number; rtoTargetMinutes?: number }
@@ -28,6 +28,8 @@ export function sourceText(s: Source | undefined): string {
     case 'legacy': return 'Set before templates existed (custom)'; default: return 'No policy assigned';
   }
 }
+/** A policy or template change moves the recovery objectives of the clusters it applies to: refresh them with the policies. */
+const revalidatePolicies = () => { revalidate('/api/policies'); revalidateMatching(/^\/api\/clusters\/[^/]+\/objectives$/); };
 const asgLabel = (a: PView['assignments'][string] | undefined, tpls: Tpl[]) => !a ? null : a.disabled ? 'No automatic backups' : a.templateId ? (tpls.find(t => t.id === a.templateId)?.name || a.templateId) : 'Custom';
 
 const mins = (m: number) => m >= 120 ? `${(m / 60).toFixed(1).replace(/\.0$/, '')} h` : `${m} min`;
@@ -63,7 +65,7 @@ export function AssignDialog({ scope, k, label, env, view, onClose, onSaved }: {
       const body: any = { scope, key: k };
       if (mode === 'inherit') body.inherit = true; else if (mode === 'off') body.disabled = true; else if (mode === 'custom') body.policy = pol; else body.templateId = mode.slice(2);
       await api('PUT', '/api/policies/assignments', body);
-      revalidate('/api/policies'); onSaved?.(); toast('Policy updated', 'ok'); close();
+      revalidatePolicies(); onSaved?.(); toast('Policy updated', 'ok'); close();
     } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
   };
   const opt = (v: string, title: React.ReactNode, sub?: string) => <label key={v} className={`opt ${mode === v ? 'on' : ''}`}><input type="radio" name="asg" checked={mode === v} onChange={() => setMode(v)} /><div><div>{title}</div>{sub ? <div className="small muted">{sub}</div> : null}</div></label>;
@@ -101,9 +103,9 @@ export function StrategyPage() {
   const envCount = (e: string) => v.clusters.filter(c => c.environment === e).length;
   const applySuggested = async () => {
     const envs = [...new Set(uncovered.map(c => c.environment))].filter(e => ENVS.includes(e));
-    try { for (const e of envs) await api('PUT', '/api/policies/assignments', { scope: 'env', key: e, templateId: v.suggested[e] }); revalidate('/api/policies'); toast(`Recommended policies applied to ${envs.length} environment(s)`, 'ok'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); }
+    try { for (const e of envs) await api('PUT', '/api/policies/assignments', { scope: 'env', key: e, templateId: v.suggested[e] }); revalidatePolicies(); toast(`Recommended policies applied to ${envs.length} environment(s)`, 'ok'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); }
   };
-  const del = async (t: Tpl) => { try { await api('DELETE', `/api/policies/templates/${t.id}`); revalidate('/api/policies'); toast('Modello eliminato', 'ok'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } };
+  const del = async (t: Tpl) => { try { await api('DELETE', `/api/policies/templates/${t.id}`); revalidatePolicies(); toast('Template deleted', 'ok'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } };
   const lineOf = (scope: 'global' | 'env' | 'folder', k: string) => asgLabel(v.assignments[scope === 'global' ? 'global' : `${scope}:${k}`], v.templates);
   const Line = ({ scope, k, title, sub, env }: { scope: 'global' | 'env' | 'folder'; k: string; title: string; sub?: string; env?: string }) => { const a = lineOf(scope, k); return <tr>
     <td><strong>{title}</strong>{sub ? <div className="small muted">{sub}</div> : null}</td>
@@ -139,7 +141,7 @@ export function StrategyPage() {
 
 function FolderEdit({ c, folders, onDone }: { c: any; folders: string[]; onDone: () => void }) {
   const [f, setF] = useDraft(`folderedit:${c.id}`, c.folder || '');
-  const save = async () => { try { await api('PATCH', `/api/clusters/${encodeURIComponent(c.id)}`, { folder: f }); revalidate('/api/policies'); revalidate('/api/clusters'); onDone(); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } };
+  const save = async () => { try { await api('PATCH', `/api/clusters/${encodeURIComponent(c.id)}`, { folder: f }); revalidatePolicies(); revalidate('/api/clusters'); onDone(); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } };
   return <span className="row gap-s"><input className="input" style={{ width: 160 }} autoFocus list="folders" value={f} onChange={e => setF(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') onDone(); }} placeholder="e.g. bank/core" /><datalist id="folders">{folders.map(x => <option key={x} value={x} />)}</datalist>
     <Button sm kind="primary" onClick={save}>Save</Button></span>;
 }
@@ -151,7 +153,7 @@ function TemplateDialog({ t, onClose }: { t: Tpl | null; onClose: () => void }) 
   const id = t?.id || name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
   const save = async () => {
     setBusy(true); setErr(null);
-    try { await api('PUT', `/api/policies/templates/${id}`, { name, description: desc, policy: pol }); revalidate('/api/policies'); toast('Template saved', 'ok'); close(); }
+    try { await api('PUT', `/api/policies/templates/${id}`, { name, description: desc, policy: pol }); revalidatePolicies(); toast('Template saved', 'ok'); close(); }
     catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
   };
   return <Modal title={t?.id ? 'Edit template' : 'New template'} onClose={close} footer={<><Button onClick={close}>Cancel</Button><Button kind="primary" busy={busy} disabled={!name.trim() || id.length < 2} onClick={save}>Save</Button></>}>

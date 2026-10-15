@@ -187,6 +187,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=Last successful sync', { timeout: 10000 }); await p.waitForSelector('.badge:has-text("Active")'); await shot('32-offsite');
   await p.click('button:has-text("What would be uploaded?")'); await p.waitForSelector('.banner:has-text("would be uploaded")', { timeout: 10000 });
   await p.click('button:has-text("Sync now")'); await p.waitForSelector('.banner:has-text("3 objects uploaded")', { timeout: 10000 });
+  await p.click('button:has-text("Download what is missing here")'); await p.waitForSelector('.banner:has-text("removed here on purpose by retention (620 MB) were not brought back")', { timeout: 10000 });
   await tab('Maintenance', 'Tuning'); await p.waitForSelector('text=16.0 GB RAM'); await p.waitForSelector('tr:has-text("shared_buffers") >> text=4GB'); await shot('14e-tuning');
   await p.click('tr:has-text("work_mem") button:has-text("Apply")'); await p.click('.modal button:has-text("Apply")'); await p.waitForSelector('text=Succeeded', { timeout: 10000 });
   await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console');

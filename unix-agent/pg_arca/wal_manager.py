@@ -575,7 +575,7 @@ class WalManager:
         them (on the lab, standbys kept re-publishing old-timeline segments the retention had just removed, which then showed up as 'holes' in the archive)."""
         tmp = os.path.join(self.wal_dir, ".retention_floor.tmp.%d" % os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"segno": int(segno), "lsn": lsn_text, "at": time.time()}, f)
+            json.dump({"segno": int(segno), "lsn": lsn_text, "at": time.time(), "seg_size": int(self.segment_size)}, f)
             f.flush()
             os.fsync(f.fileno())
         os.rename(tmp, os.path.join(self.wal_dir, self.FLOOR_FILE))

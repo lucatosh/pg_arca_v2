@@ -23,6 +23,9 @@ export function revalidate(key: string): Promise<any> {
 }
 /** The activity dock and the operation lists must notice a new or finished operation immediately, not at the next poll. */
 export const OPS_SLIM_KEY = '/api/operations?slim=1&recent=86400';
+/** Revalidate every cached query whose key matches: after a change that affects many views at once (a backup policy changes the recovery
+ *  objectives of every cluster it applies to). Only keys already in the cache, so nothing is fetched that no page asked for. */
+export function revalidateMatching(re: RegExp) { return Promise.all([...cache.keys()].filter(k => re.test(k)).map(k => revalidate(k))); }
 export function revalidateOps(clusterId?: string) {
   const keys = [OPS_SLIM_KEY, '/api/operations'];
   if (clusterId && !clusterId.startsWith('worker:')) keys.push(`/api/clusters/${encodeURIComponent(clusterId)}/activity`);   // "Running on this cluster" strip: at once, not at its next 5 s poll

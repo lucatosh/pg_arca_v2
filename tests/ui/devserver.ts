@@ -102,7 +102,7 @@ const withAgent = process.env.NO_AGENT !== '1';
       if (op.type === 'offsite_set') { await sleep(400); if (p.offsite && /refuse/.test(p.offsite.bucket || '')) return report(op.id, { status: 'failed', error: 'the bucket cannot be used: 403 AccessDenied: bad or missing signature' });
         offsiteCfg = p.offsite ? { ...p.offsite, secret_key: undefined, secret_key_set: true } : null; return report(op.id, { status: 'succeeded', result: { offsite: offsiteCfg, probe: p.offsite ? 'bucket reachable, list/put/get/delete ok' : undefined, cleared: !p.offsite } }); }
       if (op.type === 'offsite_sync') { await sleep(300); return report(op.id, { status: 'succeeded', result: p.dry_run ? { dry_run: true, to_upload: 3, bytes_to_upload: 5e8, to_delete: 0 } : { ok: true, uploaded: 3, uploaded_bytes: 5e8, deleted: 0, failed: 0 } }); }
-      if (op.type === 'offsite_rehydrate') { await sleep(300); return report(op.id, { status: 'succeeded', result: { downloaded: 0, bytes: 0, already_local: 812, differ: [], differ_count: 0 } }); }
+      if (op.type === 'offsite_rehydrate') { await sleep(300); return report(op.id, { status: 'succeeded', result: { downloaded: 0, bytes: 0, already_local: 812, differ: [], differ_count: 0, retained_skipped: 37, retained_bytes: 620 * 1048576 } }); }
       if (op.type === 'restore_db_swap') { await sleep(300); return report(op.id, { status: 'succeeded', result: { replaced: true, restored: p.restored, original: p.original, old_kept_as: p.original + '_before_20260101_000000', sessions_ended: 1 } }); }
       if (op.type === 'restore_promote') {
         await sleep(300);

@@ -212,6 +212,10 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
             if m:
                 m["status"] = "EXPIRING"
                 repo.write_meta(m)
+        try:
+            repo.retire(sets=sorted(doomed_ids))                         # the offsite rehydrate must not bring them back
+        except (IOError, OSError) as e:
+            logger.warning("could not record the expired sets in the repository journal: %s", e)
         for sid in doomed_ids:
             shutil.rmtree(repo.own_path("backup", sid), ignore_errors=True)        # only this location: a previous one is never touched by retention
         for d in repo.stale_set_dirs():                                  # starts that died before their meta (or empty claims): not sets, just clutter
@@ -233,6 +237,13 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
                     walrm += 1
         plan.update(chunks_removed=removed, bytes_freed=freed, wal_removed=walrm)
         return plan
+
+
+def _retire_pack(repo, pack):
+    try:
+        repo.retire(packs=[os.path.basename(pack)[:-5]])
+    except (IOError, OSError, AttributeError) as e:
+        logger.warning("could not record the removed pack in the repository journal: %s", e)
 
 
 def _gc_cas(repo):
@@ -328,6 +339,7 @@ def _gc_cas_locked(repo):
         dead_bytes = sum(e[2] for e in dead)
         if len(dead) == len(entries):
             try:
+                _retire_pack(repo, pack)
                 os.remove(idx)
                 os.remove(pack)
                 freed += size
@@ -338,6 +350,7 @@ def _gc_cas_locked(repo):
         elif dead_bytes >= REPACK_FRACTION * size:
             try:
                 newp, kept = _packs.repack(repo.path, pack, livebytes)
+                _retire_pack(repo, pack)
                 os.remove(idx)
                 os.remove(pack)
                 freed += size - kept

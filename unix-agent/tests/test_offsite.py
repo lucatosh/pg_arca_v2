@@ -191,6 +191,40 @@ class OffsiteTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.wal, "000000010000000000000004.zst.meta")))
         self.assertEqual(self.m.rehydrate()["downloaded"], 0, "nothing left to fetch")
 
+    def test_rehydrate_does_not_bring_back_what_retention_removed(self):
+        """Found on the lab: the mirror had uploaded the whole WAL archive, a full backup's retention then removed the old WAL locally (the
+        bucket keeps it for the grace period), and 'download what is missing' pulled 8 GB back. What this node removed on purpose (WAL below
+        the retention floor, expired sets, packs dropped by the garbage collection) is skipped unless asked for; after a real loss of the
+        storage (the journal and the floor go with it) everything is downloaded."""
+        hs = [self.repo.put_chunk(b"%06d" % i * 300)[0] for i in range(10)]
+        self.repo.flush()
+        self._set("20260101-000000F", hs)
+        self._set("20260108-000000F", hs)
+        for n in range(1, 7):
+            self._wal("0000000100000000000000%02X.zst" % n)
+        self.assertTrue(self.m.sync()["ok"])
+        # retention: the first set expires, WAL below segment 4 goes (floor marker as expire writes it)
+        self.repo.retire(sets=["20260101-000000F"])
+        shutil.rmtree(self.repo.own_path("backup", "20260101-000000F"))
+        for n in range(1, 4):
+            os.remove(os.path.join(self.wal, "0000000100000000000000%02X.zst" % n))
+            os.remove(os.path.join(self.wal, "0000000100000000000000%02X.zst.meta" % n))
+        with open(os.path.join(self.wal, ".retention_floor.json"), "w") as f:
+            json.dump({"segno": 4, "lsn": "0/4000000", "seg_size": 16 * 1024 * 1024}, f)
+        r = self.m.rehydrate()
+        self.assertEqual(r["downloaded"], 0, r)
+        self.assertGreaterEqual(r["retained_skipped"], 6 + 1, r)                     # 3 segments + 3 metas + the expired set's files
+        self.assertFalse(os.path.exists(os.path.join(self.wal, "000000010000000000000001.zst")))
+        self.assertFalse(os.path.isdir(self.repo.own_path("backup", "20260101-000000F")))
+        # a genuinely lost segment above the floor IS fetched
+        os.remove(os.path.join(self.wal, "000000010000000000000005.zst"))
+        r = self.m.rehydrate(what="wal")
+        self.assertEqual(r["downloaded"], 1, r)
+        # on request, everything
+        r = self.m.rehydrate(include_retained=True)
+        self.assertGreaterEqual(r["downloaded"], 7, r)
+        self.assertTrue(os.path.exists(os.path.join(self.wal, "000000010000000000000001.zst")))
+
     def _client(self):
         from pg_arca.s3 import S3Client
         return S3Client(self.srv.endpoint, self.bucket, self.ak, self.sk, prefix=self.prefix)
