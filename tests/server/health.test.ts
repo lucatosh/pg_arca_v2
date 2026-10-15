@@ -72,6 +72,16 @@ import { requiredRole } from '../../server/auth';
     assert.strictEqual(f({ summarize_wal: 'off' }).length, 1); assert.strictEqual(f({ summarize_wal: 'off' })[0].severity, 'info');
     assert.strictEqual(f({ summarize_wal: 'on' }).length, 0); assert.strictEqual(f({}).length, 0); assert.strictEqual(f({ summarize_wal: 'off' }, true).length, 0);
   }
+  { // archiver lag: current LSN far ahead of the last archived segment -> warning at 16 segments, critical at 128; caught up -> nothing
+    const base = store.peek(); const g1: any = base.nodes.n3;
+    const mk = (lsn: string, last: string): any => ({ ...base, clusters: [...base.clusters, { id: 'al', name: 'al-db', environment: 'dev', source: 'agent' }],
+      nodes: { ...base.nodes, a1: { ...g1, id: 'a1', name: 'a1', clusterId: 'al', snapshot: { ...g1.snapshot, postgres: { ...g1.snapshot.postgres, current_lsn: lsn, settings: { wal_segment_size: '16777216' }, archiver: { last_archived_wal: last, last_archived_time: iso(now - 5000) } } } } } });
+    const f = (lsn: string, last: string) => evaluate(mk(lsn, last), now).filter(i => i.clusterId === 'al' && i.code === 'archiver_lag');
+    assert.strictEqual(f('0/5000000', '000000010000000000000004').length, 0, 'segment 5 being written, 4 archived: caught up');
+    const w = f('0/15000000', '000000010000000000000004'); assert.strictEqual(w.length, 1); assert.strictEqual(w[0].severity, 'warning'); assert(/16 segments/.test(w[0].title), w[0].title);
+    assert.strictEqual(f('1/00000000', '000000010000000000000004')[0].severity, 'critical');
+    assert.strictEqual(f('0/15000000', 'garbage').length, 0);
+  }
   { // offsite copy: failing or behind -> finding; fresh -> nothing; not configured -> nothing
     const base = store.peek(); const g1: any = base.nodes.n3;
     const mk = (off: any): any => ({ ...base, clusters: [...base.clusters, { id: 'o', name: 'o-db', environment: 'dev', source: 'agent' }], nodes: { ...base.nodes, o1: { ...g1, id: 'o1', name: 'o1', clusterId: 'o', snapshot: { ...g1.snapshot, offsite: off } } } });

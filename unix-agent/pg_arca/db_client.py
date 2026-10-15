@@ -23,6 +23,7 @@ SNAPSHOT_SETTINGS = (
     "wal_keep_size", "autovacuum", "cluster_name", "data_directory", "unix_socket_directories",
     "max_prepared_transactions", "max_locks_per_transaction", "max_worker_processes",     # must be <= on every standby (geo sites): checked by the console
     "summarize_wal", "wal_summary_keep_time",                                            # PostgreSQL 17+: incrementals that read only changed files
+    "wal_segment_size",                                                                  # archiver backlog computed by the console
 )
 
 SNAPSHOT_SQL = """

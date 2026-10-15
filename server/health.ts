@@ -4,6 +4,7 @@
  * No I/O here: the same function feeds the "Oggi" page, the notification dispatcher and the tests.
  */
 import { resolvePolicy } from './policies';
+import { lsnToBig } from './view';
 import { classify } from './pgcompat';
 import { geoIssues } from './geo';
 import { resolveScoped } from './scoped';
@@ -125,6 +126,20 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
           cause: `Two servers promoted themselves to the same timeline number (split-brain between sites, or a promotion without access to the shared archive). PostgreSQL archives nothing after this file: WAL piles up and point-in-time restores stop here. The current primary is the right one: on its Backup tab, “Retire the dead branch” of that timeline sets the other server’s copies aside (nothing is deleted) and archiving resumes by itself. To prevent it: “Recovery from the archive” (restore_command) on both sites, in Geo-redundancy.`,
           action: { label: 'See the backups', page: 'backup' } });
       else add({ severity: 'critical', code: 'archiver_failing', title: 'WAL archiving is failing', cause: `Last failed segment: ${arch.last_failed_wal || '?'}${pg.archive_error?.error ? ` — reason: ${pg.archive_error.error}` : ''}. Until this is fixed, WAL piles up on the server and the disk fills up.`, action: { label: 'See the backups', page: 'backup' } });
+    // ---- archiver lag: segments written but not archived yet. archive_command slower than the WAL rate (slow share, zlib fallback) piles WAL up on the
+    // primary and widens the recovery point; pg_stat_archiver only shows failures, so the backlog is computed from the current LSN
+    if (arch?.last_archived_wal && pg.current_lsn && pg.settings) {
+      const segBytes = Number(pg.settings.wal_segment_size) > 0 ? Number(pg.settings.wal_segment_size) : 16 * 1048576;
+      const cur = lsnToBig(pg.current_lsn); const m = /^([0-9A-F]{8})([0-9A-F]{8})([0-9A-F]{8})$/i.exec(String(arch.last_archived_wal));
+      if (cur !== null && m) {
+        const segsPerLog = BigInt(Math.floor(0x100000000 / segBytes));
+        const archivedSeg = BigInt('0x' + m[2]) * segsPerLog + BigInt('0x' + m[3]);
+        const curSeg = cur / BigInt(segBytes);
+        const behind = Number(curSeg - archivedSeg - 1n);                             // the segment being written does not count
+        if (behind >= 16) add({ severity: behind >= 128 ? 'critical' : 'warning', code: 'archiver_lag', title: `WAL archiving is ${behind} segments behind (${bytesH(behind * segBytes)})`,
+          cause: `The archiver has not caught up with what PostgreSQL writes: archive_command is slower than the WAL rate (slow destination, zlib instead of zstd, a saturated node). Until it catches up these segments sit in pg_wal (disk) and are not restorable from the archive (recovery point). If it keeps growing: faster destination, python3-zstandard on the node, or less WAL (wal_compression=on).`, action: { label: 'See the backups', page: 'backup' } });
+      }
+    }
     if (pol?.enabled && pg.settings && pg.settings.archive_mode === 'off') add({ severity: 'warning', code: 'archive_off', title: 'archive_mode is off', cause: 'The backup policy is active but PostgreSQL does not archive WAL: no point-in-time recovery.', action: { label: 'See the backups', page: 'backup' } });
 
     // ---- shared storage: a switchover/failover moves archiving to another node. If every node writes to ITS OWN local repo / WAL archive, the archive splits and PITR breaks silently.
