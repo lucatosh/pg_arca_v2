@@ -41,7 +41,7 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   // agent now reports a complete full 1h ago; incr not due; retention expire is scheduled once for the successful backup
   await st.mutate(d => { d.nodes['n1'].snapshot.backup.recent_sets = [{ id: 'x', type: 'full', status: 'COMPLETE', start_time: iso(now + 32 * 60_000 - 3600_000) }]; });
   const s3 = [...sx, ...(await tick(now + 33 * 60_000))]; assert(s3.length === 1 && s3[0].includes(':expire:'), JSON.stringify(s3));
-  const e = st.peek().operations.find(o => o.idempotencyKey === s3[0])!; await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', e.id, 'succeeded', {});
+  const e = st.peek().operations.find(o => o.idempotencyKey === s3[0])!; assert.deepStrictEqual(e.params, { retention_full: 2, retention_days: 30 }, 'days of history travel with the retention run'); await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', e.id, 'succeeded', {});
   const s4 = await tick(now + 34 * 60_000); assert(s4.length === 1 && s4[0].includes(':verify:'), JSON.stringify(s4));
   const v = st.peek().operations.find(o => o.idempotencyKey === s4[0])!; await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', v.id, 'succeeded', {});
   assert.strictEqual((await tick(now + 35 * 60_000)).length, 0);

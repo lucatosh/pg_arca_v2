@@ -4,7 +4,7 @@ import { Badge, Banner, Button, Card, Empty, Field, Icon, Modal, Skeleton } from
 import { revalidate, toast, useQuery, clearDrafts, useDraft } from '../hooks';
 import { go } from '../router';
 
-interface Policy { enabled: boolean; fullEveryHours: number; incrEveryHours: number; retentionFull: number; verifyEveryHours: number; verifyDeep: boolean; retryAfterMinutes: number; preferStandby?: boolean; readLimitMBs?: number; windowStart?: number; windowEnd?: number }
+interface Policy { enabled: boolean; fullEveryHours: number; incrEveryHours: number; retentionFull: number; verifyEveryHours: number; verifyDeep: boolean; retryAfterMinutes: number; retentionDays?: number; preferStandby?: boolean; readLimitMBs?: number; windowStart?: number; windowEnd?: number }
 interface Tpl { id: string; name: string; description: string; builtin: boolean; policy: Policy }
 interface Source { scope: string; key: string; templateId?: string; templateName?: string; disabled?: boolean }
 interface PView { templates: Tpl[]; suggested: Record<string, string>; assignments: Record<string, { templateId?: string; policy?: Policy; disabled?: boolean }>; folders: string[]; clusters: { id: string; name: string; environment: string; folder: string; source: string; effective: { policy: Policy | null; source: Source } }[] }
@@ -15,7 +15,7 @@ const BLANK: Policy = { enabled: true, fullEveryHours: 168, incrEveryHours: 24, 
 const hrs = (h: number) => (h <= 0 ? 'never' : h % 168 === 0 ? `${h / 168 === 1 ? 'week' : `${h / 168} weeks`}` : h % 24 === 0 ? `${h / 24 === 1 ? 'day' : `${h / 24} days`}` : `${h} hours`);
 export function summarize(p: Policy | null): string {
   if (!p) return 'No automatic backups';
-  return [`full every ${hrs(p.fullEveryHours)}`, p.incrEveryHours ? `incremental every ${hrs(p.incrEveryHours)}` : 'full only', `${p.retentionFull} ${p.retentionFull === 1 ? 'chain' : 'chains'} kept`, p.verifyEveryHours ? `verify every ${hrs(p.verifyEveryHours)}${p.verifyDeep ? ' (deep)' : ''}` : 'no verification', ...(p.preferStandby ? ['from a standby when possible'] : []), ...(p.readLimitMBs ? [`read limit ${p.readLimitMBs} MB/s`] : []), ...((p.windowStart ?? 0) !== (p.windowEnd ?? 0) ? [`fulls and verifications ${String(p.windowStart).padStart(2, '0')}:00–${String(p.windowEnd).padStart(2, '0')}:00`] : [])].join(' · ');
+  return [`full every ${hrs(p.fullEveryHours)}`, p.incrEveryHours ? `incremental every ${hrs(p.incrEveryHours)}` : 'full only', `${p.retentionFull} ${p.retentionFull === 1 ? 'chain' : 'chains'} kept${p.retentionDays ? ` and ${p.retentionDays} days of history` : ''}`, p.verifyEveryHours ? `verify every ${hrs(p.verifyEveryHours)}${p.verifyDeep ? ' (deep)' : ''}` : 'no verification', ...(p.preferStandby ? ['from a standby when possible'] : []), ...(p.readLimitMBs ? [`read limit ${p.readLimitMBs} MB/s`] : []), ...((p.windowStart ?? 0) !== (p.windowEnd ?? 0) ? [`fulls and verifications ${String(p.windowStart).padStart(2, '0')}:00–${String(p.windowEnd).padStart(2, '0')}:00`] : [])].join(' · ');
 }
 /** Approximate worst-case data loss given the schedule (WAL archiving makes the real figure smaller). */
 const rpoText = (p: Policy | null) => (!p ? '' : `At most ${hrs(p.incrEveryHours || p.fullEveryHours)} between two backups; with archived WAL, restores reach the last segment.`);
@@ -35,7 +35,8 @@ function PolicyForm({ p, setP }: { p: Policy; setP: (p: Policy) => void }) {
   return <div className="stack"><div className="grid g2">
     <Field label="Full backup every (hours)"><input className="input" type="number" min={24} max={720} value={p.fullEveryHours} onChange={n('fullEveryHours')} /></Field>
     <Field label="Incremental every (hours)" hint="0 = full only"><input className="input" type="number" min={0} max={168} value={p.incrEveryHours} onChange={n('incrEveryHours')} /></Field>
-    <Field label="Chains to keep"><input className="input" type="number" min={1} max={365} value={p.retentionFull} onChange={n('retentionFull')} /></Field>
+    <Field label="Chains to keep" hint="A chain = a full backup with its incrementals. The oldest chains beyond this number are removed…"><input className="input" type="number" min={1} max={365} value={p.retentionFull} onChange={n('retentionFull')} /></Field>
+    <Field label="…unless younger than (days)" hint="Days of recoverability guaranteed whatever the count (0 = count only). 30 keeps every point of the last month restorable."><input className="input" type="number" min={0} max={3650} value={p.retentionDays ?? 0} onChange={n('retentionDays')} /></Field>
     <Field label="Verify every (hours)" hint="0 = never. Includes a test restore."><input className="input" type="number" min={0} max={720} value={p.verifyEveryHours} onChange={n('verifyEveryHours')} /></Field>
     <Field label="Retry after an error (minutes)"><input className="input" type="number" min={5} max={720} value={p.retryAfterMinutes} onChange={n('retryAfterMinutes')} /></Field></div>
     <label className="check"><input type="checkbox" checked={p.verifyDeep} onChange={e => setP({ ...p, verifyDeep: e.target.checked })} />Deep verification (reads back every chunk: slower)</label>

@@ -183,7 +183,8 @@ Object.assign(OP_SPECS, {
     if (!p.source_repo && !p.source_wal) return 'source_repo or source_wal required';
     for (const k of ['source_repo', 'source_wal']) if (p[k] !== undefined && !(typeof p[k] === 'string' && p[k].startsWith('/') && !p[k].split('/').includes('..'))) return `${k}: absolute path`;
     return null; } },
-  backup_expire: { ...dataOp, cancellable: false, validate: (p: any) => p.retention_full !== undefined && !(Number(p.retention_full) >= 1 && Number(p.retention_full) <= 365) ? 'retention_full 1..365' : null },
+  backup_expire: { ...dataOp, cancellable: false, validate: (p: any) => (p.retention_full !== undefined && !(Number(p.retention_full) >= 1 && Number(p.retention_full) <= 365) ? 'retention_full 1..365' : null) ||
+                                    (p.retention_days !== undefined && !(Number(p.retention_days) >= 0 && Number(p.retention_days) <= 3650) ? 'retention_days 0..3650' : null) },
   backup_catalog: { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => (p.set && p.set !== 'latest' && p.set !== 'all' && !setId.test(String(p.set))) ? 'invalid backup set id' : (p.database && !pgName(p.database) ? 'invalid database' : null) },
   restore_plan:  { mutating: false, target: 'any_node', lane: 'control', validate: (p: any) => ['instance', 'database', 'object'].includes(p.scope) ? targetErr(p) : 'scope must be instance|database|object' },
   // destination optional: the agent proposes one (a volume with room, never production's) and uses it when none is given

@@ -14,6 +14,8 @@ export interface BackupPolicy {
   fullEveryHours: number;      // 24..720
   incrEveryHours: number;      // 1..168 (0 = only fulls)
   retentionFull: number;       // 1..365
+  /** Days of recoverability: full chains younger than this are kept even beyond retentionFull (0 = count only). */
+  retentionDays?: number;
   verifyEveryHours: number;    // 0 = off
   verifyDeep: boolean;
   /** Take scheduled backups on a healthy streaming standby (the primary carries no load). Honoured only when the cluster's backup destination is shared (NFS/SMB): a standby cannot see a local-per-node archive. */
@@ -36,6 +38,7 @@ export function validatePolicy(p: any): { ok: true; policy: BackupPolicy } | { o
       fullEveryHours: n(p.fullEveryHours ?? DEFAULT_POLICY.fullEveryHours, 6, 720, 'fullEveryHours'),
       incrEveryHours: n(p.incrEveryHours ?? DEFAULT_POLICY.incrEveryHours, 0, 168, 'incrEveryHours'),
       retentionFull: n(p.retentionFull ?? DEFAULT_POLICY.retentionFull, 1, 365, 'retentionFull'),
+      retentionDays: n(p.retentionDays ?? 0, 0, 3650, 'retentionDays'),
       verifyEveryHours: n(p.verifyEveryHours ?? DEFAULT_POLICY.verifyEveryHours, 0, 720, 'verifyEveryHours'),
       verifyDeep: !!p.verifyDeep,
       preferStandby: !!p.preferStandby,

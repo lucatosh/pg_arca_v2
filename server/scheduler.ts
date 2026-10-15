@@ -90,7 +90,7 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     // retention: once after every successful scheduled backup
     const lastOk = myOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).pop();
     if (lastOk && !myOps.some(o => o.idempotencyKey === `sched:${c.id}:expire:${lastOk.id}`)) {
-      if (await submit('backup_expire', { retention_full: pol.retentionFull }, `sched:${c.id}:expire:${lastOk.id}`)) continue;
+      if (await submit('backup_expire', { retention_full: pol.retentionFull, ...(pol.retentionDays ? { retention_days: pol.retentionDays } : {}) }, `sched:${c.id}:expire:${lastOk.id}`)) continue;
     }
     // periodic verification (optionally by really recovering the newest set)
     if (pol.verifyEveryHours && inWindow(pol, now)) {
