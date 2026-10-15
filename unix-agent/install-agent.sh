@@ -130,6 +130,22 @@ install -m 0755 "$BUNDLE/pg-arca-cli" /usr/local/bin/pg-arca-cli
 install -m 0755 "$BUNDLE/pg-arca-wal" /usr/local/bin/pg-arca-wal
 chown -R root:root "$INSTALL_DIR"
 
+# --- CA of the console certificate: copied next to the config, readable by the agent's user. The path given (/root/console.crt, the console's own
+# tls/ directory, ...) is usually readable by root only, and the agent does not run as root (found by the release test: PermissionError at start).
+if [[ -n "${PG_ARCA_TLS_CA:-}" ]]; then
+  [[ -r "$PG_ARCA_TLS_CA" ]] || die "PG_ARCA_TLS_CA=$PG_ARCA_TLS_CA is not readable"
+  if [[ "$(readlink -f "$PG_ARCA_TLS_CA")" != "$(readlink -f "$CONF_DIR/console-ca.pem" 2>/dev/null)" ]]; then install -m 0644 "$PG_ARCA_TLS_CA" "$CONF_DIR/console-ca.pem"; fi
+  PG_ARCA_TLS_CA="$CONF_DIR/console-ca.pem"; export PG_ARCA_TLS_CA
+  if [[ -f "$CONF_DIR/agent.conf" ]]; then                                   # upgrade or re-run with a CA: point an existing config at the copy
+    python3 - "$CONF_DIR/agent.conf" "$PG_ARCA_TLS_CA" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+if c.get("tls_ca_file") != sys.argv[2]:
+    c["tls_ca_file"] = sys.argv[2]; json.dump(c, open(sys.argv[1], "w"), indent=2)
+PY
+  fi
+fi
+
 # --- config (never overwritten) -------------------------------------------------------
 if [[ ! -f "$CONF_DIR/agent.conf" ]]; then
   [[ -n "${PG_ARCA_URL:-}" ]] || die "PG_ARCA_URL is required on first install"
