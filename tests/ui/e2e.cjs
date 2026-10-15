@@ -177,6 +177,9 @@ const base = process.env.BASE || 'http://localhost:5188';
   await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console'); await p.waitForSelector('text=Active replicas without'); await shot('14-hba');
   // offsite copy (S3): no copy yet -> set it up -> test+save -> status shown -> sync and dry run -> a refused bucket is reported, not saved
   await tab('Status', 'Nodes'); await p.waitForSelector('text=Offsite copy (S3-compatible object storage)'); await p.waitForSelector('text=No offsite copy on this node');
+  // agent settings: paths as text, the asynchronous-archiving switch as a select with its default shown
+  await p.waitForSelector('.field:has-text("Asynchronous WAL archiving") select'); assert(/default \(off\)/.test(await p.locator('.field:has-text("Asynchronous WAL archiving") select').innerText()), 'bool setting shows its default');
+  await p.selectOption('.field:has-text("Asynchronous WAL archiving") select', 'true'); await p.waitForSelector('button:has-text("Save and re-check"):not([disabled])'); await shot('33-agent-settings');
   await p.fill('input[placeholder="https://minio.corp.example:9000"]', 'https://minio.corp.example:9000'); const offCard = p.locator('.card:has-text("Offsite copy (S3")');
   await offCard.locator('.field:has-text("Bucket") input').first().fill('refuse-me'); await offCard.locator('.field:has-text("Access key") input').first().fill('AKIA');
   await p.click('button:has-text("Test the bucket and save")'); await p.waitForSelector('.banner.bad:has-text("AccessDenied")', { timeout: 10000 });
