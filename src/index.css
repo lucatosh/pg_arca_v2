@@ -498,3 +498,6 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .task { display: flex; gap: 10px; align-items: flex-start; text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--ink); font: inherit; cursor: pointer; transition: border-color .12s, background .12s; }
 .task:hover, .task:focus-visible { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .task svg { flex: none; margin-top: 2px; color: var(--accent); } .task > span { display: flex; flex-direction: column; gap: 2px; }
+/* banner actions: beside the text on wide screens, under it on a phone (a long "Schedule with …" button made the Backup tab wider than the screen) */
+.banner { flex-wrap: wrap; } .banner > .grow { min-width: 0; flex: 1 1 260px; } .banner .bacts { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+@media (max-width: 720px) { .banner .bacts { flex-basis: 100%; padding-left: 30px; } .banner .bacts .btn { white-space: normal; text-align: left; } }

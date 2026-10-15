@@ -26,11 +26,13 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('label.opt:has-text("Only a copy to check") input');          // the end chosen here must survive the round trip too
   await p.waitForSelector('text=/Ready to restore/'); await p.waitForSelector('.stale', { state: 'detached' });
   const nameIn = p.locator('.field:has-text("New database name") input'); await nameIn.fill('appdb_yesterday');
-  await p.click('summary:has-text("Technical details")'); await p.click('button:has-text("General settings")'); await p.waitForSelector('text=Recovery & storage');
+  await p.click('summary:has-text("Technical details")'); await p.click('button:has-text("General settings")'); await p.waitForSelector('h1:has-text("Storage & recovery")');
   await p.goBack(); await p.waitForSelector('text=Review and confirm', { timeout: 5000 });
   assert.equal(await nameIn.inputValue(), 'appdb_yesterday', 'the typed name survived the round trip');
   assert(await p.locator('label.opt.on:has-text("Only a copy to check")').count() === 1, 'the chosen end survived the round trip');
-  assert(await p.locator('details[open] summary:has-text("Technical details")').count() === 1, 'technical details still open');
+  await p.waitForSelector('details summary:has-text("Technical details")', { timeout: 8000 }).catch(() => null);   // the plan is checked again after the round trip
+  { const open = await p.evaluate(() => [...document.querySelectorAll('details')].map(d => `${d.open ? 'OPEN' : 'closed'}:${d.querySelector('summary')?.textContent}`));
+    assert(await p.locator('details[open] summary:has-text("Technical details")').count() === 1, 'technical details still open: ' + JSON.stringify(open)); }
   await shot('f1-restore-back');
   // 3. the area pills remember the sub-tab: Protezione > Ripristino, go to Stato, back to Protezione = Ripristino
   await p.click('.gnav >> role=tab[name="Status"]'); await p.click('.gnav >> role=tab[name="Protection"]'); await p.waitForSelector('text=Review and confirm', { timeout: 5000 });
@@ -64,7 +66,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.fill('input[type=password]', 'correct-horse-battery'); await p.click('button[type=submit]'); await p.waitForSelector('a:has-text("prodpg")');
   await p.click('a:has-text("prodpg")'); await tab('Maintenance', 'Parameters');
   assert.equal(await p.locator('input[placeholder="64MB"]').inputValue(), '', 'drafts cleared at logout');
-  const left = await p.evaluate(() => Object.keys(sessionStorage).filter(k => k.startsWith('pgarca.draft.') && /128MB|appdb_yesterday|reporting/.test(sessionStorage.getItem(k) || ''))); assert.deepEqual(left, [], 'nothing typed before the logout is left in sessionStorage');
+  const left = await p.evaluate(() => Object.keys(sessionStorage).filter(k => k.startsWith('pgarca.draft.') && /128MB|appdb_yesterday|reporting/.test(sessionStorage.getItem(k) || ''))); assert.deepEqual(left, [], 'nothing typed before the logout is left in sessionStorage: ' + JSON.stringify(left));
   if (errs.length) throw new Error(errs.join('\n'));
   console.log('fluidity OK'); await b.close();
 })().catch(async e => { console.error('FAIL', e.message); try { await global.__p.screenshot({ path: `${out}/fail.png` }); } catch { /* */ } process.exit(1); });

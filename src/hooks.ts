@@ -76,14 +76,21 @@ const SS = 'pgarca.draft.';
 const ssGet = (k: string) => { try { const v = sessionStorage.getItem(SS + k); return v == null ? undefined : JSON.parse(v); } catch { return undefined; } };
 const ssSet = (k: string, v: any) => { try { if (v === undefined) sessionStorage.removeItem(SS + k); else sessionStorage.setItem(SS + k, JSON.stringify(v)); } catch { /* full or blocked: memory is enough */ } };
 export function readDraft<T>(key: string): T | undefined { return drafts.has(key) ? drafts.get(key) : ssGet(key); }
-export function writeDraft(key: string, v: any, session = true) { drafts.set(key, v); if (session) ssSet(key, v); }
+// between "Sign out" and the login screen the pages are still mounted for a moment (the logout request, then the status request): a draft
+// written in that window (a field's last change, an effect) survived the logout and was shown to the next person (seen once in the fluidity test)
+let frozen = false;
+export function writeDraft(key: string, v: any, session = true) { if (frozen) return; drafts.set(key, v); if (session) ssSet(key, v); }
 const draftResets = new Set<(prefix: string) => void>();
 /** Logout, or another user signing in on this browser: nothing typed by the previous user may be shown. */
-export function clearAllDrafts() {
+export function clearAllDrafts(leaving = false) {
+  if (leaving) frozen = true;
   drafts.clear();
   try { for (let i = sessionStorage.length - 1; i >= 0; i--) { const k = sessionStorage.key(i) || ''; if (k.startsWith(SS)) sessionStorage.removeItem(k); } } catch { /* ignore */ }
 }
+/** The login screen is showing: whatever the old pages wrote while leaving is dropped, and drafts stay off until someone signs in. */
+export function draftsSignedOut() { clearAllDrafts(true); }
 export function draftsOwner(user: string) {
+  frozen = false;
   let prev: string | null = null; try { prev = sessionStorage.getItem('pgarca.draft-owner'); } catch { /* ignore */ }
   if (prev !== null && prev !== user) clearAllDrafts();
   try { sessionStorage.setItem('pgarca.draft-owner', user); } catch { /* ignore */ }

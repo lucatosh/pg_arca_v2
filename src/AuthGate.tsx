@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, get } from './api';
-import { clearAllDrafts, draftsOwner } from './hooks';
+import { clearAllDrafts, draftsOwner, draftsSignedOut } from './hooks';
 import { Button, Field, Icon, Banner } from './ui';
 
 export interface Session { user: string; role: string }
@@ -16,7 +16,8 @@ export function AuthGate({ children }: { children: (s: Session, logout: () => vo
   }, []);
   if (fail) return <div className="authwrap"><Banner kind="bad" title="Server unreachable">{fail}</Banner></div>;
   if (!st) return <div className="authwrap"><div className="skeleton" style={{ height: 220, width: 360 }} /></div>;
-  if (st.authenticated) { draftsOwner(st.user || 'admin'); return <>{children({ user: st.user || 'admin', role: st.role || 'admin' }, async () => { try { await api('POST', '/api/auth/logout'); } catch { /* ignore */ } clearAllDrafts(); load(); })}</>; }
+  if (st.authenticated) { draftsOwner(st.user || 'admin'); return <>{children({ user: st.user || 'admin', role: st.role || 'admin' }, async () => { clearAllDrafts(true); try { await api('POST', '/api/auth/logout'); } catch { /* ignore */ } clearAllDrafts(true); load(); })}</>; }
+  draftsSignedOut();
   return <Login setup={st.setupRequired} needCode={!!st.setupCodeRequired} onDone={load} />;
 }
 

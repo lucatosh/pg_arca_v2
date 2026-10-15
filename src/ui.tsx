@@ -62,7 +62,7 @@ export function Card({ title, actions, children, pad = true }: { title?: React.R
   return <section className="card">{title ? <div className="hd"><h2>{title}</h2>{actions}</div> : null}{pad ? <div className="bd">{children}</div> : children}</section>;
 }
 export function Banner({ kind, icon, title, children, actions }: { kind: 'ok' | 'warn' | 'bad' | 'info'; icon?: string; title?: React.ReactNode; children?: React.ReactNode; actions?: React.ReactNode }) {
-  return <div className={`banner ${kind}`} role={kind === 'bad' ? 'alert' : 'status'}><Icon n={icon || (kind === 'ok' ? 'check' : kind === 'info' ? 'info' : 'alert')} s={18} className="ic" /><div className="grow">{title ? <strong>{title}</strong> : null}{children ? <div className={title ? 'small' : ''} style={{ marginTop: title ? 2 : 0 }}>{children}</div> : null}</div>{actions}</div>;
+  return <div className={`banner ${kind}`} role={kind === 'bad' ? 'alert' : 'status'}><Icon n={icon || (kind === 'ok' ? 'check' : kind === 'info' ? 'info' : 'alert')} s={18} className="ic" /><div className="grow">{title ? <strong>{title}</strong> : null}{children ? <div className={title ? 'small' : ''} style={{ marginTop: title ? 2 : 0 }}>{children}</div> : null}</div>{actions ? <div className="bacts">{actions}</div> : null}</div>;
 }
 export function Field({ label, hint, error, children }: { label: string; hint?: string; error?: string | null; children: React.ReactNode }) {
   return <div className="field"><label>{label}</label>{children}{error ? <span className="err">{error}</span> : hint ? <span className="hint">{hint}</span> : null}</div>;
