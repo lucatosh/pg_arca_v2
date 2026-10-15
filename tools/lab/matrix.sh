@@ -7,12 +7,17 @@ cd "$(dirname "$0")/../.."; ROOT=$(pwd)
 VERS=${*:-14 15 16 17 18}
 SUITES="tests.test_pgcompat tests.test_engine_pg tests.test_objects_v2 tests.test_objects_exotic_pg tests.test_objects_deps_pg tests.test_objects_ext_pg tests.test_late_created_pg tests.test_forensics_dml_pg tests.test_cancel_restore_pg tests.test_tablespace_later_pg tests.test_logical_copy_pg tests.test_wal_flush_pg tests.test_destcheck_pg tests.test_destination_switch_pg tests.test_destination_apply_pg tests.test_destination_migrate_pg tests.test_backup_crash_pg tests.test_restore_fuzz_pg tests.test_restore_fuzz_rel_pg tests.test_orphans_pg tests.test_restore_fuzz_shapes_pg tests.test_resource_leaks_pg tests.test_timeline_branch_pg tests.test_target_after_last_commit_pg tests.test_restored_pg tests.test_db_swap_pg tests.test_replace_pg tests.test_replace_unit tests.test_choose_set tests.test_restore_faults_pg tests.test_weird_names_pg tests.test_money_locale_pg tests.test_restore_database_props_pg tests.test_into_other_server_pg tests.test_dest_standby_pg tests.test_restorecheck tests.test_walscan tests.test_walprefetch tests.test_worker tests.test_engine_standby_pg tests.test_engine_failover_pg tests.test_engine_targets_pg tests.test_wal_rescue_pg tests.test_engine_layout_pg tests.test_discovery_layouts_pg tests.test_archive_enable_pg tests.test_hba_pg tests.test_wal tests.test_restore_safety tests.test_crypto tests.test_live_pg tests.test_params_pg tests.test_engine_enospc_pg tests.test_patroni_dcs_only tests.test_snapshot_busy tests.test_hba tests.test_pgrestart tests.test_destcheck tests.test_packs tests.test_walsummary tests.test_wal_summary_pg tests.test_s3 tests.test_offsite tests.test_wal_spool tests.test_wal_spool_pg"
 : > /tmp/matrix-summary.txt
+# one matrix at a time, and its containers named: killing this script (or a timeout) must not leave a test container running. Two matrices plus the
+# lab clusters on the 6.8 GB VM made the guest hang on 15/10 (an earlier run killed with pkill had left its container behind).
+for c in $(docker ps -aq --filter label=arca-matrix); do docker rm -f "$c" >/dev/null 2>&1; done
+trap 'for c in $(docker ps -aq --filter label=arca-matrix); do docker rm -f "$c" >/dev/null 2>&1; done' EXIT INT TERM
 for v in $VERS; do
   case $v in 10|11) tag="$v-bullseye";; *) tag="$v-bookworm";; esac
   echo "=== PostgreSQL $v ($tag)"
   # pull first, with a time limit and retries: a stalled pull (slow VM disk) must not block the whole matrix silently
   for try in 1 2 3; do timeout 900 docker pull -q "postgres:$tag" >/dev/null 2>&1 && break; echo "   pull of postgres:$tag failed/stalled (try $try)"; sleep 10; done
-  timeout ${MATRIX_TIMEOUT:-5400} docker run --rm -v "$ROOT":/work:ro,z -e LC_ALL=C.UTF-8 "postgres:$tag" bash -c '
+  for c in $(docker ps -aq --filter label=arca-matrix); do docker rm -f "$c" >/dev/null 2>&1; done     # a previous version that hit the timeout
+  timeout ${MATRIX_TIMEOUT:-5400} docker run --rm --name "arca-matrix-$v" --label arca-matrix -v "$ROOT":/work:ro,z -e LC_ALL=C.UTF-8 "postgres:$tag" bash -c '
     export DEBIAN_FRONTEND=noninteractive
     # a VM whose clock is behind (suspended VirtualBox, no NTP) makes apt refuse the repositories ("Release file ... is not valid yet"): never let
     # the host clock decide whether the matrix runs; and if python3 is still missing, say so instead of reporting every version as failed tests
