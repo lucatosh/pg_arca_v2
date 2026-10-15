@@ -25,6 +25,8 @@ def _chunk_hashes(merged):
 def missing_chunks(repo, merged, limit=10):
     """(checked, missing_total, [examples]). Every referenced chunk is stat'ed, or a random sample of FULL_CHECK_MAX when there are more."""
     hashes = list(dict.fromkeys(_chunk_hashes(merged)))
+    if hasattr(repo, "reload_index"):
+        repo.reload_index()                                    # packs deleted or added since this process loaded the index are seen
     sampled = len(hashes) > FULL_CHECK_MAX
     if sampled:
         hashes = random.sample(hashes, FULL_CHECK_MAX)

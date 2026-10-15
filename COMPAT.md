@@ -60,6 +60,12 @@ Every item below was an assumption found in the code; it is now detected or conf
 
 Known limits (not solved): `unix_socket_directories` with several entries uses the first existing one; 16/32 kB blocks in the tuning UI (units are assumed to be 8 kB); systemd services with `ProtectSystem=full` cannot write a `pg_hba.conf` under `/etc` outside the directories reopened by the installer; automatic binary installation does not cover SUSE.
 
+## Repository format — 15/10
+- Format 2 (every repository written by 1.0.0-rc.1 and later): chunks in pack files `cas/packs/<id>.pack` with an index `<id>.idx`; see `ARCHITETTURA-BACKUP-RESTORE.md` §7g. Format 1 (one file per chunk under `cas/aa/bb/`) is read, deduplicated against and garbage-collected by the same engine; a format-1 repository is marked `format: 2` in `repo.json` the first time this engine opens it and new chunks go to packs. There is no conversion step and nothing to run.
+- One way: an agent older than format 2 does not read packs. Never point a development build older than 15/10 at a repository written by rc.1 (it reports `PGA-REPO-014 chunk missing`). Agents of the same release on every node is the supported setup; the console shows outdated agents.
+- Memory: the chunk index costs about 55 bytes per chunk in the agent while a backup, restore or verify runs (≈ 90 MB for a 100 GB database, ≈ 900 MB for 1 TB). Packs are limited to 256 MB (`PG_ARCA_PACK_MAX_MB`); the garbage collection rewrites a pack when at least 25 % of it is dead and never touches packs younger than 48 hours.
+- Tests: `unix-agent/tests/test_packs.py`; the real-PostgreSQL suites (`test_engine_pg`, `test_engine_standby_pg`, `test_engine_failover_pg`, `test_backup_crash_pg`, `test_destination_migrate_pg`, …) run on format 2.
+
 ## Worker hosts (backup server, recovery host) — 11/10
 - Agent role `node_role`: `auto` (default: the console decides), `database`, `worker`. At installation `PG_ARCA_ROLE=worker`; without a `postgres` user the installer creates the system user `pgarca`.
 - In `worker` mode the agent **does not look for PostgreSQL** (no instance discovery, no cluster created) and reports: PostgreSQL installations per version (system, pg_arca private, configured), real filesystems with their type (local, NFS, SMB, Ceph, …) and space, pg_arca directories (scratch, repository, WAL archive), CPU/RAM and privileges (root / passwordless sudo).

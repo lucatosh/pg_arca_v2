@@ -14,18 +14,8 @@ class RepoSummary(object):
         return self.ctx.repo.sp("summary.json")
 
     def refresh_cas(self):
-        repo = self.ctx.repo
-        n = total = 0
-        for root, _, files in os.walk(repo.p("cas")):
-            for f in files:
-                if ".tmp." in f:
-                    continue
-                try:
-                    total += os.path.getsize(os.path.join(root, f))
-                    n += 1
-                except OSError:
-                    pass
-        data = {"chunks": n, "stored_bytes": total, "at": iso()}
+        cs = self.ctx.repo.cas_stats()
+        data = {"chunks": cs["chunks"], "stored_bytes": cs["stored_bytes"], "packs": cs["packs"], "at": iso()}
         try:
             write_json(self._cache_path(), data)
         except OSError:

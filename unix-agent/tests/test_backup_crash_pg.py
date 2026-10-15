@@ -58,10 +58,10 @@ class Crash(unittest.TestCase):
         p = child("full")
         # wait until the backup really writes chunks (the set directory exists and the CAS grows), then kill it hard
         t0 = time.time()
-        cas = os.path.join(F.repo, "cas")
-        while time.time() - t0 < 60:
-            n = sum(len(fs) for _, _, fs in os.walk(cas)) if os.path.isdir(cas) else 0
-            if n > 300:
+        cas = os.path.join(F.repo, "cas", "packs")
+        while time.time() - t0 < 60:                                # the open packs grow while chunks are written
+            n = sum(os.path.getsize(os.path.join(cas, f)) for f in os.listdir(cas)) if os.path.isdir(cas) else 0
+            if n > 300 * 4096:
                 break
             time.sleep(0.2)
         self.assertIsNone(p.poll(), "the backup finished before it could be interrupted: make the data bigger")

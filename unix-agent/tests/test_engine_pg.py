@@ -456,9 +456,10 @@ class EngineTests(unittest.TestCase):
             self.skipTest("run with PG_ARCA_TEST_ENCRYPT=1")
         import json
         self.assertEqual(json.load(open(os.path.join(F.repo, "repo.json")))["encryption"]["alg"], "aes-256-gcm")
-        chunks = [os.path.join(dp, f) for dp, _, fs in os.walk(os.path.join(F.repo, "cas")) for f in fs if ".tmp." not in f]
-        self.assertTrue(chunks)
-        self.assertTrue(all(open(c, "rb").read(1) == b"E" for c in chunks[:200]))
+        man = F.ctx.repo.load_manifest(F.ctx.repo.resolve_set())
+        hs = [c[2] for e in man["files"].values() for c in e["chunks"]]
+        self.assertTrue(hs)
+        self.assertTrue(all(F.ctx.repo.get_blob(h)[:1] == b"E" for h in hs[:200]))
         metas = [f for f in os.listdir(F.wal) if f.endswith(".meta") and len(f) == 29]
         self.assertTrue(metas and all(json.load(open(os.path.join(F.wal, m))).get("enc")  for m in metas))
 
@@ -538,17 +539,21 @@ class EngineTests(unittest.TestCase):
         # damage one chunk of the latest set: deep verify must flag it, restore must refuse (no silent bad data)
         man = F.ctx.repo.load_manifest(F.ctx.repo.resolve_set())
         h = [c[2] for e in man["files"].values() for c in e["chunks"]][0]
-        p = F.ctx.repo.cas_path(h)
-        good = open(p, "rb").read()
+        p, off, ln = F.ctx.repo.locate(h)
+        with open(p, "rb") as f:
+            f.seek(off)
+            good = f.read(ln)
         try:
-            with open(p, "wb") as f:
+            with open(p, "r+b") as f:                                      # damage the stored blob in place (pack or file)
+                f.seek(off)
                 f.write(good[:-3] + b"\x00\x00\x00")
             v = verify(F.ctx, deep=True)
             self.assertFalse(v["ok"])
             with self.assertRaises(EngineError):
                 F.ctx.repo.get_chunk(h)
         finally:
-            with open(p, "wb") as f:
+            with open(p, "r+b") as f:
+                f.seek(off)
                 f.write(good)
         self.assertTrue(verify(F.ctx, deep=True)["ok"])
 
@@ -556,10 +561,12 @@ class EngineTests(unittest.TestCase):
         # a chunk that vanished from the repository: the plan says so (blocker) and the real restore refuses BEFORE extracting or recovering anything
         man = F.ctx.repo.load_manifest(F.ctx.repo.resolve_set())
         h = [c[2] for e in man["files"].values() for c in e["chunks"]][0]
-        p = F.ctx.repo.cas_path(h)
-        good = open(p, "rb").read()
+        p = F.ctx.repo.locate(h)[0]
+        gone = [p] + ([p[:-5] + ".idx"] if p.endswith(".pack") else [])     # the whole pack (and its index) disappears, as a lost file would
         dest = os.path.join(F.base, "never-created")
-        os.unlink(p)
+        for g in gone:
+            os.rename(g, g + ".gone")
+        F.ctx.repo.reload_index()
         try:
             plan = restore_instance(F.ctx, dest=dest, dry_run=True)
             self.assertFalse(plan["preflight"]["ok"], plan["preflight"])
@@ -575,8 +582,9 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(cm.exception.code, "PGA-RST-031")
             self.assertEqual(q("postgres", "SELECT count(*) FROM pg_database WHERE datname='app_never'")[0][0], "0")
         finally:
-            with open(p, "wb") as f:
-                f.write(good)
+            for g in gone:
+                os.rename(g + ".gone", g)
+            F.ctx.repo.reload_index()
         self.assertTrue(restore_instance(F.ctx, dest=dest, dry_run=True)["preflight"]["ok"])
 
     def test_13_forensics_finds_the_drop(self):

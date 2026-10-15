@@ -1,7 +1,8 @@
 """Repository: content-addressed chunk store + backup sets + stanza lock. WAL lives in the shared WAL archive.
 
   <repo>/repo.json
-  <repo>/cas/<aa>/<bb>/<blake2b-256>            1 tag byte + compressed chunk, immutable, verified on every read
+  <repo>/cas/packs/<id>.pack + .idx             format 2 (every repository written by this engine): thousands of chunks per file, see engine/packs.py
+  <repo>/cas/<aa>/<bb>/<blake2b-256>            format 1: one file per chunk (1 tag byte + compressed chunk); still read, never written again
   <repo>/stanza/<name>/stanza.json
   <repo>/stanza/<name>/backup/<set>/{meta.json, manifest.json.z, catalog.json.z, backup_label}
   <repo>/stanza/<name>/locks/
@@ -18,6 +19,7 @@ import time
 import uuid
 
 from pg_arca.engine import ENGINE_VERSION
+from pg_arca.engine import packs as _packs
 from pg_arca.engine.util import (read_file, CHUNK_SIZE, HASH_NAME, EngineError, chunk_hash, compress, decompress, fsync_dir, iso, read_json,
                                  write_file_atomic, write_json)
 
@@ -48,13 +50,18 @@ class Repo(object):
         # earlier locations of this repository (the destination was changed and the old content is not migrated yet): READ only. Their sets are
         # listed and restorable; new backups never deduplicate against them, never use them as parent and retention never touches them.
         self.previous = [os.path.realpath(x) for x in (previous or []) if x and os.path.realpath(x) != self.path]
-        self._dirs_ok = set()
         self.stanza = stanza
         self.wal = wal                       # WalManager
         self.algo = algo
         self.level = level
         self.crypto = crypto                 # engine.crypt.Crypto or None
         self.suspect_since = None            # chunks newer than this are re-verified before dedup (crashed run before us)
+        self._index = None                   # packs.ChunkIndex, loaded on first use
+        self._index_lock = threading.Lock()
+        self._writers = []                   # open PackWriters of this process (one per writing thread)
+        self._tl = threading.local()         # .writer, .reader
+        self._legacy = None                  # does cas/ hold per-file chunks (format 1)? decided once per process
+        self._touched = {}                   # pack path -> last mtime refresh (dedup against a pack keeps it out of the GC grace)
 
     def p(self, *a):
         return os.path.join(self.path, *a)
@@ -103,15 +110,121 @@ class Repo(object):
         return json.loads(decompress(self._unpack(blob, "json:" + name)).decode("utf-8"))
 
     def cas_path(self, h):
+        """Format-1 path of chunk `h` (where an old repository keeps it; new chunks go to packs)."""
         return self.p("cas", h[0:2], h[2:4], h)
 
-    def find_chunk(self, h):
-        """Path of chunk `h` here or in a previous location (read paths), else None."""
-        for root in [self.path] + self.previous:
-            q = os.path.join(root, "cas", h[0:2], h[2:4], h)
-            if os.path.exists(q):
-                return q
+    # ------------------------------------------------------------------ chunk index (packs)
+    def index(self):
+        if self._index is None:
+            with self._index_lock:
+                if self._index is None:
+                    self._index = _packs.ChunkIndex([self.path] + self.previous)
+        return self._index
+
+    def reload_index(self):
+        """After garbage collection (packs deleted or rewritten) or when another process changed the repository."""
+        with self._index_lock:
+            self._index = None
+        self._touched = {}
+
+    def has_legacy_chunks(self):
+        """True when cas/ holds format-1 chunk files (a repository older than format 2): then a miss in the pack index is also looked up as a file."""
+        if self._legacy is None:
+            found = False
+            for root in [self.path] + self.previous:
+                try:
+                    if any(len(n) == 2 for n in os.listdir(os.path.join(root, "cas"))):
+                        found = True
+                        break
+                except OSError:
+                    continue
+            self._legacy = found
+        return self._legacy
+
+    def locate(self, h):
+        """(path, offset, length) of chunk `h`: in a pack, or a format-1 file (offset 0); None when absent everywhere."""
+        hb = bytes.fromhex(h)
+        r = self.index().find(hb)
+        if r is not None:
+            return r
+        if self.has_legacy_chunks():
+            for root in [self.path] + self.previous:
+                q = os.path.join(root, "cas", h[0:2], h[2:4], h)
+                try:
+                    return q, 0, os.path.getsize(q)
+                except OSError:
+                    continue
         return None
+
+    def find_chunk(self, h):
+        """Path holding chunk `h` (its pack, or its format-1 file) here or in a previous location, else None."""
+        r = self.locate(h)
+        return r[0] if r else None
+
+    def flush(self):
+        """Seal every open pack of this process: their chunks are durable and indexed. Called before a manifest that references them is written,
+        and when a backup ends either way (chunks of a failed attempt are reused by the next one)."""
+        with self._index_lock:
+            ws, self._writers = self._writers, []
+        for w in ws:
+            w.seal()
+            if w.broken and self._index is not None:
+                self._index.forget_pack(w.final)
+
+    def close(self):
+        self.flush()
+        r = getattr(self._tl, "reader", None)
+        if r is not None:
+            r.close()
+
+    def _reader(self):
+        r = getattr(self._tl, "reader", None)
+        if r is None:
+            r = self._tl.reader = _packs.PackReader()
+        return r
+
+    def _touch_pack(self, path):
+        """A pack we deduplicated against is in use by a backup that has no manifest yet: refresh its mtime so that the GC grace covers it."""
+        now = time.time()
+        if now - self._touched.get(path, 0) < DEDUP_TOUCH_AFTER:
+            return
+        self._touched[path] = now
+        try:
+            if now - os.stat(path).st_mtime > DEDUP_TOUCH_AFTER:
+                os.utime(path, None)
+        except OSError:
+            pass
+
+    def cas_stats(self):
+        """{"chunks", "stored_bytes", "packs", "files"}: packs counted from their index headers, format-1 files walked (none in a new repository)."""
+        n = total = npacks = nfiles = 0
+        for root in [self.path] + self.previous:
+            for pack, idx, _, size in _packs.list_packs(root):
+                if idx is None:
+                    continue
+                total += size
+                npacks += 1
+                try:
+                    n += _packs.idx_count(idx)
+                except OSError:
+                    pass
+            if not self.has_legacy_chunks():
+                continue
+            cas = os.path.join(root, "cas")
+            for sub in os.listdir(cas) if os.path.isdir(cas) else []:
+                if len(sub) != 2:
+                    continue
+                for dp, _, files in os.walk(os.path.join(cas, sub)):
+                    for f in files:
+                        if ".tmp." in f:
+                            continue
+                        try:
+                            total += os.path.getsize(os.path.join(dp, f))
+                            n += 1
+                            nfiles += 1
+                        except OSError:
+                            pass
+        return {"chunks": n, "stored_bytes": total, "packs": npacks, "files": nfiles}
 
     # ------------------------------------------------------------------ lifecycle
     def init(self):
@@ -132,9 +245,15 @@ class Repo(object):
                 raise EngineError("PGA-ENC-008", "this repository is NOT encrypted and cannot be switched to encryption in place",
                                   "create a new repository with the key configured and take a new full backup; the old one stays readable only without the key")
         else:
-            meta = {"format": 1, "created": iso(), "chunk_size": CHUNK_SIZE, "hash": HASH_NAME, "engine": ENGINE_VERSION}
+            meta = {"format": _packs.FORMAT, "created": iso(), "chunk_size": CHUNK_SIZE, "hash": HASH_NAME, "engine": ENGINE_VERSION}
             if self.crypto:
                 meta["encryption"] = {"alg": "aes-256-gcm", "key_id": self.crypto.key_id, "hash": "keyed-blake2b-256"}
+            write_json(rj, meta)
+        if int(meta.get("format") or 1) < _packs.FORMAT:
+            # a format-1 repository: its files stay where they are and are read as before; from now on chunks go to packs. Recorded so that an
+            # engine older than format 2 (which cannot read packs) is not pointed at this repository by mistake.
+            meta["format"] = _packs.FORMAT
+            meta["format_upgraded"] = iso()
             write_json(rj, meta)
         for d in ("backup", "locks"):
             os.makedirs(self.sp(d), mode=0o750, exist_ok=True)
@@ -180,45 +299,83 @@ class Repo(object):
     def put_chunk(self, data):
         """Returns (hash, bytes_written, was_deduplicated)."""
         h = self.hash(data)
-        dst = self.cas_path(h)
-        try:
-            st = os.stat(dst)
-            if self.suspect_since is None or st.st_mtime < self.suspect_since:
-                if time.time() - st.st_mtime > DEDUP_TOUCH_AFTER:
-                    try:
-                        os.utime(dst, None)
-                    except OSError:
-                        pass
-                return h, 0, True
-            try:                                                   # written around a crash: do not trust it blindly
-                if self.hash(decompress(self._unpack(read_file(dst, binary=True), h))) == h:
+        hb = bytes.fromhex(h)
+        r = self.index().find(hb, own_only=True)                   # never against a previous location (read-only, migrated or dropped later)
+        if r is not None:                                          # in a sealed pack (durable and indexed: nothing to re-verify) or written by this process
+            self._touch_pack(r[0])
+            return h, 0, True
+        if self.has_legacy_chunks():
+            dst = self.cas_path(h)
+            try:
+                st = os.stat(dst)
+                if self.suspect_since is None or st.st_mtime < self.suspect_since:
+                    if time.time() - st.st_mtime > DEDUP_TOUCH_AFTER:
+                        try:
+                            os.utime(dst, None)
+                        except OSError:
+                            pass
                     return h, 0, True
-            except Exception:
+                try:                                               # a format-1 file written around a crash: do not trust it blindly
+                    if self.hash(decompress(self._unpack(read_file(dst, binary=True), h))) == h:
+                        return h, 0, True
+                except Exception:
+                    pass
+            except OSError:
                 pass
-        except OSError:
-            pass
-        d = os.path.dirname(dst)
-        if d not in self._dirs_ok:                                 # 65 536 fan-out directories: create each once per process, not per chunk
-            os.makedirs(d, mode=0o750, exist_ok=True)
-            self._dirs_ok.add(d)
-        blob = self._pack(compress(data, self.algo, self.level), h)
-        tmp = "%s.tmp.%d.%d" % (dst, os.getpid(), threading.get_ident())   # unique per writer thread; a crashed writer's leftovers are swept by the repair
-        with open(tmp, "wb") as f:
-            f.write(blob)
-        os.rename(tmp, dst)
-        return h, len(blob), False
+        return h, self.put_blob(h, self._pack(compress(data, self.algo, self.level), h)), False
+
+    def put_blob(self, h, blob):
+        """Store an already packed blob (tag + compressed [+ encrypted]) under hash `h` in this process's pack. Returns the bytes written."""
+        hb = bytes.fromhex(h)
+        w = self._writer()
+        off = w.append(hb, blob)
+        self.index().add(hb, w.final, off, len(blob))
+        if w.size >= _packs.PACK_MAX:
+            w.seal()
+            with self._index_lock:
+                if w in self._writers:
+                    self._writers.remove(w)
+        return len(blob)
+
+    def _writer(self):
+        w = getattr(self._tl, "writer", None)
+        if w is None or w.sealed or w.broken:
+            w = _packs.PackWriter(self.path)
+            self._tl.writer = w
+            with self._index_lock:
+                self._writers.append(w)
+        return w
+
+    def get_blob(self, h):
+        """The stored blob of chunk `h` (tag + compressed [+ encrypted]), from a pack or a format-1 file; PGA-REPO-014 when absent."""
+        r = self.locate(h)
+        if r is None:
+            raise EngineError("PGA-REPO-014", "chunk missing from repository: %s" % h, "run verify --deep; if the chunk is lost the sets referencing it are unrecoverable")
+        path, off, ln = r
+        try:
+            if path.endswith(".pack"):
+                return self._reader().read(path, off, ln)
+            return read_file(path, binary=True)
+        except (IOError, OSError) as e:
+            if e.errno == errno.ENOENT:
+                with self._index_lock:                             # a pack this process is still writing: read it through the writer's file
+                    w = next((x for x in self._writers if x.final == path), None)
+                if w is not None and not w.sealed:
+                    w.f.flush()
+                    with open(w.open_path, "rb") as f:
+                        f.seek(off)
+                        return f.read(ln)
+                # else the pack was deleted or rewritten by a garbage collection since the index was loaded
+                self.reload_index()
+                r = self.locate(h)
+                if r is not None:
+                    path, off, ln = r
+                    return self._reader().read(path, off, ln) if path.endswith(".pack") else read_file(path, binary=True)
+                raise EngineError("PGA-REPO-014", "chunk missing from repository: %s" % h, "run verify --deep; if the chunk is lost the sets referencing it are unrecoverable")
+            raise
 
     def get_chunk(self, h):
-        blob = None
-        for root in [self.path] + self.previous:
-            try:
-                with open(os.path.join(root, "cas", h[0:2], h[2:4], h), "rb") as f:
-                    blob = f.read()
-                break
-            except (IOError, OSError):
-                continue
-        if blob is None:
-            raise EngineError("PGA-REPO-014", "chunk missing from repository: %s" % h, "run verify --deep; if the chunk is lost the sets referencing it are unrecoverable")
+        blob = self.get_blob(h)
         try:
             data = decompress(self._unpack(blob, h))
         except EngineError:

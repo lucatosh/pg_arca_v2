@@ -9,6 +9,8 @@ import time
 
 from pg_arca.engine.backup import build_chain
 from pg_arca.engine.repo import GC_GRACE
+
+REPACK_FRACTION = 0.25            # a pack whose dead chunks weigh at least this share of it is rewritten without them
 from pg_arca.engine.util import EngineError, last_wal_segno, lsn_to_int, parse_wal_name, read_json, wal_name, wal_segno
 
 
@@ -27,19 +29,11 @@ def repo_info(ctx):
     cont = ctx.wal.verify_continuity(max_age=0)
     out["wal"] = {"segments": len(segs), "first": segs[0] if segs else None, "last": segs[-1] if segs else None, "continuous": cont.get("continuous"),
                   "gaps": cont.get("gaps", [])[:10], "conflicts": cont.get("conflicts", 0)}
-    total = 0
-    n = 0
-    for root, _, files in os.walk(repo.p("cas")):
-        for f in files:
-            if ".tmp." in f:
-                continue
-            try:
-                total += os.path.getsize(os.path.join(root, f))
-                n += 1
-            except OSError:
-                pass
+    cs = repo.cas_stats()
+    n, total = cs["chunks"], cs["stored_bytes"]
     logical = sum((s.get("stats") or {}).get("bytes_logical", 0) for s in sets if s.get("status") == "COMPLETE")
-    out["cas"] = {"chunks": n, "stored_bytes": total, "logical_bytes": logical, "ratio": round(logical / float(max(total, 1)), 2)}
+    out["cas"] = {"chunks": n, "stored_bytes": total, "logical_bytes": logical, "ratio": round(logical / float(max(total, 1)), 2),
+                  "packs": cs["packs"], "files": cs["files"]}
     done = [s for s in sets if s.get("status") == "COMPLETE"]
     if done:
         out["recovery_window"] = {"from": done[0].get("start_time"), "to": "latest archived WAL" if out["wal"]["segments"] else done[-1].get("stop_time")}
@@ -49,6 +43,7 @@ def repo_info(ctx):
 # --------------------------------------------------------------------------- verify
 def verify(ctx, deep=False, progress=None, cancel=None):
     repo = ctx.repo
+    repo.reload_index()                                            # verify what is on disk now, not what this process remembers
     problems, report = [], []
     sets = repo.sets()
     checked_chunks = 0
@@ -99,6 +94,8 @@ def verify(ctx, deep=False, progress=None, cancel=None):
             problems.append("%s: %d WAL segment(s) between start and stop are not archived (first %s)" % (s["id"], len(miss), miss[0]))
             entry["problems"] += len(miss)
         report.append(entry)
+    for pr in repo.index().problems:                               # a pack index that cannot be read: its chunks look missing above; say why
+        problems.append("pack index unreadable: %s" % pr)
     cont = ctx.wal.verify_continuity(max_age=0)
     if not cont.get("continuous", True):
         problems.append("WAL archive has %d gap(s)" % cont.get("gap_count", len(cont.get("gaps", []))))
@@ -213,21 +210,79 @@ def _gc_cas(repo):
                     live.add(h)
     now = time.time()
     freed = removed = 0
-    for root, _, files in os.walk(repo.p("cas")):
-        for f in files:
-            if f in live:
+    # ---- format-1 files (repositories older than format 2): unreferenced files older than the grace period are removed
+    if repo.has_legacy_chunks():
+        for sub in os.listdir(repo.p("cas")):
+            if len(sub) != 2:
                 continue
-            p = os.path.join(root, f)
-            try:
-                st = os.stat(p)
-                tmp = ".tmp." in f
-                if now - st.st_mtime < (GC_GRACE if not tmp else 3600):
+            for root, _, files in os.walk(repo.p("cas", sub)):
+                for f in files:
+                    if f in live:
+                        continue
+                    p = os.path.join(root, f)
+                    try:
+                        st = os.stat(p)
+                        tmp = ".tmp." in f
+                        if now - st.st_mtime < (GC_GRACE if not tmp else 3600):
+                            continue
+                        os.remove(p)
+                        freed += st.st_size
+                        removed += 1
+                    except OSError:
+                        pass
+    # ---- packs: a pack younger than the grace period is never touched (a backup without a manifest yet may reference it; dedup refreshes the
+    # mtime of packs it reuses). All dead -> deleted. Mostly dead -> live records copied into a new sealed pack, then the old one deleted.
+    from pg_arca.engine import packs as _packs
+    livebytes = set(bytes.fromhex(h) for h in live)
+    changed = False
+    for pack, idx, mtime, size in _packs.list_packs(repo.path):
+        if now - mtime < GC_GRACE:
+            continue
+        if idx is None:                                            # an open pack of a crashed process, or a pack whose index was never written
+            if pack.endswith(".pack"):
+                try:                                               # sealed but not indexed (crash between the two steps): index it from its content
+                    entries = list(_packs.scan_pack(pack))
+                    _packs.write_idx(pack[:-5] + ".idx", entries)
                     continue
-                os.remove(p)
-                freed += st.st_size
+                except (EngineError, OSError):
+                    pass
+            try:
+                os.remove(pack)
+                freed += size
                 removed += 1
+                changed = True
             except OSError:
                 pass
+            continue
+        try:
+            entries = _packs.read_idx(idx)
+        except (EngineError, OSError):
+            continue                                               # unreadable index: verify reports it; never delete what we cannot account for
+        dead = [e for e in entries if e[0] not in livebytes]
+        if not dead:
+            continue
+        dead_bytes = sum(e[2] for e in dead)
+        if len(dead) == len(entries):
+            try:
+                os.remove(idx)
+                os.remove(pack)
+                freed += size
+                removed += len(entries)
+                changed = True
+            except OSError:
+                pass
+        elif dead_bytes >= REPACK_FRACTION * size:
+            try:
+                newp, kept = _packs.repack(repo.path, pack, livebytes)
+                os.remove(idx)
+                os.remove(pack)
+                freed += size - kept
+                removed += len(dead)
+                changed = True
+            except (EngineError, OSError):
+                pass
+    if changed:
+        repo.reload_index()
     return freed, removed
 
 

@@ -20,7 +20,7 @@ import shutil
 import time
 import uuid
 
-from pg_arca.engine.util import EngineError, read_json, write_json
+from pg_arca.engine.util import EngineError, decompress, read_json, write_json
 
 STATE = ".migration.json"
 WAL_SKIP_PREFIX = (".", "conflicts")
@@ -54,6 +54,21 @@ class Throttle(object):
         ahead = self.n / self.rate - (time.time() - self.t0)
         if ahead > 0:
             time.sleep(min(ahead, 5.0))
+
+
+def _copy_chunk(old, new, h, throttle=None):
+    """Chunk `h` from the previous location into the current repository (its packs), verified: the blob must decode to `h` before it is stored.
+    Returns the bytes copied, 0 when the current repository already holds the chunk."""
+    if new.index().find(bytes.fromhex(h), own_only=True) is not None or (new.has_legacy_chunks() and os.path.exists(new.cas_path(h))):
+        return 0
+    blob = old.get_blob(h)
+    data = decompress(old._unpack(blob, h))
+    if old.hash(data) != h:
+        raise EngineError("PGA-VRF-001", "chunk %s in %s failed hash verification: not migrated" % (h[:16], old.path), "storage bit-rot in the previous location")
+    n = new.put_blob(h, blob)
+    if throttle:
+        throttle.take(n)
+    return n
 
 
 def _copy_verified(src, dst, throttle=None, fresh_mtime=True):
@@ -128,12 +143,11 @@ def _inventory(ctx, src_repo, src_wal):
             out["sets"].append({"id": m["id"], "type": m.get("type"), "start_time": m.get("start_time"), "chunks": len(hs)})
             for h in hs:
                 if h not in out["chunks"]:
-                    p = os.path.join(src_repo, "cas", h[0:2], h[2:4], h)
-                    try:
-                        out["chunks"][h] = os.path.getsize(p)
-                    except OSError:
+                    loc = old.locate(h)
+                    if loc is None:
                         raise EngineError("PGA-MIG-003", "chunk %s of set %s is missing in %s: that set is not restorable there either" % (h[:16], m["id"], src_repo),
                                           "run a deep verify of the previous location; the other sets can still be migrated after removing that one")
+                    out["chunks"][h] = loc[2]
             sd = os.path.join(_sets_root(src_repo, ctx.stanza), m["id"])
             out["set_bytes"] += sum(os.path.getsize(os.path.join(sd, f)) for f in os.listdir(sd) if os.path.isfile(os.path.join(sd, f)))
         out["sets"].sort(key=lambda s: s.get("start_time") or "")
@@ -256,12 +270,13 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
             man = old.load_manifest({"id": s["id"]})
             for h in sorted(set(h for e in man["files"].values() for _, _, h in e["chunks"])):
                 _check_cancel(cancel)
-                n = _copy_verified(os.path.join(src_repo, "cas", h[0:2], h[2:4], h), os.path.join(ctx.repo.path, "cas", h[0:2], h[2:4], h), th)
+                n = _copy_chunk(old, ctx.repo, h, th)
                 if n:
                     copied["chunks"] += 1
                     done_b += n
                     if copied["chunks"] % 200 == 0:
                         tick("chunks", {"set": s["id"], "sets_done": i, "sets_total": len(p["sets"])})
+            ctx.repo.flush()                                       # the set's chunks are sealed and indexed before its directory appears
             _check_cancel(cancel)
             src_d, dst_d = os.path.join(old_sets, s["id"]), os.path.join(new_sets, s["id"])
             if not os.path.isdir(dst_d):

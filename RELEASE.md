@@ -65,6 +65,7 @@ Fixed during the rc.1 test round (15/10):
 - Dialogs no longer steal the cursor while typing (polling pages re-focused the first field; copy/paste lost its selection).
 - Cluster header badge agrees with the health findings.
 - Backup copy and restore extraction run with a sliding window over the worker threads instead of batches with a barrier.
+- Repository format 2: backup chunks are stored in pack files (`cas/packs/*.pack` + `.idx`, up to 256 MB each) instead of one file per 64 KB chunk; a 100 GB database is a few hundred files instead of 1.6 million. Repositories written before stay readable (their files are deduplicated against and garbage-collected as before; new chunks go to packs) and are marked `format: 2` on first use. **A development build older than this change cannot read a repository written by rc.1.** Measured locally: +30 % on a full backup to a local disk; the gain on NFS/SMB (where every file costs a round trip) is expected to be much larger and is not measured yet.
 - API tokens for automation (Users page: bearer tokens with their own role and expiry, revocable, every action audited as `token:<label>`).
 - Prometheus metrics on `/metrics` (enabled by `PG_ARCA_METRICS_TOKEN`), daily snapshots of the console state, install command for a console with a private/self-signed certificate, backup policy option to prefer a standby, geo rejoin of a site that came back on a higher timeline.
 

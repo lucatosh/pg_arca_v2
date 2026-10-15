@@ -43,7 +43,7 @@ class CryptoTests(unittest.TestCase):
         data = b"super secret row data " * 500
         h, w, dedup = r.put_chunk(data)
         self.assertFalse(dedup)
-        raw = open(r.cas_path(h), "rb").read()
+        raw = r.get_blob(h)
         self.assertEqual(raw[:1], b"E")
         self.assertNotIn(b"secret", raw)
         self.assertEqual(r.get_chunk(h), data)
@@ -59,10 +59,13 @@ class CryptoTests(unittest.TestCase):
         with self.assertRaises(EngineError) as cm:
             self.repo(crypt.Crypto(self.key2))
         self.assertEqual(cm.exception.code, "PGA-ENC-007")
-        p = r.cas_path(h)
-        blob = bytearray(open(p, "rb").read())
-        blob[-1] ^= 1
-        open(p, "wb").write(bytes(blob))
+        r.flush()
+        p, off, ln = r.locate(h)
+        with open(p, "r+b") as f:                                         # flip the last byte of the stored blob, in place
+            f.seek(off + ln - 1)
+            b = f.read(1)
+            f.seek(off + ln - 1)
+            f.write(bytes([b[0] ^ 1]))
         with self.assertRaises(EngineError):
             r.get_chunk(h)                                                # authenticated: bit flips are detected
 
@@ -70,7 +73,14 @@ class CryptoTests(unittest.TestCase):
         r = self.repo(self.c)
         h1, _, _ = r.put_chunk(b"one" * 1000)
         h2, _, _ = r.put_chunk(b"two" * 1000)
-        shutil.copyfile(r.cas_path(h1), r.cas_path(h2))
+        r.flush()
+        p1, o1, l1 = r.locate(h1)
+        p2, o2, l2 = r.locate(h2)
+        self.assertEqual(l1, l2, "same size blobs: the test moves one over the other")
+        blob1 = open(p1, "rb").read()[o1:o1 + l1]
+        with open(p2, "r+b") as f:                                        # blob of h1 stored under h2's slot
+            f.seek(o2)
+            f.write(blob1)
         with self.assertRaises(EngineError):
             r.get_chunk(h2)
 

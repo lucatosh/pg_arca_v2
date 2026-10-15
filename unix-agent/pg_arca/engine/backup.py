@@ -355,7 +355,8 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         tbs = tablespace_links(ctx.pgdata)
         manifest = {"set": set_id, "type": btype, "parent": meta["parent"], "files": manifest_files, "tablespaces": tbs}
 
-        repo.sync()                                                    # one global sync: chunks are durable before the set can be COMPLETE
+        repo.flush()                                                   # packs sealed and indexed (fsync) before the manifest that references them exists
+        repo.sync()                                                    # one global sync: format-1 files and set directories are durable before the set can be COMPLETE
         write_file_atomic(os.path.join(sdir, "backup_label"), labelfile.encode("utf-8"), 0o640)
         repo.write_zjson(os.path.join(sdir, "manifest.json.z"), manifest, set_id + "/manifest")
         repo.write_zjson(os.path.join(sdir, "catalog.json.z"), cat, set_id + "/catalog")
@@ -395,6 +396,10 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                 _stop_backup(sess)
             except Exception:
                 pass
+        try:
+            repo.flush()                                               # chunks of a failed attempt stay usable (deduplicated by the next one)
+        except Exception:
+            pass
         if meta is not None and meta.get("status") in ("RUNNING", "PENDING_WAL"):
             meta["status"] = "FAILED"
             meta["reason"] = e.as_text() if isinstance(e, EngineError) else str(e)
