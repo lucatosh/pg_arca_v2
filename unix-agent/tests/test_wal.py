@@ -70,6 +70,33 @@ class WalTests(unittest.TestCase):
         finally:
             os.environ.pop("WAL_ARCHIVE_DIR", None)
 
+    def test_divergent_copy_of_a_branch_this_server_left_is_acknowledged(self):
+        """Geo failover on a shared archive (seen on the lab): the new primary (timeline 12) still has timeline 10's segment 0x11 marked
+        .ready, and the archive already holds the OLD primary's copy of it. This server's history left timeline 10 inside segment 0x11, so
+        recovery along it reads timeline 11's copy of that segment, never this one: acknowledge it (quarantined for review) instead of
+        blocking PostgreSQL's archiver forever. A divergence BEFORE the switch point (shared history) stays an error."""
+        n = seg(10, 0, 0x11)
+        self.wm.archive_segment(self.mk(n, b"a"), n)                                    # the old primary's copy
+        self.mk(seg(12, 0, 0x30), b"c")                                                 # this server writes timeline 12
+        def hist(tl10_end):
+            with open(os.path.join(self.src, "0000000C.history"), "w") as f:
+                f.write("9\t0/9000000\tno recovery target specified\n10\t%s\tno recovery target specified\n11\t0/1A000000\tno recovery target specified\n" % tl10_end)
+        hist("0/110A000")                                                              # left timeline 10 inside segment 0x11 (1 MB segments)
+        ok, _, _, msg = self.wm.archive_segment(self.mk(n, b"b"), n)
+        self.assertTrue(ok); self.assertIn("not needed by this server's timeline history", msg); self.assertIn("timeline 11", msg)
+        out = os.path.join(self.t, "r"); self.wm.retrieve_segment(n, out)
+        self.assertEqual(open(out, "rb").read(), b"a" * MB, "the stored copy is never replaced")
+        self.assertEqual(len(os.listdir(os.path.join(self.wm.wal_dir, "conflicts"))), 1, "the incoming copy is kept for review")
+        hist("0/1200000")                                                              # segment 0x11 entirely BEFORE the switch: shared history
+        with self.assertRaises(WalArchiveError) as cm: self.wm.archive_segment(self.mk(n, b"b"), n)
+        self.assertEqual(cm.exception.code, "PGA-WAL-031")
+        os.remove(os.path.join(self.src, "0000000C.history"))                           # no history of our own timeline: no decision, error
+        with self.assertRaises(WalArchiveError): self.wm.archive_segment(self.mk(n, b"b"), n)
+        hist("0/110A000")
+        with open(os.path.join(self.src, "0000000C.history"), "w") as f:                # timeline 10 not an ancestor of ours: a human decides
+            f.write("9\t0/9000000\tx\n11\t0/1A000000\tx\n")
+        with self.assertRaises(WalArchiveError): self.wm.archive_segment(self.mk(n, b"b"), n)
+
     def test_divergent_copy_is_refused_and_quarantined(self):
         n = seg(1, 0, 2); self.wm.archive_segment(self.mk(n, b"a"), n)
         with self.assertRaises(WalArchiveError) as cm: self.wm.archive_segment(self.mk(n, b"b"), n)

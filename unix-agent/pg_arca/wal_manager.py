@@ -35,6 +35,56 @@ import time
 logger = logging.getLogger("pg_arca.wal_manager")
 
 SEG_RE = re.compile(r"^([0-9A-F]{8})([0-9A-F]{8})([0-9A-F]{8})$")
+HIST_LINE_RE = re.compile(r"^\s*(\d+)\s+([0-9A-Fa-f]+)/([0-9A-Fa-f]+)")
+
+
+def _branch_not_on_our_history(src_path, name):
+    """For a segment of an OLDER timeline than the one this server writes: '' when the server's own history may need it, else the reason
+    it never will. PostgreSQL recovering along a timeline history reads timeline T only up to the point where the history left T, and the
+    segment holding that switch point is read from the newer timeline. A copy of timeline T's segment that holds or follows that point is
+    therefore never read on this server's history (it is the old primary's view of a branch this server left). Decided from this server's
+    pg_wal only: the timeline of the newest segment there and its history file; any doubt answers '' (the divergence stays an error)."""
+    m = SEG_RE.match(name)
+    if not m:
+        return ""
+    try:
+        wal_dir = os.path.dirname(os.path.abspath(src_path))
+        seg_size = os.path.getsize(src_path)
+        names = os.listdir(wal_dir)
+        cur = max((int(x[:8], 16) for x in names if SEG_RE.match(x)), default=0)      # the timeline this server writes now
+        tli = int(m.group(1), 16)
+        if cur <= tli or ("%08X.history" % cur) not in names:
+            return ""
+        switch = None
+        with open(os.path.join(wal_dir, "%08X.history" % cur)) as f:
+            for line in f:
+                h = HIST_LINE_RE.match(line)
+                if h and int(h.group(1)) == tli:
+                    switch = (int(h.group(2), 16) << 32) | int(h.group(3), 16)
+        if switch is None:
+            return ""                                          # timeline T is not an ancestor of ours: not our branch, a human decides
+        per_id = 0x100000000 // seg_size
+        seg_start = (int(m.group(2), 16) * per_id + int(m.group(3), 16)) * seg_size
+        if seg_start + seg_size > switch:
+            return "timeline %d ended at %X/%X in this server's history; recovery reads timeline %d's copy of this segment" % (
+                tli, switch >> 32, switch & 0xFFFFFFFF, _next_tli(wal_dir, cur, tli))
+    except (OSError, ValueError):
+        return ""
+    return ""
+
+
+def _next_tli(wal_dir, cur, tli):
+    """The timeline that followed `tli` in this server's history (for the message only)."""
+    try:
+        nxt = cur
+        with open(os.path.join(wal_dir, "%08X.history" % cur)) as f:
+            parents = [int(h.group(1)) for h in (HIST_LINE_RE.match(l) for l in f) if h]
+        chain = parents + [cur]
+        i = chain.index(tli)
+        nxt = chain[i + 1] if i + 1 < len(chain) else cur
+        return nxt
+    except (OSError, ValueError):
+        return cur
 BACKUP_LABEL_RE = re.compile(r"^[0-9A-F]{24}\.[0-9A-F]{8}\.backup$")     # e.g. 000000010000000000000003.00000028.backup
 EXIT_NOT_FOUND = 1
 EXIT_CORRUPT = 126      # aborts PostgreSQL recovery (documented behaviour of restore_command)
@@ -354,6 +404,14 @@ class WalManager:
                                       "themselves to the same timeline number (a split-brain between sites, or a server promoted without access to this archive). "
                                       "PostgreSQL stops archiving until this is solved; incoming copy quarantined as conflicts/%s"
                                       % (name, stored[:12], raw_sha[:12], qname))
+            why = _branch_not_on_our_history(src_path, name)
+            if why:
+                # the server's own timeline history never reads this copy (the segment holds or follows the point where this server left
+                # that timeline: recovery takes the newer timeline's copy of it). Archiving it is pointless, and refusing it would block
+                # PostgreSQL's archiver on it forever (seen on the lab: 15 h without archiving after a geo failover). Kept in quarantine.
+                logger.warning("%s: a different copy is in the archive, but this server's history does not need it (%s): acknowledged, "
+                               "incoming copy quarantined as conflicts/%s", name, why, qname)
+                return True, existing, raw_sha, "not needed by this server's timeline history (%s); kept as conflicts/%s" % (why, qname)
             raise WalArchiveError("PGA-WAL-031", "DIVERGENT content for %s (stored %s.. vs incoming %s..): possible split-brain; incoming copy quarantined as conflicts/%s" % (name, stored[:12], raw_sha[:12], qname))
 
         tmp = os.path.join(self.wal_dir, ".%s.tmp.%d.%d" % (name, os.getpid(), threading.get_ident()))     # unique per writer, also per thread (spool pusher)

@@ -364,12 +364,11 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             if parent:
                 set_id = parent["id"].split("_")[0] + "_" + set_id
             sdir = repo.own_path("backup", set_id)
-            if not os.path.exists(sdir):
+            if not os.path.exists(sdir) and repo.claim_set_dir(set_id, "backup"):
                 break
             if attempt == 2:
                 raise EngineError("PGA-REPO-040", "backup set %s already exists" % set_id)
             time.sleep(1.05)
-        os.makedirs(sdir, mode=0o750)
         t_start = time.time()
         meta = {"id": set_id, "type": btype, "parent": parent["id"] if parent else None, "stanza": ctx.stanza, "system_identifier": sysid,
                 "pg_version": sess.version, "pg_version_num": sess.version_num, "timeline": tli, "status": "RUNNING", "started_ts": t_start,

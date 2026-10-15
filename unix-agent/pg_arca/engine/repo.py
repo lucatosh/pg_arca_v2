@@ -482,6 +482,53 @@ class Repo(object):
                 continue
         return out
 
+    def claim_set_dir(self, set_id, owner=""):
+        """Create the directory of a NEW set and make sure it is ours. True when claimed, False when another writer has it.
+        mkdir alone cannot tell: on NFS a MKDIR whose reply was lost is retransmitted and answers EEXIST although it was ours (found on
+        the lab: every second scheduled backup of a site on NFSv4 failed with 'File exists' on a directory it had just created, leaving
+        an empty directory behind). An exclusive create of a marker inside is exactly-once on NFS (verifier) and on local filesystems,
+        so the marker decides; a directory that already holds a set (meta.json) is never claimed."""
+        d = self.own_path("backup", set_id)
+        os.makedirs(os.path.dirname(d), mode=0o750, exist_ok=True)
+        try:
+            os.mkdir(d, 0o750)
+        except FileExistsError:
+            pass                                                   # ours (a retransmitted MKDIR) or someone else's: the marker decides
+        try:
+            fd = os.open(os.path.join(d, ".claim"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o640)
+        except FileExistsError:
+            return False
+        try:
+            os.write(fd, ("%s %d %s\n" % (owner or "backup", os.getpid(), socket.gethostname())).encode())
+        finally:
+            os.close(fd)
+        if any(n not in (".claim",) for n in os.listdir(d)):     # an older set with this id (cannot happen with fresh ids, never overwrite one)
+            try:
+                os.unlink(os.path.join(d, ".claim"))
+            except OSError:
+                pass
+            return False
+        return True
+
+    def stale_set_dirs(self, older_than=86400):
+        """Set directories without meta.json older than `older_than` seconds: a start that failed before writing its meta (or an empty
+        claim). Not sets, never listed; removed by expire."""
+        d = os.path.join(self.path, "stanza", self.stanza, "backup")
+        out = []
+        if not os.path.isdir(d):
+            return out
+        now = time.time()
+        for n in os.listdir(d):
+            p = os.path.join(d, n)
+            if n.startswith(".") or not os.path.isdir(p) or os.path.exists(os.path.join(p, "meta.json")):
+                continue
+            try:
+                if now - os.stat(p).st_mtime > older_than and all(x in (".claim",) or x.endswith(".tmp") for x in os.listdir(p)):
+                    out.append(n)
+            except OSError:
+                continue
+        return out
+
     def own_sets(self):
         """Sets of THIS location only: what backups (parent choice, crash cleanup) and retention work on."""
         out = self._sets_in(self.path)

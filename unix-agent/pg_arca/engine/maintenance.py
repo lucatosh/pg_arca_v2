@@ -203,6 +203,7 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         plan = {"delete_sets": sorted(doomed_ids), "keep_sets": [s["id"] for s in keep], "retention_full": keep_full}
         if oldest_lsn is not None:
             plan["wal_keep_from_lsn"] = "%X/%08X" % (oldest_lsn >> 32, oldest_lsn & 0xFFFFFFFF)
+        plan["stale_dirs"] = repo.stale_set_dirs()
         if dry_run:
             plan["dry_run"] = True
             return plan
@@ -213,6 +214,8 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
                 repo.write_meta(m)
         for sid in doomed_ids:
             shutil.rmtree(repo.own_path("backup", sid), ignore_errors=True)        # only this location: a previous one is never touched by retention
+        for d in repo.stale_set_dirs():                                  # starts that died before their meta (or empty claims): not sets, just clutter
+            shutil.rmtree(repo.own_path("backup", d), ignore_errors=True)
         freed, removed = _gc_cas(repo)
         walrm = 0
         if oldest_lsn is not None:
