@@ -168,6 +168,12 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         cause: `Patroni reads the replicas’ timeline through a local replication connection (127.0.0.1, user ${plc.denied.join(', ')}), which pg_hba rejects. After a failover a replica (or a whole standby site) that got ahead of the new leader is not realigned with pg_rewind and stays stuck. Rule to add: ${plc.suggest[0] || ''}.`,
         action: { label: 'Open the access rules', page: 'hba' } });
       if (n.snapshot?.postgres?.pending_restart?.length) add({ severity: 'info', code: 'pending_restart', detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: restart pending`, cause: `Parameters changed but not active yet: ${n.snapshot.postgres.pending_restart.slice(0, 5).join(', ')}.` });
+      // ---- compression: without python zstandard the agent compresses backup chunks with zlib (measured 5-10x slower per core); without the zstd binary WAL is archived uncompressed
+      const tc = n.snapshot?.toolchain;
+      if (tc && typeof tc === 'object' && 'python_zstandard' in tc) {
+        if (!tc.python_zstandard) add({ severity: pol?.enabled ? 'warning' : 'info', code: 'no_zstd_python', detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: backups run without zstd (5-10x slower)`,
+          cause: `The Python module zstandard is not installed on this node, so backup chunks are compressed with zlib: a full backup takes several times longer and uses more CPU${tc.zstd ? '' : ' (WAL segments fall back to gzip too: the zstd command is missing as well)'}. Install python3-zstandard (Debian/Ubuntu: apt install python3-zstandard; RHEL family: dnf install python3-zstandard, from EPEL on older releases) and restart pg-arca-agent. Existing backups stay readable.` });
+      }
     }
   }
   for (const i of geoIssues(st, now)) out.push(i);

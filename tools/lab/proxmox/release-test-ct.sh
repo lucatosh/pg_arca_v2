@@ -76,6 +76,26 @@ check "state kept after uninstall" test -d /var/lib/pg-arca-console
 check "reinstall exits 0" "$P1/install-console.sh"
 check "login with the kept state" login
 
+echo "== --restore-state (disaster recovery of the console on a purged host)"
+BK=$(ls /root/consolebk/console-state-*.tar.gz | head -1)
+check "purge the console" "$P1/install-console.sh" --uninstall --purge --yes
+check "fresh install" "$P1/install-console.sh" --tls-self-signed --port 8443
+check "fresh console has no users (setup code again)" test -f /var/lib/pg-arca-console/setup-code
+check "restore refused without --yes" bash -c "! /opt/pg-arca-console/current/install-console.sh --restore-state $BK"
+check "restore refuses a file that is not a state backup" bash -c "! /opt/pg-arca-console/current/install-console.sh --restore-state $R/pg-arca-agent-$V.tar.gz --yes"
+check "restore exits 0" /opt/pg-arca-console/current/install-console.sh --restore-state "$BK" --yes
+check "health after restore" bash -c "[[ \$(curl -fsSk $URL/api/health | sed -n 's/.*\"version\":\"\\([^\"]*\\)\".*/\\1/p') == $V ]]"
+check "login with the restored users" login
+check "restored state holds the marker" bash -c "curl -fsSk -b $JAR $URL/api/enrollment-tokens | grep -q rel-marker"
+check "previous state kept aside" bash -c 'ls /var/lib/pg-arca-console/backups/console-state-before-restore-*.tar.gz'
+
+echo "== API tokens (automation)"
+APITOK=$(api POST /api/api-tokens '{"label":"rel ci","role":"viewer","ttlDays":1}' | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+check "token created" test -n "$APITOK"
+check "bearer token reads the API" bash -c "curl -fsSk -H 'Authorization: Bearer $APITOK' $URL/api/clusters >/dev/null"
+check "viewer token cannot write" bash -c "[[ \$(curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer $APITOK' -H 'content-type: application/json' -d '{\"label\":\"x\"}' $URL/api/enrollment-tokens) == 403 ]]"
+check "unknown token is 401" bash -c "[[ \$(curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer arca_api_nope' $URL/api/clusters) == 401 ]]"
+
 echo "== agent package as a worker host of this console"
 CA=/etc/pg-arca-console/tls/console.crt
 TOK=$(api POST /api/enrollment-tokens '{"label":"release test","kind":"worker"}' | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')

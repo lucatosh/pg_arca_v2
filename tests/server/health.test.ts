@@ -55,6 +55,16 @@ import { requiredRole } from '../../server/auth';
     assert.deepStrictEqual(split, ['wal_not_shared'], JSON.stringify(split));
     assert.deepStrictEqual(evaluate(mk('A', 'A'), now).filter(i => i.clusterId === 's').map(i => i.code), []);
   }
+  { // no python zstandard on a node -> backups use zlib: warning when a policy is active, info otherwise; present (or an old agent that does not report it) -> nothing
+    const base = store.peek(); const g1: any = base.nodes.n3;
+    const mk = (tc: any, env = 'dev'): any => ({ ...base, clusters: [...base.clusters, { id: 'z', name: 'z-db', environment: env, source: 'agent' }],
+      nodes: { ...base.nodes, z1: { ...g1, id: 'z1', name: 'z1', clusterId: 'z', snapshot: { ...g1.snapshot, toolchain: tc } } } });
+    const f = (tc: any, env?: string) => evaluate(mk(tc, env), now).filter(i => i.clusterId === 'z' && i.code === 'no_zstd_python');
+    assert.strictEqual(f({ python_zstandard: null, zstd: '/usr/bin/zstd' }).length, 1); assert.strictEqual(f({ python_zstandard: null, zstd: '/usr/bin/zstd' })[0].severity, 'info');
+    assert(/gzip/.test(f({ python_zstandard: null, zstd: null })[0].cause), 'zstd binary missing too: WAL falls back to gzip');
+    assert.strictEqual(f({ python_zstandard: null }, 'prod')[0].severity, 'warning');
+    assert.strictEqual(f({ python_zstandard: 'installed', zstd: null }).length, 0); assert.strictEqual(f(undefined).length, 0); assert.strictEqual(f({ psql: '/usr/bin/psql' }).length, 0);
+  }
   assert(evaluate(store.peek(), now).every(i => i.clusterId !== 'demo'), 'demo cluster is not monitored');
   const slot = evaluate(store.peek(), now).find(i => i.code === 'slot_stale')!; assert.strictEqual(slot.severity, 'critical'); assert(/old_slot/.test(slot.title)); assert(!evaluate(store.peek(), now).some(i => /live/.test(i.title)), 'active slots are fine');
   const b = briefing(store.peek(), now); assert.strictEqual(b.status, 'critical'); assert(b.counts.critical >= 3); assert.strictEqual(b.issues[0].severity, 'critical');

@@ -100,7 +100,7 @@ if [[ -z "$NOPKG" ]] && ! python3 -c 'import zstandard' 2>/dev/null && ! python3
     || echo "WARN: python3-zstandard not available: backups will use zlib (much slower). Install python3-zstandard (EPEL on RHEL) or 'pip3 install zstandard' for the agent's python."
 fi
 if [[ -z "$NOPKG" ]] && ! command -v zstd >/dev/null; then
-  { command -v dnf >/dev/null && dnf install -y -q zstd; } || { command -v apt-get >/dev/null && { apt-get install -y -qq zstd >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq zstd >/dev/null 2>&1; }; }; } || echo "WARN: zstd not installed; WAL/chunks will be stored uncompressed"
+  { command -v dnf >/dev/null && dnf install -y -q zstd; } || { command -v apt-get >/dev/null && { apt-get install -y -qq zstd >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq zstd >/dev/null 2>&1; }; }; } || echo "WARN: zstd not installed; without python3-zstandard too, WAL segments are archived with gzip (slower)"
 fi
 
 # --- obtain the bundle ------------------------------------------------------------
