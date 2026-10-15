@@ -89,6 +89,19 @@ class WalSummaryTests(unittest.TestCase):
                 ent = man["files"].get(newt_rel)
                 full_ent = F.ctx.repo.load_manifest(full)["files"].get(newt_rel)
                 src = os.path.join(F.ctx.pgdata, newt_rel)
+                import hashlib, struct
+                def head(pth):
+                    try:
+                        with open(pth, "rb") as fh:
+                            b = fh.read()
+                        pages = [b[i:i + 8192] for i in range(0, len(b), 8192)]
+                        hdr = lambda pg: struct.unpack("<IIHHHHHH", pg[:20])
+                        return "sha=%s pages=%d zero=%d p0=%s plast=%s" % (hashlib.sha256(b).hexdigest()[:12], len(pages), sum(1 for x in pages if x == b"\0" * 8192),
+                                                                          hdr(pages[0]) if pages else None, hdr(pages[-1]) if pages else None)
+                    except OSError as e:
+                        return str(e)
+                logtail = open(os.path.join(F.base, "ws-restored.log")).read()[-1500:]
+                self.fail("SOURCE %s | RESTORED %s | manifest chunks %s | LOG %s" % (head(src), head(os.path.join(dest, newt_rel)), (ent or {}).get("chunks"), logtail))
                 self.fail("newt has %s rows; rel %s; incremental entry %s; full entry %s; source size %s; wal_summaries %s; restored size %s" % (
                     got, newt_rel, {k: (v if k != "chunks" else len(v)) for k, v in (ent or {}).items()}, bool(full_ent),
                     os.path.getsize(src) if os.path.exists(src) else None, ws, os.path.getsize(os.path.join(dest, newt_rel)) if os.path.exists(os.path.join(dest, newt_rel)) else None))
