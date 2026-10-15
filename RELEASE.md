@@ -39,7 +39,7 @@ A release candidate (`-rc.N`) is published when the build passes and the lab run
 | Real network storage as backup destination: NFS and SMB, including loss of the share during a backup | not done |
 | Console install, upgrade from the previous release and rollback on clean VMs (RHEL family and Debian/Ubuntu) | to run on the lab |
 | Agent upgrade through `.deb`/`.rpm` on a registered node, and removal refused while WAL archiving is active | to run on the lab |
-| Security review: authentication and sessions, RBAC on every route, agent enrollment and tokens, command execution on nodes, TLS, systemd hardening, dependency audit | not done |
+| Security review: authentication and sessions, RBAC on every route, agent enrollment and tokens, command execution on nodes, TLS, systemd hardening, dependency audit | partly: RBAC sweep of every mounted route (`rbac.test.ts`), login back-off, sessions and API tokens tested, `npm audit` in the build (clean), `systemd-analyze security` printed by the release test; command execution on nodes, TLS defaults and the agent's enrollment to review by someone else |
 | Console state backup and restore procedure tested (`install-console.sh --backup-state`, `--restore-state` on another host) | implemented; to run on the lab |
 | Installation and administration guide reviewed by someone who did not write it | first version in INSTALL.md |
 | No open defect classified as data loss or wrong restore | no open one known |
