@@ -17,6 +17,7 @@ import { requiresApproval, requestApproval } from './approvals';
 import { applyDestination } from './destinations';
 import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
+import { objectives } from './health';
 import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './scoped';
 import { conflictFor, activityOf } from './conflicts';
 import { agentOutdated, consoleAgentBuild } from './agentbuild';
@@ -464,6 +465,11 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     }
   }
 
+  app.get('/api/clusters/:id/objectives', (req: Request, res: Response) => {
+    const o = objectives(store.peek(), req.params.id);
+    if (!o) return res.status(404).json({ error: 'cluster_not_found' });
+    res.json(o);
+  });
   app.get('/api/clusters/:id/activity', (req: Request, res: Response) => {
     const st = store.peek();
     if (!st.clusters.some((c: any) => c.id === req.params.id)) return res.status(404).json({ error: 'cluster_not_found' });

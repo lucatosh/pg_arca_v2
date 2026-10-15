@@ -1,7 +1,7 @@
 import fs from 'fs'; import os from 'os'; import path from 'path'; import assert from 'assert'; import http from 'http';
 import { MiniApp } from './mini-express';
 import { Store } from '../../server/store';
-import { evaluate, briefing } from '../../server/health';
+import { evaluate, briefing, objectives } from '../../server/health';
 import { notifyTick, mountNotifyRoutes, Sender } from '../../server/notify';
 import { requiredRole } from '../../server/auth';
 (async () => {
@@ -71,6 +71,20 @@ import { requiredRole } from '../../server/auth';
     const f = (settings: any, rec?: boolean) => evaluate(mk(settings, rec), now).filter(i => i.clusterId === 'p' && i.code === 'summarize_wal_off');
     assert.strictEqual(f({ summarize_wal: 'off' }).length, 1); assert.strictEqual(f({ summarize_wal: 'off' })[0].severity, 'info');
     assert.strictEqual(f({ summarize_wal: 'on' }).length, 0); assert.strictEqual(f({}).length, 0); assert.strictEqual(f({ summarize_wal: 'off' }, true).length, 0);
+  }
+  { // recovery objectives: RPO from the archiver (failing -> bad; fresh -> ok with the archive_timeout bound), RTO from the last drill scaled to today's size
+    const base = store.peek();
+    const o1 = objectives(base, 'p', now)!; assert.strictEqual(o1.rpo.state, 'bad'); assert(/failing/.test(o1.rpo.text)); assert.strictEqual(o1.rto.state, 'unknown');
+    const st: any = JSON.parse(JSON.stringify(base));
+    st.nodes.n1.snapshot.postgres.archiver = { last_archived_time: iso(now - 20_000), last_failed_time: null }; st.nodes.n1.snapshot.postgres.settings.archive_timeout = '60';
+    st.nodes.n1.snapshot.postgres.databases = [{ name: 'a', size: 4 * GB }];
+    st.operations.push({ id: 'd1', clusterId: 'p', type: 'restore_drill', status: 'succeeded', updatedAt: iso(now - 86400_000), createdAt: iso(now - 86400_000), result: { rto_seconds: 300, data_bytes: 2 * GB, throughput_mb_s: 7 } });
+    const o2 = objectives(st, 'p', now)!;
+    assert.deepStrictEqual([o2.rpo.state, o2.rpo.seconds], ['ok', 60], JSON.stringify(o2.rpo));
+    assert.deepStrictEqual([o2.rto.state, o2.rto.estimateSeconds], ['ok', 600], JSON.stringify(o2.rto));
+    st.nodes.n1.snapshot.postgres.archiver = { last_archived_time: iso(now - 2 * 3600_000) };
+    assert.strictEqual(objectives(st, 'p', now)!.rpo.state, 'bad');
+    assert.strictEqual(objectives(st, 'nope', now), null);
   }
   assert(evaluate(store.peek(), now).every(i => i.clusterId !== 'demo'), 'demo cluster is not monitored');
   const slot = evaluate(store.peek(), now).find(i => i.code === 'slot_stale')!; assert.strictEqual(slot.severity, 'critical'); assert(/old_slot/.test(slot.title)); assert(!evaluate(store.peek(), now).some(i => /live/.test(i.title)), 'active slots are fine');

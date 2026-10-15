@@ -132,6 +132,7 @@ function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) 
   return <Card title="Repository health">
     <div className="stack">
       {c.source !== 'direct' && !c.isSandbox ? <BackupPlacement clusterId={c.id} /> : null}
+      {c.source !== 'direct' && !c.isSandbox ? <Objectives clusterId={c.id} /> : null}
       <dl className="kv small"><dt>Valid backups</dt><dd>{bk?.sets ?? 0}{bk?.failed_sets ? ` (+${bk.failed_sets} failed)` : ''}</dd><dt>Space used</dt><dd>{bytes(bk?.stored_bytes)} {bk?.dedup_ratio ? <span className="muted">— {bk.dedup_ratio}× from deduplication and compression</span> : null}</dd>
         <dt>Archived WAL</dt><dd>{num(d.wal?.total_segments)} segments, {d.wal?.continuous === false ? <Badge kind="bad">with gaps</Badge> : <Badge kind="ok">continuous</Badge>}</dd>
         <dt>Encryption</dt><dd>{bk?.encryption ? <><Badge kind="ok">On</Badge> <span className="muted">AES-256-GCM · key {bk.encryption.key_id.slice(0, 8)}</span></> : <span className="muted">Off — set <code>encryption_key_file</code> for a new repository</span>}</dd>
@@ -162,4 +163,16 @@ function SetsCard({ sets, d }: { sets: SetRow[]; d: any }) {
       <td>{s.status === 'COMPLETE' ? <Badge kind="ok">Valid</Badge> : s.status === 'FAILED' || s.status === 'UNRECOVERABLE' ? <Badge kind="bad" title={s.reason}>{s.status === 'FAILED' ? 'Failed' : 'Unrecoverable'}</Badge> : <Badge kind="info">{s.status === 'PENDING_WAL' ? 'Waiting for WAL' : s.status === 'EXPIRING' ? 'Being deleted' : 'Running'}</Badge>}</td>
       <td title={dt(s.start_time)}>{ago(s.start_time)}</td><td className="num">{dur(s.duration_sec)}</td><td className="num">{bytes(s.bytes_logical)}</td><td className="num">{bytes(s.bytes_written)}</td></tr>)}
   </tbody></table></div></Card>;
+}
+
+/** What would be lost right now (RPO) and how long a whole-cluster restore would take (RTO): the two numbers an auditor asks first. */
+function Objectives({ clusterId }: { clusterId: string }) {
+  const q = useQuery<{ rpo: { seconds: number | null; state: string; text: string; openSegment?: boolean }; rto: { estimateSeconds: number | null; state: string; text: string; drill: any } }>(`/api/clusters/${encodeURIComponent(clusterId)}/objectives`, { interval: 30000 });
+  const o = q.data; if (!o) return null;
+  const badge = (st: string) => st === 'ok' ? <Badge kind="ok">OK</Badge> : st === 'bad' ? <Badge kind="bad">At risk</Badge> : st === 'warn' || st === 'stale' ? <Badge kind="warn">{st === 'stale' ? 'Outdated' : 'Check'}</Badge> : <Badge>Unknown</Badge>;
+  const dur = (s: number | null) => s == null ? '—' : s >= 7200 ? `${(s / 3600).toFixed(1)} h` : s >= 120 ? `${Math.round(s / 60)} min` : `${s} s`;
+  return <div className="objectives" data-testid="objectives"><dl className="kv small">
+    <dt>Recovery point (RPO)</dt><dd><strong>{o.rpo.seconds == null ? (o.rpo.state === 'bad' ? 'unbounded' : '—') : `≤ ${dur(o.rpo.seconds)}${o.rpo.openSegment ? ' + the segment being written' : ''}`}</strong> {badge(o.rpo.state)} <span className="muted">{o.rpo.text}</span></dd>
+    <dt>Recovery time (RTO)</dt><dd><strong>{o.rto.estimateSeconds == null ? 'not measured' : `≈ ${dur(o.rto.estimateSeconds)}`}</strong> {badge(o.rto.state)} <span className="muted">{o.rto.text}</span></dd>
+  </dl></div>;
 }

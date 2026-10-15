@@ -39,6 +39,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   await shot('05a-oplog'); await p.click('.oplog button[aria-label="Minimize"]'); await p.waitForSelector('.oplog.min'); await p.click('.oplog button[aria-label="Expand the log"]'); await p.waitForSelector('.oplog-body');
   await p.click('.oplog button[aria-label="Close the log"]'); await p.waitForSelector('.oplog', { state: 'detached' }); await p.keyboard.press('Control+j');
   await p.waitForSelector('text=/Backup .* completed/', { timeout: 15000 }); await shot('06-backup-done');
+  // recovery objectives: RPO and RTO lines are there (the mock has no drill: RTO "not measured")
+  await p.waitForSelector('[data-testid=objectives]:has-text("Recovery point (RPO)")'); assert(/not measured/.test(await p.locator('[data-testid=objectives]').innerText()), 'RTO never measured in the mock');
   // guided restore, situation first: a database as it was
   await tab('Protection', 'Restore'); await p.waitForSelector('text=What happened?'); await shot('07-restore-situation');
   await p.click('button.choice:has-text("I need a database")');

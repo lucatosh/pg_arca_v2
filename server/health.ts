@@ -249,3 +249,46 @@ export function briefing(st: any, now = Date.now()) {
     })(),
   };
 }
+
+/**
+ * Recovery objectives of one cluster, from what the console knows right now:
+ *  - RPO: how much could be lost if the primary vanished this second = what is not in the WAL archive yet: the time since the last archived segment,
+ *    plus up to archive_timeout for the segment being written (a failing archiver makes it unbounded);
+ *  - RTO: the last disaster-recovery drill measured a whole-cluster restore (seconds, bytes); scaled to today's size it is the best estimate there is.
+ */
+export function objectives(st: any, clusterId: string, now = Date.now()) {
+  const c = (st.clusters as any[]).find(x => x.id === clusterId);
+  if (!c) return null;
+  const nodes = Object.values(st.nodes || {}).filter((n: any) => n.clusterId === clusterId) as any[];
+  const online = nodes.filter(n => n.lastSeen && now - Date.parse(n.lastSeen) < ONLINE_MS);
+  const primary = online.find(n => n.snapshot?.postgres?.is_in_recovery === false);
+  const pg = primary?.snapshot?.postgres || {};
+  const arch = pg.archiver || {};
+  const sizeBytes = ((pg.databases || []) as any[]).reduce((a, d) => a + (Number(d?.size) || 0), 0);
+  const timeout = Number(pg.settings?.archive_timeout) || 0;
+  const lastArch = ts(arch.last_archived_time);
+  const failing = !!arch.last_failed_time && (!arch.last_archived_time || ts(arch.last_failed_time) > lastArch);
+  let rpo: { seconds: number | null; state: 'ok' | 'warn' | 'bad' | 'unknown'; text: string; openSegment?: boolean };
+  if (!primary) rpo = { seconds: null, state: 'unknown', text: 'No reachable primary: the recovery point cannot be measured.' };
+  else if (pg.settings?.archive_mode === 'off') rpo = { seconds: null, state: 'bad', text: 'WAL archiving is off: only the backups themselves can be recovered (no point-in-time recovery).' };
+  else if (failing) rpo = { seconds: null, state: 'bad', text: `WAL archiving is failing since ${new Date(arch.last_failed_time).toISOString().slice(0, 16).replace('T', ' ')}: everything written since then is at risk.` };
+  else if (!Number.isFinite(lastArch)) rpo = { seconds: null, state: 'warn', text: 'Nothing archived yet.' };
+  else {
+    const since = Math.max(0, (now - lastArch) / 1000);
+    const bound = Math.max(since, timeout || 0);
+    rpo = { seconds: Math.round(bound), state: bound <= Math.max(timeout, 60) * 2 ? 'ok' : bound <= 3600 ? 'warn' : 'bad', openSegment: !timeout,
+      text: `Up to ${bound >= 120 ? Math.round(bound / 60) + ' min' : Math.round(bound) + ' s'} of transactions are not in the archive yet (last segment archived ${since >= 120 ? Math.round(since / 60) + ' min' : Math.round(since) + ' s'} ago${timeout ? `, archive_timeout ${timeout} s` : ', archive_timeout not set: an idle segment can wait for a long time'}).` };
+  }
+  const drills = (st.operations as any[]).filter(o => o.clusterId === clusterId && o.type === 'restore_drill' && o.status === 'succeeded' && Number(o.result?.rto_seconds) > 0).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  const d = drills[drills.length - 1];
+  let rto: { estimateSeconds: number | null; state: 'ok' | 'unknown' | 'stale'; text: string; drill: null | { at: string; seconds: number; bytes: number; mbs: number } };
+  if (!d) rto = { estimateSeconds: null, state: 'unknown', text: 'Never measured: run a disaster recovery drill to know how long a whole-cluster restore takes here.', drill: null };
+  else {
+    const r = d.result; const bytes = Number(r.data_bytes) || 0; const secs = Number(r.rto_seconds);
+    const est = bytes > 0 && sizeBytes > 0 ? Math.round(secs * Math.max(1, sizeBytes / bytes)) : Math.round(secs);
+    const ageDays = (now - Date.parse(d.updatedAt)) / 86400_000;
+    rto = { estimateSeconds: est, state: ageDays > 90 ? 'stale' : 'ok', drill: { at: d.updatedAt, seconds: secs, bytes, mbs: Number(r.throughput_mb_s) || 0 },
+      text: `About ${est >= 120 ? Math.round(est / 60) + ' min' : est + ' s'} for today's ${bytesH(sizeBytes)} (drill of ${d.updatedAt.slice(0, 10)}: ${secs >= 120 ? Math.round(secs / 60) + ' min' : Math.round(secs) + ' s'} for ${bytesH(bytes)}${ageDays > 90 ? '; older than 90 days, run a new one' : ''}). Plus the WAL to replay up to the chosen point.` };
+  }
+  return { rpo, rto, sizeBytes, archiveTimeoutSec: timeout || null };
+}
