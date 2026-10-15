@@ -86,6 +86,23 @@ class Crash(unittest.TestCase):
         self.assertIn(killed[0], r["delete_sets"], "retention removes the interrupted set")
         self.assertTrue(verify(F.ctx, deep=True)["ok"])
 
+    def test_y_died_while_waiting_for_wal(self):
+        """The agent dies in the WAL phase (data and manifest durable, set PENDING_WAL). At the next run: if its WAL reached the archive meanwhile
+        the set is COMPLETE (it used to be marked FAILED and deleted: a good backup thrown away); if its WAL is not there, FAILED as before."""
+        good = run_backup(F.ctx, "full")
+        self.assertEqual(good["status"], "COMPLETE")
+        repo = F.ctx.repo
+        m = repo.set_meta(good["id"]); m["status"] = "PENDING_WAL"; m.pop("completed", None); repo.write_meta(m)
+        q("postgres", "SELECT pg_switch_wal()")
+        nxt = run_backup(F.ctx, "incr")
+        self.assertEqual(repo.set_meta(good["id"])["status"], "COMPLETE", "its WAL is in the archive: completed at the next run")
+        self.assertIn("completed at the next run", repo.set_meta(good["id"]).get("note", ""))
+        self.assertEqual(nxt["status"], "COMPLETE")
+        # WAL never archived (stop point far beyond anything written): FAILED, never COMPLETE
+        m = repo.set_meta(nxt["id"]); m["status"] = "PENDING_WAL"; m["stop_lsn"] = "FF/00000000"; repo.write_meta(m)
+        run_backup(F.ctx, "incr")
+        self.assertEqual(repo.set_meta(nxt["id"])["status"], "FAILED")
+
     def test_z_killed_incremental_does_not_break_the_chain(self):
         q("crashdb", "UPDATE big SET v = md5(v) WHERE id % 3 = 0")
         p = child("incr")

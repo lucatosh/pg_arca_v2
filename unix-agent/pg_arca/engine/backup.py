@@ -318,7 +318,9 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         # ---- crashed earlier runs (we hold the lock, so nobody is really running)
         suspect = None
         for s in repo.own_sets():
-            if s.get("status") in ("RUNNING", "PENDING"):
+            if s.get("status") == "PENDING_WAL" and _finish_pending_wal(ctx, s):
+                continue                                    # died while waiting for its WAL, which arrived since: the set is good
+            if s.get("status") in ("RUNNING", "PENDING", "PENDING_WAL"):
                 s["status"] = "FAILED"
                 s["reason"] = "interrupted (agent or host died before commit)"
                 repo.write_meta(s)
@@ -621,13 +623,38 @@ def _stream(pool, items, fn, window, tick=None):
             f.cancel()
 
 
+def _wal_needed(tli, start_lsn, stop_lsn, seg_size, from_standby):
+    first, last = wal_segno(lsn_to_int(start_lsn), seg_size), last_wal_segno({"stop_lsn": stop_lsn, "from_standby": from_standby}, seg_size)
+    return [wal_name(tli, n, seg_size) for n in range(first, last + 1)]
+
+
+def _finish_pending_wal(ctx, s):
+    """A set left in PENDING_WAL by a crash (agent or host died while waiting for the archiver): its data and manifest are durable, only the
+    WAL was missing. If every segment it needs is in the archive now, it is complete (it used to be marked FAILED and later deleted as junk:
+    a good backup thrown away). Returns True when the set was completed."""
+    try:
+        if not (s.get("start_lsn") and s.get("stop_lsn") and s.get("timeline")) or not os.path.exists(ctx.repo.sp("backup", s["id"], "manifest.json.z")):
+            return False
+        need = _wal_needed(int(s["timeline"]), s["start_lsn"], s["stop_lsn"], int(s.get("wal_segment_size") or ctx.seg_size), bool(s.get("from_standby")))
+        if any(not ctx.wal.has_segment(n, anywhere=False) for n in need):
+            return False
+        s["status"] = "COMPLETE"
+        s["completed"] = iso()
+        s["note"] = ((s.get("note") or "") + " (completed at the next run: its WAL reached the archive after the agent stopped)").strip()
+        ctx.repo.write_meta(s)
+        ctx.log("info", "backup %s completed: the WAL it was waiting for when the agent stopped is in the archive now" % s.get("id"))
+        return True
+    except Exception as e:                                  # never let this block the new backup: the set is then marked FAILED as before
+        ctx.log("warn", "could not complete the interrupted backup %s: %s" % (s.get("id"), e))
+        return False
+
+
 def _wait_for_wal(ctx, sess, tli, start_lsn, stop_lsn, seg_size, in_recovery, timeout, cancel, progress=None, set_id=""):
     """Wait until every WAL segment this set needs is in the archive. Returns (ok, missing, diag):
     diag "" = plain timeout; "stale" = NOTHING reached this node's archive while waiting (on a standby that almost always means the
     archive this node reads is not the one the primary writes to, i.e. not shared). On the primary the current segment is switched
     here; on a standby the CONSOLE asks the primary to switch (an agent cannot run pg_switch_wal through a replication connection)."""
-    first, last = wal_segno(lsn_to_int(start_lsn), seg_size), last_wal_segno({"stop_lsn": stop_lsn, "from_standby": in_recovery}, seg_size)
-    need = [wal_name(tli, n, seg_size) for n in range(first, last + 1)]
+    need = _wal_needed(tli, start_lsn, stop_lsn, seg_size, in_recovery)
     switch_err = ""
     if not in_recovery:
         try:
