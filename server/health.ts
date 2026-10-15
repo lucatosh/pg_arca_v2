@@ -126,6 +126,17 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
           cause: `Two servers promoted themselves to the same timeline number (split-brain between sites, or a promotion without access to the shared archive). PostgreSQL archives nothing after this file: WAL piles up and point-in-time restores stop here. The current primary is the right one: on its Backup tab, “Retire the dead branch” of that timeline sets the other server’s copies aside (nothing is deleted) and archiving resumes by itself. To prevent it: “Recovery from the archive” (restore_command) on both sites, in Geo-redundancy.`,
           action: { label: 'See the backups', page: 'backup' } });
       else add({ severity: 'critical', code: 'archiver_failing', title: 'WAL archiving is failing', cause: `Last failed segment: ${arch.last_failed_wal || '?'}${pg.archive_error?.error ? ` — reason: ${pg.archive_error.error}` : ''}. Until this is fixed, WAL piles up on the server and the disk fills up.`, action: { label: 'See the backups', page: 'backup' } });
+    // ---- asynchronous archiving: segments parked in the local spool are NOT in the archive (not restorable, lost with the host). The archive refusing
+    // a segment is invisible to pg_stat_archiver in this mode: the pusher's own error is what says it
+    const sp = wal?.spool;
+    if (sp && (sp.pending > 0 || sp.last_error)) {
+      const oldest = Number(sp.oldest_age_sec) || 0;
+      if (sp.last_error) add({ severity: 'critical', code: 'wal_spool_failing', title: `WAL archiving is failing (${sp.pending} segments wait in the local spool)`,
+        cause: `The agent cannot push ${sp.last_error.segment || 'a segment'} into the archive: ${String(sp.last_error.error || '').slice(0, 300)}. PostgreSQL believes they are archived (asynchronous mode): until this is fixed they are only on this host.`, action: { label: 'See the backups', page: 'backup' } });
+      else if (sp.pending >= 64 || oldest > 900) add({ severity: sp.pending >= 256 || oldest > 3600 ? 'critical' : 'warning', code: 'wal_spool_behind', title: `${sp.pending} WAL segments wait in the local spool (oldest ${hrs(oldest / 3600)})`,
+        cause: 'Asynchronous archiving: the pusher is slower than the WAL rate. These segments are not in the archive yet: not restorable from it, and lost if this host is lost. Check the archive destination speed and the node load.', action: { label: 'See the backups', page: 'backup' } });
+      else if (sp.alive === false) add({ severity: 'warning', code: 'wal_spool_behind', title: `${sp.pending} WAL segments wait in the local spool and the pusher is not running`, cause: 'The agent process that pushes the spool into the archive does not report a heartbeat: restart pg-arca-agent on this node. Meanwhile archive_command archives synchronously (nothing new is spooled).', action: { label: 'See the backups', page: 'backup' } });
+    }
     // ---- archiver lag: segments written but not archived yet. archive_command slower than the WAL rate (slow share, zlib fallback) piles WAL up on the
     // primary and widens the recovery point; pg_stat_archiver only shows failures, so the backlog is computed from the current LSN
     if (arch?.last_archived_wal && pg.current_lsn && pg.settings) {
@@ -299,9 +310,10 @@ export function objectives(st: any, clusterId: string, now = Date.now()) {
   else if (!Number.isFinite(lastArch)) rpo = { seconds: null, state: 'warn', text: 'Nothing archived yet.' };
   else {
     const since = Math.max(0, (now - lastArch) / 1000);
-    const bound = Math.max(since, timeout || 0);
+    const spoolAge = Number(primary?.snapshot?.wal?.spool?.oldest_age_sec) || 0;          // asynchronous archiving: what waits in the local spool is not archived yet
+    const bound = Math.max(since, timeout || 0) + spoolAge;
     rpo = { seconds: Math.round(bound), state: bound <= Math.max(timeout, 60) * 2 ? 'ok' : bound <= 3600 ? 'warn' : 'bad', openSegment: !timeout,
-      text: `Up to ${bound >= 120 ? Math.round(bound / 60) + ' min' : Math.round(bound) + ' s'} of transactions are not in the archive yet (last segment archived ${since >= 120 ? Math.round(since / 60) + ' min' : Math.round(since) + ' s'} ago${timeout ? `, archive_timeout ${timeout} s` : ', archive_timeout not set: an idle segment can wait for a long time'}).` };
+      text: `Up to ${bound >= 120 ? Math.round(bound / 60) + ' min' : Math.round(bound) + ' s'} of transactions are not in the archive yet (last segment archived ${since >= 120 ? Math.round(since / 60) + ' min' : Math.round(since) + ' s'} ago${timeout ? `, archive_timeout ${timeout} s` : ', archive_timeout not set: an idle segment can wait for a long time'}${spoolAge ? `, ${primary.snapshot.wal.spool.pending} segments still in the local spool` : ''}).` };
   }
   const drills = (st.operations as any[]).filter(o => o.clusterId === clusterId && o.type === 'restore_drill' && o.status === 'succeeded' && Number(o.result?.rto_seconds) > 0).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
   const d = drills[drills.length - 1];

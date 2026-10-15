@@ -72,6 +72,18 @@ import { requiredRole } from '../../server/auth';
     assert.strictEqual(f({ summarize_wal: 'off' }).length, 1); assert.strictEqual(f({ summarize_wal: 'off' })[0].severity, 'info');
     assert.strictEqual(f({ summarize_wal: 'on' }).length, 0); assert.strictEqual(f({}).length, 0); assert.strictEqual(f({ summarize_wal: 'off' }, true).length, 0);
   }
+  { // asynchronous archiving spool: failing -> critical; deep or old -> behind; pusher dead with pending -> warning; empty -> nothing
+    const base = store.peek(); const g1: any = base.nodes.n3;
+    const mk = (spool: any): any => ({ ...base, clusters: [...base.clusters, { id: 'sp', name: 'sp-db', environment: 'dev', source: 'agent' }], nodes: { ...base.nodes, s1: { ...g1, id: 's1', name: 's1', clusterId: 'sp', snapshot: { ...g1.snapshot, wal: { gap_count: 0, conflicts: 0, spool } } } } });
+    const f = (spool: any) => evaluate(mk(spool), now).filter(i => i.clusterId === 'sp' && /wal_spool/.test(i.code));
+    assert.strictEqual(f({ enabled: true, pending: 0, alive: true }).length, 0);
+    assert.strictEqual(f({ enabled: true, pending: 3, alive: true, oldest_age_sec: 20 }).length, 0, 'a few fresh segments: normal');
+    assert.deepStrictEqual(f({ enabled: true, pending: 70, alive: true, oldest_age_sec: 100 }).map(i => [i.code, i.severity]), [['wal_spool_behind', 'warning']]);
+    assert.strictEqual(f({ enabled: true, pending: 300, alive: true, oldest_age_sec: 100 })[0].severity, 'critical');
+    assert.strictEqual(f({ enabled: true, pending: 5, alive: true, oldest_age_sec: 4000 })[0].severity, 'critical');
+    assert.deepStrictEqual(f({ enabled: true, pending: 2, alive: true, last_error: { segment: '0000000100000000000000AA', error: 'PGA-WAL-031 divergent' } }).map(i => i.code), ['wal_spool_failing']);
+    assert.deepStrictEqual(f({ enabled: true, pending: 2, alive: false, oldest_age_sec: 10 }).map(i => [i.code, i.severity]), [['wal_spool_behind', 'warning']]);
+  }
   { // archiver lag: current LSN far ahead of the last archived segment -> warning at 16 segments, critical at 128; caught up -> nothing
     const base = store.peek(); const g1: any = base.nodes.n3;
     const mk = (lsn: string, last: string): any => ({ ...base, clusters: [...base.clusters, { id: 'al', name: 'al-db', environment: 'dev', source: 'agent' }],

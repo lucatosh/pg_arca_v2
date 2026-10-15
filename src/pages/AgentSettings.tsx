@@ -10,6 +10,7 @@ const HINT: Record<string, string> = {
   repo_path: 'Where the agent writes backups. It cannot be a system directory.',
   wal_archive_dir: 'Where the agent archives WAL. It must be reachable from every node if you want to restore anywhere.',
   patroni_url: 'Usually detected automatically. Needed only if the Patroni API is not on this server.',
+  wal_archive_async: 'archive_command parks each segment in a local spool and returns at once; the agent pushes the spool into the archive in parallel. For WAL rates the synchronous archive_command cannot sustain. A segment in the spool is not in the archive yet: it is lost if this host is lost before it is pushed (the console shows the spool and counts it in the recovery point). Leave off unless the archiver falls behind.',
 };
 
 /** Per-node "what was detected / what I want instead". Only the agent decides what is valid: it checks every value against the real filesystem. */
@@ -44,7 +45,7 @@ export function AgentSettings({ clusterId, nodes }: { clusterId: string; nodes: 
         const val = draft[r.key] ?? (r.override != null ? String(r.override) : '');
         return <Field key={r.key} label={r.label} hint={HINT[r.key]} error={r.check && !r.check.ok ? `The saved value is no longer valid: ${r.check.message}` : null}>
           <div className="row gap-s wrap">
-            <input style={{ flex: '1 1 320px' }} className="mono" disabled={fromEnv || !canEdit} value={val} placeholder={r.detected !== '' ? String(r.detected) : 'not detected'} onChange={e => setDraft({ ...draft, [r.key]: e.target.value })} />
+            {r.kind === 'bool' ? <select style={{ flex: '0 0 200px' }} className="input" disabled={fromEnv || !canEdit} value={val} aria-label={r.label} onChange={e => setDraft({ ...draft, [r.key]: e.target.value })}><option value="">default ({String(r.detected) === 'true' ? 'on' : 'off'})</option><option value="true">on</option><option value="false">off</option></select> : <input style={{ flex: '1 1 320px' }} className="mono" disabled={fromEnv || !canEdit} value={val} placeholder={r.detected !== '' ? String(r.detected) : 'not detected'} onChange={e => setDraft({ ...draft, [r.key]: e.target.value })} />}
             <Badge kind={r.source === 'rilevato' || r.source === 'detected' ? undefined : fromEnv ? 'warn' : 'accent'} title={`Value in use: ${r.effective === '' ? '—' : r.effective}`}>{r.source}</Badge>
           </div>
           {fromEnv ? <span className="hint">Set by an environment variable of the service: it takes precedence and is changed on the server.</span> : null}
@@ -92,7 +93,7 @@ export function OffsiteCopy({ clusterId, nodes }: { clusterId: string; nodes: an
           <Field label="Prefix (folder in the bucket)" hint="One prefix per cluster, e.g. pg/prod-db"><input className="input mono" value={form.prefix} onChange={e => set('prefix', e.target.value)} /></Field>
           <Field label="Region" hint="us-east-1 for most S3-compatible stores"><input className="input mono" value={form.region} onChange={e => set('region', e.target.value)} /></Field>
           <Field label="Access key"><input className="input mono" autoComplete="off" value={form.access_key} onChange={e => set('access_key', e.target.value)} /></Field>
-          <Field label="Secret key" hint={saved?.secret_key_set ? 'Stored on the node, in the agent's settings file (readable by the agent user only). Leave empty to keep it.' : 'Stored in the agent's settings file on the node (readable by the agent user only), never in the console.'}><input className="input mono" type="password" autoComplete="new-password" value={form.secret_key} onChange={e => set('secret_key', e.target.value)} /></Field>
+          <Field label="Secret key" hint={saved?.secret_key_set ? "Stored on the node, in the agent's settings file (readable by the agent user only). Leave empty to keep it." : "Stored in the agent's settings file on the node (readable by the agent user only), never in the console."}><input className="input mono" type="password" autoComplete="new-password" value={form.secret_key} onChange={e => set('secret_key', e.target.value)} /></Field>
           <Field label="Options"><div className="row gap wrap"><label className="row gap-s small"><input type="checkbox" checked={form.path_style} onChange={e => set('path_style', e.target.checked)} /> Path-style URLs (MinIO, Ceph)</label><label className="row gap-s small"><input type="checkbox" checked={form.tls_verify} onChange={e => set('tls_verify', e.target.checked)} /> Verify the TLS certificate</label><label className="row gap-s small"><input type="checkbox" checked={form.enabled} onChange={e => set('enabled', e.target.checked)} /> Enabled</label></div></Field>
           <Field label="CA certificate file on the node (optional)"><input className="input mono" value={form.ca_file} placeholder="/etc/pg-arca/s3-ca.pem" onChange={e => set('ca_file', e.target.value)} /></Field>
         </div>

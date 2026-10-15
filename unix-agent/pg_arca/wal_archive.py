@@ -144,6 +144,12 @@ def main(argv):
         walprefetch.run(wm, argv[2], argv[3])
         return 0
     if argv[1] == "archive":
+        c = _conf()
+        if c.get("wal_archive_async") and not os.environ.get("PG_ARCA_WAL_SYNC"):
+            from pg_arca import wal_spool
+            sp = wal_spool.spool_dir(c.get("state_dir"))
+            if wal_spool.accept(sp, argv[2], argv[3]):     # parked locally, the agent pushes it; otherwise (pusher dead, spool full) synchronous as below
+                return 0
         try:
             ok, dest, sha, msg = wm.archive_segment(argv[2], argv[3])
         except WalArchiveError as e:

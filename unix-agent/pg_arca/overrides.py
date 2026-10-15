@@ -22,6 +22,7 @@ SPEC = [
     ("wal_archive_dir", "wdir", "WAL archive directory"),
     ("scratch_dir", "wdir", "Scratch directory (test restores)"),
     ("patroni_url", "url", "Patroni REST URL"),
+    ("wal_archive_async", "bool", "Asynchronous WAL archiving (local spool, pushed by the agent)"),
 ]
 # set by the console when a destination changes (not edited by hand, not listed in the settings screen): earlier locations, read only
 HIDDEN = [
@@ -89,6 +90,13 @@ def validate(key, value):
         if not _HOST.match(s):
             raise OverrideError("invalid host")
         return s
+    if kind == "bool":
+        v = value if isinstance(value, bool) else str(value).strip().lower()
+        if v in (True, "true", "on", "yes", "1"):
+            return True
+        if v in (False, "false", "off", "no", "0"):
+            return False
+        raise OverrideError("true or false")
     if kind == "offsite":
         from pg_arca import offsite
         try:
@@ -179,7 +187,8 @@ def describe(config, runtime=None):
     detected = {"pg_data": inst.get("data_directory") or "", "pg_port": inst.get("port") or "", "pg_host": inst.get("socket_directory") or "",
                 "pg_user": (getattr(getattr(runtime, "db", None), "user", None) or "postgres") if runtime else "postgres", "pg_bin_dir": inst.get("bin_dir") or inst.get("bindir") or "",
                 "repo_path": "/var/lib/pgarca/repo", "wal_archive_dir": "/var/lib/pgarca/wal", "scratch_dir": "/var/tmp/pg_arca_scratch",
-                "patroni_url": ("http://127.0.0.1:%s" % runtime.patroni_info["restapi_port"]) if runtime and getattr(runtime, "patroni_info", None) else ""}
+                "patroni_url": ("http://127.0.0.1:%s" % runtime.patroni_info["restapi_port"]) if runtime and getattr(runtime, "patroni_info", None) else "",
+                "wal_archive_async": "false"}
     env_keys = {"pg_data": "PG_ARCA_PGDATA", "repo_path": "PG_ARCA_REPO", "wal_archive_dir": "WAL_ARCHIVE_DIR", "patroni_url": "PATRONI_URL", "pg_port": "PGPORT"}
     out = []
     for key, kind, label in SPEC:

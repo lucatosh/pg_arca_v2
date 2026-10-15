@@ -210,6 +210,21 @@ class Runtime(object):
             logger.debug("restored instances housekeeping failed", exc_info=True)
             return None
 
+    def _wal_view(self, wal):
+        v = wal.verify_continuity() if wal else None
+        try:
+            from pg_arca import wal_spool
+            sp = wal_spool.spool_dir(self.config.get("state_dir"))
+            if self.config.get("wal_archive_async") or os.path.isdir(sp):
+                st = wal_spool.status(sp)
+                if v is None:
+                    v = {}
+                v["spool"] = {"enabled": bool(self.config.get("wal_archive_async")), "pending": st.get("pending", 0), "oldest_age_sec": st.get("oldest_age_sec"),
+                              "alive": st.get("alive"), "pushed": st.get("pushed"), "last_error": st.get("last_error")}
+        except Exception:
+            pass
+        return v
+
     def _offsite_status(self):
         try:
             return _offsite_summary(self.config)
@@ -270,7 +285,7 @@ class Runtime(object):
             "restored": restored,
             "node_name": self.config["node_name"], "agent_version": AGENT_VERSION,
             "postgres": pg, "patroni": self.patroni_view(),
-            "wal": wal.verify_continuity() if wal else None,
+            "wal": self._wal_view(wal),
             "backup": cas.get_stats() if cas else None,
             "system": self.system_metrics({"pgdata": inst.get("data_directory"), "repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir"),
                                            "scratch": self.config.get("scratch_dir")}),

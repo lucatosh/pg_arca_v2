@@ -65,6 +65,13 @@ def main():
         from pg_arca.wal_rescue import WalRescue
         WalRescue(rt, wal, config).start()
     ex = OperationExecutor(config, rt.db, rt.patroni, discovery=lambda: rt.refresh(), runtime=rt)
+    from pg_arca.wal_spool import Pusher, spool_dir
+    from pg_arca.wal_archive import _last_error as _wal_last_error
+    # asynchronous archiving: the pusher runs ALWAYS (a spool left by an earlier configuration must still drain); archive_command spools only when
+    # wal_archive_async is set AND this pusher is alive (heartbeat file)
+    Pusher(wal, spool_dir(config.get("state_dir")), workers=int(config.get("wal_spool_workers", 2)),
+           log=lambda lv, m: logger.log({"warn": logging.WARNING, "error": logging.ERROR}.get(lv, logging.INFO), "%s", m),
+           on_error=lambda name, msg: _wal_last_error(config["wal_archive_dir"], name, msg)).start()
     from pg_arca.offsite import Mirror                      # offsite copy on S3-compatible storage: runs only when configured (console -> agent settings)
     Mirror(config, config.get("state_dir", "/var/lib/pgarca/state"), log=lambda lv, m: logger.log({"warn": logging.WARNING, "error": logging.ERROR}.get(lv, logging.INFO), "[offsite] %s", m)).start()
     stop = threading.Event()
