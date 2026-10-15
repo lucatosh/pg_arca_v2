@@ -267,6 +267,8 @@ Un backup pg_arca è: lettura sequenziale del datadir (I/O) → hash blake2b per
 
 **Lettura a run** (`Repo.get_chunks`, usata da `restore._write_one` a finestre di 128 chunk): i chunk di un file sono adiacenti nel pack (scritti in ordine dallo stesso thread), quindi un file di 8 MiB si legge con **una** `pread` invece di 128; su NFS sono 128 round trip in meno per ogni 8 MiB. Misura locale (`bench_restore 400 50`): estrazione di 674 MB in 4,3 s (157 MB/s); nessuna misura «prima» sullo stesso banco per questa fase. Il resto del restore è dominato da WAL (`wal_flush` 10-17 s, `recovery` 21-27 s per 172 segmenti): è lì che conviene lavorare dopo (read-ahead già presente).
 
+**Verifica profonda** (`maintenance.verify(deep=True)`): ogni chunk viene localizzato e, se profondo, letto e controllato **una volta sola** anche se dieci set lo condividono, in ordine di pack e offset (I/O sequenziale, letture a run) invece che set per set in ordine di manifest (letture casuali, lo stesso chunk dieci volte). Il corrotto viene attribuito a tutti i set che lo riferiscono.
+
 **Test**: `tests/test_packs.py` (15: roundtrip, deduplica tra processi, rollover, thread, fold, crash con pack aperto, re-indicizzazione, writer rotto abortito e dimenticato, GC cancella/riscrive/rispetta la grazia, lettore con indice vecchio, formato 1 letto/deduplicato/spazzato, sede precedente, scansione record); suite con PG16 reale rieseguite: engine 35, standby 6, failover 6, crash 2, restore_faults 6, destination_switch, destination_migrate, dest_standby, wal_rescue, targets — tutte verdi.
 
 ## 8. Registro delle modifiche

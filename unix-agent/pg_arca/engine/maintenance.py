@@ -47,6 +47,11 @@ def verify(ctx, deep=False, progress=None, cancel=None):
     problems, report = [], []
     sets = repo.sets()
     checked_chunks = 0
+    # every chunk is located once, and in a deep verify read and checked ONCE even when ten sets share it, pack by pack in file order
+    # (sequential I/O) instead of set by set in manifest order (random reads, the same chunk ten times)
+    located = {}                                                   # hash -> (path, offset, length) or None
+    uses = {}                                                      # hash -> [set ids]
+    per_set = {}
     for s in sets:
         if s.get("status") != "COMPLETE":
             continue
@@ -65,27 +70,56 @@ def verify(ctx, deep=False, progress=None, cancel=None):
             problems.append("%s: manifest unreadable (%s)" % (s["id"], e))
             report.append(entry)
             continue
-        missing = bad = 0
+        missing = 0
         for rel, e in man["files"].items():
             for off, ln, h in e["chunks"]:
-                p = repo.find_chunk(h)
-                if not p:
+                if h not in located:
+                    located[h] = repo.locate(h)
+                    uses[h] = []
+                uses[h].append(s["id"])
+                if located[h] is None:
                     missing += 1
-                    continue
-                if deep:
-                    checked_chunks += 1
+        if cancel and cancel():
+            raise EngineError("PGA-GEN-099", "cancelled")
+        entry.update(files=len(man["files"]), missing=missing, corrupt=0)
+        entry["problems"] += missing
+        per_set[s["id"]] = entry
+        report.append(entry)
+    if deep:
+        order = sorted((loc[0], loc[1], h) for h, loc in located.items() if loc is not None)
+        bad_by_set = {}
+        i = 0
+        while i < len(order):
+            run = [h for _, _, h in order[i:i + 128]]                   # adjacent chunks of a pack come with one read (Repo.get_chunks)
+            try:
+                got = repo.get_chunks(run)
+                bad = [h for h in run if h not in got]
+            except EngineError:
+                got, bad = {}, []
+                for h in run:                                          # one of them is corrupt: find which, one by one
                     try:
                         repo.get_chunk(h)
                     except EngineError:
-                        bad += 1
-                    if progress and checked_chunks % 500 == 0:
-                        progress({"phase": "verify", "chunks": checked_chunks})
-                    if cancel and cancel():
-                        raise EngineError("PGA-GEN-099", "cancelled")
-        if missing or bad:
-            problems.append("%s: %d missing, %d corrupt chunks" % (s["id"], missing, bad))
-        entry.update(files=len(man["files"]), missing=missing, corrupt=bad)
-        entry["problems"] += missing + bad
+                        bad.append(h)
+            for h in bad:
+                for sid in uses[h]:
+                    bad_by_set[sid] = bad_by_set.get(sid, 0) + 1
+            checked_chunks += len(run)
+            i += len(run)
+            if progress:
+                progress({"phase": "verify", "chunks": checked_chunks, "chunks_total": len(order)})
+            if cancel and cancel():
+                raise EngineError("PGA-GEN-099", "cancelled")
+        for sid, n in bad_by_set.items():
+            per_set[sid]["corrupt"] = n
+            per_set[sid]["problems"] += n
+    for sid, entry in per_set.items():
+        if entry["missing"] or entry["corrupt"]:
+            problems.append("%s: %d missing, %d corrupt chunks" % (sid, entry["missing"], entry["corrupt"]))
+    for s in sets:
+        if s.get("status") != "COMPLETE" or s["id"] not in per_set:
+            continue
+        entry = per_set[s["id"]]
         # WAL needed for this set
         seg = s.get("wal_segment_size") or ctx.seg_size
         miss = [wal_name(s["timeline"], n, seg) for n in range(wal_segno(lsn_to_int(s["start_lsn"]), seg), last_wal_segno(s, seg) + 1)
@@ -93,7 +127,6 @@ def verify(ctx, deep=False, progress=None, cancel=None):
         if miss:
             problems.append("%s: %d WAL segment(s) between start and stop are not archived (first %s)" % (s["id"], len(miss), miss[0]))
             entry["problems"] += len(miss)
-        report.append(entry)
     for pr in repo.index().problems:                               # a pack index that cannot be read: its chunks look missing above; say why
         problems.append("pack index unreadable: %s" % pr)
     cont = ctx.wal.verify_continuity(max_age=0)
