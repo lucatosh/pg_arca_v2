@@ -359,7 +359,9 @@ class Repo(object):
                 return self._reader().read(path, off, ln)
             return read_file(path, binary=True)
         except (IOError, OSError) as e:
-            if e.errno == errno.ENOENT:
+            if e.errno in (errno.ENOENT, errno.ESTALE):
+                if e.errno == errno.ESTALE:                       # NFS: the pack was rewritten by a garbage collection on another host: drop the handles
+                    self._reader().close()
                 with self._index_lock:                             # a pack this process is still writing: read it through the writer's file
                     w = next((x for x in self._writers if x.final == path), None)
                 if w is not None and not w.sealed:
