@@ -550,7 +550,7 @@ def register_and_start(ctx, state_dir, dest, plan, action="promote", ttl_hours=D
     if not _postgres_ok(bindir, major):
         _update(state_dir, rid, state="failed", want="stopped", error="PostgreSQL %d binaries are not installed on this host" % major)
         raise EngineError("PGA-RST-050", "the copy is restored in %s, but PostgreSQL %d is not installed on this host, so it cannot be started here" % (dest, major),
-                          "install PostgreSQL %d (Recovery & storage -> Recovery instance -> Install the binaries), then press Start on the restored copy" % major)
+                          "install PostgreSQL %d (Storage & recovery -> Recovery instance -> Install the binaries), then press Start on the restored copy" % major)
     notes = []
     try:
         res = start(it, progress, cancel, notes=notes)

@@ -55,8 +55,8 @@ export function BackupPlacement({ clusterId }: { clusterId: string }) {
   const b = q.data?.backup;
   if (!b) return null;
   const sameDisk = !!(b.repoDisk && b.dataDisk && b.repoDisk.dev !== undefined && b.repoDisk.dev === b.dataDisk.dev);
-  return <div className="placement" role="group" aria-label="Where backups go">
-    <div className="ph"><Icon n="server" s={15} /><strong>Where backups go</strong><Badge>{TYPE_LABEL[b.type] || b.type}</Badge><div className="grow" />
+  return <div className="placement" role="group" aria-label="Backup destination">
+    <div className="ph"><Icon n="server" s={15} /><strong>Destination</strong><Badge>{TYPE_LABEL[b.type] || b.type}</Badge><div className="grow" />
       <Button sm onClick={() => setDlg('edit')}>Change for this cluster</Button><Button sm icon="check" onClick={() => setDlg('apply')}>Check</Button><Button sm kind="ghost" onClick={() => go('infra/destination')}>General settings</Button></div>
     <dl className="kv">
       <dt>Repository</dt><dd><code>{b.repoPath || '—'}</code>{from(b.sources, 'repoPath')}<div><DiskLine d={b.repoDisk} /></div></dd>

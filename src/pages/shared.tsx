@@ -3,14 +3,15 @@ import { Op, isTerminal, useQuery } from '../hooks';
 import { openOpLog } from '../OpLog';
 import { Badge, Banner, Button, CopyBlock, Progress, ago, bytes, dur, num } from '../ui';
 import { itCheck } from '../i18n';
+import { go } from '../router';
 
 export const OP_LABEL: Record<string, string> = {
-  pg_reload: 'Configuration reload', wal_switch: 'WAL segment switch', wal_retire_branch: 'Dead WAL branch retirement', checkpoint: 'Checkpoint', discovery_scan: 'Discovery', compat_check: 'PostgreSQL compatibility check', agent_config_get: 'Read agent settings', agent_config_set: 'Agent settings', offsite_get: 'Read offsite settings', offsite_set: 'Offsite copy settings', offsite_sync: 'Offsite copy sync', offsite_rehydrate: 'Download from the offsite copy', list_objects: 'Object list',
+  pg_reload: 'Configuration reload', pg_timeline: 'Read the timeline', wal_conflicts: 'Divergent WAL copies', hba_restore: 'pg_hba restore of an earlier list', wal_switch: 'WAL segment switch', wal_retire_branch: 'Dead WAL branch retirement', checkpoint: 'Checkpoint', discovery_scan: 'Discovery', compat_check: 'PostgreSQL compatibility check', agent_config_get: 'Read agent settings', agent_config_set: 'Agent settings', offsite_get: 'Read offsite settings', offsite_set: 'Offsite copy settings', offsite_sync: 'Offsite copy sync', offsite_rehydrate: 'Download from the offsite copy', list_objects: 'Object list',
   pg_set_param: 'Parameter change', patroni_switchover: 'Switchover', patroni_failover: 'Failover', patroni_restart: 'Member restart', patroni_reinit: 'Replica reinitialization', archive_enable: 'Enable WAL archiving', patroni_reload: 'Patroni reload',
-  patroni_pause: 'Maintenance mode', patroni_config_patch: 'Patroni configuration change', backup_run: 'Backup', backup_info: 'Repository info', backup_verify: 'Backup verification',
-  backup_expire: 'Retention cleanup', backup_catalog: 'Backup catalog', restore_plan: 'Restore plan', restore_instance: 'Instance restore', restore_database: 'Database restore',
-  restore_object: 'Object restore', wal_forensics: 'WAL analysis', hba_read: 'Read pg_hba', hba_plan: 'pg_hba check', hba_apply: 'pg_hba change', hba_rollback: 'pg_hba rollback', restore_promote: 'Bring back into the database', restore_drill: 'Disaster recovery drill', restore_diff: 'Row-by-row comparison', restore_apply_rows: 'Row recovery', hba_expire: 'pg_hba rule expiry',
-  ephemeral_preflight: 'Recovery instance check', ephemeral_install: 'PostgreSQL binaries installation', destination_check: 'Backup destination check', destination_migrate: 'Backup migration', destination_drop_old: 'Removal of the previous location', pg_restart: 'PostgreSQL restart', restore_db_swap: 'Swap in the restored database', geo_failover: 'Standby site promotion (disaster recovery)', geo_promote: 'Site promotion', geo_demote: 'Site demotion to standby', geo_archive_fallback: 'Fallback to the standby site’s WAL archive', restored_stop: 'Stop the restored copy', restored_start: 'Start the restored copy', restored_resume: 'Finish the copy’s recovery', restored_keep: 'Restored copy lifetime', restored_drop: 'Delete the restored copy', restored_list: 'Restored copies', restore_kept_drop: 'Delete kept data', restore_kept_list: 'Data kept from replacements',
+  patroni_pause: 'Maintenance mode', patroni_config_patch: 'Patroni configuration change', backup_run: 'Backup', backup_info: 'Backup storage info', backup_verify: 'Backup verification',
+  backup_expire: 'Retention cleanup', backup_catalog: 'Backup catalog', restore_plan: 'Restore plan', restore_instance: 'Restore server', restore_database: 'Restore database',
+  restore_object: 'Restore tables', wal_forensics: 'WAL analysis', hba_read: 'Read pg_hba', hba_plan: 'pg_hba check', hba_apply: 'pg_hba change', hba_rollback: 'pg_hba rollback', restore_promote: 'Put back into the database', restore_drill: 'Disaster recovery drill', restore_diff: 'Row-by-row comparison', restore_apply_rows: 'Put rows back', hba_expire: 'pg_hba rule expiry',
+  ephemeral_preflight: 'Recovery host check', ephemeral_install: 'PostgreSQL binaries installation', destination_check: 'Backup destination check', destination_migrate: 'Backup migration', destination_drop_old: 'Removal of the previous location', pg_restart: 'PostgreSQL restart', restore_db_swap: 'Put the restored database in place', geo_failover: 'Standby site promotion (disaster recovery)', geo_promote: 'Site promotion', geo_demote: 'Site demotion to standby', geo_archive_fallback: 'Fallback to the standby site’s WAL archive', restored_stop: 'Stop the restored copy', restored_start: 'Start the restored copy', restored_resume: 'Finish the copy’s recovery', restored_keep: 'Restored copy lifetime', restored_drop: 'Delete the restored copy', restored_list: 'Restored copies', restore_kept_drop: 'Delete kept data', restore_kept_list: 'Data kept from replacements',
 };
 export const STATUS_LABEL: Record<string, string> = { sending: 'Sending…', queued: 'Queued', leased: 'Assigned', running: 'Running', succeeded: 'Succeeded', failed: 'Failed', expired: 'Expired', cancelled: 'Cancelled' };
 export const statusBadge = (s: string) => <Badge kind={s === 'succeeded' ? 'ok' : s === 'failed' ? 'bad' : s === 'running' || s === 'leased' ? 'info' : undefined}>{STATUS_LABEL[s] || s}</Badge>;
@@ -126,4 +127,11 @@ export function InstallCommand({ r, nodeName }: { r: { installCommand: string; i
     <CopyBlock text={cmd} />
     {r.installCommandPrivateCa ? <label className="check small"><input type="checkbox" checked={priv} onChange={e => setPriv(e.target.checked)} /><span>The console uses a private or self-signed certificate <span className="muted">— the command first fetches the console’s certificate and pins it for the download and for the agent (PG_ARCA_TLS_CA)</span></span></label> : null}
   </div>;
+}
+
+/** The two views of the activity log, one page in the navigation: what ran (operations) and who changed what (the audit trail). */
+export function ActivitySwitch({ at }: { at: 'history' | 'audit' }) {
+  return <div className="seg" role="tablist" aria-label="Activity log view">
+    <button role="tab" aria-pressed={at === 'history'} aria-selected={at === 'history'} onClick={() => go('history')}>Operations</button>
+    <button role="tab" aria-pressed={at === 'audit'} aria-selected={at === 'audit'} onClick={() => go('audit')}>Who changed what</button></div>;
 }

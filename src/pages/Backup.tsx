@@ -92,7 +92,7 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
     <div className="stack">
       <div className="row wrap"><div className="seg" role="group" aria-label="Backup type">{(['full', 'diff', 'incr'] as const).map(t => <button key={t} aria-pressed={type === t} disabled={active || (t !== 'full' && !hasFull)} onClick={() => { setType(t); r.reset(); }}>{TYPE_LABEL[t]}</button>)}</div>
         <Button kind="primary" icon="play" busy={r.busy} disabled={active} onClick={() => r.run('backup_run', { type, start_fast: fast }, { nodeId: from || undefined })}>Start backup</Button><span className="small muted">{hint}</span></div>
-      {fromReplica && !walShared && !sameWalPath ? <Banner kind="warn" title="This replica may not see the WAL the primary archives">The backup waits for the segments the primary archives. The cluster has no shared destination (NFS/SMB) configured, so each node most likely writes to its own local directory: the wait would fail within a minute. Run the backup from the primary, or set one shared archive for every node in Recovery &amp; storage → Where backups go.</Banner> : null}
+      {fromReplica && !walShared && !sameWalPath ? <Banner kind="warn" title="This replica may not see the WAL the primary archives">The backup waits for the segments the primary archives. The cluster has no shared destination (NFS/SMB) configured, so each node most likely writes to its own local directory: the wait would fail within a minute. Run the backup from the primary, or set one shared archive for every node in Storage &amp; recovery → Backup destination.</Banner> : null}
       {mine.length > 1 ? <label className="row small" style={{ gap: 8 }}>Run from <select className="input" style={{ width: 'auto' }} value={from} onChange={e => setFrom(e.target.value)}><option value="">automatic (primary)</option>{mine.map(n => <option key={n.id} value={n.id}>{n.name}{n.role ? ` — ${n.role}` : ''}</option>)}</select><span className="muted">— from a replica the primary carries no load; the console asks it to switch the WAL segment by itself.</span></label> : null}
       <label className="row small" style={{ gap: 8 }}><input type="checkbox" checked={fast} onChange={e => setFast(e.target.checked)} /> Immediate checkpoint <span className="muted">— the backup starts right away; when off, PostgreSQL spreads the checkpoint and the start can take a few minutes (less I/O).</span></label>
       {!hasFull ? <p className="small muted">The first backup must be a full backup.</p> : null}
@@ -134,7 +134,7 @@ function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) 
   const [ask, setAsk] = useState(false);
   const run = (k: string, type: string, params: any) => { setKind(k); r.run(type, params); };
   const bk = d.backup; const res = r.op?.result;
-  return <Card title="Repository health">
+  return <Card title="Backup storage">
     <div className="stack">
       {c.source !== 'direct' && !c.isSandbox ? <BackupPlacement clusterId={c.id} /> : null}
       {c.source !== 'direct' && !c.isSandbox ? <Objectives clusterId={c.id} /> : null}

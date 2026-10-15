@@ -38,7 +38,7 @@ export function App() {
 
 const rd = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
 const wr = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
-const PAGE_TITLE: Record<string, string> = { today: 'Today', clusters: 'Clusters', strategy: 'Backup policies', infra: 'Recovery & storage', discovery: 'Discovery', settings: 'Settings', users: 'Users', audit: 'Audit log', history: 'Operation history', workers: 'Worker hosts', worker: 'Worker host', geo: 'Geo-redundancy' };
+const PAGE_TITLE: Record<string, string> = { today: 'Today', clusters: 'Clusters', strategy: 'Backup policies', infra: 'Storage & recovery', discovery: 'Discovery', settings: 'Settings', users: 'Users', audit: 'Activity log', history: 'Activity log', workers: 'Worker hosts', worker: 'Worker host', geo: 'Geo-redundancy' };
 
 function Shell({ user, role, logout }: { user: string; role: string; logout: () => void }) {
   const route = useRoute();
@@ -75,7 +75,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
   const cycle = () => { const n = th === 'auto' ? 'dark' : th === 'dark' ? 'light' : 'auto'; applyTheme(n); setTh(n); };
   const toggleRail = () => { const n = !rail; setRail(n); wr('arca.rail', n ? '1' : '0'); };
   const nav = (page: string, to: string, icon: string, text: string, extra?: React.ReactNode) =>
-    <button className="navbtn" aria-current={route.page === page ? 'page' : undefined} onClick={() => go(to)} title={rail ? text : undefined}><Icon n={icon} /><span className="lbl">{text}</span>{extra}</button>;
+    <button className="navbtn" aria-current={route.page === page || (page === 'history' && route.page === 'audit') || (page === 'workers' && route.page === 'worker') ? 'page' : undefined} onClick={() => go(to)} title={rail ? text : undefined}><Icon n={icon} /><span className="lbl">{text}</span>{extra}</button>;
 
   return <div className="shell" data-rail={rail ? '1' : '0'}>
     <aside className="side" aria-label="Navigation">
@@ -92,13 +92,14 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         {nav('clusters', '', 'layers', 'All clusters')}
       </nav>
       <div className="sgroup">Protection</div>
-      <nav>{nav('strategy', 'strategy', 'shield', 'Backup policies')}{nav('infra', 'infra', 'restore', 'Recovery & storage')}{nav('geo', 'geo', 'swap', 'Geo-redundancy')}{nav('discovery', 'discovery', 'search', 'Discovery')}</nav>
+      {/* by task: protecting data here, running the console below (a review found Worker hosts reachable only through a '+' and Discovery under Protection) */}
+      <nav>{nav('strategy', 'strategy', 'shield', 'Backup policies')}{nav('infra', 'infra', 'restore', 'Storage & recovery')}{nav('geo', 'geo', 'swap', 'Geo-redundancy')}{nav('workers', 'workers', 'server', 'Worker hosts')}</nav>
       <div className="sgroup">Administration</div>
       <nav>
         {role === 'admin' ? nav('settings', 'settings', 'settings', 'Settings') : null}
         {role === 'admin' ? nav('users', 'users', 'user', 'Users') : null}
-        {nav('history', 'history', 'activity', 'Operation history')}
-        {nav('audit', 'audit', 'list', 'Audit log')}
+        {nav('history', 'history', 'activity', 'Activity log')}
+        {nav('discovery', 'discovery', 'search', 'Discovery')}
       </nav>
       <div className="sgroup">Connected clusters{clusters.length ? ` (${clusters.length})` : ''}</div>
       {clusters.length > 6 ? <input className="csearch" placeholder="Filter by name or folder…" aria-label="Filter clusters" value={cq} onChange={e => setCq(e.target.value)} /> : null}
@@ -131,8 +132,8 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
           {/* every page of the sidebar is here (a review found the Users page shown as "All clusters" on a phone) */}
           <optgroup label="Overview"><option value="today">Today</option><option value="">All clusters</option></optgroup>
           {clusters.length ? <optgroup label="Clusters">{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}</optgroup> : null}
-          <optgroup label="Protection"><option value="strategy">Backup policies</option><option value="infra">Recovery & storage</option><option value="geo">Geo-redundancy</option><option value="discovery">Discovery</option><option value="workers">Worker hosts</option></optgroup>
-          <optgroup label="Administration">{role === 'admin' ? <><option value="settings">Settings</option><option value="users">Users</option></> : null}<option value="history">Operation history</option><option value="audit">Audit log</option></optgroup></select>
+          <optgroup label="Protection"><option value="strategy">Backup policies</option><option value="infra">Storage & recovery</option><option value="geo">Geo-redundancy</option><option value="discovery">Discovery</option><option value="workers">Worker hosts</option></optgroup>
+          <optgroup label="Administration">{role === 'admin' ? <><option value="settings">Settings</option><option value="users">Users</option></> : null}<option value="history">Activity log: operations</option><option value="audit">Activity log: who changed what</option></optgroup></select>
         <div className="crumbs" aria-label="Location">
           {route.page === 'cluster' ? <><a href="#/">Clusters</a>{(() => { const p = cur ? primaryOf(cur, clusters) : null; const base = p || cur;
             return <>{base?.folder ? <><Icon n="chev" s={12} /><span className="faint trunc">{base.folder}</span></> : null}{p ? <><Icon n="chev" s={12} /><a className="trunc" href={`#/c/${encodeURIComponent(p.id)}`} title="Primary site">{p.name}</a></> : null}</>; })()}<Icon n="chev" s={12} /><strong className="trunc">{cur?.name || '…'}</strong></> : <strong>{PAGE_TITLE[route.page] || ''}</strong>}
@@ -172,7 +173,7 @@ function Palette({ onClose, clusters, route, cycle }: { onClose: () => void; clu
     for (const c of clusters) a.push({ label: c.name, hint: c.environment, icon: 'db', run: () => go(`c/${encodeURIComponent(c.id)}`) });
     const cid = route.page === 'cluster' ? route.id : clusters[0]?.id;
     if (cid) for (const t of TAB_ITEMS) if (!t.preview) a.push({ label: `${clusters.find(c => c.id === cid)?.name || ''} › ${t.label}`, icon: t.icon || 'chev', run: () => go(`c/${encodeURIComponent(cid)}/${t.id}`) });
-    a.push({ label: 'Today: what needs attention', icon: 'alert', run: () => go('today') }, { label: 'All clusters', icon: 'layers', run: () => go('') }, { label: 'Backup policies', icon: 'shield', run: () => go('strategy') }, { label: 'Recovery & storage: recovery instance and backup destination', icon: 'restore', run: () => go('infra') }, { label: 'Discovery', icon: 'search', run: () => go('discovery') }, { label: 'Worker hosts: backup servers and recovery hosts', icon: 'server', run: () => go('workers') }, { label: 'Geo-redundancy: primary and standby sites', icon: 'swap', run: () => go('geo') }, { label: 'Operation history', icon: 'activity', run: () => go('history') }, { label: 'Audit log', icon: 'list', run: () => go('audit') }, { label: 'Show running activity', hint: 'Ctrl J', icon: 'activity', run: () => window.dispatchEvent(new Event('arca:dock')) }, { label: 'Change theme', icon: 'settings', run: cycle });
+    a.push({ label: 'Today: what needs attention', icon: 'alert', run: () => go('today') }, { label: 'All clusters', icon: 'layers', run: () => go('') }, { label: 'Backup policies', icon: 'shield', run: () => go('strategy') }, { label: 'Storage & recovery: backup destination and recovery hosts', icon: 'restore', run: () => go('infra') }, { label: 'Discovery', icon: 'search', run: () => go('discovery') }, { label: 'Worker hosts: backup servers and recovery hosts', icon: 'server', run: () => go('workers') }, { label: 'Geo-redundancy: primary and standby sites', icon: 'swap', run: () => go('geo') }, { label: 'Activity log: operations (backups, restores…)', icon: 'activity', run: () => go('history') }, { label: 'Activity log: who changed what (audit)', icon: 'list', run: () => go('audit') }, { label: 'Show running activity', hint: 'Ctrl J', icon: 'activity', run: () => window.dispatchEvent(new Event('arca:dock')) }, { label: 'Change theme', icon: 'settings', run: cycle });
     const s = q.trim().toLowerCase();
     return s ? a.filter(x => x.label.toLowerCase().includes(s)) : a;
   }, [q, clusters, route, cycle]);

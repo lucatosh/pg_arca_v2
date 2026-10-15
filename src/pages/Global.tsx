@@ -3,12 +3,13 @@ import { api, uid } from '../api';
 import { Badge, Banner, Button, Card, Empty, Icon, Skeleton, dt, num } from '../ui';
 import { go } from '../router';
 import { toast, useQuery, revalidate, useDraft } from '../hooks';
+import { ActivitySwitch } from './shared';
 
 export function Audit({ clusters }: { clusters: any[] }) {
   const [cl, setCl] = useDraft('audit:cl', 'all'); const [st, setSt] = useDraft('audit:st', 'all'); const [s, setS] = useDraft('audit:s', '');
   const q = useQuery<{ total: number; entries: any[] }>(`/api/audit/history?limit=200&clusterId=${cl}&status=${st}&search=${encodeURIComponent(s)}`, { interval: 10000 });
   return <>
-    <div className="pagehead"><div className="grow"><h1>Audit log</h1><p className="sub">Every action performed by the console, the agents and the scheduler.</p></div></div>
+    <div className="pagehead"><div className="grow"><h1>Activity log</h1><p className="sub">Who changed what: every action of people, agents and the scheduler, kept for audit.</p></div><ActivitySwitch at="audit" /></div>
     <div className="row wrap"><select className="input" style={{ width: 200 }} value={cl} onChange={e => setCl(e.target.value)} aria-label="Cluster"><option value="all">All clusters</option>{clusters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
       <select className="input" style={{ width: 160 }} value={st} onChange={e => setSt(e.target.value)} aria-label="Outcome"><option value="all">Any outcome</option><option value="SUCCESS">Succeeded</option><option value="FAILED">Failed</option><option value="WARNING">Warnings</option></select>
       <input className="input" style={{ maxWidth: 280 }} placeholder="Search" value={s} onChange={e => setS(e.target.value)} /></div>

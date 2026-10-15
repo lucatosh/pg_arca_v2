@@ -91,7 +91,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
   await p.click('.tree summary:has-text("Only some partitions")'); await p.waitForSelector('.tree button:has-text("orders_2026")'); await p.waitForSelector('.tree :text("view")'); await shot('12e-partitions');
   await p.click('.recentrow:has-text("orders")'); await p.waitForSelector('label.opt.on:has-text("Just before: public.orders dropped")'); await shot('09b-when-suggested');
-  await p.click('button:has-text("Next")'); await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 }); await p.waitForSelector('.rplan:has-text("quarantine")');
+  await p.click('button:has-text("Next")'); await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 }); await p.waitForSelector('.rplan:has-text("staging database")');
   // default end: put back what is gone, in the same operation
   await p.waitForSelector('label.opt.on:has-text("Put back into appdb")'); await p.waitForSelector('.seg button[aria-pressed=true]:has-text("Only what is missing")');
   await p.click('button:has-text("Start the restore")'); await p.click('.modal button:has-text("Start")');
@@ -153,7 +153,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need to rebuild the whole server")'); await p.click('button:has-text("Next")');
   await p.click('label:has-text("Only a temporary copy to inspect")'); await p.waitForSelector('text=Where to put the copy', { timeout: 10000 });
   // recovery & storage: recovery instance (global -> cluster, check, installation) and backup destination (check, apply)
-  await p.goto(base + '/#/infra'); await p.waitForSelector('text=Recovery & storage'); await p.waitForSelector('text=All clusters');
+  await p.goto(base + '/#/infra'); await p.waitForSelector('h1:has-text("Storage & recovery")'); await p.waitForSelector('text=All clusters');
   await p.locator('tr:has-text("All clusters") button:has-text("Edit")').click(); await p.waitForSelector('text=Where the recovery instance runs');
   await p.fill('input[placeholder="/var/tmp/pg_arca_scratch"]', '/data/scratch'); await p.fill('input[placeholder="e.g. 55000"]', '55000'); await p.fill('input[placeholder="e.g. 55100"]', '55100');
   await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Settings saved'); await p.waitForSelector('text=ports 55000-55100'); await shot('15-infra-eph');
@@ -219,7 +219,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Check the effect")'); await p.waitForSelector('text=Simulated connection'); await shot('14f-hba-adopt');
   // palette
   await p.keyboard.press('Control+k'); await p.waitForSelector('[role=dialog][aria-label="Quick search"]'); await p.keyboard.type('audit'); await p.keyboard.press('Enter');
-  await p.waitForSelector('text=Audit log'); await shot('15-audit');
+  await p.waitForSelector('text=Who changed what: every action'); await shot('15-audit');
   // discovery
   await p.goto(base + '/#/discovery'); await p.waitForSelector('text=Configuration differences between nodes'); await p.waitForSelector('text=To fix'); await shot('15a-discovery');
   // strategies

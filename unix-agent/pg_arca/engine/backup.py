@@ -491,7 +491,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                 repo.write_meta(meta)
                 raise EngineError("PGA-WAL-021", meta["reason"],
                                   "a backup taken on a standby needs the WHOLE cluster to share ONE WAL archive (the same network share or destination on every "
-                                  "node). Point every node at the same archive (Backup tab, 'Where backups go'), or run backups on the primary. "
+                                  "node). Point every node at the same archive (Backup tab, 'Backup storage' -> 'Destination'), or run backups on the primary. "
                                   "If the archive IS shared, the primary's archiver is failing: check pg_stat_archiver there. The set is marked UNRECOVERABLE")
             else:
                 meta["reason"] = "WAL segment(s) not archived within %ds: %s" % (archive_timeout, ", ".join(need_missing[:5]))

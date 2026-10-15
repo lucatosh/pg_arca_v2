@@ -139,7 +139,7 @@ ${parent}  <nodes-network>/24(rw,sync,no_subtree_check,all_squash,anonuid=${uid}
 exportfs -ra`}</pre>
       <p className="muted">On every database node (as root):</p>
       <pre className="out">{`mkdir -p /mnt/pgarca && echo '${host}:${parent} /mnt/pgarca nfs hard,noatime,_netdev 0 0' >> /etc/fstab && mount /mnt/pgarca`}</pre>
-      <p className="muted">Then set the destination in Recovery &amp; storage → Where backups go (type NFS, “mount required” on): {paths.map(x => <span key={x} className="mono">/mnt/pgarca{parent !== '/' ? x.replace(parent, '') || '' : x} </span>)}— the console checks every node before applying.</p>
+      <p className="muted">Then set the destination in Storage &amp; recovery → Backup destination (type NFS, “mount required” on): {paths.map(x => <span key={x} className="mono">/mnt/pgarca{parent !== '/' ? x.replace(parent, '') || '' : x} </span>)}— the console checks every node before applying.</p>
     </div></details>;
 }
 

@@ -289,7 +289,7 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
 export function InfraPage({ tab }: { tab?: string }) {
   const t: 'ephemeral' | 'destination' = tab === 'destination' ? 'destination' : 'ephemeral';
   return <>
-    <div className="pagehead"><div className="grow"><h1>Recovery & storage</h1><p className="sub">Where recoveries run and where backups are written: once for everything, then exceptions per environment, folder or cluster.</p></div></div>
+    <div className="pagehead"><div className="grow"><h1>Storage & recovery</h1><p className="sub">Where recoveries run and where backups are written: once for everything, then exceptions per environment, folder or cluster.</p></div></div>
     <Tabs value={t} onChange={v => go(`infra/${v}`)} items={[{ id: 'ephemeral', label: 'Recovery instance', icon: 'restore' }, { id: 'destination', label: 'Backup destination', icon: 'server' }]} />
     <div style={{ marginTop: 16 }}><ScopedTab kind={t} key={t} /></div></>;
 }

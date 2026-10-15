@@ -3,7 +3,7 @@ import { api } from '../api';
 import { Badge, Button, Card, Empty, Skeleton, dt } from '../ui';
 import { go } from '../router';
 import { toast, useQuery, useRole, revalidate, useDraft } from '../hooks';
-import { OP_LABEL, STATUS_LABEL } from './shared';
+import { OP_LABEL, STATUS_LABEL, ActivitySwitch } from './shared';
 
 /** Fasce orarie offerte nel pannello attività e nello storico (le ore oltre la conservazione impostata non hanno dati). */
 export const WINDOWS: { h: number; label: string }[] = [
@@ -36,7 +36,7 @@ export function HistoryPage({ clusters }: { clusters: any[] }) {
   const wins = [...WINDOWS, ...LONG.filter(w => w.h <= days * 24)];
   const q = useQuery<{ total: number; operations: any[] }>(`/api/operations/history?hours=${hours}&status=${st}&clusterId=${encodeURIComponent(cl)}&search=${encodeURIComponent(s)}&limit=200`, { interval: 15000 });
   return <>
-    <div className="pagehead"><div className="grow"><h1>Operation history</h1><p className="sub">Finished backups, restores and other actions: outcome, duration and error cause.</p></div></div>
+    <div className="pagehead"><div className="grow"><h1>Activity log</h1><p className="sub">What ran: backups, restores and other operations, with outcome, duration and the cause of a failure.</p></div><ActivitySwitch at="history" /></div>
     <div className="row wrap">
       <select className="input" style={{ width: 170 }} value={hours} onChange={e => setHours(Number(e.target.value))} aria-label="Time window">{wins.map(w => <option key={w.h} value={w.h}>{w.label}</option>)}</select>
       <select className="input" style={{ width: 150 }} value={st} onChange={e => setSt(e.target.value)} aria-label="Outcome"><option value="all">Any outcome</option><option value="failed">Failed only</option><option value="succeeded">Succeeded only</option></select>
