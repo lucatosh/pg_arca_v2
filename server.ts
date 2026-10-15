@@ -20,7 +20,7 @@ import { briefing } from './server/health';
 import { mountAdvancedRoutes } from './server/approvals';
 import { mountJoinRoutes } from './server/join';
 import { audit as auditLog, setResultsDir } from './server/ops';
-import { mountAuthRoutes, requireAdmin, bootstrapAdminFromEnv, initSetupCode } from './server/auth';
+import { mountAuthRoutes, mountApiTokenRoutes, requireAdmin, bootstrapAdminFromEnv, initSetupCode } from './server/auth';
 import { runSelfTest } from './server/selftest';
 import { attachLogSocket, broadcastLiveLog, mountLogRoutes } from './server/logs';
 import { mountNetscanRoutes } from './server/netscan';
@@ -86,7 +86,7 @@ app.use(requireAdmin(store));
 attachLogSocket(server);
 
 // Everything below is real: persisted, authenticated, idempotent (see server/*.ts).
-mountAuthRoutes(app, store);
+mountAuthRoutes(app, store); mountApiTokenRoutes(app, store);
 mountAgentRoutes(app, store, {
   onLogs: (node, clusterName, logs) => {
     for (const l of logs) {

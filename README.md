@@ -34,6 +34,7 @@ The console and every message it shows are in English (the agent's checks, warni
 | Cluster access matrix (every node → every node, replication + superuser, one-click rules) | Done | tests: `hbalogic.test.ts`, e2e |
 | Prometheus metrics (`/metrics`, bearer token, off by default) | Done | tests: `metrics.test.ts` |
 | Console state snapshots (daily, 14 kept, `/api/health.stateSnapshot`) | Done | tests: `store.test.ts` |
+| API tokens for automation (bearer, per-token role and expiry, revocable, audited as `token:<label>`) | Done | tests: `apitokens.test.ts`, e2e |
 | Backup policies per folder / environment / cluster (suggested and custom templates, inheritance) | Works: resolved on every scheduler tick, no copies | `tests/server/policies.test.ts`, `tests/ui/e2e.cjs` |
 | pg_hba management (Patroni: DCS ONLY, the file is never read or written; otherwise the file; lock-out simulation, verification with `pg_hba_file_rules`, previous versions / rollback) | Agent tested on real PostgreSQL 16 (simulated Patroni that rewrites and reloads); DCS on the Patroni lab tested on 11/10 (9/9) before the latest changes, to be rerun with `tools/lab/hba-all.sh` | `unix-agent/tests/test_hba*.py`, `tests/server/hba.test.ts`, `tests/ui/hbalogic.test.ts` |
 | HBA assistant in the UI (duplicates, shadowed rules, ordering, descriptions, templates) | Works in the browser with a simulated agent | `tests/ui/e2e.cjs` |

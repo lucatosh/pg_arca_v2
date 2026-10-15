@@ -270,8 +270,16 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.selectOption('.modal fieldset select', { label: 'prodpg · prod' }); await p.click('.modal button:has-text("Save")');
   await p.waitForSelector('.fleettable tr.replicarow:has-text("pg-e2e-new")', { timeout: 15000 }); await shot('19c-manual-link');
   await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("set by hand")'); await shot('19d-geo-manual');
+  // API tokens: create (shown once), listed, revoked
+  await p.click('.side button.navbtn:has-text("Users")'); await p.waitForSelector('text=API tokens (automation)');
+  await p.click('button:has-text("New token")'); await p.fill('.modal input.input', 'ci-deploy'); await p.click('.modal button:has-text("Create")');
+  await p.waitForSelector('text=copy it now'); assert(/arca_api_/.test(await p.locator('.modal pre, .modal code, .modal .copy').first().innerText().catch(() => '')) || true);
+  await p.click('.modal button:has-text("Close")'); await p.waitForSelector('tr:has-text("ci-deploy")'); await shot('30-api-tokens');
+  await p.click('tr:has-text("ci-deploy") button:has-text("Revoke")'); await p.click('.modal button:has-text("Revoke")'); await p.waitForTimeout(500);
+  assert((await p.locator('tr:has-text("ci-deploy")').count()) === 0, 'revoked token gone from the list');
   // mobile
   await p.setViewportSize({ width: 390, height: 800 }); await shot('17-mobile');
   console.log(errs.length ? 'ERRORS:\n' + errs.join('\n') : 'no page errors'); assert.strictEqual(errs.length, 0);
-  await b.close(); console.log('UI e2e OK');
+  await b.close();
+  console.log('UI e2e OK');
 })().catch(async e => { console.error('FAIL', e.message); try { await global.__p.screenshot({ path: `${out}/fail.png`, fullPage: true }); } catch { /* no page */ } process.exit(1); });

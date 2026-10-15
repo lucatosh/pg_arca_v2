@@ -119,6 +119,7 @@ To restore on a new host: install the same release, `systemctl stop pg-arca-cons
 | Logs | `journalctl -u pg-arca-console -f`; on a node `journalctl -u pg-arca-agent -f` |
 | Health check for monitoring | `GET /api/health` → `{"ok":true,"version":"…"}` (no authentication) |
 | Prometheus metrics | `GET /metrics` with `Authorization: Bearer $PG_ARCA_METRICS_TOKEN` (see settings); alert on `pg_arca_cluster_status >= 2`, `time() - pg_arca_cluster_last_backup_timestamp_seconds > 86400`, `pg_arca_cluster_archiver_failed_total` increasing |
+| API access from scripts, CI, monitoring | Users → *API tokens*: create a token with a role and an expiry; send `Authorization: Bearer arca_api_…` on any `/api/...` call. The token is shown once; actions are audited as `token:<label>`; revoke it from the same page |
 | Uninstall the console | `install-console.sh --uninstall` (keeps the state); `--uninstall --purge --yes` deletes it |
 | Uninstall an agent | `sudo PG_ARCA_UNINSTALL=1 /usr/share/pg-arca-agent/install-agent.sh` (or the console's `install.sh`); keeps backups unless `PG_ARCA_PURGE=1` |
 

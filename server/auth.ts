@@ -48,6 +48,7 @@ export function roleOf(store: Store, user: string): Role | null {
 const own = (o: any, k: string) => (o && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);   // user-controlled keys must never resolve to Object.prototype members
 const RULES: { m: RegExp; p: RegExp; min: Role }[] = [
   { m: /^(GET|HEAD)$/, p: /^\/api\/users(\/|$)/, min: 'admin' },
+  { m: /^(GET|HEAD)$/, p: /^\/api\/api-tokens/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /^\/api\/enrollment-tokens/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /^\/api\/notifications/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /^\/api\/join-requests/, min: 'admin' },
@@ -141,9 +142,14 @@ export function requireAdmin(store: Store) {
     const p = req.path.toLowerCase();          // Express routes case-insensitively: '/API/users' must not slip past a case-sensitive gate
     if (p.startsWith('/api/auth/') || p.startsWith('/api/agent/') || p === '/api/health' || p === '/api/metrics' || !p.startsWith('/api/')) return next();   // /api/metrics has its own bearer token
     if (!store.peek().settings.admin) return res.status(428).json({ error: 'setup_required', message: 'Create the administrator account first.' });
-    const u = sessionUser(req);
+    let u = sessionUser(req); let role: Role | null = u ? roleOf(store, u) : null;
+    if (!u) {
+      // automation (CI, Ansible, scripts): a bearer API token created by an administrator, with its own role and expiry; actor = "token:<label>"
+      const t = apiTokenOf(store, req);
+      if (t === 'bad') return res.status(401).json({ error: 'unauthenticated', message: 'API token unknown, revoked or expired.' });
+      if (t) { u = `token:${t.label}`; role = t.role; touchApiToken(store, t.id); }
+    }
     if (!u) return res.status(401).json({ error: 'unauthenticated' });
-    const role = roleOf(store, u);
     if (!role) return res.status(401).json({ error: 'unauthenticated' });          // user removed or disabled while logged in
     (req as any).actor = u; (req as any).role = role;
     if (!can(role, req.method, p)) return res.status(403).json({ error: 'forbidden', message: `Role “${role}” cannot perform this action.`, requiredRole: requiredRole(req.method, p) });
@@ -154,6 +160,47 @@ export function requireAdmin(store: Store) {
     }
     next();
   };
+}
+
+// ---------------------------------------------------------------------------------------------------------- API tokens (automation)
+export interface ApiTokenRec { id: string; label: string; hash: string; role: Role; createdBy: string; createdAt: string; expiresAt: string | null; lastUsedAt?: string; revokedAt?: string }
+const API_TOKEN_PREFIX = 'arca_api_';
+/** The valid API token presented as a bearer, null when none is presented, 'bad' when one is presented but unknown / revoked / expired. */
+export function apiTokenOf(store: Store, req: Request): ApiTokenRec | null | 'bad' {
+  const h = String(req.headers.authorization || '');
+  if (!/^Bearer\s+arca_api_/i.test(h)) return null;
+  const raw = h.replace(/^Bearer\s+/i, '').trim();
+  const k = sha256(raw);
+  const t = Object.values((store.peek().settings.apiTokens || {}) as Record<string, ApiTokenRec>).find(x => x.hash === k);
+  if (!t || t.revokedAt || (t.expiresAt && Date.parse(t.expiresAt) < Date.now())) return 'bad';
+  return t;
+}
+const lastTouch = new Map<string, number>();
+/** lastUsedAt, written at most every 5 minutes per token (a scraper every 10 s must not rewrite the state each time). */
+function touchApiToken(store: Store, id: string) {
+  const now = Date.now(); if ((lastTouch.get(id) || 0) > now - 300_000) return; lastTouch.set(id, now);
+  store.mutate(d => { const t = (d.settings.apiTokens || {})[id]; if (t) t.lastUsedAt = nowIso(); }).catch(() => undefined);
+}
+export function mountApiTokenRoutes(app: any, store: Store) {
+  const view = (t: ApiTokenRec) => ({ id: t.id, label: t.label, role: t.role, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt, lastUsedAt: t.lastUsedAt || null, revokedAt: t.revokedAt || null, prefix: API_TOKEN_PREFIX });
+  app.get('/api/api-tokens', (_req: Request, res: Response) => res.json({ tokens: Object.values((store.peek().settings.apiTokens || {}) as Record<string, ApiTokenRec>).map(view) }));
+  app.post('/api/api-tokens', async (req: Request, res: Response) => {
+    const { label, role, ttlDays } = req.body || {};
+    if (typeof label !== 'string' || !/^[A-Za-z0-9 _.@:-]{2,60}$/.test(label)) return res.status(400).json({ error: 'invalid_label', message: 'Label: 2-60 characters (letters, digits, space, _ . @ : -).' });
+    if (!ROLES.includes(role)) return res.status(400).json({ error: 'invalid_role' });
+    const days = ttlDays === undefined || ttlDays === null || ttlDays === '' ? null : Number(ttlDays);
+    if (days !== null && !(Number.isInteger(days) && days >= 1 && days <= 3650)) return res.status(400).json({ error: 'invalid_ttl', message: 'ttlDays: 1-3650, or empty for no expiry.' });
+    const token = API_TOKEN_PREFIX + crypto.randomBytes(30).toString('base64url');
+    const rec: ApiTokenRec = { id: 'tk' + crypto.randomBytes(6).toString('hex'), label, hash: sha256(token), role, createdBy: (req as any).actor, createdAt: nowIso(), expiresAt: days ? new Date(Date.now() + days * 86400_000).toISOString() : null };
+    await store.mutate(d => { (d.settings.apiTokens ||= {})[rec.id] = rec; audit(d, { actor: (req as any).actor, action: 'apitoken.create', status: 'OK', details: { id: rec.id, label, role, expiresAt: rec.expiresAt } }); });
+    res.status(201).json({ token, ...view(rec), note: 'The token is shown once. Send it as: Authorization: Bearer <token>' });
+  });
+  app.delete('/api/api-tokens/:id', async (req: Request, res: Response) => {
+    const id = req.params.id;
+    const r = await store.mutate(d => { const t = own(d.settings.apiTokens, id); if (!t) return 'missing' as const; if (!t.revokedAt) { t.revokedAt = nowIso(); audit(d, { actor: (req as any).actor, action: 'apitoken.revoke', status: 'OK', details: { id, label: t.label } }); } return 'ok' as const; });
+    if (r === 'missing') return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true });
+  });
 }
 
 export function mountAuthRoutes(app: any, store: Store) {
@@ -241,7 +288,7 @@ export function mountAuthRoutes(app: any, store: Store) {
   app.post('/api/users', async (req: Request, res: Response) => {
     const { username, password, role } = req.body || {};
     if (typeof username !== 'string' || !/^[A-Za-z0-9_.@-]{3,64}$/.test(username) || ['__proto__', 'constructor', 'prototype'].includes(username)) return res.status(400).json({ error: 'invalid_username' });
-    if (typeof password !== 'string' || password.length < 12) return res.status(400).json({ error: 'weak_password', message: 'Minimo 12 caratteri.' });
+    if (typeof password !== 'string' || password.length < 12) return res.status(400).json({ error: 'weak_password', message: 'At least 12 characters.' });
     if (!ROLES.includes(role)) return res.status(400).json({ error: 'invalid_role' });
     const h = hashPassword(password);
     const r = await store.mutate(d => {
