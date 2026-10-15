@@ -557,7 +557,8 @@ def _plan_with_summaries(ctx, sess, repo, parent, tli, prev_lsn, start_lsn, file
     paged = [x for x in files if is_main_fork(x[0])]
     skip, partial, full = walsummary.plan_files(paged, changes, pfiles)
     # the check: a few files the summaries call unchanged, scanned the old way; one changed page there and the summaries are not used
-    for rel in walsummary.sample(skip):
+    sizes = dict((x[0], x[2].st_size) for x in paged)
+    for rel in walsummary.sample(skip, sizes=sizes):
         item = next(x for x in paged if x[0] == rel)
         bad = walsummary.contradiction(item[1], prev_lsn, lsn_to_int(start_lsn))
         if bad is not None:

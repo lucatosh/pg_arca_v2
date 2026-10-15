@@ -180,10 +180,22 @@ def contradiction(path, prev_lsn, start_lsn):
         return None
 
 
-def sample(skip, k=None):
-    """Files to scan in full as a check of the summaries: 1 % of the skipped ones, between 3 and 50."""
+def sample(skip, k=None, sizes=None, budget=None):
+    """Files to scan in full as a check of the summaries: 1 % of the skipped ones, between 3 and 50 - and, when sizes are known, no more bytes
+    than `budget` (default: 1 % of their total, at least 256 MiB): the check must stay a small fraction of what the summaries save."""
     if not skip:
         return []
     k = k if k is not None else max(3, min(50, len(skip) // 100))
     k = min(k, len(skip))
-    return random.sample(skip, k)
+    picked = random.sample(skip, k)
+    if sizes:
+        total = sum(sizes.get(r, 0) for r in skip)
+        budget = budget if budget is not None else max(256 * 1048576, total // 100)
+        out, used = [], 0
+        for r in sorted(picked, key=lambda r: sizes.get(r, 0)):      # small files first: more files checked for the same bytes
+            if out and used + sizes.get(r, 0) > budget:
+                break
+            out.append(r)
+            used += sizes.get(r, 0)
+        return out
+    return picked

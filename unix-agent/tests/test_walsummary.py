@@ -117,6 +117,13 @@ class Mapping(unittest.TestCase):
         self.assertEqual(ws.sample([]), [])
         self.assertEqual(len(ws.sample(["a", "b"])), 2)
         self.assertEqual(len(ws.sample(["f%d" % i for i in range(10000)])), 50)
+        big = ["b%d" % i for i in range(100)]
+        sizes = dict((r, 1 << 30) for r in big)                          # 100 files of 1 GiB: the check must not read 50 GB
+        picked = ws.sample(big, sizes=sizes)
+        self.assertEqual(len(picked), 1, "budget = max(256 MiB, 1 %% of 100 GiB = 1 GiB): one file")
+        sizes["small"] = 1000
+        picked = ws.sample(big + ["small"], sizes=sizes, budget=2 << 30)
+        self.assertLessEqual(len(picked), 3)
 
 
 class Limiter(unittest.TestCase):
