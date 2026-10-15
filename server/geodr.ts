@@ -156,9 +156,25 @@ async function runFailover(store: Store, id: string, a: { key: string; from: str
   }
 }
 
+/** The old site follows the new primary: a standby site streaming from it, NOT on a newer timeline (a standby can never replay a lower timeline:
+ *  on a site that promoted itself while away the WAL receiver starts and dies at once, and one 'streaming' sample of it must not count;
+ *  seen on the lab: hy-mi on timeline 13 marked rejoined to hy-rm on 12, so the automatic rejoin never ran again). */
+export const followsPrimary = (old: { role?: string; receiver?: any; timeline?: any } | null | undefined, neu: { timeline?: any } | null | undefined) =>
+  !!old && !!neu && old.role === 'standby' && old.receiver?.status === 'streaming' && !(Number(old.timeline) > Number(neu.timeline));
+
 /** The old primary site is back after a failover (writable: a second primary) -> it becomes a standby site of the new primary, through its own DCS. */
 async function rejoinIfBack(store: Store, g: GeoGroup, pol: GeoPolicy, now = Date.now()) {
   const st = store.peek(); const f = (st.settings.geoFailovers || {})[groupKey(g)];
+  // a 'rejoined' that is plainly false (the old site, a standby, is on a newer timeline than the primary it should follow) is reopened:
+  // the next pass rejoins it again, and the rejoin rebuilds a site that is ahead
+  if (f?.rejoinedAt && !f.rejoinJob) {
+    const o = g.sites.find(s => s.clusterId === f.from), n = g.sites.find(s => s.clusterId === f.to);
+    if (o && n && o.online && n.online && o.role === 'standby' && n.role === 'primary' && Number(o.timeline) > Number(n.timeline)) {
+      await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) { delete x.rejoinedAt; delete x.rejoinFailedAt; x.reopenedAt = nowIso();
+        ops.audit(d, { clusterId: f.from, actor: 'pg_arca', action: 'geo.rejoin', status: 'REOPENED', details: { reason: `${o.name} is on timeline ${o.timeline}, ahead of ${n.name} (${n.timeline}): it does not follow it` } }); } });
+      return;
+    }
+  }
   if (!f || f.rejoinedAt || f.rejoinJob || (f.rejoinFailedAt && Date.now() - Date.parse(f.rejoinFailedAt) < 300_000)) return;   // a failed attempt is retried after 5 minutes
   const old = g.sites.find(s => s.clusterId === f.from); const neu = g.sites.find(s => s.clusterId === f.to);
   // FENCING: the moment any node of the old site answers again with its Patroni API reachable, it is demoted - also while its PostgreSQL is
@@ -167,8 +183,9 @@ async function rejoinIfBack(store: Store, g: GeoGroup, pol: GeoPolicy, now = Dat
   const back = nodesOf(st, f.from).some(n => online(n, now) && n.snapshot?.patroni?.accessible);
   if (!old || !neu || !(old.online || back)) return;
   if (old.role === 'standby') {                  // already following someone (rejoined by hand, or by an earlier pass): done
-    if (old.receiver?.status === 'streaming') await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinedAt = nowIso(); });
-    return;
+    if (followsPrimary(old, neu)) { await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinedAt = nowIso(); }); return; }
+    if (!(Number(old.timeline) > Number(neu.timeline))) return;                   // a standby of the right timeline that does not stream right now: not ours to act on
+    // a standby AHEAD of the new primary never streams from it by itself: rejoined (rebuilt) below like a site that came back writable
   }
   if (!pol.autoRejoin || running(st)) return;
   const ep = st.clusters.find((c: any) => c.id === f.to)?.geoEndpoint || neu.endpoint;
@@ -196,7 +213,10 @@ async function timelines(store: Store, id: string, tag: string, oldId: string, n
 async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Site, neu: Site, ep: { host: string; port: number } | null | undefined) {
   try {
     const div = old.lsn && f.forkLsn ? (() => { const a = lsnToBig(old.lsn), b = lsnToBig(f.forkLsn); return a !== null && b !== null && a > b ? Number(a - b) : 0; })() : null;
-    await step(store, id, old.role === 'primary'
+    const ahead = old.role === 'standby' && Number(old.timeline) > Number(neu.timeline);
+    await step(store, id, ahead
+      ? `1/3 ${old.name} is a standby site on timeline ${old.timeline}, ahead of ${neu.name} (${neu.timeline}): it promoted itself while it was away and can never follow ${neu.name}. It is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`
+      : old.role === 'primary'
       ? `1/3 ${old.name} is back and accepts writes, but the primary is now ${neu.name}: it becomes its standby site right away${div ? ` (it had written about ${(div / MB).toFixed(1)} MB of WAL past the promotion point: that data is not in ${neu.name} and is discarded by pg_rewind; it stays in the WAL archive for analysis)` : ''}`
       : `1/3 ${old.name} is back (its PostgreSQL is not up yet): fenced as a standby site of ${neu.name} now, before Patroni there can promote it`, 'running', { divergedBytes: div });
     if (!ep) throw new Error(`address of ${neu.name} for the other sites not set: set it in Geo-redundancy, then “Demote ${old.name}”`);
@@ -206,11 +226,11 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     const force = sameTimelineDiverged(t1.o, t1.n);
     if (force) await step(store, id, `1b ${old.name} promoted itself when it came back, on the SAME timeline ${t1.o.timeline} as ${neu.name} but with a different history: Patroni (and pg_rewind) compare only the number and it would follow ${neu.name} with a hole in the data. It is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`);
     // a fenced site is still starting PostgreSQL: give Patroni more time to bring up the standby leader (the DCS write itself is immediate)
-    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force ? { force_rewind: true } : {}), ...(old.role !== 'primary' ? { timeout: 600 } : {}) }, `geo:${id}:demote`, 'pg_arca (automatic rejoin)');
-    const r = await waitOp(store, o.id, 300_000);
+    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force || ahead ? { force_rewind: true } : {}), ...(ahead ? { timeout: 3600 } : old.role !== 'primary' ? { timeout: 600 } : {}) }, `geo:${id}:demote`, 'pg_arca (automatic rejoin)');
+    const r = await waitOp(store, o.id, ahead ? 3700_000 : 300_000);
     if (r.status !== 'succeeded') throw new Error(`demotion of ${old.name} failed: ${r.error || r.status}`);
     await step(store, id, `2/3 ${old.name} is a standby site of ${neu.name} (${ep.host}:${ep.port}): waiting for it to receive WAL`);
-    const streaming = async () => { const t0 = Date.now(); while (Date.now() - t0 < GEO_DR_TIMING.rejoinStreamMs) { const s = siteNow(store, f.from); if (s?.role === 'standby' && s.receiver?.status === 'streaming') return true; await new Promise(r2 => setTimeout(r2, GEO_DR_TIMING.rejoinPollMs)); } return false; };
+    const streaming = async () => { const t0 = Date.now(); while (Date.now() - t0 < GEO_DR_TIMING.rejoinStreamMs) { if (followsPrimary(siteNow(store, f.from), siteNow(store, f.to))) return true; await new Promise(r2 => setTimeout(r2, GEO_DR_TIMING.rejoinPollMs)); } return false; };
     let ok = await streaming();
     if (!ok) {
       // the old site promoted itself while it was away and is now on a HIGHER timeline than the new primary ("highest timeline N of the primary is
