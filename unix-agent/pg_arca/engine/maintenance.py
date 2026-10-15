@@ -294,6 +294,11 @@ def _gc_cas(repo):
         dead = [e for e in entries if e[0] not in livebytes]
         if not dead:
             continue
+        try:                                                       # fresh mtime right before acting: a backup that reused a chunk of this pack
+            if now - os.stat(pack).st_mtime < GC_GRACE:            # since the listing touched it (same narrow window as with per-chunk files)
+                continue
+        except OSError:
+            continue
         dead_bytes = sum(e[2] for e in dead)
         if len(dead) == len(entries):
             try:
