@@ -66,6 +66,11 @@ class SpoolPgTests(unittest.TestCase):
             self.assertEqual(m["status"], "COMPLETE")
             self.assertTrue(verify(F.ctx)["ok"])
             self.assertGreater(pu.pushed, 0)
+            # the backup waits for the segments it needs; the .backup label PostgreSQL archives right after pg_backup_stop may still be in the
+            # spool for one push interval (seen on the PG17 matrix on a loaded VM): it must drain, not be there already
+            t0 = time.time()
+            while wal_spool.pending(spool) and time.time() - t0 < 15:
+                time.sleep(0.2)
             self.assertEqual(wal_spool.pending(spool), [])
             st = wal_spool.status(spool)
             self.assertTrue(st["alive"] and st["pending"] == 0 and not st.get("last_error"))

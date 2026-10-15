@@ -24,8 +24,12 @@ X = T.Fx()
 
 def setUpModule():
     T.setUpModule()
+    q("postgres", "ALTER SYSTEM SET autovacuum = off")                 # no ANALYZE of a catalog either, after the target time
+    q("postgres", "SELECT pg_reload_conf()")
     q("postgres", "CREATE DATABASE idle")
-    q("idle", "CREATE TABLE notes (id serial PRIMARY KEY, tag text); INSERT INTO notes (tag) SELECT 'A' FROM generate_series(1, 100)")
+    # autovacuum off for the table: an ANALYZE of it after the target time is a COMMIT after the target, and then PostgreSQL stops there by itself
+    # (no clamp needed: seen once on the PG17 matrix on a loaded VM) - the fixture needs NO transaction after the target
+    q("idle", "CREATE TABLE notes (id serial PRIMARY KEY, tag text) WITH (autovacuum_enabled = false); INSERT INTO notes (tag) SELECT 'A' FROM generate_series(1, 100)")
     run_backup(F.ctx, "full")
     q("idle", "INSERT INTO notes (tag) SELECT 'B' FROM generate_series(1, 50)")
     time.sleep(2)
