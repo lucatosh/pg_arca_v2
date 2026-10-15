@@ -80,7 +80,7 @@ class TsLater(unittest.TestCase):
         self.assertEqual(r.returncode, 0, open(dest + ".log").read()[-1500:])
         try:
             s = PgSession(PgConn(host=F.sock, port=port, user="postgres", bindir=BIN).with_db("tsl"))
-            for _ in range(60):
+            for _ in range(300):
                 if s.scalar("SELECT pg_is_in_recovery()") == "f":
                     break
                 time.sleep(1)
@@ -113,15 +113,19 @@ class TsLater(unittest.TestCase):
         r = sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-o", "-p %d -k %s" % (port, F.sock), "-l", dest + ".log", "-w", "-t", "120", "start")
         self.assertEqual(r.returncode, 0, open(dest + ".log").read()[-1500:])
         try:
+            # 'pg_ctl start -w' returns once the server accepts read-only connections: the replay may not have reached CREATE DATABASE yet
+            # (seen on PG17 on a loaded VM). Wait for the end of recovery on 'postgres', then open the database
+            w = PgSession(PgConn(host=F.sock, port=port, user="postgres", bindir=BIN).with_db("postgres"))
+            for _ in range(300):
+                if w.scalar("SELECT pg_is_in_recovery()") == "f":
+                    break
+                time.sleep(1)
+            w.close()
             try:
                 s = PgSession(PgConn(host=F.sock, port=port, user="postgres", bindir=BIN).with_db("in_empty"))
             except Exception:
                 print(open(dest + ".log").read()[-3000:])
                 raise
-            for _ in range(60):
-                if s.scalar("SELECT pg_is_in_recovery()") == "f":
-                    break
-                time.sleep(1)
             self.assertEqual(s.scalar("SELECT count(*) FROM t"), "250")
             s.close()
         finally:

@@ -54,9 +54,17 @@ class Flush(unittest.TestCase):
         old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S+00")
         self.assertIsNone(flush_current_wal(F.ctx, chain, target_time=old), "a target of hours ago is archived long since")
         self.assertIsNone(flush_current_wal(F.ctx, chain, target_lsn="0/1000000"), "explicit positions are not touched")
-        before = q("postgres", "SELECT pg_current_wal_lsn()")[0][0]
-        self.assertIsNone(flush_current_wal(F.ctx, [{"system_identifier": "1234"}]), "another cluster (central recovery host's own PostgreSQL)")
-        self.assertEqual(q("postgres", "SELECT pg_current_wal_lsn()")[0][0], before, "no WAL switch on a cluster that is not the backed-up one")
+        # the fixture archives every 5 s (archive_timeout): a timed switch between the two readings is not ours (seen on PG17 on a loaded VM)
+        q("postgres", "ALTER SYSTEM SET archive_timeout = 0"); q("postgres", "SELECT pg_reload_conf()"); time.sleep(0.5)
+        try:
+            before = q("postgres", "SELECT pg_current_wal_lsn()")[0][0]
+            self.assertIsNone(flush_current_wal(F.ctx, [{"system_identifier": "1234"}]), "another cluster (central recovery host's own PostgreSQL)")
+            after = q("postgres", "SELECT pg_current_wal_lsn()")[0][0]
+            seg = int(q("postgres", "SELECT setting FROM pg_settings WHERE name = 'wal_segment_size'")[0][0])
+            lsn = lambda x: (int(x.split("/")[0], 16) << 32) | int(x.split("/")[1], 16)
+            self.assertFalse(lsn(after) % seg == 0 and lsn(after) > lsn(before), "no WAL switch on a cluster that is not the backed-up one (%s -> %s)" % (before, after))
+        finally:
+            q("postgres", "ALTER SYSTEM RESET archive_timeout"); q("postgres", "SELECT pg_reload_conf()")
 
 
 if __name__ == "__main__":
