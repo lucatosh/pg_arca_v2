@@ -21,7 +21,8 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
     assert(inWindow({ ...DEFAULT_POLICY, windowStart: 3, windowEnd: 3 }, at(12)), 'equal hours = no window');
   }
   assert(!validatePolicy({ ...DEFAULT_POLICY, readLimitMBs: -1 }).ok); assert.strictEqual((validatePolicy({ ...DEFAULT_POLICY, readLimitMBs: '80' }) as any).policy.readLimitMBs, 80);
-  const pol = validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 168, incrEveryHours: 24, readLimitMBs: 80 }) as any;
+  assert.strictEqual((validatePolicy({ ...DEFAULT_POLICY, retentionDays: 30 }) as any).policy.retentionDays, 30); assert(!validatePolicy({ ...DEFAULT_POLICY, retentionDays: 9999 }).ok);
+  const pol = validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 168, incrEveryHours: 24, readLimitMBs: 80, retentionDays: 30 }) as any;
   await st.mutate(d => {
     d.clusters.push({ id: 'c1', name: 'c1', environment: 'prod', source: 'agent', backupPolicy: pol.policy } as any);
     d.nodes['n1'] = { id: 'n1', name: 'pg1', clusterId: 'c1', lastSeen: iso(now), snapshot: { postgres: { is_in_recovery: false }, backup: { recent_sets: [] } } } as any;
