@@ -104,6 +104,16 @@ import { requiredRole } from '../../server/auth';
     const e = f({ configured: true, enabled: true, last_ok: now / 1000 - 600, last_error: '403 AccessDenied', bucket: 'b', endpoint: 'e' }); assert.strictEqual(e.length, 1); assert(/failing/.test(e[0].title) && /AccessDenied/.test(e[0].cause));
     assert.strictEqual(f({ configured: true, enabled: true, last_ok: null, bucket: 'b', endpoint: 'e' })[0].severity, 'critical', 'never synced');
   }
+  { // archiving blocked by a divergent copy (two servers on the same timeline number): the finding names the way out
+    const st: any = JSON.parse(JSON.stringify(store.peek()));
+    st.nodes.n1.snapshot.postgres.archiver = { last_archived_time: iso(now - 3600_000), last_failed_time: iso(now - 30_000), last_failed_wal: '0000000A0000000000000011' };
+    st.nodes.n1.snapshot.postgres.archive_error = { error: 'PGA-WAL-031: DIVERGENT content for 0000000A0000000000000011 (stored 32d9.. vs incoming 2def..)' };
+    const f = evaluate(st, now).find(i => i.clusterId === 'p' && i.code === 'archiver_failing')!;
+    assert(/retire the dead branch of timeline 10/.test(f.cause), f.cause); assert.strictEqual(f.action?.label, 'Retire the dead branch');
+    st.nodes.n1.snapshot.postgres.archive_error = { error: 'PGA-REPO-062: I/O error' };
+    const g = evaluate(st, now).find(i => i.clusterId === 'p' && i.code === 'archiver_failing')!;
+    assert(!/dead branch/.test(g.cause)); assert.strictEqual(g.action?.label, 'See the backups');
+  }
   { // recovery objectives: RPO from the archiver (failing -> bad; fresh -> ok with the archive_timeout bound), RTO from the last drill scaled to today's size
     const base = store.peek();
     const o1 = objectives(base, 'p', now)!; assert.strictEqual(o1.rpo.state, 'bad'); assert(/failing/.test(o1.rpo.text)); assert.strictEqual(o1.rto.state, 'unknown');

@@ -134,7 +134,13 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         add({ severity: 'critical', code: 'archiver_history_conflict', title: `Archiving stuck: timeline history ${arch.last_failed_wal} already exists with different content`,
           cause: `Two servers promoted themselves to the same timeline number (split-brain between sites, or a promotion without access to the shared archive). PostgreSQL archives nothing after this file: WAL piles up and point-in-time restores stop here. The current primary is the right one: on its Backup tab, “Retire the dead branch” of that timeline sets the other server’s copies aside (nothing is deleted) and archiving resumes by itself. To prevent it: “Recovery from the archive” (restore_command) on both sites, in Geo-redundancy.`,
           action: { label: 'See the backups', page: 'backup' } });
-      else add({ severity: 'critical', code: 'archiver_failing', title: 'WAL archiving is failing', cause: `Last failed segment: ${arch.last_failed_wal || '?'}${pg.archive_error?.error ? ` — reason: ${pg.archive_error.error}` : ''}. Until this is fixed, WAL piles up on the server and the disk fills up.`, action: { label: 'See the backups', page: 'backup' } });
+      else {
+        // a divergent copy (two servers on the same timeline number) blocks PostgreSQL's archiver on that segment for ever: name the way out
+        const why = String(pg.archive_error?.error || ''); const tl = /^[0-9A-F]{24}$/i.test(String(arch.last_failed_wal || '')) ? parseInt(String(arch.last_failed_wal).slice(0, 8), 16) : null;
+        const divergent = /PGA-WAL-03[13]/.test(why);
+        add({ severity: 'critical', code: 'archiver_failing', title: 'WAL archiving is failing', cause: `Last failed segment: ${arch.last_failed_wal || '?'}${why ? ` — reason: ${why}` : ''}. Until this is fixed, WAL piles up on the server and the disk fills up.${divergent ? ` The archive already holds another server's copy of this ${tl ? `timeline ${tl} ` : ''}file (two servers used the same timeline number): PostgreSQL retries it for ever and archives nothing after it. If this server is the right primary, retire the dead branch${tl ? ` of timeline ${tl}` : ''} in Backup → divergent WAL copies: the archive's copies are set aside (nothing is deleted), this server's take their place and archiving resumes.` : ''}`,
+          action: { label: divergent ? 'Retire the dead branch' : 'See the backups', page: 'backup' } });
+      }
     // ---- asynchronous archiving: segments parked in the local spool are NOT in the archive (not restorable, lost with the host). The archive refusing
     // a segment is invisible to pg_stat_archiver in this mode: the pusher's own error is what says it
     const sp = wal?.spool;
