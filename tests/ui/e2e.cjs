@@ -231,14 +231,14 @@ const base = process.env.BASE || 'http://localhost:5188';
   // a template with the rc.1 policy fields: days of recoverability, heavy-work hours, read rate limit -> summarized on the card, kept on reopen
   { await p.goto(base + '/#/strategy'); await p.waitForSelector('button:has-text("New template")'); await p.click('button:has-text("New template")'); await p.waitForSelector('.modal:has-text("New template")');
     const fld = (l) => `.modal .field:has(label:text-is("${l}")) input`;
-    await p.fill(fld('Name'), 'Night window'); await p.fill(fld('…unless younger than (days)'), '30'); await p.fill(fld('Read rate limit (MB/s, 0 = none)'), '50');
+    await p.fill(fld('Name'), 'Night window'); await p.click('.modal button:has-text("Advanced:")'); await p.fill(fld('Keep restore points for at least (days)'), '30'); await p.fill(fld('Read rate limit (MB/s, 0 = none)'), '50');
     await p.fill(fld('Recovery point objective (minutes, 0 = none)'), '15'); await p.fill(fld('Recovery time objective (minutes, 0 = none)'), '240');
     await p.fill('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=0', '22'); await p.fill('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=1', '6');
     await shot('15d1-template-fields'); await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Template saved');
     const card = p.locator('.tpl:has-text("Night window")'); await card.waitFor();
     for (const s of ['30 days of history', 'read limit 50 MB/s', 'fulls and verifications 22:00–06:00', 'RPO 15 min', 'RTO 4 h']) assert.ok((await card.innerText()).includes(s), `template summary shows "${s}"`);
-    await card.locator('button:has-text("Edit")').click(); await p.waitForSelector('.modal:has-text("Edit template")');
-    assert.equal(await p.inputValue(fld('…unless younger than (days)')), '30'); assert.equal(await p.inputValue(fld('Read rate limit (MB/s, 0 = none)')), '50'); assert.equal(await p.inputValue(fld('Recovery point objective (minutes, 0 = none)')), '15');
+    await card.locator('button:has-text("Edit")').click(); await p.waitForSelector('.modal:has-text("Edit template")'); await p.click('.modal button:has-text("Advanced:")');
+    assert.equal(await p.inputValue(fld('Keep restore points for at least (days)')), '30'); assert.equal(await p.inputValue(fld('Read rate limit (MB/s, 0 = none)')), '50'); assert.equal(await p.inputValue(fld('Recovery point objective (minutes, 0 = none)')), '15');
     assert.equal(await p.inputValue('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=0'), '22'); assert.equal(await p.inputValue('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=1'), '6');
     await p.fill(fld('Read rate limit (MB/s, 0 = none)'), '0'); await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Template saved');
     await p.waitForFunction(() => { const c = [...document.querySelectorAll('.tpl')].find(e => e.textContent.includes('Night window')); return c && !c.textContent.includes('read limit'); });

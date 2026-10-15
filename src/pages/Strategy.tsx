@@ -15,7 +15,7 @@ const BLANK: Policy = { enabled: true, fullEveryHours: 168, incrEveryHours: 24, 
 const hrs = (h: number) => (h <= 0 ? 'never' : h % 168 === 0 ? `${h / 168 === 1 ? 'week' : `${h / 168} weeks`}` : h % 24 === 0 ? `${h / 24 === 1 ? 'day' : `${h / 24} days`}` : h === 1 ? 'hour' : `${h} hours`);
 export function summarize(p: Policy | null): string {
   if (!p) return 'No automatic backups';
-  return [`full every ${hrs(p.fullEveryHours)}`, p.incrEveryHours ? `incremental every ${hrs(p.incrEveryHours)}` : 'full only', `${p.retentionFull} ${p.retentionFull === 1 ? 'chain' : 'chains'} kept${p.retentionDays ? ` and ${p.retentionDays} days of history` : ''}`, p.verifyEveryHours ? `verify every ${hrs(p.verifyEveryHours)}${p.verifyDeep ? ' (deep)' : ''}` : 'no verification', ...(p.preferStandby ? ['from a standby when possible'] : []), ...(p.readLimitMBs ? [`read limit ${p.readLimitMBs} MB/s`] : []), ...((p.windowStart ?? 0) !== (p.windowEnd ?? 0) ? [`fulls and verifications ${String(p.windowStart).padStart(2, '0')}:00–${String(p.windowEnd).padStart(2, '0')}:00`] : []), ...(p.rpoTargetMinutes ? [`RPO ${mins(p.rpoTargetMinutes)}`] : []), ...(p.rtoTargetMinutes ? [`RTO ${mins(p.rtoTargetMinutes)}`] : [])].join(' · ');
+  return [`full every ${hrs(p.fullEveryHours)}`, p.incrEveryHours ? `incremental every ${hrs(p.incrEveryHours)}` : 'full only', `${p.retentionDays ? `${p.retentionDays} days of history, ` : ''}${p.retentionFull} full ${p.retentionFull === 1 ? 'backup' : 'backups'} kept`, p.verifyEveryHours ? `verify every ${hrs(p.verifyEveryHours)}${p.verifyDeep ? ' (deep)' : ''}` : 'no verification', ...(p.preferStandby ? ['from a standby when possible'] : []), ...(p.readLimitMBs ? [`read limit ${p.readLimitMBs} MB/s`] : []), ...((p.windowStart ?? 0) !== (p.windowEnd ?? 0) ? [`fulls and verifications ${String(p.windowStart).padStart(2, '0')}:00–${String(p.windowEnd).padStart(2, '0')}:00`] : []), ...(p.rpoTargetMinutes ? [`RPO ${mins(p.rpoTargetMinutes)}`] : []), ...(p.rtoTargetMinutes ? [`RTO ${mins(p.rtoTargetMinutes)}`] : [])].join(' · ');
 }
 /** Approximate worst-case data loss given the schedule (WAL archiving makes the real figure smaller). */
 const rpoText = (p: Policy | null) => (!p ? '' : `At most ${hrs(p.incrEveryHours || p.fullEveryHours)} between two backups; with archived WAL, restores reach the last segment.`);
@@ -33,21 +33,39 @@ const revalidatePolicies = () => { revalidate('/api/policies'); revalidateMatchi
 const asgLabel = (a: PView['assignments'][string] | undefined, tpls: Tpl[]) => !a ? null : a.disabled ? 'No automatic backups' : a.templateId ? (tpls.find(t => t.id === a.templateId)?.name || a.templateId) : 'Custom';
 
 const mins = (m: number) => m >= 120 ? `${(m / 60).toFixed(1).replace(/\.0$/, '')} h` : `${m} min`;
+/** Choices a person reads in days and frequencies (an independent review: "the policy editor speaks in hours and chains"). What a business
+ *  decides first - how far back it can go - comes first; the mechanics (chains, retries, windows, limits) are under "Advanced". */
+const FULL_EVERY: [number, string][] = [[24, 'Every day'], [48, 'Every 2 days'], [168, 'Every week'], [336, 'Every 2 weeks'], [720, 'Every 30 days']];
+const INCR_EVERY: [number, string][] = [[0, 'None (full backups only)'], [1, 'Every hour'], [4, 'Every 4 hours'], [6, 'Every 6 hours'], [12, 'Every 12 hours'], [24, 'Every day']];
+const VERIFY_EVERY: [number, string][] = [[0, 'Never'], [24, 'Every day'], [168, 'Every week'], [720, 'Every 30 days']];
+function Every({ label, hint, value, choices, unit, min, max, onChange }: { label: string; hint?: string; value: number; choices: [number, string][]; unit: string; min: number; max: number; onChange: (v: number) => void }) {
+  const known = choices.some(([v]) => v === value);
+  return <Field label={label} hint={hint}><div className="row gap-s">
+    <select className="input" value={known ? String(value) : 'custom'} onChange={e => onChange(e.target.value === 'custom' ? (known ? Math.max(min, value || min) : value) : Number(e.target.value))} style={{ maxWidth: 230 }}>
+      {choices.map(([v, t]) => <option key={v} value={v}>{t}</option>)}<option value="custom">Other…</option></select>
+    {!known ? <><input className="input" type="number" min={min} max={max} value={value} onChange={e => onChange(Number(e.target.value))} style={{ width: 90 }} aria-label={`${label} (${unit})`} /><span className="small muted">{unit}</span></> : null}</div></Field>;
+}
 function PolicyForm({ p, setP }: { p: Policy; setP: (p: Policy) => void }) {
   const n = (k: keyof Policy) => (e: React.ChangeEvent<HTMLInputElement>) => setP({ ...p, [k]: Number(e.target.value) });
-  return <div className="stack"><div className="grid g2">
-    <Field label="Full backup every (hours)"><input className="input" type="number" min={24} max={720} value={p.fullEveryHours} onChange={n('fullEveryHours')} /></Field>
-    <Field label="Incremental every (hours)" hint="0 = full only"><input className="input" type="number" min={0} max={168} value={p.incrEveryHours} onChange={n('incrEveryHours')} /></Field>
-    <Field label="Chains to keep" hint="A chain = a full backup with its incrementals. The oldest chains beyond this number are removed…"><input className="input" type="number" min={1} max={365} value={p.retentionFull} onChange={n('retentionFull')} /></Field>
-    <Field label="…unless younger than (days)" hint="Days of recoverability guaranteed whatever the count (0 = count only). 30 keeps every point of the last month restorable."><input className="input" type="number" min={0} max={3650} value={p.retentionDays ?? 0} onChange={n('retentionDays')} /></Field>
-    <Field label="Verify every (hours)" hint="0 = never. Includes a test restore."><input className="input" type="number" min={0} max={720} value={p.verifyEveryHours} onChange={n('verifyEveryHours')} /></Field>
-    <Field label="Retry after an error (minutes)"><input className="input" type="number" min={5} max={720} value={p.retryAfterMinutes} onChange={n('retryAfterMinutes')} /></Field></div>
-    <label className="check"><input type="checkbox" checked={p.verifyDeep} onChange={e => setP({ ...p, verifyDeep: e.target.checked })} />Deep verification (reads back every chunk: slower)</label>
+  const [adv, setAdv] = useState(false);
+  return <div className="stack">
+    <Field label="Keep restore points for at least (days)" hint="Every point in time of this many days back stays restorable, whatever else happens (0 = keep only the number of full backups set under Advanced)."><input className="input" type="number" min={0} max={3650} value={p.retentionDays ?? 0} onChange={n('retentionDays')} style={{ maxWidth: 140 }} /></Field>
+    <div className="grid g2">
+      <Every label="Full backup" value={p.fullEveryHours} choices={FULL_EVERY} unit="hours" min={24} max={720} onChange={v => setP({ ...p, fullEveryHours: v })} />
+      <Every label="Incremental backup" hint="Only what changed since the previous backup: fast and small." value={p.incrEveryHours} choices={INCR_EVERY} unit="hours" min={0} max={168} onChange={v => setP({ ...p, incrEveryHours: v })} />
+    </div>
+    <div className="grid g2"><Field label="Recovery point objective (minutes, 0 = none)" hint="How much recent data the business accepts to lose: compared with what is really in the WAL archive."><input className="input" type="number" min={0} max={10080} value={p.rpoTargetMinutes ?? 0} onChange={n('rpoTargetMinutes')} /></Field>
+    <Field label="Recovery time objective (minutes, 0 = none)" hint="How long the business accepts to wait for the whole cluster back: compared with the last disaster recovery drill, scaled to today's size."><input className="input" type="number" min={0} max={100000} value={p.rtoTargetMinutes ?? 0} onChange={n('rtoTargetMinutes')} /></Field></div>
+    <Every label="Verify the backups" hint="Reads the backup back and includes a test restore." value={p.verifyEveryHours} choices={VERIFY_EVERY} unit="hours" min={0} max={720} onChange={v => setP({ ...p, verifyEveryHours: v })} />
+    <button type="button" className="linkbtn small" aria-expanded={adv} onClick={() => setAdv(!adv)}>{adv ? 'Hide the advanced settings' : 'Advanced: full backups kept, hours for heavy work, read limit, standby, retries'}</button>
+    {adv ? <div className="stack" style={{ paddingLeft: 12, borderLeft: '2px solid var(--line)' }}>
+      <div className="grid g2"><Field label="Full backups kept (with their incrementals)" hint="The oldest beyond this number are removed, unless still needed for the days above."><input className="input" type="number" min={1} max={365} value={p.retentionFull} onChange={n('retentionFull')} /></Field>
+      <Field label="Retry after an error (minutes)"><input className="input" type="number" min={5} max={720} value={p.retryAfterMinutes} onChange={n('retryAfterMinutes')} /></Field></div>
+      <label className="check"><input type="checkbox" checked={p.verifyDeep} onChange={e => setP({ ...p, verifyDeep: e.target.checked })} />Deep verification (reads back every chunk: slower)</label>
     <Field label="Hours for full backups and verifications (console time)" hint="Heavy work only between these hours, e.g. 22 → 06 for the night; the same hour twice = any time. Incrementals run whenever they are due. A cluster with no full backup yet gets one right away."><div className="row gap-s"><input className="input" type="number" min={0} max={23} style={{ width: 80 }} value={p.windowStart ?? 0} onChange={e => setP({ ...p, windowStart: Math.min(23, Math.max(0, Number(e.target.value) || 0)) })} /><span className="muted">→</span><input className="input" type="number" min={0} max={23} style={{ width: 80 }} value={p.windowEnd ?? 0} onChange={e => setP({ ...p, windowEnd: Math.min(23, Math.max(0, Number(e.target.value) || 0)) })} /></div></Field>
-    <div className="grid g2"><Field label="Recovery point objective (minutes, 0 = none)" hint="How much recent data the business accepts to lose: the Backup tab compares it with what is really in the WAL archive and the findings tell you when archive_timeout cannot guarantee it."><input className="input" type="number" min={0} max={10080} value={p.rpoTargetMinutes ?? 0} onChange={n('rpoTargetMinutes')} /></Field>
-    <Field label="Recovery time objective (minutes, 0 = none)" hint="How long the business accepts to wait for the whole cluster back: compared with the estimate from the last disaster recovery drill, scaled to today's size."><input className="input" type="number" min={0} max={100000} value={p.rtoTargetMinutes ?? 0} onChange={n('rtoTargetMinutes')} /></Field></div>
     <Field label="Read rate limit (MB/s, 0 = none)" hint="How fast a scheduled backup may read the data directory: a ceiling that keeps backups from saturating production storage (the copy takes proportionally longer). Manual backups are not limited."><input className="input" type="number" min={0} max={100000} value={p.readLimitMBs ?? 0} onChange={e => setP({ ...p, readLimitMBs: Math.max(0, Number(e.target.value) || 0) })} /></Field>
     <label className="check"><input type="checkbox" checked={!!p.preferStandby} onChange={e => setP({ ...p, preferStandby: e.target.checked })} /><span>Take scheduled backups on a streaming standby when possible <span className="small muted">— the primary carries no load; used only when the backup destination is a shared NFS/SMB (a standby cannot see a per-node local archive), otherwise the primary</span></span></label>
+    </div> : null}
     <p className="small muted">{summarize(p)}</p></div>;
 }
 
@@ -140,9 +158,9 @@ export function StrategyPage() {
 
       <Card title="Templates" actions={<Button sm icon="plus" onClick={() => setEdit('new')}>New template</Button>}>
         <div className="grid g3">{v.templates.map(t => <div key={t.id} className="tpl"><div className="row"><strong className="grow">{t.name}</strong>{!t.builtin ? <Badge>Yours</Badge> : null}</div>
-          <p className="small muted" style={{ margin: '6px 0' }}>{t.description || summarize(t.policy)}</p>
-          <div className="small" style={{ marginBottom: 8 }}>{summarize(t.policy)}</div>
-          <div className="row wrap gap-s">{ENVS.filter(e => v.suggested[e] === t.id).map(e => <Badge key={e} kind="accent">recommended {e}</Badge>)}<div className="grow" />
+          {t.description ? <p className="small muted" style={{ margin: '6px 0' }}>{t.description}</p> : null}
+          <div className="small" style={{ margin: t.description ? '0 0 8px' : '6px 0 8px' }}>{summarize(t.policy)}</div>
+          <div className="row wrap gap-s">{ENVS.filter(e => v.suggested[e] === t.id).map(e => <Badge key={e} kind="accent">Recommended for {ENV_LABEL[e] || e}</Badge>)}<div className="grow" />
             <Button sm onClick={() => setEdit({ ...t, id: t.builtin ? '' : t.id, name: t.builtin ? `${t.name} (copy)` : t.name, builtin: false })}>{t.builtin ? 'Duplicate' : 'Edit'}</Button>
             {!t.builtin ? <Button sm kind="ghost" aria-label="Delete template" onClick={() => del(t)}><Icon n="trash" /></Button> : null}</div></div>)}</div></Card>
     </div>
