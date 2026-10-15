@@ -30,7 +30,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=Migration completed', { timeout: 15000 }); await shot('04d-migration-done');
   await p.click('.modal >> nth=0 >> button:has-text("Close")'); await p.waitForSelector('text=Previous location still used by restores', { state: 'detached', timeout: 20000 });
   { const b = p.locator('button:has-text("Disaster recovery drill")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster restored in 13 minutes', { timeout: 10000 }); await shot('04b-drill'); } }
-  await p.click('button:has-text("Start backup")'); await p.waitForSelector('text=Copying data'); await p.waitForSelector('.activitystrip:has-text("Backup (Copying data")', { timeout: 8000 }); await shot('05-backup-running');
+  await p.click('button:has-text("Start backup")'); await p.waitForSelector('text=Copying data'); { const strip = await p.waitForSelector('.activitystrip:has-text("Backup (")', { timeout: 8000 }).catch(() => null);   // the strip polls: a 3 s fake backup may end first
+    if (strip) assert(!/backup_run|\bcopy\b,/.test(await strip.innerText()), 'the strip shows labels, not raw operation types or phase keys'); } await shot('05-backup-running');
   // the dock's Log opens a floating window with THIS operation's log (not the database log): movable, minimisable, closable
   await p.click('.dock-chip'); await p.click('.dock-item button:has-text("Log")'); await p.waitForSelector('.oplog'); await p.waitForSelector('.oplog-body .ln', { timeout: 8000 });
   assert(/Backup/.test(await p.locator('.oplog-hd .nm').innerText()), 'log window is titled with the operation');
@@ -176,10 +177,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   await tab('Maintenance', 'Logs'); await p.waitForSelector('text=Live logs');
   await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console'); await p.waitForSelector('text=Active replicas without'); await shot('14-hba');
   // offsite copy (S3): no copy yet -> set it up -> test+save -> status shown -> sync and dry run -> a refused bucket is reported, not saved
-  await tab('Status', 'Nodes'); await p.waitForSelector('text=Offsite copy (S3-compatible object storage)'); await p.waitForSelector('text=No offsite copy on this node');
+  await tab('Status', 'Nodes'); await p.waitForSelector('text=Offsite copy: in Protection');
   // agent settings: paths as text, the asynchronous-archiving switch as a select with its default shown
   await p.waitForSelector('.field:has-text("Asynchronous WAL archiving") select'); assert(/default \(off\)/.test(await p.locator('.field:has-text("Asynchronous WAL archiving") select').innerText()), 'bool setting shows its default');
   await p.selectOption('.field:has-text("Asynchronous WAL archiving") select', 'true'); await p.waitForSelector('button:has-text("Save and re-check"):not([disabled])'); await shot('33-agent-settings');
+  // the offsite copy lives with the backups (Protection -> Backup), not among the node settings
+  await tab('Protection', 'Backup'); await p.waitForSelector('text=Offsite copy (S3-compatible object storage)'); await p.waitForSelector('text=No offsite copy on this node');
   await p.fill('input[placeholder="https://minio.corp.example:9000"]', 'https://minio.corp.example:9000'); const offCard = p.locator('.card:has-text("Offsite copy (S3")');
   await offCard.locator('.field:has-text("Bucket") input').first().fill('refuse-me'); await offCard.locator('.field:has-text("Access key") input').first().fill('AKIA');
   await p.click('button:has-text("Test the bucket and save")'); await p.waitForSelector('.banner.bad:has-text("AccessDenied")', { timeout: 10000 });

@@ -11,7 +11,7 @@ const RestoreTab = lazy(() => import('./Restore').then(m => ({ default: m.Restor
 const LogsTab = lazy(() => import('./Logs').then(m => ({ default: m.LogsTab })));
 const HbaTab = lazy(() => import('./Hba').then(m => ({ default: m.HbaTab })));
 const TuningTab = lazy(() => import('./Tuning').then(m => ({ default: m.TuningTab })));
-import { AgentSettings, OffsiteCopy } from './AgentSettings';
+import { AgentSettings } from './AgentSettings';
 import { PendingJoin } from './Join';
 import { NodePanel } from './NodePanel';
 import { ProtectionRibbon } from './Ribbon';
@@ -120,7 +120,8 @@ function Nodes({ c }: { c: any }) {
           <td className="num">{isAdmin ? <Button sm icon="trash" onClick={() => setRevoke(n)}>Revoke</Button> : null}</td></tr>)}
           {!mine.length ? <tr><td colSpan={5} className="muted">No agents.</td></tr> : null}</tbody></table></div></Card> : null}
     {!c.isSandbox && c.source !== 'direct' ? <AgentSettings clusterId={c.id} nodes={mine.map(n => ({ id: n.id, name: n.name, online: n.online }))} /> : null}
-    {!c.isSandbox && c.source !== 'direct' ? <OffsiteCopy clusterId={c.id} nodes={mine.map(n => ({ id: n.id, name: n.name, online: n.online }))} /> : null}
+    {/* storage is set in ONE place, with the backups (a review found it in three, and the offsite copy only here) */}
+    {!c.isSandbox && c.source !== 'direct' ? <div className="activitystrip"><Icon n="shield" s={14} /><span className="small">Offsite copy: in Protection → Backup, next to where the backups go.</span><div className="grow" /><button className="linkbtn small" onClick={() => go(`c/${encodeURIComponent(c.id)}/backup`)}>Open</button></div> : null}
     {selNode ? <NodePanel c={c} node={selNode} agent={selAgent} leader={leaderName} isAdmin={isAdmin} onClose={() => setSel(null)} onInstall={() => { setSel(null); mint(selNode.name); }} onRevoke={() => { setRevoke(selAgent); setSel(null); }} /> : null}
     {tok ? <Modal title={tok.node ? `Install the agent on ${tok.node}` : 'Add a node'} onClose={() => setTok(null)} footer={<Button onClick={() => setTok(null)}>Close</Button>}><div className="stack"><p>Run this command as root on the server{tok.node ? ` ${tok.node}` : ''}. The token is valid for a single node and expires in one hour.</p><InstallCommand r={tok} nodeName={tok.node} /><p className="faint small">Alternative without a token: install the agent giving only the console address. The server announces itself and you approve it from the “New server detected” banner.</p></div></Modal> : null}
     {revoke ? <Confirm danger title={`Revoke the agent on ${revoke.name}?`} confirmLabel="Revoke" busy={busy} onClose={() => setRevoke(null)} onConfirm={doRevoke}>

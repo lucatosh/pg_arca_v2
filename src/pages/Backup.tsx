@@ -1,6 +1,7 @@
 import { BackupPlacement } from './Placement';
 import { StrategyCard, useRecommended } from './Strategy';
 import { RestartPg } from './RestartPg';
+import { OffsiteCopy } from './AgentSettings';
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Skeleton, bytes, dt, dur, ago, num, nof } from '../ui';
@@ -42,6 +43,7 @@ export function BackupTab({ c }: { c: any }) {
   const agentic = c.source !== 'direct' && !c.isSandbox;
   const q = useQuery<any>(agentic ? key : null, { interval: 5000 });
   const rec = useRecommended(c, () => q.refresh());
+  const reg = useQuery<{ nodes: any[] }>(agentic ? '/api/nodes' : null, { interval: 15000 });
   if (c.isSandbox) return <Banner kind="info" title="Not available on the demo cluster">Connect a real cluster with the agent to run backups.</Banner>;
   if (c.source === 'direct') return <Card><Empty icon="shield" title="The agent is required">Backup and restore run on the database server. Install the agent on a node of this cluster: the console cannot read data files through a plain SQL connection.</Empty></Card>;
   if (q.loading || !q.data) return <div className="stack"><Skeleton h={60} /><Skeleton h={200} /></div>;
@@ -56,6 +58,7 @@ export function BackupTab({ c }: { c: any }) {
     <RunCard c={c} hasFull={done.some(s => s.type === 'full')} running={d.running || []} refresh={q.refresh} />
     <div className="grid g2"><StrategyCard c={c} policy={d.policySource?.scope === 'none' || d.policySource?.disabled ? null : d.policy} source={d.policySource} onSaved={q.refresh} /><HealthCard c={c} d={d} refresh={q.refresh} /></div>
     <SetsCard sets={sets} d={d} />
+    {(() => { const ns = (reg.data?.nodes || []).filter((n: any) => n.clusterId === c.id && n.kind !== 'worker'); return ns.length ? <OffsiteCopy clusterId={c.id} nodes={ns.map((n: any) => ({ id: n.id, name: n.name, online: n.online }))} /> : null; })()}
   </div>;
 }
 
