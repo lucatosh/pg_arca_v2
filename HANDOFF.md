@@ -157,6 +157,14 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### 15/10 10:50 — checkpoint 8 (`npm test` completo rc=0 dopo tutto quanto segue)
+- **Accesso con LDAP / Active Directory** (c22c746): `server/ldap.ts` senza dipendenze (BER di bind/search/unbind, StartTLS, ldaps con verifica e CA privata), ricerca utente con service account o template DN, `memberOf` o ricerca gruppi, gruppi → ruoli (il più alto vince) con ruolo di default o rifiuto, password del service account cifrata con la chiave della console, endpoint di prova, audit; gli account locali vincono sempre; account di directory disabilitato in console resta bloccato; 503 chiaro quando la directory non risponde. Scheda «Directory sign-in» in Users; utenti di directory senza password locale (ruolo «from the directory»). Test `tests/server/ldap.test.ts` con una directory finta in-process (anche ldaps con certificato generato da openssl) + e2e `31-directory`. **Mai provato contro un AD vero.**
+- **Policy: limite di lettura MB/s** (ffb615b) per i backup pianificati (`read_limit_mb_s` nell'op, `ReadLimiter` token bucket condiviso dai thread, verificato su PG16 reale: 103 MB a 15 MB/s = 7,2 s) e **fascia oraria per fulls/verifiche** (64bbf71; `inWindow`, ora locale della console, a cavallo di mezzanotte; incrementali sempre; primo full subito). Editor in Strategy, riga di riepilogo, test scheduler.
+- **Dump parallelo** nel restore di database (9f31bcf): `pg_dump -Fd -j N` (misura: 1,3 s → 0,6 s su 4 tabelle/332 MB, 2 vCPU).
+- ESTALE (NFS) gestito come pack sparito; indice compatto 44 B/chunk con cache.
+- Analisi scritta: estrazione per relazione non percorribile (ARCHITETTURA §7f punto 5).
+- Aperti: come al checkpoint 7 (tutto ciò che richiede la VM) + LDAP contro AD reale.
+
 ### 15/10 09:30 — checkpoint 7
 - **Lettura a run nel restore** (503711e): `Repo.get_chunks` legge i chunk adiacenti di un pack con una sola `pread` (finestre di 128 chunk in `_write_one`). Bench locale: estrazione 674 MB in 4,3 s.
 - **Verifica profonda** (886fa68): ogni chunk una volta sola, in ordine di pack; progresso `chunks / chunks_total` in UI.
