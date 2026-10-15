@@ -78,7 +78,7 @@ export function OpPanel({ op, error, cancel, label }: { op: Op | null; error?: s
   }
   else if (op.status === 'leased') what = 'The agent picked it up and is starting…';
   else if (!done) what = <>{phase || 'In progress…'}{runningSince ? ` — for ${elapsed(secs(runningSince, now))}` : ''}
-    {p?.phase === 'checkpoint' ? `${p.fast ? '' : ' (spread checkpoint: on a busy server it can take a few minutes; cancelling interrupts it)'}` : ''}{p?.files_total ? ` — ${num(p.files)} / ${num(p.files_total)} file` : ''}{p?.bytes_total ? `, ${bytes(p.bytes)} / ${bytes(p.bytes_total)}` : ''}{p?.chunks ? ` — ${num(p.chunks)} chunks verified` : ''}{p?.segments_total ? ` — ${num(p.segments)} / ${num(p.segments_total)} segments` : ''}{p?.msg ? ` — ${p.msg}` : ''}</>;
+    {p?.phase === 'checkpoint' ? `${p.fast ? '' : ' (spread checkpoint: on a busy server it can take a few minutes; cancelling interrupts it)'}` : ''}{p?.files_total ? ` — ${num(p.files)} / ${num(p.files_total)} file` : ''}{p?.bytes_total ? `, ${bytes(p.bytes)} / ${bytes(p.bytes_total)}` : ''}{p?.chunks ? ` — ${num(p.chunks)}${p.chunks_total ? ` / ${num(p.chunks_total)}` : ''} chunks verified` : ''}{p?.segments_total ? ` — ${num(p.segments)} / ${num(p.segments_total)} segments` : ''}{p?.msg ? ` — ${p.msg}` : ''}</>;
   const total = done && op.createdAt ? secs(op.createdAt, Date.parse(op.updatedAt)) : null;
   return <div className="stack oppanel">
     <div className="row wrap"><strong>{label || OP_LABEL[op.type] || op.type}</strong>{statusBadge(op.status)}
