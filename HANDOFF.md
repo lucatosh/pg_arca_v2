@@ -157,6 +157,16 @@ Vedi COMPAT.md «Versioni di PostgreSQL» e NOTES riga 39. Punto d'ingresso unic
 - **Da fare (richiede il lab, strumento del dispositivo disponibile solo subito dopo un messaggio dell'utente)**: `tsc && vite build`, `tools/lab/run-scn.sh` + `npm test` con le nuove modifiche, misure di walscan/prefetch/dump sul Patroni, scenario lab «DB eliminato prima dell'ultimo backup». **Da fare in locale**: istanze multiple per host (oggi solo l'avviso `MULTI_INSTANCE`), schema `as_new` con altro nome, ripresa di un restore interrotto, estrazione per relazione, restyle UI più profondo (oggi solo rifiniture: la base «Abyss & Ember» c'era già), testi dei controlli pre-restore in italiano (oggi in inglese, come gli altri messaggi dell'agent).
 
 
+### 15/10 03:15 — checkpoint 3, ramo `release/1.0.0-rc.1` (`npm test` completo rc=0, e2e/sweep/archive OK)
+Dopo il checkpoint 2:
+- **Geo**: fence con finestra di 10 min per lo standby leader (df5e233); **vecchio sito su timeline più alta** del nuovo primario → ricostruito dal nuovo primario con una seconda demote `force_rewind` (5ddd942, è il caso di hy1 bloccato su TL 13; test g).
+- **Console che protegge se stessa**: snapshot gzip dello stato in `<data>/snapshots/` un minuto dopo l'avvio e ogni 24 h, ne restano 14; `/api/health.stateSnapshot` (808130f). INSTALL §6.
+- **HBA**: senza Patroni la copertura della matrice è per OGNI nodo (file per nodo): «missing on pg2, pg3» (45130d2). Tabella nodi: nome membro Patroni quando diverso (0acc185).
+- **Policy «prefer a standby»** per i backup pianificati, onorata solo con destinazione condivisa e standby in streaming (7d57302; test scheduler; checkbox nell'editor).
+- `wal_retire_branch` sotto approvazione a quattro occhi (18a15c0). Test scheduler reso indipendente dal confine del bucket settimanale (giovedì 00:00 UTC) (nessun bug di prodotto).
+- Agent: grammatica Python 3.6 verificata su tutti i moduli (`ast.parse(feature_version=(3,6))`), nessuna API ≥ 3.7.
+- Non verificabile in locale: `server.ts` non parte qui (express non installato): `npm run build` sulla VM è il controllo di tipo definitivo.
+
 ### 15/10 02:10 — checkpoint 2 (lavoro notturno autonomo, Fable 5.1), ramo `release/1.0.0-rc.1`
 Tutto committato, pushato, testato (server, agent 245, i18n, e2e, fluidity). Fatti dopo le 00:45:
 - **HBA, matrice di accesso del cluster** (ae51d5b): scheda Access → «Cluster access (every node → every node)»: per ogni membro, utente di replica e superuser accettati dal suo indirizzo? first-match come PostgreSQL (reject sopra = bloccato; `all` non copre `replication`). Un click aggiunge le regole /32 mancanti (hostssl se ssl=on, scram/md5 da `password_encryption`) al blocco gestito; poi il solito «Check the effect»/«Apply» (DCS su Patroni, file per nodo altrimenti — distinzione esplicita nel testo, come chiesto). Impostazioni: utente di replica (imparato da pg_stat_replication / wal receiver), superuser, TLS, reti extra. L'agent `hba_read` riporta `facts`. Logica in `hbaLogic.clusterNeeds/accessCoverage` + test; e2e coperto.
