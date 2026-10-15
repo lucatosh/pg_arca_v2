@@ -24,7 +24,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   // 2. from the check step open a general setting, then Back: same step, same name, details still open
   await p.click('button:has-text("Next")'); await p.waitForSelector('text=Review and confirm');
   await p.click('label.opt:has-text("Only a copy to check") input');          // the end chosen here must survive the round trip too
-  await p.waitForSelector('text=/All set|Ready: read/'); await p.waitForSelector('.stale', { state: 'detached' });
+  await p.waitForSelector('text=/Ready to restore/'); await p.waitForSelector('.stale', { state: 'detached' });
   const nameIn = p.locator('.field:has-text("New database name") input'); await nameIn.fill('appdb_yesterday');
   await p.click('summary:has-text("Technical details")'); await p.click('button:has-text("General settings")'); await p.waitForSelector('text=Recovery & storage');
   await p.goBack(); await p.waitForSelector('text=Review and confirm', { timeout: 5000 });

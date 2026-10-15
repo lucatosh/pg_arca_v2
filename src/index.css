@@ -136,7 +136,7 @@ table.t td.num, table.t th.num { text-align: right; }
 .tabs button:hover { color: var(--ink); } .tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 650; }
 .tabs button.preview { color: var(--ink-3); }
 /* cluster navigation: four areas (pills) + the pages of the current area (underline) */
-.clusternav { position: sticky; top: -24px; z-index: 3; margin-top: 14px; padding: 12px 0 0; background: linear-gradient(var(--bg) 82%, transparent); }
+.clusternav { position: sticky; top: -24px; z-index: 3; margin-top: 14px; padding: 12px 0 0; background: var(--bg); box-shadow: 0 6px 8px -8px rgba(15, 23, 42, .18); }  /* solid: scrolled content no longer shows through the tabs */
 .gnav { display: flex; gap: 6px; padding: 4px; border-radius: 12px; background: var(--surface-3); width: fit-content; max-width: 100%; overflow-x: auto; }
 .gnav button { display: inline-flex; align-items: center; gap: 8px; padding: 7px 15px; border: 0; background: none; border-radius: 9px; cursor: pointer; color: var(--ink-2); font-weight: 550; white-space: nowrap; transition: background .14s, color .14s, box-shadow .14s; }
 .gnav button:hover { color: var(--ink); } .gnav button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(14,29,43,.14); } .gnav button[aria-selected="true"] svg { color: var(--accent); }
@@ -166,7 +166,7 @@ table.t td.num, table.t th.num { text-align: right; }
 .cmd { max-width: 560px; } .cmd input { border: 0; border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; padding: 15px 20px; font-size: 15px; } .cmd ul { list-style: none; margin: 0; padding: 6px; max-height: 360px; overflow: auto; }
 .cmd li button { width: 100%; text-align: left; display: flex; gap: 10px; align-items: center; background: none; border: 0; padding: 8px 12px; border-radius: 8px; cursor: pointer; } .cmd li button[aria-selected="true"], .cmd li button:hover { background: var(--surface-2); }
 pre.out { background: var(--surface-2); border: 1px solid var(--line); padding: 10px 12px; border-radius: var(--r); overflow: auto; font-family: var(--mono); font-size: 12px; max-height: 280px; margin: 0; }
-.copy { position: relative; } .copy pre { padding-right: 70px; } .copy .btn { position: absolute; top: 6px; right: 6px; }
+.copy { position: relative; } .copy pre { padding-right: 96px; white-space: pre-wrap; overflow-wrap: anywhere; }  /* the whole command is visible: never hidden under the Copy button */ .copy .btn { position: absolute; top: 6px; right: 6px; }
 
 /* ---------- recovery timeline (the signature control) ---------- */
 .rt { position: relative; user-select: none; touch-action: none; }
@@ -485,3 +485,11 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .usebar b.warn { background: var(--warn); } .usebar b.bad { background: var(--bad); }
 .restored { border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; background: var(--surface); }
 .restored + .restored { margin-top: 2px; }
+/* The restore verdict is one box: its notes sit inside it, without a second frame. */
+.banner .preflight { border: 0; background: none; padding: 6px 0 0; } .banner ul.verdict { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 6px; } .banner ul.verdict .fix { display: block; }
+/* The ribbon says what its colours mean (a review found 30 unexplained squares). */
+.ribbon .legend { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; } .ribbon .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 6px; }
+.ribbon .legend i.full { background: var(--accent); } .ribbon .legend i.incr { background: color-mix(in srgb, var(--accent) 32%, var(--surface)); } .ribbon .legend i.none { background: var(--ribbon-none); box-shadow: inset 0 0 0 1px var(--line); }
+/* Phones: toasts at the top, one at a time, never over the form being filled in or the activity chip. */
+@media (max-width: 720px) { .toasts { top: 10px; bottom: auto; left: 12px; right: 12px; max-width: none; } .toasts .toast:not(:last-child) { display: none; } }
+.geochecks .howfix { margin-top: 2px; } .geochecks .howfix summary { cursor: pointer; list-style: revert; } .geochecks li.more { list-style: none; }

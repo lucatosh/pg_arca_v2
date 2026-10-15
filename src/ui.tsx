@@ -34,6 +34,8 @@ export function ago(iso?: string | null, now = Date.now()): string { if (!iso) r
  *  point read as 09/10 or 10/09 is a day of data (an independent review found six formats, US and European mixed). */
 const DT_OPTS: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZoneName: 'short' };
 export const dt = (iso?: string | number | Date | null) => { if (iso == null || iso === '') return '—'; const d = new Date(iso as any); return isNaN(d.getTime()) ? '—' : d.toLocaleString('en-GB', DT_OPTS); };
+/** "1 table", "2 tables": counts in sentences never read "1 tables" or "rule(s)". */
+export const nof = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 /** Day only, same convention: "15 Oct 2026". */
 export const dday = (iso?: string | number | Date | null) => { if (iso == null || iso === '') return '—'; const d = new Date(iso as any); return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }); };
 /** Time of day only, same convention (logs, step lists). */

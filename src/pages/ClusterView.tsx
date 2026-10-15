@@ -242,14 +242,17 @@ function AgentUpdateBanner({ clusterId }: { clusterId: string }) {
   const q = useQuery<{ nodes: any[] }>('/api/nodes', { interval: 30000 });
   const h = useQuery<{ version?: string }>('/api/health', { interval: 300000 });
   const [show, setShow] = useState(false);
-  const old = (q.data?.nodes || []).filter(n => n.clusterId === clusterId && n.agentOutdated);
+  // only nodes that respond: an agent that does not report cannot be updated from here, and its real problem (not responding) is said elsewhere
+  const old = (q.data?.nodes || []).filter(n => n.clusterId === clusterId && n.agentOutdated && n.online !== false);
   if (!old.length) return null;
   const cmds = Array.from(new Set(old.map(n => n.upgradeCommand).filter(Boolean))) as string[];
   const local = cmds.some(c => /https?:\/\/(localhost|127\.0\.0\.1)[:/]/.test(c));          // the servers cannot reach a console on localhost
-  const vers = Array.from(new Set(old.map(n => n.agentVersion || '?'))).join(', ');
+  const cv = h.data?.version; const vs = Array.from(new Set(old.map(n => n.agentVersion || '?')));
+  // same version number, different code (a release candidate rebuilt, a patched console): say so instead of "1.0.0-rc.1 → 1.0.0-rc.1"
+  const vers = cv && vs.length === 1 && vs[0] === cv ? `an earlier build of ${cv}` : `${vs.join(', ')} → ${cv || 'this console'}`;
   // one line by default: it used to be a 150 px banner on every tab of the cluster, pushing the restore wizard below the fold
   return <div className="activitystrip" role="status"><Icon n="alert" s={14} />
-    <span className="small"><strong>{old.length === 1 ? `The agent on ${old[0].name} is outdated` : `${old.length} agents are outdated (${old.map(n => n.name).join(', ')})`}</strong> <span className="faint">({vers} → {h.data?.version || 'this console'}): some features may be missing until it is updated; updating does not touch PostgreSQL or the backups.</span></span>
+    <span className="small"><strong>{old.length === 1 ? `The agent on ${old[0].name} is outdated` : `${old.length} agents are outdated (${old.map(n => n.name).join(', ')})`}</strong> <span className="faint">({vers}): some features may be missing until it is updated; updating does not touch PostgreSQL or the backups.</span></span>
     <button className="btn ghost sm" onClick={() => setShow(!show)} aria-expanded={show}>{show ? 'Hide' : 'Show the update command'}</button>
     {show ? <div style={{ flexBasis: '100%' }}>{local ? <p className="small">The console address is <code>localhost</code>, which the servers cannot reach: set the address the servers use in <a href="#/settings">Settings → Console address</a>, then the command appears here.</p>
       : <><p className="small" style={{ margin: '6px 0' }}>Run as root {old.length > 1 ? 'on each of these servers' : `on ${old[0].name}`}:</p>{cmds.map(c => <CopyBlock key={c} text={c} />)}</>}</div> : null}

@@ -804,8 +804,25 @@ class OperationExecutor:
         if not wal_dir or not os.path.isdir(wal_dir):
             raise OpError("no WAL archive configured on this node")
         wm = WalManager(wal_dir)
-        moved = wm.conflicts_reviewed(p.get("files") if isinstance(p.get("files"), list) else None) if p.get("reviewed") else []
-        return {"conflicts": wm.conflicts(), "reviewed": moved, "wal_dir": wal_dir}
+        files = p.get("files") if isinstance(p.get("files"), list) else None
+        tl = self._local_timeline()
+        if p.get("reviewed") and p.get("kind") == "off_history":
+            # "these are the leftovers of a failover": only the copies that the current history never reads, decided here, not by the caller
+            files = [c["file"] for c in wm.classify_conflicts(tl) if c.get("kind") == "off_history"]
+        moved = wm.conflicts_reviewed(files) if p.get("reviewed") and (files is None or files) else []
+        return {"conflicts": wm.classify_conflicts(tl), "current_timeline": tl, "reviewed": moved, "wal_dir": wal_dir}
+
+    def _local_timeline(self):
+        """The timeline the local PostgreSQL is on (a standby: the one of its last restartpoint), None when it cannot be asked."""
+        try:
+            if self.db and self.db.ping():
+                ok, out, _ = self.db.run_psql("SELECT CASE WHEN pg_is_in_recovery() THEN (SELECT timeline_id FROM pg_control_checkpoint())::text "
+                                              "ELSE (('x' || substr(pg_walfile_name(pg_current_wal_insert_lsn()), 1, 8))::bit(32)::int)::text END")
+                if ok and out.strip().isdigit():
+                    return int(out.strip())
+        except Exception:
+            pass
+        return None
 
     def h_wal_retire_branch(self, p):
         """Retire the DEAD branch of a timeline number two servers used: its stored copies go to conflicts/dead-branch-<tli>/ and the

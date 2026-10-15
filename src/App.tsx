@@ -127,8 +127,12 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
     <div className="main">
       <NetBar />
       <div className="topbar">
-        <select className="input mobnav" aria-label="Go to" value={route.page === 'cluster' ? `c/${route.id}` : route.page === 'clusters' ? '' : route.page} onChange={e => go(e.target.value)}>
-          <option value="">All clusters</option>{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}<option value="today">Today</option><option value="strategy">Backup policies</option><option value="infra">Recovery & storage</option><option value="discovery">Discovery</option><option value="workers">Worker hosts</option><option value="geo">Geo-redundancy</option><option value="history">Operation history</option><option value="audit">Audit log</option></select>
+        <select className="input mobnav" aria-label="Go to" value={route.page === 'cluster' ? `c/${encodeURIComponent(route.id || "")}` : route.page === 'clusters' ? '' : route.page === 'worker' ? 'workers' : route.page} onChange={e => go(e.target.value)}>
+          {/* every page of the sidebar is here (a review found the Users page shown as "All clusters" on a phone) */}
+          <optgroup label="Overview"><option value="today">Today</option><option value="">All clusters</option></optgroup>
+          {clusters.length ? <optgroup label="Clusters">{clusters.map(c => <option key={c.id} value={`c/${encodeURIComponent(c.id)}`}>{c.name}</option>)}</optgroup> : null}
+          <optgroup label="Protection"><option value="strategy">Backup policies</option><option value="infra">Recovery & storage</option><option value="geo">Geo-redundancy</option><option value="discovery">Discovery</option><option value="workers">Worker hosts</option></optgroup>
+          <optgroup label="Administration">{role === 'admin' ? <><option value="settings">Settings</option><option value="users">Users</option></> : null}<option value="history">Operation history</option><option value="audit">Audit log</option></optgroup></select>
         <div className="crumbs" aria-label="Location">
           {route.page === 'cluster' ? <><a href="#/">Clusters</a>{(() => { const p = cur ? primaryOf(cur, clusters) : null; const base = p || cur;
             return <>{base?.folder ? <><Icon n="chev" s={12} /><span className="faint trunc">{base.folder}</span></> : null}{p ? <><Icon n="chev" s={12} /><a className="trunc" href={`#/c/${encodeURIComponent(p.id)}`} title="Primary site">{p.name}</a></> : null}</>; })()}<Icon n="chev" s={12} /><strong className="trunc">{cur?.name || '…'}</strong></> : <strong>{PAGE_TITLE[route.page] || ''}</strong>}

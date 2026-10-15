@@ -1,7 +1,7 @@
 import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { itCheck, itFix } from '../i18n';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Confirm, Field, Icon, Modal, Skeleton, Tabs, bytes, ago, num } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, Field, Icon, Modal, Skeleton, Tabs, bytes, ago, num, nof } from '../ui';
 import { Op, clearDrafts, isTerminal, revalidate, toast, useDraft, useOpRunner, useQuery } from '../hooks';
 import { OpPanel } from './shared';
 import { go } from '../router';
@@ -128,7 +128,7 @@ function PreflightModal({ cluster, onClose }: { cluster: SCluster; onClose: () =
           {plan.blocked ? <Banner kind="warn" title="Automatic installation not available">{plan.blocked}</Banner> : <>
             <p className="small muted">The binaries for the backup’s version are missing. A different version cannot open those files: pg_arca can install it, but only if you ask here and with the permissions shown.</p>
             {(['private', 'system'] as const).map(k => modes[k] ? <label key={k} className={`opt ${mode === k ? 'on' : ''}`}><input type="radio" checked={mode === k} onChange={() => setMode(k)} />
-              <div><div><strong>{k === 'private' ? 'Private installation' : 'System packages'}</strong> {modes[k].possible ? <Badge kind="ok">possible</Badge> : <Badge kind="bad">not possible</Badge>}{plan.recommended === k ? <Badge kind="accent">recommended</Badge> : null}</div>
+              <div><div><strong>{k === 'private' ? 'Private installation' : 'System packages'}</strong> {!modes[k].possible ? <Badge kind="bad">Not possible here</Badge> : plan.recommended === k ? <Badge kind="ok">Recommended</Badge> : <Badge>Possible</Badge>}</div>
                 <div className="small muted">{k === 'private' ? 'No root: downloads the packages and extracts their files into a pg_arca directory. No service, no system changes. Needs network access to the package repository.' : 'Regular package installation. Needs root or passwordless sudo for the agent’s user.'}</div></div></label> : null)}
             {m ? <div className="stack">
               {m.blockers?.length ? <Banner kind="bad" title="What blocks the installation">{m.blockers.map((b: string, i: number) => <div key={i} className="small">{b}</div>)}</Banner> : null}
@@ -252,7 +252,7 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
       <Banner kind="info" title="Applying the destination">Sets the repository and WAL archive on every node’s agent. On the primary, pg_arca immediately checks that the next WAL segment lands in the new directory; if it does not, it switches back to the previous one by itself and says so. Existing backups stay readable in the previous location (including for a PITR spanning the change) and you can migrate them in the background. The new destination starts with a full backup. In a protected environment a second administrator must approve.</Banner>
       <div><Button kind="primary" icon="zap" busy={busy === 'apply'} disabled={!allOk || !!busy} onClick={() => act('apply')}>Apply to the nodes</Button>{!allOk ? <span className="small muted"> Every node needs a recent passed check.</span> : null}</div>
       {done ? (done.approval ? <Banner kind="info" title="Awaiting approval">A destination change in this environment requires approval from another administrator (Today page). It is applied as soon as it is approved.</Banner>
-        : <Banner kind="ok" title="Apply started">{done.operations.length} operations sent to the nodes (see the Activity panel). {done.note}</Banner>) : null}
+        : <Banner kind="ok" title="Apply started">{nof(done.operations.length, 'operation')} sent to the nodes (see the Activity panel). {done.note}</Banner>) : null}
       {err ? <Banner kind="bad">{err}</Banner> : null}
       <PreviousLocation cluster={cluster} d={d} /></div>}
   </Modal>;
@@ -274,8 +274,8 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
     <p className="sub" style={{ margin: 0, maxWidth: 820 }}>{ui.intro}</p>
     <Card title="Levels" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Level</th><th>What it sets</th><th /></tr></thead><tbody>
       {line('global', '', 'All clusters', 'Fallback value')}
-      {ENVS.map(e => line('env', e, `Environment: ${ENV_LABEL[e]}`, `${v.clusters.filter(c => c.environment === e).length} cluster`))}
-      {v.folders.map(f => line('folder', f, `Folder: ${f}`, `${v.clusters.filter(c => c.folder === f || c.folder.startsWith(f + '/')).length} cluster`))}</tbody></table></div></Card>
+      {ENVS.map(e => line('env', e, `Environment: ${ENV_LABEL[e]}`, nof(v.clusters.filter(c => c.environment === e).length, 'cluster')))}
+      {v.folders.map(f => line('folder', f, `Folder: ${f}`, nof(v.clusters.filter(c => c.folder === f || c.folder.startsWith(f + '/')).length, 'cluster')))}</tbody></table></div></Card>
     <Card title="Cluster" pad={false}>{!v.clusters.length ? <div style={{ padding: 16 }} className="muted">No connected clusters.</div> : <div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>In effect</th><th /></tr></thead><tbody>
       {v.clusters.map(c => <tr key={c.id}><td><strong>{c.name}</strong><div className="small muted">{c.environment}{c.folder ? ` · ${c.folder}` : ''}</div></td>
         <td><div>{ui.summary(eff(c))}</div><div className="small muted">{ui.fields.filter(f => c.effective.sources[f] && c.effective.sources[f].scope !== 'default' && eff(c)[f] !== undefined).map(f => `${ui.labels[f]}: ${srcText(c.effective.sources[f])}`).join(' · ') || 'defaults'}</div></td>

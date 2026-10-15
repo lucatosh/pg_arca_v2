@@ -28,6 +28,6 @@ export function ProtectionRibbon({ c }: { c: any }) {
   return <button type="button" className="ribbon" onClick={() => go(`c/${encodeURIComponent(c.id)}/restore`)} aria-label={`Data protection: ${msg}`}>
     <div className="cells" aria-hidden="true">{cells.map((x, i) => <i key={i} className={`${x.type || 'none'} ${x.today ? 'today' : ''}`} title={`${dday(x.start)}: ${x.type ? `${x.n} backup (${NAME[x.type]})` : 'no backups'}`} />)}</div>
     <div className={`wal ${wal}`} aria-hidden="true" />
-    <div className="cap"><span>{msg}</span><span className="muted">30 days · WAL {wal === 'ok' ? 'continuous' : wal === 'bad' ? 'with gaps' : 'not archived'}</span></div>
+    <div className="cap"><span>{msg}</span><span className="legend muted">Last 30 days: <i className="full" />full <i className="incr" />incremental <i className="none" />no backup · line: WAL {wal === 'ok' ? 'continuous' : wal === 'bad' ? 'with gaps' : 'not archived'}</span></div>
   </button>;
 }

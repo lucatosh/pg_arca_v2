@@ -65,7 +65,9 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
       if (!was || isTerminal(was) || !isTerminal(o.status) || o.createdBy !== me || QUIET.includes(o.type) || o.background || o.readonly || (o.params?.dry_run && o.status === 'succeeded')) continue;
       // successes: the page that started it shows the outcome and the chip says it; only what needs attention pops up
       if (o.status === 'failed') { const first = itCheck((o.error || '').split('\n')[0]); const hint = hintFor(o.error); const code = (/PGA-[A-Z]+-\d+/.exec(first) || [])[0];
-        toast(`${label(o)} failed: ${hint ? `${hint}${code ? ` (${code})` : ''}` : first.slice(0, 180)}`, 'bad', 9000); }
+        // a toast is a pointer, not the report: the first sentence of the explanation, the whole of it is on the page and in Activity
+        const one = (t: string) => { const x = t.split(/(?<=\.)\s/)[0]; return x.length > 150 ? x.slice(0, 147) + '…' : x; };
+        toast(`${label(o)} failed: ${one(hint || first)}${code ? ` (${code})` : ''} Details in Activity.`, 'bad', 9000); }
       else if (o.status === 'cancelled') toast(`${label(o)}: cancelled`, 'info');
     }
     prev.current = cur;

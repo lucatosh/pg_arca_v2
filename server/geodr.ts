@@ -224,7 +224,7 @@ async function retireAbandoned(store: Store, id: string, f: any, oldTl: number, 
       const r2 = await waitOp(store, o2.id, 120_000); if (r2.status === 'succeeded') moved.push(...(r2.result?.retired || []));
     } catch { /* the old site may not answer yet: its archive is checked again by the next rejoin attempt */ }
   }
-  await step(store, id, `1c timeline${oldTl - newTl > 1 ? 's' : ''} ${newTl + 1}${oldTl - newTl > 1 ? `–${oldTl}` : ''} of ${oldName} abandoned: ${moved.length} object(s) of the WAL archive set aside in conflicts/dead-branch-… (nothing deleted), so the rebuilt members do not try to follow ${oldTl - newTl > 1 ? 'them' : 'it'}`);
+  await step(store, id, `1c timeline${oldTl - newTl > 1 ? 's' : ''} ${newTl + 1}${oldTl - newTl > 1 ? `–${oldTl}` : ''} of ${oldName} abandoned: ${moved.length} ${moved.length === 1 ? 'object' : 'objects'} of the WAL archive set aside in conflicts/dead-branch-… (nothing deleted), so the rebuilt members do not try to follow ${oldTl - newTl > 1 ? 'them' : 'it'}`);
 }
 
 async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Site, neu: Site, ep: { host: string; port: number } | null | undefined) {

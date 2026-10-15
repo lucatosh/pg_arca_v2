@@ -275,7 +275,11 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
     // RPO: how much would be lost if the primary site vanished now
     const r = s.lagBytes === 0 ? 0 : (s.receiver?.status === 'streaming' && s.receiver.silentSec != null && s.receiver.silentSec < 10 && (s.lagBytes ?? 0) < 16 * MB) ? Math.round(s.receiver.silentSec) : (s.replayDelaySec ?? null);
     rpo = r === null ? rpo : Math.max(rpo ?? 0, r);
-    if (r === null) add({ id: 'rpo', level: 'warn', site: s.name, text: at('data loss in a disaster cannot be measured (no replication data)') });
+    // nothing received and no way to measure it: the link is down or the WAL receiver stopped. That is NOT "ready with reservations"
+    // (an independent review found it labelled so): without the archive fallback nothing bounds the loss; with it, the archive does
+    if (r === null) add({ id: 'rpo', level: sv.standby_cluster?.restore_command ? 'warn' : 'bad', site: s.name, text: at(sv.standby_cluster?.restore_command
+      ? 'not receiving from the primary site (link down or WAL receiver stopped): it catches up from the shared archive, but the loss in a disaster cannot be measured'
+      : 'not receiving from the primary site (link down or WAL receiver stopped), and no archive fallback: the loss in a disaster cannot be bounded') });
     else add({ id: 'rpo', level: r > rpoTarget ? (r > rpoTarget * 10 ? 'bad' : 'warn') : 'ok', site: s.name, text: at(`estimated loss in a disaster: ${r < 1 ? 'none' : `about ${r} s of transactions`} (target ${rpoTarget} s)${s.lagBytes ? ` · ${Math.round(s.lagBytes / MB)} MB to receive` : ''}`) });
     if (!s.endpoint) add({ id: 'endpoint', level: 'warn', site: s.name, text: at('the address other sites would reach it with is not set: needed for the planned switchover'), fix: 'set it in Geo-redundancy → “Address of …”' });
     // after a promotion this site must be able to rewind / re-follow

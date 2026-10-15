@@ -270,6 +270,42 @@ class WalManager:
                 pass
         return out
 
+    def classify_conflicts(self, current_timeline=None, items=None):
+        """Each quarantined copy with a `kind`, decided against the timeline history of the server writing NOW (current_timeline):
+          'off_history'  never read by recovery along the current history: a .partial (PostgreSQL never asks for those), a segment of an
+                         ancestor timeline that holds or follows the point where the history left it (the old primary's tail after a failover),
+                         or a segment / history of a sibling timeline that is not an ancestor at all. Kept; informational, not an alarm.
+          'divergent'    on the shared history (or undecidable: no current timeline, unreadable history): a real split-brain signal.
+        Copies of a timeline NEWER than the current one stay 'divergent': the reporter may lag behind a promotion, and the abandoned
+        timelines are handled by retire_abandoned. Any doubt answers 'divergent' (an independent review asked why 228 copies a
+        failover left behind were 'urgent' for days: they are not, and a real divergence must not drown among them)."""
+        items = self.conflicts() if items is None else items
+        try:
+            cur = int(current_timeline) if current_timeline is not None else None
+        except (TypeError, ValueError):
+            cur = None
+        forks = self._history_forks(cur) if cur and cur > 1 else ({} if cur == 1 else None)
+        seg, per_id = self.segment_size, 0x100000000 // self.segment_size
+        for c in items:
+            kind, why = "divergent", ""
+            name, tli = c.get("name") or "", c.get("timeline")
+            if cur is not None and forks is not None and tli is not None and tli < cur:
+                m = SEG_RE.match(name.split(".")[0])
+                if tli not in forks:
+                    kind, why = "off_history", "timeline %d is not in the history of the current timeline %d" % (tli, cur)
+                elif name.endswith(".partial"):
+                    kind, why = "off_history", "partial segment of timeline %d: recovery never reads partial segments" % tli
+                elif m and not name.endswith(".history"):
+                    start = (int(m.group(2), 16) * per_id + int(m.group(3), 16)) * seg
+                    if start + seg > forks[tli]:
+                        kind, why = "off_history", "timeline %d ended at %X/%X in the current history: recovery reads the next timeline's copy" % (tli, forks[tli] >> 32, forks[tli] & 0xFFFFFFFF)
+            elif cur is not None and tli is not None and tli < cur and name.endswith(".partial"):
+                kind, why = "off_history", "partial segment of timeline %d: recovery never reads partial segments" % tli
+            c["kind"] = kind
+            if why:
+                c["why"] = why
+        return items
+
     def retire_abandoned(self, timeline, current_timeline, dry_run=False):
         """A timeline NEWER than the primary's current one can only be a dead branch (a site that promoted itself while it was cut off and
         was then rebuilt from the primary): its history file in the archive makes every member that recovers from the archive with
@@ -613,17 +649,19 @@ class WalManager:
         except (IOError, OSError, ValueError, TypeError):
             return 0
 
-    def verify_continuity(self, max_age=30):
-        """Timeline-aware gap detection. Cached (dir mtime + max_age) so heartbeats stay cheap on huge archives."""
+    def verify_continuity(self, max_age=30, current_timeline=None):
+        """Timeline-aware gap detection. Cached (dir mtime + max_age) so heartbeats stay cheap on huge archives. current_timeline (the timeline
+        the local PostgreSQL is on) classifies the quarantined copies: only the ones on the shared history count as `conflicts`."""
         now = time.time()
         try:
             mt = os.stat(self.wal_dir).st_mtime
         except OSError:
             mt = None
         at, cmt, rep = self._cont_cache
-        if rep is not None and cmt == mt and now - at < max_age:
+        if rep is not None and cmt == mt and now - at < max_age and rep.get("_tl") == current_timeline:
             return rep
-        rep = self._compute_continuity()
+        rep = self._compute_continuity(current_timeline)
+        rep["_tl"] = current_timeline
         self._cont_cache = (now, mt, rep)
         return rep
 
@@ -687,7 +725,13 @@ class WalManager:
             r.pop("_end", None)
         return out
 
-    def _compute_continuity(self):
+    def _conflict_counts(self, current_timeline=None):
+        cl = self.classify_conflicts(current_timeline)
+        div = [c for c in cl if c.get("kind") == "divergent"]
+        return {"conflicts": len(div), "conflicts_newest": max([c["at"] for c in div] or [0]) or None,
+                "conflicts_off_history": len(cl) - len(div), "conflicts_classified": current_timeline is not None}
+
+    def _compute_continuity(self, current_timeline=None):
         per_id = 0x100000000 // self.segment_size
         names, timelines, histories = [], {}, []
         floor, below = self.retention_floor(), 0
@@ -711,7 +755,8 @@ class WalManager:
                 timelines.setdefault(tli, []).append(log * per_id + seg)
                 names.append(base)
         if not names:
-            return {"continuous": True, "total_segments": 0, "gaps": [], "timelines": [], "status": "archive is empty", "histories": sorted(histories)}
+            return dict({"continuous": True, "total_segments": 0, "gaps": [], "timelines": [], "status": "archive is empty", "histories": sorted(histories)},
+                        **self._conflict_counts(current_timeline))
         gaps = []
         for tli, nums in timelines.items():
             nums.sort()
@@ -723,5 +768,5 @@ class WalManager:
         names.sort()
         return {"continuous": not gaps, "total_segments": len(names), "gaps": gaps[:50], "gap_count": len(gaps),
                 "timelines": sorted(timelines), "histories": sorted(histories), "first_segment": names[0], "last_segment": names[-1],
-                "conflicts": len(self.conflicts()), "conflicts_newest": max([c["at"] for c in self.conflicts()] or [0]) or None, "below_retention_floor": below,
+                **self._conflict_counts(current_timeline), "below_retention_floor": below,
                 "status": "continuous" if not gaps else "%d gap(s) detected" % len(gaps)}

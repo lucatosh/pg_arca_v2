@@ -1,9 +1,9 @@
 import { BackupPlacement } from './Placement';
-import { StrategyCard } from './Strategy';
+import { StrategyCard, useRecommended } from './Strategy';
 import { RestartPg } from './RestartPg';
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Skeleton, bytes, dt, dur, ago, num } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Skeleton, bytes, dt, dur, ago, num, nof } from '../ui';
 import { Op, revalidate, toast, useOpRunner, useQuery, useDraft } from '../hooks';
 import { OP_LABEL, OpPanel, Result } from './shared';
 
@@ -33,7 +33,7 @@ export function protection(d: any): Protection {
   if (!bk?.sets) return { kind: 'warn', title: 'No valid backup', text: bk?.failed_sets ? 'There are only failed attempts: check the operation and try again.' : 'Take the first full backup.' };
   const maxH = pol?.enabled ? Math.max(pol.incrEveryHours || pol.fullEveryHours, 1) * 2 : 36;
   if (bk.last_backup_age_hours != null && bk.last_backup_age_hours > maxH) return { kind: 'warn', title: 'Last backup is old', text: `It dates from ${ago(bk.last_backup?.stop_time)}${pol?.enabled ? ', more than twice the scheduled interval' : ''}.` };
-  if (!pol?.enabled) return { kind: 'warn', title: 'Backups succeed, but are not scheduled', text: 'Enable scheduling so you do not depend on a manual action.' };
+  if (!pol?.enabled) return { kind: 'warn', title: 'Backups succeed, but are not scheduled', text: 'Only manual backups run: schedule them so protection does not depend on someone remembering.' };
   return { kind: 'ok', title: 'Data protected', text: `Last backup ${ago(bk.last_backup?.stop_time)}, continuous WAL${wal?.last_segment ? ` up to ${wal.last_segment}` : ''}.` };
 }
 
@@ -41,6 +41,7 @@ export function BackupTab({ c }: { c: any }) {
   const key = `/api/clusters/${encodeURIComponent(c.id)}/backups`;
   const agentic = c.source !== 'direct' && !c.isSandbox;
   const q = useQuery<any>(agentic ? key : null, { interval: 5000 });
+  const rec = useRecommended(c, () => q.refresh());
   if (c.isSandbox) return <Banner kind="info" title="Not available on the demo cluster">Connect a real cluster with the agent to run backups.</Banner>;
   if (c.source === 'direct') return <Card><Empty icon="shield" title="The agent is required">Backup and restore run on the database server. Install the agent on a node of this cluster: the console cannot read data files through a plain SQL connection.</Empty></Card>;
   if (q.loading || !q.data) return <div className="stack"><Skeleton h={60} /><Skeleton h={200} /></div>;
@@ -49,7 +50,8 @@ export function BackupTab({ c }: { c: any }) {
   const v = protection(d); const sets: SetRow[] = d.backup?.recent_sets || [];
   const done = sets.filter(s => s.status === 'COMPLETE');
   return <div className="stack-l">
-    <Banner kind={v.kind} title={v.title}>{v.text}</Banner>
+    {/* one banner, with the way out on it: "not scheduled" carries the button that schedules (a review found the problem said twice and the fix hidden behind a small gear) */}
+    <Banner kind={v.kind} title={v.title} actions={!d.policy?.enabled || d.policySource?.scope === 'none' ? (rec.sug && !d.policySource?.disabled ? <Button sm kind="primary" icon="shield" busy={rec.busy} onClick={rec.assign}>Schedule with “{rec.sug.name}” (recommended)</Button> : null) : undefined}>{v.text}</Banner>
     {d.archiveMode === 'off' ? <ArchiveSetup c={c} refresh={q.refresh} /> : null}
     <RunCard c={c} hasFull={done.some(s => s.type === 'full')} running={d.running || []} refresh={q.refresh} />
     <div className="grid g2"><StrategyCard c={c} policy={d.policySource?.scope === 'none' || d.policySource?.disabled ? null : d.policy} source={d.policySource} onSaved={q.refresh} /><HealthCard c={c} d={d} refresh={q.refresh} /></div>
@@ -100,21 +102,24 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
 }
 
 /** Divergent WAL copies the archive refused and kept aside: what they are, and 'reviewed' once a person has looked (they stay in conflicts/reviewed/). */
-function WalConflicts({ c, count, refresh }: { c: any; count: number; refresh: () => void }) {
+function WalConflicts({ c, count, offHistory = 0, refresh }: { c: any; count: number; offHistory?: number; refresh: () => void }) {
   const ls = useOpRunner(c.id, undefined, `walconf:${c.id}`); const ack = useOpRunner(c.id, () => { refresh(); ls.run('wal_conflicts', {}); }); const [ask, setAsk] = useState(false);
   const list: any[] = ls.op?.status === 'succeeded' ? ls.op.result.conflicts || [] : [];
   const ret = useOpRunner(c.id, () => { refresh(); ls.run('wal_conflicts', {}); }); const [retire, setRetire] = useState<number | null>(null);
-  const tls = [...new Set(list.map(x => x.timeline).filter((t: any) => Number.isInteger(t)))] as number[];
+  // only a copy on the shared history makes a timeline a candidate for "retire the dead branch"; the leftovers of a failover never do
+  const tls = [...new Set(list.filter(x => x.kind !== 'off_history').map(x => x.timeline).filter((t: any) => Number.isInteger(t)))] as number[];
   const primaryTl = c.activeTimeline || c.haState?.activeTimeline;
-  return <Banner kind="bad" title={`${count} ${count === 1 ? 'divergent WAL copy' : 'divergent WAL copies'} in quarantine`}>
-    <p className="small">Two servers archived different content under the same name: the archive kept the first copy and set the others aside. This happens with two primaries at once or with two promotions to the same timeline number (split-brain between sites).</p>
-    {list.length ? <div className="tablewrap"><table className="t small"><thead><tr><th>Segment / history</th><th>Copy set aside</th><th>When</th></tr></thead><tbody>
-      {list.map(x => <tr key={x.file}><td className="mono">{x.name}</td><td className="mono">{x.file}</td><td>{ago(new Date(x.at * 1000).toISOString())}</td></tr>)}</tbody></table></div> : null}
+  return <Banner kind={count ? 'bad' : 'info'} title={count ? `${count} ${count === 1 ? 'divergent WAL copy' : 'divergent WAL copies'} in quarantine${offHistory ? ` (and ${offHistory} left behind by a failover)` : ''}` : `${nof(offHistory, 'WAL copy', 'WAL copies')} left behind by a failover, kept in quarantine`}>
+    {count ? <p className="small">Two servers archived different content under the same name for a part of the history that recovery reads: the archive kept the first copy and set the others aside. This happens with two primaries at once or with two promotions to the same timeline number (split-brain between sites).</p> : null}
+    {offHistory ? <p className="small">{count ? 'The others are' : 'These are'} copies that recovery along the current timeline never reads: the old primary’s tail of a timeline it left at a failover, or partial segments. They are harmless and kept; file them away once seen.</p> : null}
+    {list.length ? <div className="tablewrap"><table className="t small"><thead><tr><th>Segment / history</th><th>Needed by the current history?</th><th>Copy set aside</th><th>When</th></tr></thead><tbody>
+      {[...list].sort((a, b) => (a.kind === 'off_history' ? 1 : 0) - (b.kind === 'off_history' ? 1 : 0)).map(x => <tr key={x.file}><td className="mono">{x.name}</td><td>{x.kind === 'off_history' ? <Badge title={x.why}>No: failover leftover</Badge> : <Badge kind="bad" title={x.kind ? undefined : 'An agent older than this console does not classify the copies'}>{x.kind ? 'Yes: divergent' : 'Not classified'}</Badge>}</td><td className="mono">{x.file}</td><td>{ago(new Date(x.at * 1000).toISOString())}</td></tr>)}</tbody></table></div> : null}
     {tls.length ? <p className="small" style={{ marginTop: 6 }}>If the current primary{primaryTl ? ` (timeline ${primaryTl})` : ''} is the right server, retire the dead branch: the archive’s copies of that timeline that differ from the primary’s are set aside in <code>conflicts/dead-branch-…/</code> (nothing is deleted), the primary’s copies take their place and WAL archiving resumes by itself.</p> : null}
     <div className="row wrap gap-s" style={{ marginTop: 6 }}>{!list.length ? <Button sm busy={ls.busy} onClick={() => ls.run('wal_conflicts', {})}>Show the copies</Button> : null}
       {tls.map(t => <Button key={t} sm kind="danger" busy={ret.busy} onClick={() => setRetire(t)}>Retire the dead branch of timeline {t}</Button>)}
-      <Button sm busy={ack.busy} onClick={() => setAsk(true)}>Mark as reviewed</Button></div>
-    {ret.op?.status === 'succeeded' ? <Banner kind="ok" title={`Timeline ${ret.op.result?.timeline}: ${(ret.op.result?.retired || []).length} object(s) set aside, ${(ret.op.result?.promoted || []).length} promoted`}>{ret.op.result?.verified_against_primary ? 'Each promoted copy was byte-identical to the primary’s own WAL file.' : 'Run on a node that is not the primary: the newest quarantined copy was promoted without a byte-level proof.'}{(ret.op.result?.skipped || []).length ? ` Skipped: ${ret.op.result.skipped.map((x: any) => `${x.name} (${x.why})`).join('; ')}` : ''}</Banner> : null}
+      {offHistory ? <Button sm kind={count ? undefined : 'primary'} busy={ack.busy} onClick={() => ack.run('wal_conflicts', { reviewed: true, kind: 'off_history' })}>File away the failover leftovers</Button> : null}
+      {count ? <Button sm busy={ack.busy} onClick={() => setAsk(true)}>Mark all as reviewed</Button> : null}</div>
+    {ret.op?.status === 'succeeded' ? <Banner kind="ok" title={`Timeline ${ret.op.result?.timeline}: ${nof((ret.op.result?.retired || []).length, 'object')} set aside, ${(ret.op.result?.promoted || []).length} promoted`}>{ret.op.result?.verified_against_primary ? 'Each promoted copy was byte-identical to the primary’s own WAL file.' : 'Run on a node that is not the primary: the newest quarantined copy was promoted without a byte-level proof.'}{(ret.op.result?.skipped || []).length ? ` Skipped: ${ret.op.result.skipped.map((x: any) => `${x.name} (${x.why})`).join('; ')}` : ''}</Banner> : null}
     {(ls.op?.status === 'failed' || ack.op?.status === 'failed' || ret.op?.status === 'failed') ? <OpPanel op={ls.op?.status === 'failed' ? ls.op : ack.op?.status === 'failed' ? ack.op : ret.op} /> : null}
     {retire !== null ? <Confirm title={`Retire the dead branch of timeline ${retire}?`} confirmLabel="Retire" danger requireText="RETIRE" onClose={() => setRetire(null)} onConfirm={() => { const t = retire; setRetire(null); ret.run('wal_retire_branch', { timeline: t, confirm: 'RETIRE' }); }}>
       <p>Only do this if the <strong>current primary</strong> is the server whose history must survive. Its refused copies (in quarantine) replace the stored ones that differ; the stored ones are kept in <code>conflicts/dead-branch-{String(retire).padStart(8, '0').toUpperCase()}/</code>. Objects both servers wrote identically stay as they are.</p>
@@ -135,9 +140,9 @@ function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) 
       {c.source !== 'direct' && !c.isSandbox ? <Objectives clusterId={c.id} /> : null}
       <dl className="kv small"><dt>Valid backups</dt><dd>{bk?.sets ?? 0}{bk?.failed_sets ? ` (+${bk.failed_sets} failed)` : ''}</dd><dt>Space used</dt><dd>{bytes(bk?.stored_bytes)} {bk?.dedup_ratio ? <span className="muted">— {bk.dedup_ratio}× from deduplication and compression</span> : null}</dd>
         <dt>Archived WAL</dt><dd>{num(d.wal?.total_segments)} segments, {d.wal?.continuous === false ? <Badge kind="bad">with gaps</Badge> : <Badge kind="ok">continuous</Badge>}</dd>
-        <dt>Encryption</dt><dd>{bk?.encryption ? <><Badge kind="ok">On</Badge> <span className="muted">AES-256-GCM · key {bk.encryption.key_id.slice(0, 8)}</span></> : <span className="muted">Off — set <code>encryption_key_file</code> for a new repository</span>}</dd>
+        <dt>Encryption</dt><dd>{bk?.encryption ? <><Badge kind="ok">On</Badge> <span className="muted">AES-256-GCM · key {bk.encryption.key_id.slice(0, 8)}</span></> : <span className="muted" title="Backups are encrypted when the repository is created with encryption_key_file set in the agent configuration">Off</span>}</dd>
         <dt>Archiver</dt><dd>{d.archiver ? `${num(d.archiver.archived_count)} ok, ${num(d.archiver.failed_count)} errors` : '—'}</dd></dl>
-      {d.wal?.conflicts > 0 ? <WalConflicts c={c} count={d.wal.conflicts} refresh={refresh} /> : null}
+      {d.wal?.conflicts > 0 || d.wal?.conflicts_off_history > 0 ? <WalConflicts c={c} count={d.wal.conflicts || 0} offHistory={d.wal.conflicts_off_history || 0} refresh={refresh} /> : null}
       <div className="row wrap"><Button sm disabled={r.busy} onClick={() => run('verify', 'backup_verify', {})}>Quick verify</Button><Button sm disabled={r.busy} onClick={() => run('deep', 'backup_verify', { deep: true })}>Deep verify</Button>
         <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('test', 'backup_verify', { restore_test: true })} title="Actually restores the latest backup into a temporary instance">Test restore</Button>
         <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('drill', 'restore_drill', {})} title="Restores the whole cluster into a temporary directory, starts it, checks every database and measures the time">Disaster recovery drill</Button>
@@ -170,9 +175,10 @@ function Objectives({ clusterId }: { clusterId: string }) {
   const q = useQuery<{ rpo: { seconds: number | null; state: string; text: string; openSegment?: boolean }; rto: { estimateSeconds: number | null; state: string; text: string; drill: any }; targets?: { rpoSeconds: number | null; rtoSeconds: number | null } }>(`/api/clusters/${encodeURIComponent(clusterId)}/objectives`, { interval: 30000 });
   const o = q.data; if (!o) return null;
   const badge = (st: string) => st === 'ok' ? <Badge kind="ok">OK</Badge> : st === 'bad' ? <Badge kind="bad">At risk</Badge> : st === 'warn' || st === 'stale' ? <Badge kind="warn">{st === 'stale' ? 'Outdated' : 'Check'}</Badge> : <Badge>Unknown</Badge>;
-  const dur = (s: number | null) => s == null ? '—' : s >= 7200 ? `${(s / 3600).toFixed(1).replace(/\.0$/, '')} h` : s >= 120 ? `${Math.round(s / 60)} min` : `${s} s`;
+  const dur = (s: number | null) => s == null ? '—' : s >= 7200 ? `${(s / 3600).toFixed(1).replace(/\.0$/, '')} h` : s >= 120 ? `${Math.round(s / 60)} min` : s < 1 ? 'under 1 s' : `${s} s`;
   return <div className="objectives" data-testid="objectives"><dl className="kv small">
-    <dt>Recovery point (RPO)</dt><dd><strong>{o.rpo.seconds == null ? (o.rpo.state === 'bad' ? 'unbounded' : '—') : `≤ ${dur(o.rpo.seconds)}${o.rpo.openSegment ? ' + the segment being written' : ''}`}</strong>{o.targets?.rpoSeconds ? <span className="muted"> / objective {dur(o.targets.rpoSeconds)}</span> : null} {badge(o.rpo.state)} <span className="muted">{o.rpo.text}</span></dd>
-    <dt>Recovery time (RTO)</dt><dd><strong>{o.rto.estimateSeconds == null ? 'not measured' : `≈ ${dur(o.rto.estimateSeconds)}`}</strong>{o.targets?.rtoSeconds ? <span className="muted"> / objective {dur(o.targets.rtoSeconds)}</span> : null} {badge(o.rto.state)} <span className="muted">{o.rto.text}</span></dd>
+    {/* the answer first (how much data, how long), the explanation on its own line below: a review found the value lost in one long sentence */}
+    <dt title="Recovery point objective: the transactions that would be lost if the server were lost now">Data at risk (RPO)</dt><dd><strong>{o.rpo.seconds == null ? (o.rpo.state === 'bad' ? 'unbounded' : '—') : o.rpo.seconds < 1 ? 'under 1 s' : `up to ${dur(o.rpo.seconds)}`}</strong>{o.targets?.rpoSeconds ? <span className="muted"> / objective {dur(o.targets.rpoSeconds)}</span> : null} {badge(o.rpo.state)}<span className="muted small" style={{ display: 'block' }}>{o.rpo.text}</span></dd>
+    <dt title="Recovery time objective: how long restoring the whole cluster takes">Time to restore all (RTO)</dt><dd><strong>{o.rto.estimateSeconds == null ? 'not measured' : `≈ ${dur(o.rto.estimateSeconds)}`}</strong>{o.targets?.rtoSeconds ? <span className="muted"> / objective {dur(o.targets.rtoSeconds)}</span> : null} {badge(o.rto.state)}<span className="muted small" style={{ display: 'block' }}>{o.rto.text}</span></dd>
   </dl></div>;
 }

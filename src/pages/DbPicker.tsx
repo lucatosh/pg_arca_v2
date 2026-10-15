@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Badge, Icon, bytes, dt } from '../ui';
+import { Badge, Icon, bytes, dt, nof } from '../ui';
 
 /** WAL timestamps come as "2026-10-11 01:36:04.742818 UTC": make them parseable everywhere (ms, ISO). */
 export function parseWalTime(s?: string | null): number {
@@ -25,7 +25,7 @@ export function splitId(id: string): string[] {
 export type DropInfo = { time: string; time_exact: boolean } | null | undefined;
 type Kind = 'app' | 'work' | 'system';
 export const kindOf = (n: string): Kind => (/^(template[01]|postgres)$/.test(n) ? 'system' : /^(arca_rl_|pgarca_stage_)/.test(n) || /_(pitr|restored)(_?\d+)?$/.test(n) ? 'work' : 'app');
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const plural = nof;
 
 /** Database list of the restore wizard: what exists now, what was DROPPED (red, with the date when the WAL scan found it), temporary pg_arca databases kept apart. */
 export function DbPicker({ dbs, live, drops, dropsState, value, onChange }: { dbs: CatDb[]; live: Set<string> | null; drops: Record<string, DropInfo>; dropsState: 'idle' | 'running' | 'done' | 'failed'; value: string; onChange: (n: string) => void }) {

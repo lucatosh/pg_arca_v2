@@ -210,8 +210,12 @@ class Runtime(object):
             logger.debug("restored instances housekeeping failed", exc_info=True)
             return None
 
-    def _wal_view(self, wal):
-        v = wal.verify_continuity() if wal else None
+    def _wal_view(self, wal, timeline=None):
+        # the local PostgreSQL's timeline classifies the quarantined copies (only the ones on the shared history raise the alarm)
+        v = wal.verify_continuity(current_timeline=timeline) if wal else None
+        if v is not None:
+            v = dict(v)
+            v.pop("_tl", None)
         try:
             from pg_arca import wal_spool
             sp = wal_spool.spool_dir(self.config.get("state_dir"))
@@ -285,7 +289,7 @@ class Runtime(object):
             "restored": restored,
             "node_name": self.config["node_name"], "agent_version": AGENT_VERSION,
             "postgres": pg, "patroni": self.patroni_view(),
-            "wal": self._wal_view(wal),
+            "wal": self._wal_view(wal, pg.get("timeline") if pg.get("alive") else None),
             "backup": cas.get_stats() if cas else None,
             "system": self.system_metrics({"pgdata": inst.get("data_directory"), "repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir"),
                                            "scratch": self.config.get("scratch_dir")}),

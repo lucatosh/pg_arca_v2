@@ -22,6 +22,16 @@ const GB = 1024 ** 3;
 const hrs = (h: number) => (h >= 48 ? `${Math.round(h / 24)} days` : `${Math.round(h)} hours`);
 const bytesH = (b: number) => (b >= GB ? `${(b / GB).toFixed(1)} GB` : `${Math.round(b / 1048576)} MB`);
 const ts = (s?: string) => (s ? Date.parse(s) : NaN);
+/** Where PostgreSQL writes compared with the last archived segment: completed segments still waiting for the archiver (backlog) and the
+ *  offset inside the segment being written. null when it cannot be told (no LSN, unknown name). */
+export function walPosition(pg: any, lastArchivedWal?: string | null): { backlog: number; offset: number } | null {
+  const m = /^([0-9A-F]{8})([0-9A-F]{8})([0-9A-F]{8})$/i.exec(String(lastArchivedWal || '')); const cur = lsnToBig(pg?.current_lsn);
+  if (!m || cur === null) return null;
+  const segBytes = Number(pg?.settings?.wal_segment_size) > 0 ? Number(pg.settings.wal_segment_size) : 16 * 1048576;
+  const segsPerLog = BigInt(Math.floor(0x100000000 / segBytes)); const archived = BigInt('0x' + m[2]) * segsPerLog + BigInt('0x' + m[3]);
+  const curSeg = cur / BigInt(segBytes);
+  return { backlog: Number(curSeg - archived - 1n), offset: Number(cur % BigInt(segBytes)) };
+}
 const durH = (s: number) => s >= 7200 ? `${(s / 3600).toFixed(1).replace(/\.0$/, '')} h` : s >= 120 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`;
 
 export function evaluate(st: any, now = Date.now()): Issue[] {
@@ -41,9 +51,16 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
 
     // geo DR site (Patroni standby cluster): no primary by design; its own findings (replication between sites) come from geo.ts
     const standbySite = !primary && online.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader' || n.snapshot?.patroni?.standby_cluster);
-    if (!primary && !standbySite) add({ severity: 'critical', code: 'no_primary', title: 'No reachable primary', cause: online.length ? 'The agents respond but no node reports the primary role.' : 'No agent of the cluster has responded for more than 45 seconds.', action: { label: 'Open the cluster', page: 'cluster' } });
+    // every agent silent: say for how long. Days of silence is a server switched off or decommissioned more often than an outage still
+    // going on (the lab kept five release-test clusters "critical: no reachable primary" for days): still reported, as a warning that
+    // names both ways out (bring the agent back, or detach the cluster) instead of an urgent problem that never changes
+    const lastNews = Math.max(0, ...nodes.map(n => ts(n.lastSeen)).filter(Number.isFinite));
+    const silentFor = !online.length && lastNews ? now - lastNews : 0;
+    if (!primary && !standbySite) add(silentFor > 3 * 86400_000
+      ? { severity: 'warning', code: 'no_primary', title: `No news from this cluster for ${hrs(silentFor / 3600_000)}`, cause: `No agent has reported since ${new Date(lastNews).toISOString().slice(0, 16).replace('T', ' ')} UTC. If the servers were switched off or decommissioned, detach the cluster (its backups stay in the repository); otherwise start pg-arca-agent on its nodes.`, action: { label: 'Open the cluster', page: 'cluster' } }
+      : { severity: 'critical', code: 'no_primary', title: 'No reachable primary', cause: online.length ? 'The agents respond but no node reports the primary role.' : lastNews ? `No agent of the cluster has responded since ${new Date(lastNews).toISOString().slice(0, 16).replace('T', ' ')} UTC (${hrs(silentFor / 3600_000)}).` : 'No agent of the cluster has ever responded.', action: { label: 'Open the cluster', page: 'cluster' } });
     for (const n of nodes.filter(x => !on(x))) {
-      if (!primary && online.length === 0 && nodes.length === 1) break;           // already covered by no_primary
+      if (!primary && online.length === 0 && !standbySite) break;                 // every node silent: one finding (no_primary) says it, not one per node
       add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Node ${n.name} is not responding`, cause: n.lastSeen ? `Last seen ${new Date(n.lastSeen).toISOString()}. Agent stopped, server down or network interrupted.` : 'This node has never sent data.' });
     }
     // agents that talk to the console in clear or without checking its certificate: their token (which commands the node) and everything they send are readable on the network
@@ -86,7 +103,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     if (!sets.length && standbySite) {
       // backups are taken on the primary site (same database, shared repository): nothing to report here
     } else if (!sets.length) {
-      add({ severity: isProd || pol?.enabled ? 'critical' : 'warning', code: 'no_backup', title: 'No full backup', cause: pol?.enabled ? 'The policy is active but there is no successful backup yet.' : 'The cluster has neither a backup policy nor any backups: the data is not protected.', action: { label: pol?.enabled ? 'See the backups' : 'Assign a policy', page: pol?.enabled ? 'backup' : 'strategy' } });
+      add({ severity: isProd || pol?.enabled ? 'critical' : 'warning', code: 'no_backup', title: 'No backup yet', cause: pol?.enabled ? 'The policy is active but there is no successful backup yet: the data is not protected.' : isProd ? 'The cluster has neither a backup policy nor any backups: the data is not protected.' : 'Not a production cluster, so this is not urgent, but it has neither a backup policy nor any backups: its data is not protected.', action: { label: pol?.enabled ? 'See the backups' : 'Assign a policy', page: pol?.enabled ? 'backup' : 'strategy' } });
     } else if (expectH && Number.isFinite(lastMs) && now - lastMs > expectH * 3600_000 * 2) {
       const age = (now - lastMs) / 3600_000;
       add({ severity: age > expectH * 4 ? 'critical' : 'warning', code: 'backup_stale', title: `Last backup ${hrs(age)} ago`, cause: `The policy expects a backup every ${hrs(expectH)}: at least one is missing. Check the last error or whether the agent is offline.`, action: { label: 'See the backups', page: 'backup' } });
@@ -122,10 +139,15 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
 
     // ---- WAL / archiving
     const wal = (primary || nodes[0])?.snapshot?.wal;
-    if (wal && wal.gap_count > 0 && !standbySite) add({ severity: 'critical', code: 'wal_gap', title: `WAL archive with ${wal.gap_count} gap(s)`, cause: 'WAL segments are missing: point-in-time recovery past the gap is not possible. Take a new full backup right away.', action: { label: 'See restore', page: 'restore' } });
+    if (wal && wal.gap_count > 0 && !standbySite) add({ severity: 'critical', code: 'wal_gap', title: `WAL archive with ${wal.gap_count === 1 ? 'a gap' : `${wal.gap_count} gaps`}`, cause: 'WAL segments are missing: point-in-time recovery past the gap is not possible. Take a new full backup right away.', action: { label: 'See restore', page: 'restore' } });
     // the standby site of a geo pair shares the primary site's archive: its findings are the primary's, said once there
     if (wal && wal.conflicts > 0 && !standbySite) add({ severity: wal.conflicts_newest && now - wal.conflicts_newest * 1000 > 7 * 86400_000 ? 'warning' : 'critical', code: 'wal_conflict', title: `${wal.conflicts} ${wal.conflicts === 1 ? 'divergent WAL copy' : 'divergent WAL copies'} in quarantine`,
       cause: 'Two servers archived different content under the same name (possible split-brain: two primaries at once, or two promotions to the same timeline number). The archive kept the first copy and set the others aside. Check which server was the right primary, then mark the copies as reviewed (they are kept).',
+      action: { label: 'Review', page: 'backup' } });
+    // copies a failover left behind (the old primary's tail of a timeline it left, partial segments): the agent proved the current history never
+    // reads them, so they are not a split-brain signal. Informational, with the one-click way to file them away
+    else if (wal && wal.conflicts_off_history > 0 && !standbySite) add({ severity: 'info', code: 'wal_leftovers', title: `${wal.conflicts_off_history} WAL ${wal.conflicts_off_history === 1 ? 'copy' : 'copies'} left behind by a failover`,
+      cause: 'Kept in the archive’s quarantine. Recovery along the current timeline never reads them (the old primary’s tail of a timeline it left, or partial segments): nothing is at risk. File them away from the Backup tab once seen.',
       action: { label: 'Review', page: 'backup' } });
     const arch = pg.archiver;
     if (arch?.last_failed_time && (!arch.last_archived_time || ts(arch.last_failed_time) > ts(arch.last_archived_time)) && now - ts(arch.last_failed_time) < 3600_000 * 6)
@@ -373,9 +395,17 @@ export function objectives(st: any, clusterId: string, now = Date.now()) {
   else {
     const since = Math.max(0, (now - lastArch) / 1000);
     const spoolAge = Number(primary?.snapshot?.wal?.spool?.oldest_age_sec) || 0;          // asynchronous archiving: what waits in the local spool is not archived yet
-    const bound = Math.max(since, timeout || 0) + spoolAge;
-    rpo = { seconds: Math.round(bound), state: bound <= Math.max(timeout, 60) * 2 ? 'ok' : bound <= 3600 ? 'warn' : 'bad', openSegment: !timeout,
-      text: `Up to ${dur(bound)} of transactions are not in the archive yet (last segment archived ${dur(since)} ago${timeout ? `, archive_timeout ${timeout} s` : ', archive_timeout not set: an idle segment can wait for a long time'}${spoolAge ? `, ${primary.snapshot.wal.spool.pending} segments still in the local spool` : ''}).` };
+    // How old is the oldest WAL byte not archived yet? "since the last archived segment" is only an upper bound, and on an IDLE cluster it
+    // grows for ever (a lab cluster with archive_timeout 60 s showed "4.2 h at risk": nothing had been written). The current LSN decides:
+    //  - a COMPLETED segment not archived yet (backlog): it has waited since the last archive at least -> `since`
+    //  - only the segment being written, and archive_timeout set: PostgreSQL switches it at most archive_timeout after its first write
+    //    -> archive_timeout (the archiver is not failing: checked above)
+    //  - only the segment being written, exactly at its start: nothing written since the switch -> nothing at risk
+    //  - only the segment being written, no archive_timeout: its first write may be as old as the last archive -> `since` (open segment)
+    const pos = walPosition(pg, arch.last_archived_wal);
+    const bound = (pos && pos.backlog <= 0 ? (pos.offset === 0 ? 0 : timeout ? Math.min(timeout, since) : since) : Math.max(since, timeout || 0)) + spoolAge;
+    rpo = { seconds: Math.round(bound), state: bound <= Math.max(timeout, 60) * 2 ? 'ok' : bound <= 3600 ? 'warn' : 'bad', openSegment: !timeout && !(pos && pos.backlog <= 0 && pos.offset === 0),
+      text: `Last WAL segment archived ${dur(since)} ago.${spoolAge ? ` ${primary.snapshot.wal.spool.pending} segments are still waiting in the local spool.` : ''}${timeout ? ` archive_timeout (${timeout} s) bounds the wait.` : ' archive_timeout is not set: with little traffic the segment being written can wait a long time before it is archived.'}` };
     if (rpoTarget) {
       if (bound > rpoTarget) { rpo.state = 'bad'; rpo.text += ` Above the ${dur(rpoTarget)} objective${timeout > rpoTarget ? `: archive_timeout (${timeout} s) alone is above it; set archive_timeout = ${rpoTarget} s` : ''}.`; }
       else if (!timeout) { rpo.state = 'warn'; rpo.text += ` The ${dur(rpoTarget)} objective is not guaranteed: archive_timeout is not set, so a segment with little traffic can wait longer; set archive_timeout = ${rpoTarget} s.`; }

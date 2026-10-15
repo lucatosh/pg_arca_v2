@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { api, uid } from '../api';
-import { Badge, Banner, Button, Card, Confirm, Dot, Empty, Field, Icon, Modal, Skeleton, ago, bytes, dt, tm } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, Dot, Empty, Field, Icon, Modal, Skeleton, ago, bytes, dt, tm, nof } from '../ui';
 import { revalidate, toast, useQuery } from '../hooks';
 import { go } from '../router';
 
@@ -134,11 +134,14 @@ function LinkPicker({ all, onClose }: { all: any[]; onClose: () => void }) {
 }
 
 /** "If the primary site is lost now, does the DR site take over cleanly, and how much is lost?": the conditions a geo pair silently depends on. */
-const READY_LABEL = { ready: 'Ready for disaster recovery', degraded: 'Ready with reservations', not_ready: 'Not ready for disaster recovery' };
+/** The state in words that say what to do: "Ready, 2 things to fix" / "Not ready: 1 problem" (never "ready with reservations" while the link is down). */
+const readyLabel = (r: Ready) => { const bad = r.checks.filter(c => c.level === 'bad').length, warn = r.checks.filter(c => c.level === 'warn').length;
+  return r.status === 'ready' ? 'Ready for disaster recovery' : r.status === 'degraded' ? `Ready for disaster recovery, ${nof(warn, 'thing')} to fix` : `Not ready for disaster recovery: ${nof(bad, 'problem')}`; };
 function Readiness({ r, role }: { r: Ready; role: string }) {
   const [open, setOpen] = useState(r.status !== 'ready'); const [edit, setEdit] = useState(false); const [rpo, setRpo] = useState(String(r.rpoTargetSec)); const [busy, setBusy] = useState(false);
   const issues = r.checks.filter(c => c.level !== 'ok'); const tone = r.status === 'ready' ? 'ok' : r.status === 'degraded' ? 'warn' : 'bad';
   const [fixing, setFixing] = useState<string | null>(null);
+  const [all, setAll] = useState(false); const byLevel = (a: { level: string }, b: { level: string }) => (a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2) - (b.level === 'bad' ? 0 : b.level === 'warn' ? 1 : 2);
   // one-click fixes, through the site's own DCS (agent operations: the command / setting is built by the agent, never sent from here)
   const fix = async (c: Ready['checks'][number]) => {
     setFixing(c.id + c.clusterId);
@@ -153,16 +156,18 @@ function Readiness({ r, role }: { r: Ready; role: string }) {
   const save = async () => { setBusy(true); try { await api('PUT', '/api/geo/settings', { rpoSec: Number(rpo) }); revalidate('/api/geo'); toast('RPO target saved', 'ok'); setEdit(false); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
   return <div className={`geoready ${tone}`}>
     <div className="row wrap gap-s">
-      <button className="linkbtn row gap-s" onClick={() => setOpen(!open)} aria-expanded={open}><Icon n={open ? 'down' : 'chev'} s={13} /><Dot kind={tone} /><strong>{READY_LABEL[r.status]}</strong></button>
+      <button className="linkbtn row gap-s" onClick={() => setOpen(!open)} aria-expanded={open}><Icon n={open ? 'down' : 'chev'} s={13} /><Dot kind={tone} /><strong>{readyLabel(r)}</strong></button>
       <span className="small muted">estimated loss <strong>{r.rpoSec == null ? 'not measurable' : r.rpoSec < 1 ? 'none' : `${r.rpoSec} s`}</strong> · target {r.rpoTargetSec} s
         {r.lastTest ? <> · last switchover {ago(r.lastTest.at)}{r.lastTest.seconds != null ? `, ${r.lastTest.seconds} s` : ''}</> : <> · switchover never tested</>}</span>
       <div className="grow" />{role === 'admin' ? <Button sm kind="ghost" onClick={() => setEdit(true)}>RPO target…</Button> : null}
     </div>
-    {open ? <ul className="geochecks">{[...issues, ...r.checks.filter(c => c.level === 'ok')].map((c, i) => <li key={i} className={c.level}>
-      <Icon n={c.level === 'ok' ? 'check' : c.level === 'info' ? 'info' : 'alert'} s={13} /><span className="grow">{c.text}{c.fix ? <span className="faint"> — {c.fix}</span> : null}</span>
-      {role === 'admin' && c.action && c.clusterId ? <Button sm busy={fixing === c.id + c.clusterId} onClick={() => fix(c)}>{c.action === 'archive_fallback' ? 'Enable the archive fallback' : 'Enable pg_rewind'}</Button> : null}</li>)}</ul> : null}
+    {/* problems first (worst first), at most three until asked; the configuration syntax of a fix sits behind "How to fix by hand" */}
+    {open ? <ul className="geochecks">{(all ? [...issues.sort(byLevel), ...r.checks.filter(c => c.level === 'ok')] : [...issues].sort(byLevel).slice(0, 3)).map((c, i) => <li key={i} className={c.level}>
+      <Icon n={c.level === 'ok' ? 'check' : c.level === 'info' ? 'info' : 'alert'} s={13} /><span className="grow">{c.text}{c.fix && c.level !== 'ok' ? <details className="howfix"><summary className="small faint">How to fix by hand</summary><span className="small">{c.fix}</span></details> : null}</span>
+      {role === 'admin' && c.action && c.clusterId ? <Button sm busy={fixing === c.id + c.clusterId} onClick={() => fix(c)}>{c.action === 'archive_fallback' ? 'Enable the archive fallback' : 'Enable pg_rewind'}</Button> : null}</li>)}
+      <li className="more"><button className="linkbtn small" onClick={() => setAll(!all)}>{all ? 'Show only what needs attention' : issues.length > 3 ? `Show all ${r.checks.length} checks (${issues.length - 3} more to fix)` : `Show all ${r.checks.length} checks`}</button></li></ul> : null}
     {edit ? <Modal title="Data loss target (RPO)" onClose={() => setEdit(false)} footer={<><div className="grow" /><Button onClick={() => setEdit(false)}>Cancel</Button><Button kind="primary" busy={busy} onClick={save}>Save</Button></>}>
-      <Field label="Seconds of transactions it is acceptable to lose if the primary site disappears" hint="Above the target the pair is “with reservations”; above ten times the target, “not ready”. Applies to all site pairs.">
+      <Field label="Seconds of transactions it is acceptable to lose if the primary site disappears" hint="Above the target the pair has something to fix; above ten times the target it is not ready. Applies to all site pairs.">
         <input className="input" type="number" min={1} max={86400} value={rpo} onChange={e => setRpo(e.target.value)} /></Field></Modal> : null}
   </div>;
 }

@@ -22,6 +22,8 @@ import { mountJoinRoutes } from '../../server/join';
 import { mountWorkerRoutes } from '../../server/workers';
 import { mountGeoRoutes } from '../../server/geo';
 import { audit } from '../../server/ops';
+// suffixes like the agent's: the real time of the operation, not a fixed placeholder that ends up in screenshots and docs
+const stamp = () => new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
 
 const port = Number(process.argv[2] || 5188); const staticDir = process.argv[3] || '/tmp/claude-0/ui';
 const withAgent = process.env.NO_AGENT !== '1';
@@ -78,7 +80,7 @@ const withAgent = process.env.NO_AGENT !== '1';
       if (op.type === 'restore_diff') { await sleep(300); return report(op.id, { status: 'succeeded', result: { object: p.object, primary_key: ['id'], restored_rows: 500, live_rows: 6, columns_only_in_one_side: [], counts: { missing_now: 2, added_since: 1, changed: 1 }, limit: 200,
         missing_now: [{ key: [200], restored: { id: 200, name: 'c200' } }, { key: [201], restored: { id: 201, name: 'c201' } }], added_since: [{ key: [900], live: { id: 900, name: 'new' } }], changed: [{ key: [1], restored: { id: 1, name: 'old' }, live: { id: 1, name: 'live1' } }] } }); }
       if (op.type === 'restore_apply_rows') { await sleep(300); return report(op.id, { status: 'succeeded', result: { object: p.object, inserted: (p.restore_keys || []).length, updated: 0, deleted: (p.delete_keys || []).length, safety_copy: 'public.pgarca_rowsafe_20260101_orders' } }); }
-      if (op.type === 'ephemeral_preflight') { await sleep(400); return report(op.id, { status: 'succeeded', result: { ok: false, level: 'bad', major: 15, host: { os: 'Ubuntu 24.04', cpus: 4, mem_available: 8e9, root: false, sudo_nopasswd: false }, settings: p.ephemeral || {},
+      if (op.type === 'ephemeral_preflight') { await sleep(400); return report(op.id, { status: 'succeeded', result: { ok: false, level: 'bad', major: 15, host: { os: 'Ubuntu 24.04', cpus: 4, mem_available: 8 * 2 ** 30, root: false, sudo_nopasswd: false }, settings: p.ephemeral || {},
         checks: [{ id: 'user', level: 'ok', text: 'runs as an unprivileged user (uid 1000)' }, { id: 'binaries', level: 'bad', text: 'no PostgreSQL 15 binaries on this host (found: 16)', fix: 'install PostgreSQL 15: see the installation plan below', missing_major: 15 }, { id: 'scratch', level: 'ok', text: 'scratch /var/tmp/pg_arca_scratch: 80.0 GiB free' }, { id: 'memory', level: 'ok', text: '8.0 GiB of memory available' }],
         installations: [{ bindir: '/usr/lib/postgresql/16/bin', major: 16, version: '16.4', missing_tools: [], complete: true, source: 'system' }],
         install_plan: { major: 15, recommended: 'private', host: { os: 'Ubuntu 24.04', family: 'debian' }, modes: {
@@ -106,13 +108,13 @@ const withAgent = process.env.NO_AGENT !== '1';
       if (op.type === 'restore_db_swap') { await sleep(300); return report(op.id, { status: 'succeeded', result: { replaced: true, restored: p.restored, original: p.original, old_kept_as: p.original + '_before_20260101_000000', sessions_ended: 1 } }); }
       if (op.type === 'restore_promote') {
         await sleep(300);
-        const plan = { mode: p.mode, tables: [{ schema: 'public', name: 'orders', kind: 'r', action: p.mode === 'as_new' ? 'copy' : 'swap', exists_now: true, rows_at_target: 1234, old_kept_as: 'orders_old_20260101000000', new_name: 'orders_pitr_20260101000000' }],
+        const plan = { mode: p.mode, tables: [{ schema: 'public', name: 'orders', kind: 'r', action: p.mode === 'as_new' ? 'copy' : 'swap', exists_now: true, rows_at_target: 1234, old_kept_as: `orders_old_${stamp()}`, new_name: `orders_pitr_${stamp()}` }],
           inbound_fks: [{ name: 'items_order_fk', schema: 'public', table: 'items', ref_schema: 'public', ref_table: 'orders' }], outbound_fks: [], views: [{ schema: 'public', name: 'v_totals', kind: 'v' }], warnings: [], missing_prereq: { extensions: [], schemas: [], types: [], functions: [] } };
         if (p.dry_run) return report(op.id, { status: 'succeeded', result: { ...plan, dry_run: true } });
         // replace: the check before the swap finds rows that would be orphaned (refused, nothing changed) until the operator accepts them
         if (p.mode === 'replace' && !p.allow_orphans) return report(op.id, { status: 'failed', error: 'PGA-GEN-096: promotion not done, nothing was changed: 3 row(s) of public.items (order_id) would reference public.orders rows that are not in the restored copy' });
         if (p.allow_orphans) plan.warnings = ['foreign keys left NOT VALID on purpose (allow_orphans): public.items -> public.orders: 3 row(s)'] as any;
-        return report(op.id, { status: 'succeeded', result: { mode: p.mode, promoted: ['public.orders'], promoted_as: 'public.orders', old_kept: ['public.orders_old_20260101000000'], old_kept_as: 'public.orders_old_20260101000000', foreign_keys_reattached: 1, views_recreated: 1, plan, stage_dropped: !!p.drop_stage } });
+        return report(op.id, { status: 'succeeded', result: { mode: p.mode, promoted: ['public.orders'], promoted_as: 'public.orders', old_kept: [`public.orders_old_${stamp()}`], old_kept_as: `public.orders_old_${stamp()}`, foreign_keys_reattached: 1, views_recreated: 1, plan, stage_dropped: !!p.drop_stage } });
       }
       if (op.type === 'hba_read') {
         const eff = [{ line_number: 90, type: 'local', database: ['all'], user_name: ['postgres'], address: null, netmask: null, auth_method: 'peer', options: null, error: null },
@@ -142,7 +144,7 @@ const withAgent = process.env.NO_AGENT !== '1';
       if (op.type === 'restore_kept_drop') { await sleep(300); keptDirs = keptDirs.filter(k => k.path !== p.path); return report(op.id, { status: 'succeeded', result: { removed: p.path } }); }
       if ((op.type === 'restore_plan' || op.type === 'restore_instance') && p.replace_production) {
         const rep = { method: 'systemd', unit: 'postgresql@16-main.service', was_running: true, data_directory: PGD, carry_unarchived_wal: !p.target_time, warnings: ['1 standby server(s) stream from this server: after the replacement they follow a past timeline and must be rebuilt from it'], kept: keptDirs.map(k => ({ ...k })) };
-        const base = { set: sets[sets.length - 1].id, chain: sets.slice(-2).map(s => s.id), target: p.target_time || 'end of archive', bytes: 5e9, files: 1200, missing_wal: [], destination: PGD + '.pgarca-new-20260101000000',
+        const base = { set: sets[sets.length - 1].id, chain: sets.slice(-2).map(s => s.id), target: p.target_time || 'end of archive', bytes: 5e9, files: 1200, missing_wal: [], destination: PGD + '.pgarca-new-' + stamp(),
           space: [{ paths: [PGD], roles: ['dest', 'data'], need: 5.3e9, free: 4.3e10, total: 2.0e11, free_after: 3.77e10 }], preflight: { ok: true, level: 'ok', checks: [{ id: 'chunks', level: 'ok', text: 'all 61234 backup chunks needed are present in the repository' }] } };
         if (op.type === 'restore_plan') return report(op.id, { status: 'succeeded', result: { ...base, dry_run: true, replace: rep } });
         for (const ph of ['extract', 'swap', 'recovery']) { await sleep(500); await report(op.id, { status: 'running', progress: { phase: ph, msg: ph === 'swap' ? 'stopping production PostgreSQL' : ph === 'recovery' ? 'production recovering: WAL applied up to 0/4B000100' : undefined } }); }
@@ -160,8 +162,8 @@ const withAgent = process.env.NO_AGENT !== '1';
         for (let i = 1; i <= 3; i++) { await sleep(500); await report(op.id, { status: 'running', progress: { phase: 'extract', files: i * 40, files_total: 120, bytes: i * 1e8, bytes_total: 3e8 } }); }
         // the end chosen before starting: the recovered objects / rows / database go back into the ORIGINAL by the same operation
         const fin = op.type === 'restore_object' && p.finish === 'promote' ? (p.promote_mode === 'replace' && !p.allow_orphans ? { finish_error: 'PGA-GEN-096: promotion not done, nothing was changed: 3 row(s) of public.items (order_id) would reference public.orders rows that are not in the restored copy' }
-              : { finished: 'promote', finish: { mode: p.promote_mode, promoted: ['public.orders'], old_kept: p.promote_mode === 'replace' ? ['public.orders_old_20260101000000'] : [], stage_dropped: true } })
-          : op.type === 'restore_object' && p.finish === 'rows_all' ? { finished: 'rows_all', finish: { inserted: 48210, updated: 0, deleted: 0, safety_copy: 'public.pgarca_rowsafe_20260101000000_orders', stage_dropped: true } }
+              : { finished: 'promote', finish: { mode: p.promote_mode, promoted: ['public.orders'], old_kept: p.promote_mode === 'replace' ? [`public.orders_old_${stamp()}`] : [], stage_dropped: true } })
+          : op.type === 'restore_object' && p.finish === 'rows_all' ? { finished: 'rows_all', finish: { inserted: 48210, updated: 0, deleted: 0, safety_copy: `public.pgarca_rowsafe_${stamp()}_orders`, stage_dropped: true } }
           : op.type === 'restore_database' && p.replace_original ? { swap: { replaced: true, original: p.database, old_kept_as: p.database + '_before_20260101_000000', sessions_ended: 2 } } : {};
         return report(op.id, { status: 'succeeded', result: { result_database: (fin as any).swap ? p.database : (p.new_name || 'pgarca_stage_1'), destination: p.destination, start_hint: 'pg_ctl -D ' + p.destination + ' start', inspect: 'SELECT 1', ...fin,
           ...(p.create_missing_roles ? { roles_created: ['gone_owner'], warnings: ['roles created as NOLOGIN placeholders (no password, no login, no memberships) to keep owners and privileges: gone_owner'] } : {}) } });

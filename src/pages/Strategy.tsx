@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Empty, Field, Icon, Modal, Skeleton } from '../ui';
+import { Badge, Banner, Button, Card, Empty, Field, Icon, Modal, Skeleton, nof } from '../ui';
 import { revalidate, toast, useQuery, clearDrafts, useDraft, revalidateMatching } from '../hooks';
 import { go } from '../router';
 
@@ -12,7 +12,7 @@ const ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 const ENV_LABEL: Record<string, string> = { prod: 'Production', prep: 'Pre-production', int: 'Integration', dev: 'Development', test: 'Test' };
 const BLANK: Policy = { enabled: true, fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168, verifyDeep: false, retryAfterMinutes: 30 };
 
-const hrs = (h: number) => (h <= 0 ? 'never' : h % 168 === 0 ? `${h / 168 === 1 ? 'week' : `${h / 168} weeks`}` : h % 24 === 0 ? `${h / 24 === 1 ? 'day' : `${h / 24} days`}` : `${h} hours`);
+const hrs = (h: number) => (h <= 0 ? 'never' : h % 168 === 0 ? `${h / 168 === 1 ? 'week' : `${h / 168} weeks`}` : h % 24 === 0 ? `${h / 24 === 1 ? 'day' : `${h / 24} days`}` : h === 1 ? 'hour' : `${h} hours`);
 export function summarize(p: Policy | null): string {
   if (!p) return 'No automatic backups';
   return [`full every ${hrs(p.fullEveryHours)}`, p.incrEveryHours ? `incremental every ${hrs(p.incrEveryHours)}` : 'full only', `${p.retentionFull} ${p.retentionFull === 1 ? 'chain' : 'chains'} kept${p.retentionDays ? ` and ${p.retentionDays} days of history` : ''}`, p.verifyEveryHours ? `verify every ${hrs(p.verifyEveryHours)}${p.verifyDeep ? ' (deep)' : ''}` : 'no verification', ...(p.preferStandby ? ['from a standby when possible'] : []), ...(p.readLimitMBs ? [`read limit ${p.readLimitMBs} MB/s`] : []), ...((p.windowStart ?? 0) !== (p.windowEnd ?? 0) ? [`fulls and verifications ${String(p.windowStart).padStart(2, '0')}:00–${String(p.windowEnd).padStart(2, '0')}:00`] : []), ...(p.rpoTargetMinutes ? [`RPO ${mins(p.rpoTargetMinutes)}`] : []), ...(p.rtoTargetMinutes ? [`RTO ${mins(p.rtoTargetMinutes)}`] : [])].join(' · ');
@@ -79,6 +79,18 @@ export function AssignDialog({ scope, k, label, env, view, onClose, onSaved }: {
       {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
 }
 
+/** The policy recommended for a cluster's environment, assignable in one click (to the cluster only: nothing else changes). */
+export function useRecommended(c: any, onSaved: () => void) {
+  const q = useQuery<PView>('/api/policies'); const [busy, setBusy] = useState(false);
+  const sug = q.data?.templates.find(t => t.id === q.data?.suggested[c.environment]) || null;
+  const assign = async () => {
+    if (!sug) return; setBusy(true);
+    try { await api('PUT', '/api/policies/assignments', { scope: 'cluster', key: c.id, templateId: sug.id }); revalidatePolicies(); onSaved(); toast(`Backups of ${c.name} scheduled with “${sug.name}”`, 'ok'); }
+    catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); }
+  };
+  return { sug, assign, busy };
+}
+
 /** Compact card for the Backup tab: what applies to this cluster and where it comes from. */
 export function StrategyCard({ c, policy, source, onSaved }: { c: any; policy: Policy | null; source?: Source; onSaved: () => void }) {
   const q = useQuery<PView>('/api/policies'); const [open, setOpen] = useDraft(`strategycard:${c.id}`, false);
@@ -86,9 +98,9 @@ export function StrategyCard({ c, policy, source, onSaved }: { c: any; policy: P
   return <Card title="Backup policy" actions={<Button sm icon="settings" onClick={() => setOpen(true)} disabled={!q.data}>Change</Button>}>
     <div className="stack">
       {policy ? <><div className="row wrap gap-s"><Badge kind="ok">Active</Badge>{source?.templateName ? <Badge kind="accent">{source.templateName}</Badge> : null}</div><p style={{ margin: 0 }}>{summarize(policy)}</p><p className="small muted" style={{ margin: 0 }}>{rpoText(policy)}</p></>
-        : <Banner kind="warn" title="No automatic backups">{source?.disabled ? 'Scheduling is disabled at this level.' : 'No policy is assigned to this cluster, its folder or its environment.'}{sug ? ` For ${c.environment}, “${sug.name}” is recommended.` : ''}</Banner>}
-      <div className="small muted">{sourceText(source)}</div>
-      <div className="row"><Button sm kind="ghost" onClick={() => go('strategy')}>All policies</Button></div></div>
+        : <div><strong>No automatic backups</strong><p className="small muted" style={{ margin: '4px 0 0' }}>{source?.disabled ? 'Scheduling is disabled at this level.' : 'No policy is assigned to this cluster, its folder or its environment.'}{sug ? ` For ${ENV_LABEL[c.environment] || c.environment}, “${sug.name}” is recommended.` : ''}</p></div>}
+      {policy ? <div className="small muted">{sourceText(source)}</div> : null}
+      <div className="row">{!policy ? <Button sm onClick={() => setOpen(true)} disabled={!q.data}>Choose a policy…</Button> : null}<Button sm kind="ghost" onClick={() => go('strategy')}>All policies</Button></div></div>
     {open && q.data ? <AssignDialog scope="cluster" k={c.id} label={c.name} env={c.environment} view={q.data} onClose={() => setOpen(false)} onSaved={onSaved} /> : null}
   </Card>;
 }
@@ -103,7 +115,7 @@ export function StrategyPage() {
   const envCount = (e: string) => v.clusters.filter(c => c.environment === e).length;
   const applySuggested = async () => {
     const envs = [...new Set(uncovered.map(c => c.environment))].filter(e => ENVS.includes(e));
-    try { for (const e of envs) await api('PUT', '/api/policies/assignments', { scope: 'env', key: e, templateId: v.suggested[e] }); revalidatePolicies(); toast(`Recommended policies applied to ${envs.length} environment(s)`, 'ok'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); }
+    try { for (const e of envs) await api('PUT', '/api/policies/assignments', { scope: 'env', key: e, templateId: v.suggested[e] }); revalidatePolicies(); toast(`Recommended policies applied to ${nof(envs.length, 'environment')}`, 'ok'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); }
   };
   const del = async (t: Tpl) => { try { await api('DELETE', `/api/policies/templates/${t.id}`); revalidatePolicies(); toast('Template deleted', 'ok'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } };
   const lineOf = (scope: 'global' | 'env' | 'folder', k: string) => asgLabel(v.assignments[scope === 'global' ? 'global' : `${scope}:${k}`], v.templates);
@@ -113,12 +125,12 @@ export function StrategyPage() {
     <td className="num"><Button sm onClick={() => setDlg({ scope, k, label: title, env })}>Assign</Button></td></tr>; };
   return <>
     <div className="pagehead"><div className="grow"><h1>Backup policies</h1><p className="sub">Decide once per environment or folder; every cluster follows the closest level. An assignment on a single cluster overrides everything.</p></div></div>
-    {uncovered.length ? <Banner kind="warn" title={`${uncovered.length} cluster(s) without automatic backups`} actions={<Button sm kind="primary" onClick={applySuggested}>Apply the recommended ones per environment</Button>}>{uncovered.map(c => c.name).join(', ')}. The recommended template depends on the environment (production → “{v.templates.find(t => t.id === v.suggested.prod)?.name}”).</Banner> : v.clusters.length ? <Banner kind="ok" title="Every cluster has an active policy" /> : null}
+    {uncovered.length ? <Banner kind="warn" title={`${nof(uncovered.length, 'cluster')} without automatic backups`} actions={<Button sm kind="primary" onClick={applySuggested}>Apply the recommended ones per environment</Button>}>{uncovered.map(c => c.name).join(', ')}. The recommended template depends on the environment (production → “{v.templates.find(t => t.id === v.suggested.prod)?.name}”).</Banner> : v.clusters.length ? <Banner kind="ok" title="Every cluster has an active policy" /> : null}
     <div className="stack-l" style={{ marginTop: 16 }}>
       <Card title="Levels" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Level</th><th>Assignment</th><th /></tr></thead><tbody>
         <Line scope="global" k="" title="All clusters" sub="Fallback value when no level below is set" />
-        {ENVS.map(e => <Line key={e} scope="env" k={e} env={e} title={`Environment: ${ENV_LABEL[e]}`} sub={`${envCount(e)} cluster(s) · recommended: ${v.templates.find(t => t.id === v.suggested[e])?.name}`} />)}
-        {v.folders.map(f => <Line key={f} scope="folder" k={f} title={`Folder: ${f}`} sub={`${v.clusters.filter(c => c.folder === f || c.folder.startsWith(f + '/')).length} cluster(s)`} />)}</tbody></table></div></Card>
+        {ENVS.map(e => <Line key={e} scope="env" k={e} env={e} title={`Environment: ${ENV_LABEL[e]}`} sub={`${nof(envCount(e), 'cluster')} · recommended: ${v.templates.find(t => t.id === v.suggested[e])?.name}`} />)}
+        {v.folders.map(f => <Line key={f} scope="folder" k={f} title={`Folder: ${f}`} sub={nof(v.clusters.filter(c => c.folder === f || c.folder.startsWith(f + '/')).length, 'cluster')} />)}</tbody></table></div></Card>
 
       <Card title="Cluster" pad={false}>{!v.clusters.length ? <Empty icon="shield" title="No connected clusters" /> : <div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>Folder</th><th>Effective policy</th><th /></tr></thead><tbody>
         {v.clusters.map(c => <tr key={c.id}><td><a href={`#/c/${encodeURIComponent(c.id)}/backup`}><strong>{c.name}</strong></a><div className="small muted">{c.environment}</div></td>
