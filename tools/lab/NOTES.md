@@ -81,10 +81,12 @@ Uso (sull'host Proxmox, root): `./virgin.sh list`, `./virgin.sh create all` (o i
 - `restore-ui.cjs` attiva da sé l'archiviazione WAL dalla UI (con il riavvio dalla scheda Backup) sui server appena collegati. Lo scenario `server` sostituisce la produzione: va bene solo su standalone e viene rifiutato con un motivo su Patroni, tablespace e container.
 - `hy.sh fixip`: IP fissi per hy1/hy2/etcd/HAProxy senza ricreare i container (dopo un reboot si erano scambiati). `scenario-hy.py setup,switch,dr,wan`: tutta la coppia geo dalla console.
 
-## Copia offsite S3 (15/10): prova contro MinIO reale (da fare sul lab)
+## Copia offsite S3 (15/10): prova contro un server S3 reale — FATTA, verde
+MinIO non distribuisce più immagini né binari liberi (quay.io 401, Docker Hub «access denied», dl.min.io 410): si usa **SeaweedFS** (Docker Hub `chrislusf/seaweedfs`) con credenziali, così la firma SigV4 viene davvero verificata. Script: `~/lablogs/s3auth.sh` sulla VM.
 ```bash
-docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=pgarca -e MINIO_ROOT_PASSWORD=pgarca-secret-1 quay.io/minio/minio server /data
-docker exec minio mc alias set local http://127.0.0.1:9000 pgarca pgarca-secret-1 && docker exec minio mc mb local/bk
-cd unix-agent && PG_ARCA_TEST_S3_ENDPOINT=http://127.0.0.1:9000 PG_ARCA_TEST_S3_KEY=pgarca PG_ARCA_TEST_S3_SECRET=pgarca-secret-1 PG_ARCA_TEST_S3_BUCKET=bk python3 -m unittest tests.test_offsite tests.test_s3 -v
+mkdir -p ~/s3cfg && echo '{"identities":[{"name":"pgarca","credentials":[{"accessKey":"pgarca","secretKey":"pgarca-secret-1"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' > ~/s3cfg/s3.json
+docker run -d --name s3srv -p 127.0.0.1:9000:8333 -v ~/s3cfg:/cfg:ro chrislusf/seaweedfs server -s3 -s3.config=/cfg/s3.json
+# bucket: nome di almeno 3 caratteri (S3) -> pgarca-test; creato con S3Client(...)._req('PUT')
+cd unix-agent && PG_ARCA_TEST_S3_ENDPOINT=http://127.0.0.1:9000 PG_ARCA_TEST_S3_KEY=pgarca PG_ARCA_TEST_S3_SECRET=pgarca-secret-1 PG_ARCA_TEST_S3_BUCKET=pgarca-test python3 -m unittest tests.test_offsite tests.test_s3 -v
 ```
-Poi dalla console: Status → Nodes → Offsite copy su un nodo del cluster pg17 (endpoint http://<vm>:9000, bucket bk, prefix pg17), «Test the bucket and save», «Sync now», verificare gli oggetti con `mc ls -r local/bk`.
+Esito 15/10 sera: 14 test, OK (1 saltato: i guasti simulati richiedono il server finto); segreto sbagliato → `403 SignatureDoesNotMatch`. Il server rifiuta (400) o normalizza alcuni nomi ostili all'upload: il test ora li conta da ciò che il bucket contiene davvero. Resta da fare dalla console: Status → Nodes → Offsite copy su un nodo (endpoint http://<vm>:9000 se la porta non è solo su 127.0.0.1), «Test the bucket and save», «Sync now». AWS S3 vero non provato.
