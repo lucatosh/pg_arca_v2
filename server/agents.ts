@@ -22,7 +22,7 @@ import { resolveScoped, ephemeralForAgent, EPHEMERAL_OPS, CENTRAL_OPS } from './
 import { conflictFor, activityOf } from './conflicts';
 import { agentOutdated, consoleAgentBuild } from './agentbuild';
 import { startFailover } from './geodr';
-import { startSwitchover, geoParamGuard, geoStanzaPlan, geoOf } from './geo';
+import { startSwitchover, geoParamGuard, geoStanzaPlan, geoOf, knownPeerEndpoints } from './geo';
 const geoStanzaChecked = new Map<string, number>();
 
 export interface Deps {
@@ -399,7 +399,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (params?.into !== undefined && params?.into !== null && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can deliver a restore to an explicit address (into).' });
     if (type === 'hba_apply' || type === 'hba_restore') { const open = hbaOpenRule(params?.rules); if (open && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: `Only an administrator can open the server to the network without a password or with a clear-text one: ${open}` }); }
     if (type === 'geo_demote') {                                              // the site may only follow a registered peer site: the agent connects there with the cluster's replication credentials
-      const me = geoOf(st, cluster.id); const eps = (me?.peers || []).map((p: any) => p.endpoint).filter(Boolean);
+      const eps = knownPeerEndpoints(st, cluster.id);
       if (!eps.some((e: any) => e.host === String(params.host) && Number(e.port) === Number(params.port))) return res.status(409).json({ error: 'not_a_peer', message: 'A site can only be demoted under a registered peer site (Geo-redundancy → “Address of …”): the address given is not one.' });
     }
     const spec = OP_SPECS[type];

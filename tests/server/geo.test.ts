@@ -4,6 +4,7 @@ import assert from 'assert'; import fs from 'fs'; import os from 'os'; import pa
 import { MiniApp } from './mini-express';
 import { Store } from '../../server/store';
 import { sameTimelineDiverged, parseHistory, followsPrimary } from '../../server/geodr';
+import { knownPeerEndpoints } from '../../server/geo';
 import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, stanzaOf, geoReadiness } from '../../server/geo';
 import { evaluate } from '../../server/health';
 import { GEO_DR_TIMING, geoMonitorTick, watchOf, recoverInterruptedGeoJobs } from '../../server/geodr';
@@ -310,6 +311,12 @@ import { deriveCluster } from '../../server/view';
     for (let i = 0; i < 120 && jobs().find(j => j.type === 'rejoin')!.status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
     const rj4 = jobs().find(j => j.type === 'rejoin')!; assert.strictEqual(rj4.status, 'succeeded', JSON.stringify(rj4.steps)); assert(/ahead of hy-rm \(12\)/.test(rj4.steps[0].text), rj4.steps[0].text); assert(rj4.steps.some((x: any) => /timeline 13 of hy-mi abandoned/.test(x.text)), JSON.stringify(rj4.steps));
     assert(st4.peek().settings.geoFailovers[key].rejoinedAt, 'rejoined for real');
+  }
+  { // peers a site may be demoted under: live peers, and the partner of a recorded failover (a site whose PostgreSQL does not start has no live group)
+    const st6: any = { clusters: [{ id: 'x', name: 'hy-mi' }, { id: 'y', name: 'hy-rm', geoEndpoint: { host: '192.168.1.232', port: 5000 } }, { id: 'z', name: 'other', geoEndpoint: { host: '10.0.0.9', port: 5000 } }],
+      nodes: {}, operations: [], settings: { geoFailovers: { k: { from: 'x', to: 'y' } } } };
+    assert.deepStrictEqual(knownPeerEndpoints(st6, 'x'), [{ host: '192.168.1.232', port: 5000 }]);
+    assert.deepStrictEqual(knownPeerEndpoints(st6, 'z'), [], 'an unrelated cluster is never a peer');
   }
   { // a console restart while a geo job runs: the job is closed as interrupted and the pair released (it blocked switchover, failover and rejoin for good)
     const st5 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'geojobs-')));

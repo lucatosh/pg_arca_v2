@@ -172,6 +172,19 @@ export function geoOf(st: any, clusterId: string) {
   return null;
 }
 
+/** Endpoints a site may be demoted under: its live peers, and the sites it was paired with in a recorded failover. A site whose PostgreSQL does not
+ *  start (exactly when it must be rebuilt) has no system identifier to be grouped by, so the live group alone left it with no peer and
+ *  "Demote with rebuild" was refused (seen on the lab after a rejoin interrupted by a console restart). */
+export function knownPeerEndpoints(st: any, clusterId: string): { host: string; port: number }[] {
+  const out: any[] = []; const me = geoOf(st, clusterId);
+  for (const p of me?.peers || []) if (p.endpoint) out.push(p.endpoint);
+  for (const f of Object.values(st.settings?.geoFailovers || {}) as any[]) {
+    const other = f?.from === clusterId ? f.to : f?.to === clusterId ? f.from : null; if (!other) continue;
+    const c = (st.clusters || []).find((x: any) => x.id === other); if (c?.geoEndpoint?.host) out.push(c.geoEndpoint);
+  }
+  return out;
+}
+
 /** Stanza name the agent derives from a cluster key (pg_arca/engine/ctx.py _stanza_name): "patroni:geo-dc1" -> "patroni-geo-dc1". */
 export const stanzaOf = (key: string) => key.replace(/:/g, '-').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 60);
 
