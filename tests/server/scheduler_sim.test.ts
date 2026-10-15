@@ -37,7 +37,7 @@ class SimDate extends RealDate {                // the whole console lives in si
       d.nodes['n1'] = { id: 'n1', name: 'pg1', clusterId: 'c1', lastSeen: new Date(t0).toISOString(), snapshot: { postgres: { is_in_recovery: false }, backup: { recent_sets: [] } } } as any;
       d.nodes['n2'] = { id: 'n2', name: 'pg2', clusterId: 'c1', lastSeen: new Date(t0).toISOString(), snapshot: { postgres: { is_in_recovery: true }, backup: { recent_sets: [] } } } as any;
     });
-    let primary = 'n1'; let offlineUntil = 0; let offlineTotal = 0;
+    let primary = 'n1'; let offlineUntil = 0; let offlineSince = 0; let offlineTotal = 0;
     const agentSets: any[] = [];               // what the agent really has
     const running: Record<string, number> = {}; // op id -> tick when it finishes
     let reportedUpTo = 0;                       // telemetry lag: the snapshot shows agentSets[0..reportedUpTo)
@@ -48,7 +48,7 @@ class SimDate extends RealDate {                // the whole console lives in si
       // telemetry (lags 0..3 ticks)
       if (rnd() < 0.5) reportedUpTo = agentSets.length;
       if (rnd() < 0.002) primary = primary === 'n1' ? 'n2' : 'n1';                       // Patroni failover: the other node becomes primary (shared repository)
-      if (t >= offlineUntil && rnd() < 0.003) { const d = (1 + Math.floor(rnd() * 6)) * H; offlineUntil = t + d; offlineTotal += d; }   // agents unreachable
+      if (t >= offlineUntil && rnd() < 0.003) { const d = (1 + Math.floor(rnd() * 6)) * H; offlineSince = t; offlineUntil = t + d; offlineTotal += d; }   // agents unreachable
       const online = t >= offlineUntil;
       await st.mutate(d => { for (const id of ['n1', 'n2']) { const n = d.nodes[id]; if (online) n.lastSeen = new Date(t).toISOString(); n.snapshot.postgres.is_in_recovery = id !== primary;
         n.snapshot.backup.recent_sets = agentSets.slice(0, reportedUpTo).slice(-60); } });
@@ -79,10 +79,13 @@ class SimDate extends RealDate {                // the whole console lives in si
       const recentFail = (since: number) => fails.some(f => f > since);
       if (okFulls.length) {
         const lastOk = okAny[okAny.length - 1];
+        // the whole length of an outage that overlaps the waiting period is slack (an operation leased just before the outage finishes in the
+        // tick the agents come back, after the scheduler ran: that success must not erase the outage, or the invariant fires one tick early)
+        const outage = (since: number) => (offlineUntil > since ? offlineUntil - Math.max(offlineSince, since) : 0);
         const slack = 3 * H + (offlineUntil > lastOk ? offlineUntil - lastOk : 0);
         assert(t - lastOk <= incrH * H + slack || recentFail(lastOk), `no successful backup for ${((t - lastOk) / H).toFixed(1)} h without failures (${ctx(t)})` + dump());
         const lastFull = okFulls[okFulls.length - 1];
-        assert(t - lastFull <= fullH * H + slack + 2 * H || recentFail(lastFull + fullH * H - H), `no full for ${((t - lastFull) / H).toFixed(1)} h (${ctx(t)})` + dump());
+        assert(t - lastFull <= fullH * H + Math.max(slack, 3 * H + outage(lastFull)) + 2 * H || recentFail(lastFull + fullH * H - H), `no full for ${((t - lastFull) / H).toFixed(1)} h (${ctx(t)})` + dump());
       } else assert(t - t0 <= 2 * H || fails.length, `no first full after ${((t - t0) / H).toFixed(1)} h (${ctx(t)})`);
     }
     console.log(`  fullH=${fullH} incrH=${incrH} failP=${failP}: ${okFulls.length} fulls, ${okAny.length} backups, ${fails.length} failures, ${(offlineTotal / H).toFixed(0)} h offline in 30 days`);
