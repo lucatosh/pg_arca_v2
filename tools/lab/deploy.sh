@@ -3,7 +3,12 @@
 #   tools/lab/deploy.sh [branch]        e.g. tools/lab/deploy.sh release/1.0.0-rc.1
 # Run from /opt/pg_arca_v2/tools/lab as a docker-group user (sudo w/o password).
 set -e; cd "$(dirname "$0")/../.."
-if [ -n "${1:-}" ]; then git fetch -q origin "$1" && git checkout -q -B "$1" "origin/$1"; fi
+if [ -n "${1:-}" ]; then
+  git fetch -q origin "$1"
+  # an untracked package-lock.json left by an earlier `npm install` blocks the checkout of a branch that tracks it
+  [ -f package-lock.json ] && [ -z "$(git ls-files package-lock.json)" ] && mv package-lock.json /tmp/package-lock.json.before-deploy
+  git checkout -q -B "$1" "origin/$1" || { echo "CHECKOUT FAILED: not deployed"; exit 1; }
+fi
 git pull -q --ff-only; git log --oneline | head -1
 if ! npm run build > /tmp/deploy-build.log 2>&1; then grep -E "error" /tmp/deploy-build.log | head -20; echo "BUILD FAILED: console not restarted"; exit 1; fi; grep -E "built" /tmp/deploy-build.log
 sudo systemctl restart pg-arca-console
