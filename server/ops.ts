@@ -1,3 +1,4 @@
+import { PHASE } from './phases';
 import fs from 'fs';
 import path from 'path';
 /**
@@ -61,15 +62,19 @@ export interface SubmitInput {
 
 export const OP_LOG_MAX = 400;
 /** One human line for a progress report: the agent's own `msg` if any, otherwise the phase with its counters. */
+const hb = (n: number) => n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GiB` : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(0)} KiB` : `${n} B`;
 export function progressLine(p: any): string {
   if (!p || typeof p !== 'object') return '';
   const bits: string[] = [];
-  if (p.phase) bits.push(String(p.phase));
+  // read by people in the operation log: the phase in words, sizes in KiB/MiB/GiB with a percentage, units in the plural when they are
+  // (the log used to show "copy · 100000000/400000000 byte" and an Italian "segmenti")
+  if (p.phase) bits.push(PHASE[String(p.phase)] || String(p.phase));
   if (p.msg) bits.push(String(p.msg).slice(0, 300));
-  if (p.files_total) bits.push(`${p.files ?? 0}/${p.files_total} file`);
-  if (p.bytes_total) bits.push(`${p.bytes ?? 0}/${p.bytes_total} byte`);
-  if (p.chunks) bits.push(`${p.chunks} chunk`);
-  if (p.segments_total) bits.push(`${p.segments ?? 0}/${p.segments_total} segmenti`);
+  const pct = (a: number, b: number) => (b > 0 ? ` (${Math.min(100, Math.floor((100 * a) / b))}%)` : '');
+  if (p.files_total) bits.push(`${p.files ?? 0} of ${p.files_total} ${p.files_total === 1 ? 'file' : 'files'}${pct(Number(p.files) || 0, Number(p.files_total))}`);
+  if (p.bytes_total) bits.push(`${hb(Number(p.bytes) || 0)} of ${hb(Number(p.bytes_total))}${pct(Number(p.bytes) || 0, Number(p.bytes_total))}`);
+  if (p.chunks) bits.push(`${p.chunks} ${p.chunks === 1 ? 'chunk' : 'chunks'}`);
+  if (p.segments_total) bits.push(`${p.segments ?? 0} of ${p.segments_total} WAL ${p.segments_total === 1 ? 'segment' : 'segments'}`);
   if (p.elapsed_sec != null) bits.push(`${p.elapsed_sec} s`);
   return bits.join(' · ');
 }

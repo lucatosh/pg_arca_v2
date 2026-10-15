@@ -1,7 +1,7 @@
 import { RecoveryPlacement } from './Placement';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { takePendingIntent } from '../tasks';
-import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago, nof } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago, nof, setName } from '../ui';
 import { Op, useDraft, useOpRunner, useQuery } from '../hooks';
 import { OpPanel, Result, hintFor } from './shared';
 import { DestPicker, RestoredCard, RestoredList, TTL_CHOICES } from './Restored';
@@ -431,7 +431,7 @@ function PlanView({ p, scope }: { p: any; scope: Scope }) {
     {p.preflight?.checks?.length ? <Preflight pf={p.preflight} /> : null}
     <SpaceBars vols={p.space} />
     <dl className="kv"><dt>Target</dt><dd>{p.target === 'end of archive' ? 'latest available' : Number.isFinite(Date.parse(p.target)) ? dt(p.target) : p.target}</dd>
-      <dt>Base backup</dt><dd><span className="mono">{p.set}</span></dd>
+      <dt>Backup</dt><dd>{setName(p.set)} <span className="mono faint small">{p.set}</span></dd>
       <dt>Chain</dt><dd className="mono small">{(p.chain || []).join(' → ')}</dd>
       {scope === 'instance' ? <><dt>Data to extract</dt><dd>{bytes(p.bytes)} in {num(p.files)} files</dd></> : <><dt>Data to extract</dt><dd>{bytes(p.extract_bytes)} of the cluster’s {bytes(p.cluster_bytes)}{saved != null ? <> — <strong>{saved}% less</strong></> : null}</dd></>}
       {p.tablespaces && Object.keys(p.tablespaces).length ? <><dt>Tablespace</dt><dd className="small">{Object.entries(p.tablespaces).map(([oid, path]: any) => <div key={oid}><span className="mono">{oid}</span> → <span className="mono">{String(path)}</span>{(p.tablespaces_relocated || []).includes(oid) ? <> <Badge kind="warn" title="The original directory belongs to the source server: it is never overwritten">relocated</Badge></> : null}</div>)}</dd></> : null}

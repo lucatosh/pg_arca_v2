@@ -36,6 +36,16 @@ const DT_OPTS: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', ye
 export const dt = (iso?: string | number | Date | null) => { if (iso == null || iso === '') return '—'; const d = new Date(iso as any); return isNaN(d.getTime()) ? '—' : d.toLocaleString('en-GB', DT_OPTS); };
 /** "1 table", "2 tables": counts in sentences never read "1 tables" or "rule(s)". */
 export const nof = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
+/** A backup set id ("20261009-185335F_20261015-185408I": UTC time + F/D/I, chained to its full) in words: "Incremental of 15 Oct 2026, 20:54:08 CEST
+ *  (on the full of 9 Oct 2026)". The id stays available as a tooltip / in technical details; a person reads the sentence. */
+export function setName(id?: string | null): string {
+  if (!id) return '—';
+  const parts = String(id).split('_'); const m = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)([FDI])$/.exec(parts[parts.length - 1]);
+  if (!m) return String(id);
+  const at = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]); const kind = m[7] === 'F' ? 'Full backup' : m[7] === 'D' ? 'Differential' : 'Incremental';
+  const p = parts.length > 1 ? /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)F$/.exec(parts[0]) : null;
+  return `${kind} of ${dt(at)}${p ? ` (on the full of ${dday(Date.UTC(+p[1], +p[2] - 1, +p[3], +p[4], +p[5], +p[6]))})` : ''}`;
+}
 /** Day only, same convention: "15 Oct 2026". */
 export const dday = (iso?: string | number | Date | null) => { if (iso == null || iso === '') return '—'; const d = new Date(iso as any); return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }); };
 /** Time of day only, same convention (logs, step lists). */

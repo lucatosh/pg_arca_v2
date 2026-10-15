@@ -4,7 +4,7 @@ import { RestartPg } from './RestartPg';
 import { OffsiteCopy } from './AgentSettings';
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Skeleton, bytes, dt, dur, ago, num, nof } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Skeleton, bytes, dt, dur, ago, num, nof, setName } from '../ui';
 import { Op, revalidate, toast, useOpRunner, useQuery, useDraft } from '../hooks';
 import { OP_LABEL, OpPanel, Result } from './shared';
 
@@ -99,7 +99,7 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
       {mine.length > 1 ? <label className="row small" style={{ gap: 8 }}>Run from <select className="input" style={{ width: 'auto' }} value={from} onChange={e => setFrom(e.target.value)}><option value="">automatic (primary)</option>{mine.map(n => <option key={n.id} value={n.id}>{n.name}{n.role ? ` — ${n.role}` : ''}</option>)}</select><span className="muted">— from a replica the primary carries no load; the console asks it to switch the WAL segment by itself.</span></label> : null}
       <label className="row small" style={{ gap: 8 }}><input type="checkbox" checked={fast} onChange={e => setFast(e.target.checked)} /> Immediate checkpoint <span className="muted">— the backup starts right away; when off, PostgreSQL spreads the checkpoint and the start can take a few minutes (less I/O).</span></label>
       {!hasFull ? <p className="small muted">The first backup must be a full backup.</p> : null}
-      {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} />{r.op?.status === 'succeeded' ? <Banner kind="ok" title={`Backup ${r.op.result?.set} completed`}>{bytes(r.op.result?.bytes_logical)} read, {bytes(r.op.result?.bytes_written)} written to the repository in {dur(r.op.result?.duration_sec)}{r.op.result?.chunks_dedup ? `; ${num(r.op.result.chunks_dedup)} chunks already present (deduplication)` : ''}.</Banner> : null}</> : null}
+      {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} />{r.op?.status === 'succeeded' ? <Banner kind="ok" title={`${setName(r.op.result?.set)} completed`}>{bytes(r.op.result?.bytes_logical)} read, {bytes(r.op.result?.bytes_written)} written to the repository in {dur(r.op.result?.duration_sec)}{r.op.result?.chunks_dedup ? `; ${num(r.op.result.chunks_dedup)} chunks already present (deduplication)` : ''}.</Banner> : null}</> : null}
       {other.map(o => <div key={o.id} className="stack"><OpPanel op={o} cancel={() => cancelOther(o.id)} /></div>)}
     </div></Card>;
 }
@@ -167,9 +167,9 @@ function SetsCard({ sets, d }: { sets: SetRow[]; d: any }) {
   if (!sets.length) return <Card title="Backup"><Empty icon="shield" title="No backups yet">The first full backup creates the starting point for every restore.</Empty></Card>;
   return <Card title="Backups in the repository" pad={false}><div className="tablewrap"><table className="t sets"><thead><tr><th>Backup</th><th>Type</th><th>Status</th><th>Started</th><th className="num">Duration</th><th className="num">Data</th><th className="num">Written</th></tr></thead><tbody>
     {rows.map(({ row: s, depth }) => <tr key={s.id} className={depth ? 'd1' : 'chainrow'}>
-      <td className="mono">{s.id}</td><td>{TYPE_LABEL[s.type]}</td>
+      <td title={s.id}><span className="nowrap">{dt(s.start_time)}</span><div className="mono faint" style={{ fontSize: 11 }}>{s.id}</div></td><td>{TYPE_LABEL[s.type]}</td>
       <td>{s.status === 'COMPLETE' ? <Badge kind="ok">Valid</Badge> : s.status === 'FAILED' || s.status === 'UNRECOVERABLE' ? <Badge kind="bad" title={s.reason}>{s.status === 'FAILED' ? 'Failed' : 'Unrecoverable'}</Badge> : <Badge kind="info">{s.status === 'PENDING_WAL' ? 'Waiting for WAL' : s.status === 'EXPIRING' ? 'Being deleted' : 'Running'}</Badge>}</td>
-      <td title={dt(s.start_time)}>{ago(s.start_time)}</td><td className="num">{dur(s.duration_sec)}</td><td className="num">{bytes(s.bytes_logical)}</td><td className="num">{bytes(s.bytes_written)}</td></tr>)}
+      <td>{ago(s.start_time)}</td><td className="num">{dur(s.duration_sec)}</td><td className="num">{bytes(s.bytes_logical)}</td><td className="num">{bytes(s.bytes_written)}</td></tr>)}
   </tbody></table></div></Card>;
 }
 

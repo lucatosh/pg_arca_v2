@@ -98,7 +98,8 @@ import * as ops from '../../server/ops';
     await ops.report(s3, 'n9', id, 'running', undefined, undefined, 120, { phase: 'checkpoint', elapsed_sec: 2 });
     await ops.report(s3, 'n9', id, 'running', undefined, undefined, 120, { phase: 'copy', files: 1, files_total: 10 });
     const op = s3.peek().operations.find((o: any) => o.id === id)!;
-    assert.deepStrictEqual((op.log || []).map(l => l.text.split(' · ')[0]), ['checkpoint', 'copy']);
+    assert.deepStrictEqual((op.log || []).map(l => l.text.split(' · ')[0]), ['PostgreSQL checkpoint', 'Copying data']);   // phases in words
+    assert.ok((op.log || [])[1].text.includes('1 of 10 files (10%)'), (op.log || [])[1].text);
     const tl = ops.opTimeline(op);
     assert.ok(tl.some(x => x.kind === 'status') && tl.some(x => x.kind === 'log') && tl.every((x, i) => i === 0 || tl[i - 1].at <= x.at));
     // a large result lives in a side file: the state keeps a summary (scalars included), the API gives back the whole thing, pruning removes the file

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Badge, Banner, Button, Card, Confirm, CopyBlock, Field, Icon, bytes, dt } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, CopyBlock, Field, Icon, bytes, dt, setName } from '../ui';
 import { revalidate, useOpRunner } from '../hooks';
 import { OpPanel } from './shared';
 
@@ -57,7 +57,7 @@ export function RestoredCard({ r, clusterId, compact }: { r: any; clusterId: str
       <span className="small muted">{r.keep ? 'Kept until you delete it' : r.expires_at ? <>Deleted {left(r.expires_at)} ({dt(r.expires_at)})</> : null}</span></div>
     <dl className="kv small">
       <dt>Server</dt><dd>{r.nodeName}{host && host !== r.nodeName ? <> ({host})</> : null}, port <strong>{r.port}</strong></dd>
-      <dt>Content</dt><dd>PostgreSQL {r.major}, backup {r.set ? <code>{r.set}</code> : '—'}, {r.target ? <>up to <em>{String(r.target).replace('end of archive', 'end of the archive')}</em></> : null}{r.size_bytes ? <>, {bytes(r.size_bytes)}</> : null}</dd>
+      <dt>Content</dt><dd>PostgreSQL {r.major}, {r.set ? <span title={r.set}>{setName(r.set).replace(/^Full backup/, 'full backup').replace(/^(Differential|Incremental)/, m => m.toLowerCase())}</span> : 'backup —'}, {r.target ? <>up to <em>{String(r.target).replace('end of archive', 'end of the archive')}</em></> : null}{r.size_bytes ? <>, {bytes(r.size_bytes)}</> : null}</dd>
       <dt>Directory</dt><dd><code>{r.dest}</code></dd>
       {r.databases?.length ? <><dt>Database</dt><dd>{r.databases.join(', ')}</dd></> : null}
     </dl>
