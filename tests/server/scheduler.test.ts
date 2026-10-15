@@ -12,7 +12,8 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   const WEEK = 168 * 3600_000; const sameBucket = Math.floor(now / WEEK) === Math.floor((now + 31 * 60_000) / WEEK);
   assert(!validatePolicy({ ...DEFAULT_POLICY, fullEveryHours: 1 }).ok);
   assert(!validatePolicy({ ...DEFAULT_POLICY, incrEveryHours: 200 }).ok);
-  const pol = validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 168, incrEveryHours: 24 }) as any;
+  assert(!validatePolicy({ ...DEFAULT_POLICY, readLimitMBs: -1 }).ok); assert.strictEqual((validatePolicy({ ...DEFAULT_POLICY, readLimitMBs: '80' }) as any).policy.readLimitMBs, 80);
+  const pol = validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 168, incrEveryHours: 24, readLimitMBs: 80 }) as any;
   await st.mutate(d => {
     d.clusters.push({ id: 'c1', name: 'c1', environment: 'prod', source: 'agent', backupPolicy: pol.policy } as any);
     d.nodes['n1'] = { id: 'n1', name: 'pg1', clusterId: 'c1', lastSeen: iso(now), snapshot: { postgres: { is_in_recovery: false }, backup: { recent_sets: [] } } } as any;
@@ -21,6 +22,7 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   let s1 = await tick(now); assert.strictEqual(s1.length, 1); assert(s1[0].includes(':full:'));
   assert.strictEqual((await tick(now + 1000)).length, 0, 'in flight: nothing else');
   const op = st.peek().operations[0]; assert.strictEqual(op.params.type, 'full'); assert.strictEqual(op.createdBy, 'scheduler');
+  assert.strictEqual(op.params.read_limit_mb_s, 80, 'the policy read limit travels with the scheduled backup');
   // fail it -> back-off, no immediate retry
   await ops.lease(st, 'n1', 1); await ops.report(st, 'n1', op.id, 'failed', undefined, 'boom');
   assert.strictEqual((await tick(now + 60_000)).length, 0, 'back-off window');

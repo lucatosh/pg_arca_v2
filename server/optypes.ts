@@ -170,7 +170,8 @@ const intoErr = (p: Record<string, any>) => {
 Object.assign(OP_SPECS, {
   backup_run:    { ...dataOp, target: 'any_node', validate: (p: any) => (['full', 'diff', 'incr'].includes(p.type ?? 'incr') ? null : 'type must be full|diff|incr') ||
                                     (p.archive_timeout !== undefined && !(Number(p.archive_timeout) >= 10 && Number(p.archive_timeout) <= 3600) ? 'archive_timeout 10..3600' : null) ||
-                                    (p.start_fast !== undefined && typeof p.start_fast !== 'boolean' ? 'start_fast must be boolean' : null) },
+                                    (p.start_fast !== undefined && typeof p.start_fast !== 'boolean' ? 'start_fast must be boolean' : null) ||
+                                    (p.read_limit_mb_s !== undefined && !(Number(p.read_limit_mb_s) >= 0 && Number(p.read_limit_mb_s) <= 100000) ? 'read_limit_mb_s 0..100000' : null) },
   backup_info:   { mutating: false, target: 'any_node', lane: 'control', validate: () => null },
   backup_verify: { ...dataOp, mutating: false, validate: (p: any) => p.restore_test && p.set && !setId.test(String(p.set)) ? 'invalid backup set id' : null },
   destination_migrate: { ...dataOp, target: 'primary', validate: (p: any) => {

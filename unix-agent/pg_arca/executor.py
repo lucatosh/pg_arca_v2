@@ -863,7 +863,7 @@ class OperationExecutor:
         ctx = self._ctx()
         meta = run_backup(ctx, str(p.get("type", "incr")), int(p.get("archive_timeout", 120)), self._progress, self._cancelled,
                           owner=getattr(self._tl, "op_id", ""), note=str(p.get("note", ""))[:200],
-                          start_fast=(bool(p["start_fast"]) if "start_fast" in p else None))
+                          start_fast=(bool(p["start_fast"]) if "start_fast" in p else None), read_limit_mb_s=float(p.get("read_limit_mb_s") or 0))
         self._engine_refresh_summary(ctx)
         st = meta.get("stats") or {}
         return {"set": meta["id"], "type": meta["type"], "parent": meta.get("parent"), "start_lsn": meta["start_lsn"], "stop_lsn": meta["stop_lsn"],

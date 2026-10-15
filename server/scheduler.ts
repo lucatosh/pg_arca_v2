@@ -54,6 +54,7 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     const lastFail = myOps.filter(o => o.type === 'backup_run' && o.status === 'failed' && o.idempotencyKey.startsWith('sched:')).map(o => ts(o.updatedAt)).sort().pop();
     if (lastFail && now - lastFail < pol.retryAfterMinutes * 60_000) continue;
 
+    const limit = pol.readLimitMBs ? { read_limit_mb_s: pol.readLimitMBs } : {};
     const submit = async (type: string, params: any, key: string) => {
       if (conflictFor(store.peek().operations, c.id, type, params, 'scheduler')) return false;     // a switchover / promotion / manual run in progress: next tick
       const r = await ops.submit(store, { type, clusterId: c.id, nodeId: target.id, params, idempotencyKey: key, createdBy: 'scheduler', ttlSeconds: 3600 });
@@ -77,11 +78,11 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
       const bucket = Math.floor(now / (pol.fullEveryHours * h));
       // a full that failed in this bucket is retried through a new key after the back-off (attempt counter)
       const attempts = myOps.filter(o => o.idempotencyKey.startsWith(`sched:${c.id}:full:${bucket}`)).length;
-      if (await submit('backup_run', { type: 'full', note: 'scheduled' }, `sched:${c.id}:full:${bucket}:${attempts}`)) continue;
+      if (await submit('backup_run', { type: 'full', note: 'scheduled', ...limit }, `sched:${c.id}:full:${bucket}:${attempts}`)) continue;
     } else if (pol.incrEveryHours && (!Number.isFinite(lastAny) || now - lastAny >= pol.incrEveryHours * h)) {
       const bucket = Math.floor(now / (pol.incrEveryHours * h));
       const attempts = myOps.filter(o => o.idempotencyKey.startsWith(`sched:${c.id}:incr:${bucket}`)).length;
-      if (await submit('backup_run', { type: 'incr', note: 'scheduled' }, `sched:${c.id}:incr:${bucket}:${attempts}`)) continue;
+      if (await submit('backup_run', { type: 'incr', note: 'scheduled', ...limit }, `sched:${c.id}:incr:${bucket}:${attempts}`)) continue;
     }
 
     // retention: once after every successful scheduled backup

@@ -21,6 +21,36 @@ READ_BLOCK = 4 * 1024 * 1024
 TYPE_LETTER = {"full": "F", "diff": "D", "incr": "I"}
 
 
+class ReadLimiter(object):
+    """Ceiling on the bytes read from the data directory per second, shared by every worker thread (a token bucket: at most one second of
+    credit, so a pause never turns into a burst). rate <= 0 = unlimited."""
+
+    def __init__(self, mb_s):
+        self.rate = float(mb_s or 0) * 1048576
+        self.lock = threading.Lock()
+        self.allowance = self.rate
+        self.last = time.time()
+        self.total = 0
+
+    def take(self, nbytes):
+        self.total += nbytes
+        if self.rate <= 0:
+            return
+        while True:
+            with self.lock:
+                now = time.time()
+                self.allowance = min(self.rate, self.allowance + (now - self.last) * self.rate)
+                self.last = now
+                if self.allowance >= nbytes or self.allowance >= self.rate:
+                    self.allowance -= nbytes
+                    return
+                wait = (nbytes - self.allowance) / self.rate
+            time.sleep(min(wait, 1.0))
+
+
+_NO_LIMIT = ReadLimiter(0)
+
+
 def build_chain(repo, target):
     """full -> ... -> target, validated (no cycles, no missing parent, only COMPLETE parents)."""
     chain, seen, cur = [], set(), target
@@ -57,7 +87,7 @@ def unread_entry(st):
     return {"size": st.st_size, "mode": stat.S_IMODE(st.st_mode), "mtime": int(st.st_mtime), "kind": "pages", "chunks": []}, stats
 
 
-def backup_file_sparse(repo, rel, full, st, prev_lsn, chunk_idx, fadvise=True):
+def backup_file_sparse(repo, rel, full, st, prev_lsn, chunk_idx, fadvise=True, limiter=_NO_LIMIT):
     """Store only the chunks of a relation file the WAL summaries flag (chunk_idx: set of chunk indexes); the page-LSN test still applies."""
     stats = _empty_stats()
     try:
@@ -81,6 +111,7 @@ def backup_file_sparse(repo, rel, full, st, prev_lsn, chunk_idx, fadvise=True):
                 buf = f.read(CHUNK_SIZE)
                 if not buf:
                     continue
+                limiter.take(len(buf))
                 npages = (len(buf) + BLCKSZ - 1) // BLCKSZ
                 stats["pages_read"] += npages
                 keep = len(buf) % BLCKSZ != 0
@@ -108,7 +139,7 @@ def backup_file_sparse(repo, rel, full, st, prev_lsn, chunk_idx, fadvise=True):
     return {"size": size, "mode": stat.S_IMODE(st.st_mode), "mtime": int(st.st_mtime), "kind": "pages", "chunks": chunks}, stats
 
 
-def backup_file(repo, rel, full, st, prev_lsn, incremental, fadvise=True):
+def backup_file(repo, rel, full, st, prev_lsn, incremental, fadvise=True, limiter=_NO_LIMIT):
     """Store one file. Returns (entry or None, stats dict)."""
     stats = _empty_stats()
     try:
@@ -130,6 +161,7 @@ def backup_file(repo, rel, full, st, prev_lsn, incremental, fadvise=True):
                 block = f.read(READ_BLOCK)
                 if not block:
                     break
+                limiter.take(len(block))
                 for i in range(0, len(block), CHUNK_SIZE):
                     buf = block[i:i + CHUNK_SIZE]
                     keep = True
@@ -234,17 +266,17 @@ def _external_conf(sess, pgdata):
     return out
 
 
-def run_backup(ctx, btype="incr", archive_timeout=120, progress=None, cancel=None, owner="", note="", start_fast=None):
+def run_backup(ctx, btype="incr", archive_timeout=120, progress=None, cancel=None, owner="", note="", start_fast=None, read_limit_mb_s=0):
     repo = ctx.repo
     repo.init()
     repo.check_writable()
     if not ctx.pgdata or not os.path.exists(os.path.join(ctx.pgdata, "PG_VERSION")):
         raise EngineError("PGA-CFG-014", "%s is not a PGDATA (PG_VERSION missing)" % ctx.pgdata)
     with repo.lock("stanza", owner or "backup"):
-        return _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast)
+        return _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast, ReadLimiter(read_limit_mb_s))
 
 
-def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=None):
+def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=None, limiter=_NO_LIMIT):
     repo, log = ctx.repo, ctx.log
     sess = PgSession(ctx.conn)
     meta = None
@@ -340,6 +372,8 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                 "pg_version": sess.version, "pg_version_num": sess.version_num, "timeline": tli, "status": "RUNNING", "started_ts": t_start,
                 "start_time": iso(), "host": socket.gethostname(), "pgdata": ctx.pgdata, "from_standby": in_recovery, "engine": ENGINE_VERSION,
                 "wal_segment_size": seg_size, "data_checksums": checksums, "note": note}
+        if limiter.rate > 0:
+            meta["read_limit_mb_s"] = limiter.rate / 1048576.0
         repo.write_meta(meta)
         log("info", "backup %s (%s) started on timeline %d%s" % (set_id, btype, tli, " [standby]" if in_recovery else ""))
         if progress:
@@ -386,8 +420,8 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             if rel in unread:
                 return rel, unread_entry(st)
             if rel in partial:
-                return rel, backup_file_sparse(repo, rel, full, st, prev_lsn, partial[rel])
-            return rel, backup_file(repo, rel, full, st, prev_lsn, parent is not None)
+                return rel, backup_file_sparse(repo, rel, full, st, prev_lsn, partial[rel], limiter=limiter)
+            return rel, backup_file(repo, rel, full, st, prev_lsn, parent is not None, limiter=limiter)
 
         def absorb(rel, entry, st):
             totals["files"] += 1

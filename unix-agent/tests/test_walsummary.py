@@ -119,6 +119,22 @@ class Mapping(unittest.TestCase):
         self.assertEqual(len(ws.sample(["f%d" % i for i in range(10000)])), 50)
 
 
+class Limiter(unittest.TestCase):
+    def test_token_bucket_paces_reads_and_never_bursts_more_than_a_second(self):
+        import time
+        from pg_arca.engine.backup import ReadLimiter
+        l = ReadLimiter(20)                                              # 20 MB/s
+        t = time.time()
+        for _ in range(40):
+            l.take(1048576)                                              # 40 MB: one second of credit, then 1 s for the remaining 20 MB
+        dt = time.time() - t
+        self.assertTrue(0.8 <= dt <= 1.8, dt)
+        self.assertEqual(l.total, 40 * 1048576)
+        t = time.time()
+        ReadLimiter(0).take(10 ** 9)
+        self.assertLess(time.time() - t, 0.05, "0 = unlimited")
+
+
 class SparseRead(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp(prefix="pgarca-ws-")
