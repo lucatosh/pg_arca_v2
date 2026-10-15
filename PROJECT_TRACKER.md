@@ -56,7 +56,7 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 ## Da fare
 - **[release 1.0.0-rc.1 — ramo `release/1.0.0-rc.1`]** (dettagli in HANDOFF, checkpoint 1-6 del 15/10):
   - [x] Build di release sulla VM: tar, deb, rpm, `npm audit` clean (BUILDINFO).
-  - [x] `tools/lab/release-test.sh` su Debian 12 / Rocky 9 / Ubuntu 24: primo giro 13 fallimenti per distro = 3 bug dell'installer, corretti (9c8c987). [ ] Leggere l'esito del secondo ciclo (`~/lablogs/reltest.log`, termina con `CYCLE-DONE`).
+  - [x] `tools/lab/release-test.sh` su Debian 12 / Rocky 9 / Ubuntu 24: primo giro 13 fallimenti per distro = 3 bug dell'installer, corretti (9c8c987). [x] Secondo ciclo: 4 fallimenti per distro = CA della console non leggibile dall'agent, corretto (e26b656). [ ] Terzo ciclo (`~/lablogs/reltest.log`).
   - [ ] L'utente prova l'installazione su un'altra macchina (`TEST-INSTALLAZIONE.md`): raccogliere l'esito.
   - [x] F1 fencing geo (c9de688, df5e233, 5ddd942), F2 ritiro del ramo morto (4f848ef), F3 badge della testata (0acc185 e seguenti), 9 copie in `conflicts/` spiegate (tentativi prima della deduplica), `package-lock.json` versionato.
   - [ ] Leggere il `rejoinError` di hy-mi (13:19:25 UTC del 14/10) e capire perché il riallineamento automatico è fallito.
