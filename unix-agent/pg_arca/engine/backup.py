@@ -324,12 +324,16 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                                       "(hint-bit changes could modify a page without advancing its LSN)", "enable wal_log_hints=on (restart) or run full backups only")
                 parent, prev_lsn = cand, lsn_to_int(cand["start_lsn"])
 
-        set_id = now_utc().strftime("%Y%m%d-%H%M%S") + TYPE_LETTER[btype]
-        if parent:
-            set_id = parent["id"].split("_")[0] + "_" + set_id
-        sdir = repo.own_path("backup", set_id)
-        if os.path.exists(sdir):
-            raise EngineError("PGA-REPO-040", "backup set %s already exists" % set_id)
+        for attempt in range(3):                                       # ids have a one-second resolution: a retry right after a failed start waits a second
+            set_id = now_utc().strftime("%Y%m%d-%H%M%S") + TYPE_LETTER[btype]
+            if parent:
+                set_id = parent["id"].split("_")[0] + "_" + set_id
+            sdir = repo.own_path("backup", set_id)
+            if not os.path.exists(sdir):
+                break
+            if attempt == 2:
+                raise EngineError("PGA-REPO-040", "backup set %s already exists" % set_id)
+            time.sleep(1.05)
         os.makedirs(sdir, mode=0o750)
         t_start = time.time()
         meta = {"id": set_id, "type": btype, "parent": parent["id"] if parent else None, "stanza": ctx.stanza, "system_identifier": sysid,

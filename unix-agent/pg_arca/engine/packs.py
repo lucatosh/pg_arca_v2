@@ -35,6 +35,7 @@ FORMAT = 2
 HDR_LEN = 16                         # magic(8) + u32 format + u32 reserved
 REC_HDR = struct.Struct("<32sI")     # hash, blob length
 IDX_REC = struct.Struct("<32sQI")    # hash, offset, blob length
+CACHE_REC = struct.Struct("<32sIQI")  # hash, pack number (within the root's cache), offset, blob length
 PACK_MAX = int(os.environ.get("PG_ARCA_PACK_MAX_MB", "256")) * 1048576
 FOLD_AT = 262144                     # recent entries folded into the sorted index (about 64 packs of 64 KiB chunks)
 OFF_BITS = 40                        # pack number << 40 | offset (packs of up to 1 TiB)
@@ -172,52 +173,161 @@ class PackWriter(object):
                 pass
 
 
+class Table(object):
+    """Sorted, compact table of (hash, location): one bytes blob of 32-byte hashes (binary search by slicing) + two arrays: 44 bytes per chunk
+    (a Python list of bytes objects costs ~100). Immutable: a merge builds a new table."""
+    __slots__ = ("keys", "locs", "lens", "n")
+
+    def __init__(self, keys=b"", locs=None, lens=None):
+        self.keys = bytes(keys)
+        self.locs = locs if locs is not None else array.array("q")
+        self.lens = lens if lens is not None else array.array("I")
+        self.n = len(self.keys) // 32
+
+    def find(self, hb):
+        """index of hb or -1."""
+        keys, lo, hi = self.keys, 0, self.n
+        while lo < hi:
+            mid = (lo + hi) >> 1
+            k = keys[mid * 32:mid * 32 + 32]
+            if k < hb:
+                lo = mid + 1
+            elif k > hb:
+                hi = mid
+            else:
+                return mid
+        return -1
+
+    def records(self):
+        """(hash, packed location, length) in hash order."""
+        keys, locs, lens = self.keys, self.locs, self.lens
+        for i in range(self.n):
+            yield keys[i * 32:i * 32 + 32], locs[i], lens[i]
+
+    @staticmethod
+    def merge(streams):
+        """A table from sorted streams of (hash, packed location, length): linear, no list of every hash in memory."""
+        import heapq
+        keys, locs, lens = bytearray(), array.array("q"), array.array("I")
+        last = None
+        for hb, loc, ln in heapq.merge(*streams):
+            if hb == last:
+                continue                                       # the same chunk stored twice (two writers, a repack): one entry is enough
+            last = hb
+            keys += hb
+            locs.append(loc)
+            lens.append(ln)
+        return Table(bytes(keys), locs, lens)
+
+    def without_pack(self, pn):
+        return Table.merge([((hb, loc, ln) for hb, loc, ln in self.records() if (loc >> OFF_BITS) != pn)])
+
+
+def _idx_stream(entries, pn):
+    for hb, off, ln in entries:
+        yield hb, (pn << OFF_BITS) | off, ln
+
+
+CACHE_NAME = "index.cache"                   # merged table of every sealed pack of a root, rebuilt by whoever finds it stale
+
+
 class ChunkIndex(object):
     """hash (32 bytes) -> (pack path, offset, length) over every sealed pack of the given roots, plus what this process wrote since."""
 
-    def __init__(self, roots):
+    def __init__(self, roots, readonly=False):
         self.roots = list(roots)
+        self.readonly = readonly                               # never write the index cache (a previous location opened for reading)
         self.own_prefix = packs_dir(self.roots[0]) + os.sep
         self.packs = []                                        # pack number -> path
-        self.tab = ([], array.array("q"), array.array("I"))    # sorted hashes, pack number << OFF_BITS | offset, lengths: swapped as ONE tuple
+        self.tab = Table()                                     # swapped as a whole by a fold or a reload
         self.recent = {}                                       # hash -> (pack number, offset, length)
         self.lock = threading.Lock()
         self.problems = []                                     # indexes that could not be read (reported by verify)
         self.load()
 
     # ---- loading
-    def load(self):
-        keys, locs, lens, packs = [], [], [], []
-        for root in self.roots:
-            d = packs_dir(root)
-            if not os.path.isdir(d):
+    def _root_table(self, root, packs, writable):
+        """Table of one root from its cache plus the .idx files the cache does not know; the cache is rewritten when it was incomplete.
+        packs: list to extend with the pack paths (their position = pack number); entries carry pack numbers."""
+        d = packs_dir(root)
+        if not os.path.isdir(d):
+            return None
+        idx_names = sorted(n for n in os.listdir(d) if n.endswith(".idx") and os.path.exists(os.path.join(d, n[:-4] + ".pack")))
+        base = len(packs)
+        cached, cached_names = None, []
+        cp = os.path.join(d, CACHE_NAME)
+        try:
+            with open(cp + ".json") as f:
+                import json
+                meta = json.load(f)
+            names = list(meta.get("packs") or [])
+            if names and all(n in idx_names for n in names):
+                with open(cp, "rb") as f:
+                    blob = f.read()
+                cnt = int(meta.get("count") or 0)
+                if len(blob) == cnt * IDX_REC.size:
+                    cached_names = names
+                    cached = (blob, cnt)
+        except (IOError, OSError, ValueError):
+            cached = None
+        for n in cached_names:
+            packs.append(os.path.join(d, n[:-4] + ".pack"))
+        streams = []
+        if cached is not None:
+            blob, cnt = cached
+
+            def cache_stream(blob=blob, cnt=cnt, base=base):
+                for i in range(cnt):
+                    hb, pn, off, ln = CACHE_REC.unpack_from(blob, i * CACHE_REC.size)
+                    yield hb, ((base + pn) << OFF_BITS) | off, ln
+            streams.append(cache_stream())
+        fresh = [n for n in idx_names if n not in cached_names]
+        for n in fresh:
+            try:
+                entries = read_idx(os.path.join(d, n))
+            except (EngineError, OSError) as e:
+                self.problems.append("%s: %s" % (n, e))
                 continue
-            for name in sorted(os.listdir(d)):
-                if not name.endswith(".idx"):
-                    continue
-                pack = os.path.join(d, name[:-4] + ".pack")
-                if not os.path.exists(pack):
-                    continue                                   # index of a pack that was deleted (crash between the two unlinks): ignored
-                try:
-                    entries = read_idx(os.path.join(d, name))
-                except (EngineError, OSError) as e:
-                    self.problems.append("%s: %s" % (name, e))
-                    continue
-                pn = len(packs)
-                packs.append(pack)
-                for hb, off, ln in entries:
-                    keys.append(hb)
-                    locs.append((pn << OFF_BITS) | off)
-                    lens.append(ln)
-        order = sorted(range(len(keys)), key=keys.__getitem__)
-        tab = ([keys[i] for i in order], array.array("q", (locs[i] for i in order)), array.array("I", (lens[i] for i in order)))
+            pn = len(packs)
+            packs.append(os.path.join(d, n[:-4] + ".pack"))
+            streams.append(_idx_stream(entries, pn))           # a function, not a generator expression: pn and entries are bound NOW
+        tab = Table.merge(streams) if streams else Table()
+        if writable and fresh and tab.n and len(fresh) + len(cached_names) >= 2:   # never written into a previous location (read-only)
+            self._write_cache(d, tab, base, packs[base:])
+        return tab
+
+    def _write_cache(self, d, tab, base, pack_paths):
+        """index.cache (records with the pack number RELATIVE to this root) + .json listing the packs it covers; best effort."""
+        import json
+        tmp = os.path.join(d, CACHE_NAME + ".tmp.%d" % os.getpid())
+        try:
+            with open(tmp, "wb") as f:
+                for hb, loc, ln in tab.records():
+                    f.write(CACHE_REC.pack(hb, (loc >> OFF_BITS) - base, loc & ((1 << OFF_BITS) - 1), ln))
+            os.rename(tmp, os.path.join(d, CACHE_NAME))
+            with open(tmp, "w") as f:
+                json.dump({"packs": [os.path.basename(p)[:-5] + ".idx" for p in pack_paths], "count": tab.n}, f)
+            os.rename(tmp, os.path.join(d, CACHE_NAME + ".json"))
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def load(self):
+        packs, tabs = [], []
+        for i, root in enumerate(self.roots):
+            t = self._root_table(root, packs, writable=(i == 0 and not self.readonly))
+            if t is not None and t.n:
+                tabs.append(t)
+        tab = tabs[0] if len(tabs) == 1 else (Table.merge([t.records() for t in tabs]) if tabs else Table())
         with self.lock:
             self.packs = packs
             self.tab = tab
             self.recent = {}
 
     def __len__(self):
-        return len(self.tab[0]) + len(self.recent)
+        return self.tab.n + len(self.recent)
 
     # ---- lookups
     def find(self, hb, own_only=False):
@@ -225,14 +335,14 @@ class ChunkIndex(object):
         r = self.recent.get(hb)
         if r is not None:
             return self.packs[r[0]], r[1], r[2]
-        keys, locs, lens = self.tab                            # one tuple, swapped atomically by a fold or a reload
-        i = bisect.bisect_left(keys, hb)
-        if i < len(keys) and keys[i] == hb:
-            v = locs[i]
+        tab = self.tab                                         # swapped atomically by a fold or a reload
+        i = tab.find(hb)
+        if i >= 0:
+            v = tab.locs[i]
             path = self.packs[v >> OFF_BITS]
             if own_only and not path.startswith(self.own_prefix):
                 return None
-            return path, v & ((1 << OFF_BITS) - 1), lens[i]
+            return path, v & ((1 << OFF_BITS) - 1), tab.lens[i]
         return None
 
     def pack_number(self, path):
@@ -258,23 +368,15 @@ class ChunkIndex(object):
                 return
             pn = self.packs.index(path)
             self.recent = dict((k, v) for k, v in self.recent.items() if v[0] != pn)
-            keys, locs, lens = self.tab
-            keep = [i for i in range(len(keys)) if (locs[i] >> OFF_BITS) != pn]
-            if len(keep) != len(keys):
-                self.tab = ([keys[i] for i in keep], array.array("q", (locs[i] for i in keep)), array.array("I", (lens[i] for i in keep)))
+            self.tab = self.tab.without_pack(pn)
 
     def fold(self):
-        """Merge the recent dictionary into the sorted lists (the lists are rebuilt and swapped, readers never see a half state)."""
+        """Merge the recent dictionary into the sorted table (a new table is built and swapped, readers never see a half state)."""
         with self.lock:
             if not self.recent:
                 return
-            items = sorted(self.recent.items())
-            okeys, olocs, olens = self.tab
-            keys = okeys + [k for k, _ in items]
-            locs = list(olocs) + [(v[0] << OFF_BITS) | v[1] for _, v in items]
-            lens = list(olens) + [v[2] for _, v in items]
-            order = sorted(range(len(keys)), key=keys.__getitem__)
-            self.tab = ([keys[i] for i in order], array.array("q", (locs[i] for i in order)), array.array("I", (lens[i] for i in order)))
+            items = sorted((k, (v[0] << OFF_BITS) | v[1], v[2]) for k, v in self.recent.items())
+            self.tab = Table.merge([self.tab.records(), iter(items)])
             self.recent = {}
 
 

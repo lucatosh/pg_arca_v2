@@ -46,8 +46,9 @@ class Lock(object):
 
 
 class Repo(object):
-    def __init__(self, path, stanza, wal=None, algo=None, level=3, crypto=None, previous=None):
+    def __init__(self, path, stanza, wal=None, algo=None, level=3, crypto=None, previous=None, readonly=False):
         self.path = os.path.realpath(path)
+        self.readonly = readonly             # a location opened only for reading (migration source): nothing is written there, not even the index cache
         # earlier locations of this repository (the destination was changed and the old content is not migrated yet): READ only. Their sets are
         # listed and restorable; new backups never deduplicate against them, never use them as parent and retention never touches them.
         self.previous = [os.path.realpath(x) for x in (previous or []) if x and os.path.realpath(x) != self.path]
@@ -119,7 +120,7 @@ class Repo(object):
         if self._index is None:
             with self._index_lock:
                 if self._index is None:
-                    self._index = _packs.ChunkIndex([self.path] + self.previous)
+                    self._index = _packs.ChunkIndex([self.path] + self.previous, readonly=self.readonly)
         return self._index
 
     def reload_index(self):

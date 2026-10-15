@@ -293,6 +293,41 @@ class PackTests(unittest.TestCase):
         with self.assertRaises(EngineError):
             r2.get_chunks([hs[1], "00" * 32])
 
+    def test_index_cache_is_used_and_rebuilt_when_packs_change(self):
+        old = packs.PACK_MAX
+        packs.PACK_MAX = 20000
+        try:
+            hs = [self.repo.put_chunk(os.urandom(2000))[0] for i in range(60)]
+            self.repo.flush()
+            pd = os.path.join(self.root, "cas", "packs")
+            self.assertFalse(os.path.exists(os.path.join(pd, packs.CACHE_NAME)))
+            r2 = Repo(self.root, "main", algo="zlib")
+            self.assertIsNotNone(r2.locate(hs[0]))
+            import json
+            meta = json.load(open(os.path.join(pd, packs.CACHE_NAME + ".json")))
+            self.assertEqual(len(meta["packs"]), len([f for f in os.listdir(pd) if f.endswith(".idx")]), "cache covers every pack")
+            self.assertEqual(meta["count"], 60)
+            r3 = Repo(self.root, "main", algo="zlib")                   # loads from the cache
+            for h in hs:
+                self.assertIsNotNone(r3.locate(h))
+            # a pack disappears (GC): the cache is stale and ignored, the index is rebuilt and the cache rewritten without that pack
+            victim = r3.locate(hs[0])[0]
+            os.remove(victim)
+            os.remove(victim[:-5] + ".idx")
+            r4 = Repo(self.root, "main", algo="zlib")
+            self.assertIsNone(r4.locate(hs[0]))
+            self.assertTrue(all(r4.locate(h) is not None for h in hs if r3.locate(h)[0] != victim))
+            meta = json.load(open(os.path.join(pd, packs.CACHE_NAME + ".json")))
+            self.assertNotIn(os.path.basename(victim)[:-5] + ".idx", meta["packs"])
+            # new packs after the cache: merged in and the cache refreshed
+            h_new = r4.put_chunk(os.urandom(2000))[0]
+            r4.flush()
+            r5 = Repo(self.root, "main", algo="zlib")
+            self.assertIsNotNone(r5.locate(h_new))
+            self.assertIn(os.path.basename(r5.locate(h_new)[0])[:-5] + ".idx", json.load(open(os.path.join(pd, packs.CACHE_NAME + ".json")))["packs"])
+        finally:
+            packs.PACK_MAX = old
+
     # ---- low level
     def test_scan_pack_matches_the_index_and_stops_at_a_torn_record(self):
         hs = [self.repo.put_chunk(self._data(i))[0] for i in range(10)]

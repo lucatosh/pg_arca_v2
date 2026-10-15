@@ -130,7 +130,7 @@ def _inventory(ctx, src_repo, src_wal):
     from pg_arca.engine.repo import Repo
     out = {"sets": [], "chunks": {}, "set_bytes": 0, "wal": [], "wal_bytes": 0}
     if src_repo:
-        old = Repo(src_repo, ctx.stanza, crypto=ctx.crypto)
+        old = Repo(src_repo, ctx.stanza, crypto=ctx.crypto, readonly=True)
         have = {m.get("id") for m in ctx.repo.own_sets()}
         for m in old.own_sets():
             if m.get("id") in have or m.get("status") != "COMPLETE":
@@ -265,7 +265,7 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
         if os.path.exists(sj_old) and not os.path.exists(sj_new):
             shutil.copyfile(sj_old, sj_new)
         from pg_arca.engine.repo import Repo
-        old = Repo(src_repo, ctx.stanza, crypto=ctx.crypto)
+        old = Repo(src_repo, ctx.stanza, crypto=ctx.crypto, readonly=True)
         for i, s in enumerate(p["sets"]):
             man = old.load_manifest({"id": s["id"]})
             for h in sorted(set(h for e in man["files"].values() for _, _, h in e["chunks"])):
