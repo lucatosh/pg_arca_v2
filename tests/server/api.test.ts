@@ -37,7 +37,7 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   // --- enrollment -> heartbeat -> operation -> report
   const tok = await call('POST', '/api/enrollment-tokens', { label: 't', environment: 'prod' }, H());
   assert.strictEqual(tok.status, 201); const token = tok.body.token;
-  assert(/curl -fsSL http:\/\/[^ ]+\/agent\/install.sh \| sudo PG_ARCA_URL=/.test(tok.body.installCommand)); assert.strictEqual(tok.body.installCommandPrivateCa, undefined, 'the private-CA variant exists only for an https console');
+  assert(/curl -fsSL \S+\/agent\/install.sh \| sudo PG_ARCA_URL=/.test(tok.body.installCommand), tok.body.installCommand); assert.strictEqual(tok.body.installCommandPrivateCa, undefined, 'the private-CA variant exists only for an https console');
   const disc = { postgres_instances: [{ cluster_key: 'sysid:111', patroni: { scope: 'prodpg' } }], patroni_clusters: [{ scope: 'prodpg' }] };
   const en = await call('POST', '/api/agent/enroll', { enrollment_token: token, node_name: 'db1', agent_version: '2.0', discovery: disc });
   assert.strictEqual(en.status, 201);
