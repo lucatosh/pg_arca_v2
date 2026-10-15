@@ -20,6 +20,9 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('.side .fhead.folder:has-text("billing")'); await p.waitForSelector('.fleettable tr.frow:has-text("api")'); await shot('02-clusters');
   assert(await p.locator('text=Demo cluster').count() >= 1, 'demo present');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Data protection'); await shot('03-overview');
+  // "What do you need?": one click lands in the restore wizard with the situation chosen; back to the situations for the flows below
+  await p.click('.task:has-text("Bring back a dropped or emptied table")'); await p.waitForSelector('.rsum:has-text("I dropped or truncated a table")'); await shot('03a-task-restore');
+  await p.click('button:has-text("Situation")'); await p.waitForSelector('text=What happened?');
   // backup tab
   await tab('Protection', 'Backup'); await p.waitForSelector('text=Run a backup'); await p.waitForSelector('.placement code:has-text("/mnt/backup/repo/prodpg")'); await shot('04-backup');
   // previous backup location after a destination change: plan the migration (sizes, free space, time), run it, follow it

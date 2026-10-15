@@ -3,6 +3,7 @@ import { AuthGate } from './AuthGate';
 import { useQuery } from './hooks';
 import { Icon, Toasts, Dot, Empty, Skeleton } from './ui';
 import { go, nav as routeNav, useRoute } from './router';
+import { CLUSTER_TASKS } from './tasks';
 import { TAB_ITEMS } from './tabs';
 import { TodayPage, useHealth } from './pages/Today';
 import { JoinBanner } from './pages/Join';
@@ -172,6 +173,8 @@ function Palette({ onClose, clusters, route, cycle }: { onClose: () => void; clu
     const a: { label: string; hint?: string; icon: string; run: () => void }[] = [];
     for (const c of clusters) a.push({ label: c.name, hint: c.environment, icon: 'db', run: () => go(`c/${encodeURIComponent(c.id)}`) });
     const cid = route.page === 'cluster' ? route.id : clusters[0]?.id;
+    const cname = clusters.find(c => c.id === cid)?.name || '';
+    if (cid) for (const t of CLUSTER_TASKS) a.push({ label: `${t.label} (${cname})`, hint: t.hint, icon: t.icon, run: () => t.run(cid) });
     if (cid) for (const t of TAB_ITEMS) if (!t.preview) a.push({ label: `${clusters.find(c => c.id === cid)?.name || ''} › ${t.label}`, icon: t.icon || 'chev', run: () => go(`c/${encodeURIComponent(cid)}/${t.id}`) });
     a.push({ label: 'Today: what needs attention', icon: 'alert', run: () => go('today') }, { label: 'All clusters', icon: 'layers', run: () => go('') }, { label: 'Backup policies', icon: 'shield', run: () => go('strategy') }, { label: 'Storage & recovery: backup destination and recovery hosts', icon: 'restore', run: () => go('infra') }, { label: 'Discovery', icon: 'search', run: () => go('discovery') }, { label: 'Worker hosts: backup servers and recovery hosts', icon: 'server', run: () => go('workers') }, { label: 'Geo-redundancy: primary and standby sites', icon: 'swap', run: () => go('geo') }, { label: 'Activity log: operations (backups, restores…)', icon: 'activity', run: () => go('history') }, { label: 'Activity log: who changed what (audit)', icon: 'list', run: () => go('audit') }, { label: 'Show running activity', hint: 'Ctrl J', icon: 'activity', run: () => window.dispatchEvent(new Event('arca:dock')) }, { label: 'Change theme', icon: 'settings', run: cycle });
     const s = q.trim().toLowerCase();

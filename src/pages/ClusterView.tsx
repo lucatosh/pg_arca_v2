@@ -3,6 +3,7 @@ import { api, get } from '../api';
 import { Modal, Badge, Banner, Button, Card, Confirm, Dot, Empty, Field, Icon, Skeleton, Tabs, bytes, dt, ago, num, Preview, CopyBlock } from '../ui';
 import { Op, readDraft, revalidate, toast, useDraft, useOpRunner, useQuery, isTerminal, useRole, writeDraft } from '../hooks';
 import { go } from '../router';
+import { CLUSTER_TASKS } from '../tasks';
 import { statusKind } from '../App';
 import { useHealth } from './Today';
 import { InstallCommand, OP_LABEL, OpPanel, PHASE, Result, statusBadge } from './shared';
@@ -77,6 +78,14 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   </>;
 }
 
+/** "What do you need?": the common tasks as one click each, straight to the right page with the choice made (shared with Ctrl+K). */
+function TaskStrip({ c, agentic }: { c: any; agentic: boolean }) {
+  const role = useRole();
+  const tasks = CLUSTER_TASKS.filter(t => (agentic || !t.agentOnly) && !(role === 'viewer' && ['table', 'rows', 'database', 'cluster', 'schedule', 'hba'].includes(t.id)));
+  if (!tasks.length || c.isSandbox) return null;
+  return <Card title="What do you need?"><div className="tasks">{tasks.map(t => <button key={t.id} className="task" onClick={() => t.run(c.id)}><Icon n={t.icon} s={16} /><span><strong>{t.label}</strong><span className="small muted">{t.hint}</span></span></button>)}</div></Card>;
+}
+
 function Kpi({ v, l }: { v: React.ReactNode; l: string }) { return <Card><div className="kpi"><span className="v">{v}</span><span className="l">{l}</span></div></Card>; }
 
 function Overview({ c, agentic }: { c: any; agentic: boolean }) {
@@ -84,6 +93,7 @@ function Overview({ c, agentic }: { c: any; agentic: boolean }) {
   const bk = b.data?.backup;
   return <div className="stack-l">
     <div className="grid g3 kpis"><Kpi v={c.haState?.nodes?.length ?? 0} l="Nodes" /><Kpi v={bytes(c.totalSizeBytes)} l="Data size" /><Kpi v={num(c.tps)} l="Transactions per second" /></div>
+    <TaskStrip c={c} agentic={agentic} />
     {agentic ? <Card title="Data protection">
       {b.loading ? <Skeleton h={40} /> : !b.data?.agent ? <p className="muted">No agent connected.</p> : !bk?.configured ? <Banner kind="warn" title="Backups not configured yet">Open the Backup tab to enable WAL archiving and take the first backup.</Banner> :
         <div className="row wrap gap-l"><div><div className="kpi"><span className="v">{bk.last_backup ? ago(bk.last_backup.stop_time) : 'never'}</span><span className="l">Last backup</span></div></div>

@@ -1,5 +1,6 @@
 import { RecoveryPlacement } from './Placement';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { takePendingIntent } from '../tasks';
 import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago, nof } from '../ui';
 import { Op, useDraft, useOpRunner, useQuery } from '../hooks';
 import { OpPanel, Result, hintFor } from './shared';
@@ -176,6 +177,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     if (i === 'cluster') { setScope('instance'); setFin(c.haState?.managedByPatroni ? 'copy' : 'fix'); setStep(2); return; }
     setScope(i === 'database' ? 'database' : 'object'); setObjMode('table'); setStep(1);
   };
+  // arrived from "What do you need?" (overview or Ctrl+K): the situation is already chosen, unless a restore is under way here
+  useEffect(() => { const i = takePendingIntent(c.id); if (i && !exec.op && !running) { exec.reset(); choose(i as Intent); } /* eslint-disable-next-line */ }, [c.id]);
   const restart = () => { exec.reset(); plan.reset(); prom.reset(); prev.reset(); dml.reset(); fx.reset(); objR.reset(); liveR.reset(); setObjs([]); setTgt(null); setIntent(null); setPmode(null); setLastPromote(null); setSearch(''); setDest(''); setStep(0); };
   // a quick pick from what the WAL says went wrong recently: selects the table AND the point just before
   const pickEvent = (e: any) => {
