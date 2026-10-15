@@ -191,6 +191,18 @@ class OffsiteTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.wal, "000000010000000000000004.zst.meta")))
         self.assertEqual(self.m.rehydrate()["downloaded"], 0, "nothing left to fetch")
 
+    def _client(self):
+        from pg_arca.s3 import S3Client
+        return S3Client(self.srv.endpoint, self.bucket, self.ak, self.sk, prefix=self.prefix)
+
+    def _inject(self, key, data):
+        """An object written by whoever controls the bucket (key relative to the bucket, prefix included)."""
+        if not REAL:
+            self.srv.objects[(self.bucket, key)] = data
+            return
+        from pg_arca.s3 import S3Client
+        S3Client(self.srv.endpoint, self.bucket, self.ak, self.sk).put(key, data)
+
     def test_rehydrate_refuses_hostile_object_names(self):
         """Whoever controls the bucket chooses the object names: a key that resolves outside the repository / archive, or onto an existing
         local file, is refused and reported, never written."""
@@ -199,12 +211,15 @@ class OffsiteTests(unittest.TestCase):
         pre = self.prefix + "/"
         bad = ["wal/../../../../tmp/pga-evil", "repo/../evil", "repo//abs", "evil/x", "wal/./x", "wal/a/../../x", "repo/" + "x"]
         for k in bad:
-            self.srv.objects[(self.bucket, pre + k)] = b"evil"
+            self._inject(pre + k, b"evil")
+        # a real server may normalize or refuse some of these names on upload: count what the bucket really holds
+        held = set(self._client().list().keys()) if REAL else set(bad)
+        hostile = [k for k in held if k in bad and k != "repo/x"]
         existing = os.path.join(self.wal, "000000010000000000000009.zst")
         os.remove(os.path.join(self.wal, "000000010000000000000009.zst.meta"))             # the archive lost one file: that one is fetched
         r = self.m.rehydrate()
         self.assertEqual(r["downloaded"], 2, r)                                                 # the .meta and the harmless repo/x
-        self.assertEqual(r["refused_count"], len(bad) - 1, r)
+        self.assertEqual(r["refused_count"], len(hostile), (r, sorted(held)))
         self.assertFalse(os.path.exists("/tmp/pga-evil"))
         self.assertFalse(os.path.exists(os.path.join(self.d, "evil")))
         self.assertTrue(os.path.exists(existing))
@@ -212,7 +227,7 @@ class OffsiteTests(unittest.TestCase):
         # a local file already in the way is not overwritten even when the inventory does not know it (written between listing and download)
         with open(os.path.join(self.wal, "000000010000000000000009.zst.meta"), "w") as f:
             f.write("mine")
-        self.srv.objects[(self.bucket, pre + "wal/000000010000000000000009.zst.meta")] = b"theirs"
+        self._inject(pre + "wal/000000010000000000000009.zst.meta", b"theirs")
         local = self.m.local_inventory()
         self.assertIn("wal/000000010000000000000009.zst.meta", local)
         with open(os.path.join(self.wal, "000000010000000000000009.zst.meta")) as f:
