@@ -11,8 +11,9 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import type { Request, Response, NextFunction } from 'express';
-import { Store, sha256, nowIso } from './store';
+import { Store, sha256, nowIso, loadSecretKey, encrypt, decrypt } from './store';
 import { audit } from './ops';
+import { authenticateLdap, LdapConfig } from './ldap';
 
 const SESSION_TTL_MS = 12 * 3600 * 1000;
 const COOKIE = 'arca_session';
@@ -32,7 +33,7 @@ let DUMMY: { salt: string; hash: string } | null = null;          // an unknown 
 export type Role = 'admin' | 'operator' | 'viewer';
 export const ROLES: Role[] = ['admin', 'operator', 'viewer'];
 const RANK: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
-interface UserRec { user: string; salt: string; hash: string; role: Role; disabled?: boolean; createdAt: string }
+interface UserRec { user: string; salt: string; hash: string; role: Role; disabled?: boolean; createdAt: string; source?: 'local' | 'ldap'; dn?: string; lastLoginAt?: string }
 
 /** Role of a user: the bootstrap account (settings.admin) is always admin; others live in settings.users. */
 export function roleOf(store: Store, user: string): Role | null {
@@ -49,6 +50,7 @@ const own = (o: any, k: string) => (o && Object.prototype.hasOwnProperty.call(o,
 const RULES: { m: RegExp; p: RegExp; min: Role }[] = [
   { m: /^(GET|HEAD)$/, p: /^\/api\/users(\/|$)/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /^\/api\/api-tokens/, min: 'admin' },
+  { m: /^(GET|HEAD)$/, p: /^\/api\/auth\/ldap/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /^\/api\/enrollment-tokens/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /^\/api\/notifications/, min: 'admin' },
   { m: /^(GET|HEAD)$/, p: /^\/api\/join-requests/, min: 'admin' },
@@ -203,6 +205,27 @@ export function mountApiTokenRoutes(app: any, store: Store) {
   });
 }
 
+/** The directory configuration with the bind password decrypted, or null when LDAP sign-in is off (even=true: also when disabled, for the test endpoint). */
+export function ldapConfig(store: Store, evenDisabled = false): LdapConfig | null {
+  const c = (store.peek().settings as any).ldap;
+  if (!c || !c.url || (!c.enabled && !evenDisabled)) return null;
+  let bindPassword = '';
+  if (c.bindPasswordEnc) { try { bindPassword = decrypt(loadSecretKey(store.dir), c.bindPasswordEnc); } catch { bindPassword = ''; } }
+  return { ...c, bindPassword };
+}
+
+export function validateLdap(b: any): string[] {
+  const errs: string[] = [];
+  if (!b.enabled && !b.url) return errs;
+  if (typeof b.url !== 'string' || !/^ldaps?:\/\/[^\s/]+$/i.test(b.url.trim())) errs.push('url: ldap://host[:port] or ldaps://host[:port].');
+  if (typeof b.baseDN !== 'string' || !b.baseDN.trim()) { if (!(typeof b.userDnTemplate === 'string' && b.userDnTemplate.includes('{user}'))) errs.push('baseDN is required (or a user DN template with {user}).'); }
+  if (b.userFilter && (typeof b.userFilter !== 'string' || !b.userFilter.includes('{user}'))) errs.push('userFilter must contain {user}.');
+  if (b.userDnTemplate && (typeof b.userDnTemplate !== 'string' || !b.userDnTemplate.includes('{user}'))) errs.push('userDnTemplate must contain {user}.');
+  if (!b.userFilter && !b.userDnTemplate) errs.push('Give a user filter (search) or a user DN template.');
+  if (b.insecureSkipVerify && /^ldaps:/i.test(String(b.url)) === false && !b.startTls) { /* plain ldap: nothing to verify */ }
+  return errs;
+}
+
 export function mountAuthRoutes(app: any, store: Store) {
   app.get('/api/auth/status', (req: Request, res: Response) => {
     const adm = store.peek().settings.admin;
@@ -241,10 +264,23 @@ export function mountAuthRoutes(app: any, store: Store) {
       return res.status(429).json({ error: 'too_many_attempts', retryAfterSeconds: Math.ceil((until - now) / 1000) });
     }
     const st = store.peek().settings; const adm = st.admin;
-    const rec: { salt: string; hash: string } | undefined = typeof username === 'string' ? (adm && username === adm.user ? adm : own(st.users, username)) : undefined;
+    const local: UserRec | undefined = typeof username === 'string' ? (adm && username === adm.user ? adm : own(st.users, username)) : undefined;
+    const rec = local && local.source !== 'ldap' ? local : undefined;                   // a directory user has no local password
     const pw = typeof password === 'string' ? password : '';
     const good = verifyPassword(pw, rec || (DUMMY ||= hashPassword('pg_arca-dummy-password')));
-    const ok = !!rec && typeof password === 'string' && !!roleOf(store, username) && good;
+    let ok = !!rec && typeof password === 'string' && !!roleOf(store, username) && good;
+    let viaLdap: { dn: string; role: Role; groups: string[] } | null = null;
+    const ldapCfg = ldapConfig(store);
+    if (!ok && !rec && ldapCfg && typeof username === 'string' && pw) {                 // not a local account: ask the directory
+      if (local?.disabled) { /* disabled here wins over the directory */ } else {
+        const r = await authenticateLdap(ldapCfg, username, pw);
+        if (r.ok && r.role && r.dn) { viaLdap = { dn: r.dn, role: r.role, groups: r.groups || [] }; ok = true; }
+        else if (r.error === 'directory_unavailable' || r.error === 'no_role') {
+          await store.mutate(d => audit(d, { actor: uname, action: 'auth.login', status: 'FAILED', details: { ip, ldap: r.error, detail: r.detail } }));
+          return res.status(r.error === 'no_role' ? 403 : 503).json({ error: r.error, message: r.error === 'no_role' ? 'The directory knows you, but no group of yours is mapped to a console role.' : `The directory cannot be reached: ${r.detail || ''}`.trim() });
+        }
+      }
+    }
     if (!ok) {
       const n = (f?.n || 0) + 1;
       failures.set(fk, { n, until: now + Math.min(60_000, 500 * 2 ** n), last: now });
@@ -253,9 +289,47 @@ export function mountAuthRoutes(app: any, store: Store) {
       return res.status(401).json({ error: 'invalid_credentials' });
     }
     failures.delete(fk);
+    if (viaLdap) {                                                                     // the directory's answer of today is the user's role of today
+      const v = viaLdap;
+      await store.mutate(d => {
+        const cur = own(d.settings.users, username);
+        d.settings.users ||= {};
+        d.settings.users[username] = { ...(cur || { createdAt: nowIso() }), user: username, salt: '', hash: '', role: v.role, source: 'ldap', dn: v.dn, lastLoginAt: nowIso(), disabled: false };
+        audit(d, { actor: username, action: 'auth.login', status: 'OK', details: { ip, ldap: true, role: v.role, dn: v.dn } });
+      });
+    } else await store.mutate(d => audit(d, { actor: username, action: 'auth.login', status: 'OK', details: { ip } }));
     startSession(req, res, username);
-    await store.mutate(d => audit(d, { actor: username, action: 'auth.login', status: 'OK', details: { ip } }));
     res.json({ ok: true, user: username, role: roleOf(store, username) });
+  });
+
+  // ---- LDAP / Active Directory settings (admin): stored with the bind password encrypted; a test endpoint says what a sign-in would do
+  app.get('/api/auth/ldap', (_req: Request, res: Response) => { const c = (store.peek().settings as any).ldap || { enabled: false }; res.json({ ldap: { ...c, bindPasswordEnc: undefined, bindPasswordSet: !!c.bindPasswordEnc } }); });
+  app.put('/api/auth/ldap', async (req: Request, res: Response) => {
+    const b = req.body || {};
+    const errs = validateLdap(b);
+    if (errs.length) return res.status(400).json({ error: 'invalid_ldap', message: errs.join(' ') });
+    await store.mutate(d => {
+      const prev = (d.settings as any).ldap || {};
+      const next: any = { enabled: !!b.enabled, url: String(b.url || '').trim(), startTls: !!b.startTls, caFile: String(b.caFile || '').trim(), insecureSkipVerify: !!b.insecureSkipVerify,
+        bindDN: String(b.bindDN || '').trim(), baseDN: String(b.baseDN || '').trim(), userFilter: String(b.userFilter || '').trim(), userDnTemplate: String(b.userDnTemplate || '').trim(),
+        groupAttr: String(b.groupAttr || '').trim(), groupBaseDN: String(b.groupBaseDN || '').trim(), groupFilter: String(b.groupFilter || '').trim(),
+        roleMap: (Array.isArray(b.roleMap) ? b.roleMap : []).filter((m: any) => m && typeof m.group === 'string' && ROLES.includes(m.role)).map((m: any) => ({ group: m.group.trim(), role: m.role })),
+        defaultRole: ['admin', 'operator', 'viewer', 'none'].includes(b.defaultRole) ? b.defaultRole : 'none', timeoutMs: Number(b.timeoutMs) > 0 ? Math.min(60000, Number(b.timeoutMs)) : 8000 };
+      next.bindPasswordEnc = typeof b.bindPassword === 'string' && b.bindPassword !== '' ? encrypt(loadSecretKey(store.dir), b.bindPassword) : (b.clearBindPassword ? undefined : prev.bindPasswordEnc);
+      (d.settings as any).ldap = next;
+      audit(d, { actor: (req as any).actor, action: 'ldap.configure', status: 'OK', details: { enabled: next.enabled, url: next.url, baseDN: next.baseDN, roles: next.roleMap.length, defaultRole: next.defaultRole } });
+    });
+    res.json({ ok: true });
+  });
+  app.post('/api/auth/ldap/test', async (req: Request, res: Response) => {
+    const { username, password } = req.body || {};
+    const cfg = ldapConfig(store, true);
+    if (!cfg) return res.status(400).json({ error: 'ldap_not_configured', message: 'Save the directory settings first.' });
+    if (typeof username !== 'string' || typeof password !== 'string') return res.status(400).json({ error: 'invalid_request' });
+    const r = await authenticateLdap(cfg, username, password);
+    await store.mutate(d => audit(d, { actor: (req as any).actor, action: 'ldap.test', status: r.ok ? 'OK' : 'FAILED', details: { username, error: r.error, role: r.role } }));
+    res.json({ ok: r.ok, role: r.role || null, dn: r.dn || null, groups: r.groups || [], error: r.error || null, detail: r.detail || null,
+      note: r.ok ? `${username} would sign in as ${r.role}.` : r.error === 'no_role' ? 'Authenticated, but no group maps to a role and no default role is set.' : r.error === 'directory_unavailable' ? 'The directory could not be queried.' : 'The directory refused these credentials (or the filter matched no single entry).' });
   });
 
   app.post('/api/auth/logout', (req: Request, res: Response) => {
@@ -270,6 +344,7 @@ export function mountAuthRoutes(app: any, store: Store) {
     if (!u) return res.status(401).json({ error: 'unauthenticated' });
     const { currentPassword, newPassword } = req.body || {};
     const st = store.peek().settings; const isBoot = st.admin?.user === u; const rec = isBoot ? st.admin : (st.users || {})[u];
+    if (rec && (rec as any).source === 'ldap') return res.status(400).json({ error: 'directory_user', message: 'Your password is managed by the directory (LDAP / Active Directory), not by the console.' });
     if (!rec || typeof currentPassword !== 'string' || !verifyPassword(currentPassword, rec)) return res.status(403).json({ error: 'invalid_credentials' });
     if (typeof newPassword !== 'string' || newPassword.length < 12) return res.status(400).json({ error: 'weak_password' });
     const h = hashPassword(newPassword);
@@ -279,7 +354,7 @@ export function mountAuthRoutes(app: any, store: Store) {
   });
 
   // ---- user management (admin only: enforced by the permission table) ----
-  const strip = (u: UserRec) => ({ user: u.user, role: u.role, disabled: !!u.disabled, createdAt: u.createdAt });
+  const strip = (u: UserRec) => ({ user: u.user, role: u.role, disabled: !!u.disabled, createdAt: u.createdAt, source: u.source || 'local', lastLoginAt: u.lastLoginAt || null });
   const admins = (st: any) => 1 + Object.values(st.users || {}).filter((x: any) => x.role === 'admin' && !x.disabled).length;
   app.get('/api/users', (_req: Request, res: Response) => {
     const st = store.peek().settings;
@@ -307,6 +382,7 @@ export function mountAuthRoutes(app: any, store: Store) {
     const r = await store.mutate(d => {
       const u = own(d.settings.users, name);
       if (!u) return 'missing' as const;
+      if (password && u.source === 'ldap') return 'directory_user' as const;
       const nextRole = role ?? u.role, nextDis = disabled ?? !!u.disabled;
       if (u.role === 'admin' && !u.disabled && (nextRole !== 'admin' || nextDis) && admins(d.settings) <= 1) return 'last_admin' as const;
       if (role !== undefined) u.role = role; if (disabled !== undefined) u.disabled = !!disabled;
@@ -316,6 +392,7 @@ export function mountAuthRoutes(app: any, store: Store) {
     });
     if (r === 'missing') return res.status(404).json({ error: 'not_found' });
     if (r === 'last_admin') return res.status(409).json({ error: 'last_admin', message: 'At least one active administrator must remain.' });
+    if (r === 'directory_user') return res.status(400).json({ error: 'directory_user', message: 'This account signs in through the directory: it has no console password.' });
     revokeSessionsOf(name);
     res.json({ ok: true });
   });

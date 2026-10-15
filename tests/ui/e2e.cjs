@@ -277,6 +277,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('.modal button:has-text("Close")'); await p.waitForSelector('tr:has-text("ci-deploy")'); await shot('30-api-tokens');
   await p.click('tr:has-text("ci-deploy") button:has-text("Revoke")'); await p.click('.modal button:has-text("Revoke")'); await p.waitForTimeout(500);
   assert((await p.locator('tr:has-text("ci-deploy")').count()) === 0, 'revoked token gone from the list');
+  // Directory sign-in: the card, a group mapping row, validation on save, a test against an unreachable server says so (never "invalid credentials")
+  await p.waitForSelector('text=Directory sign-in (LDAP / Active Directory)');
+  await p.fill('input[placeholder="ldaps://dc1.corp.example"]', 'ldap://127.0.0.1:1'); await p.fill('input[placeholder="OU=Users,DC=corp,DC=example"]', 'ou=people,dc=corp,dc=example');
+  await p.click('button:has-text("Add a group")'); await p.fill('input[placeholder="CN=DBA,OU=Groups,DC=corp,DC=example"]', 'cn=dba,ou=groups,dc=corp,dc=example');
+  await p.fill('input[placeholder="username"]', 'alice'); await p.fill('input[placeholder="password"]', 'x'); await p.click('button:has-text("Test")');
+  await p.waitForSelector('.banner:has-text("could not be queried")', { timeout: 15000 }); await shot('31-directory');
   // mobile
   await p.setViewportSize({ width: 390, height: 800 }); await shot('17-mobile');
   console.log(errs.length ? 'ERRORS:\n' + errs.join('\n') : 'no page errors'); assert.strictEqual(errs.length, 0);
