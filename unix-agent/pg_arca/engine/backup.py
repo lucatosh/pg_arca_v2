@@ -46,9 +46,71 @@ def _check_cancel(cancel):
         raise Cancelled()
 
 
+def _empty_stats():
+    return {"bytes_logical": 0, "bytes_written": 0, "chunks_new": 0, "chunks_dedup": 0, "pages_read": 0, "pages_kept": 0, "skipped": 0, "bytes_not_read": 0}
+
+
+def unread_entry(st):
+    """Manifest entry of a relation file the WAL summaries prove unchanged since the parent backup: same size, no chunk, nothing read."""
+    stats = _empty_stats()
+    stats["bytes_logical"] = stats["bytes_not_read"] = st.st_size
+    return {"size": st.st_size, "mode": stat.S_IMODE(st.st_mode), "mtime": int(st.st_mtime), "kind": "pages", "chunks": []}, stats
+
+
+def backup_file_sparse(repo, rel, full, st, prev_lsn, chunk_idx, fadvise=True):
+    """Store only the chunks of a relation file the WAL summaries flag (chunk_idx: set of chunk indexes); the page-LSN test still applies."""
+    stats = _empty_stats()
+    try:
+        fd = os.open(full, os.O_RDONLY)
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            stats["skipped"] = 1
+            return None, stats
+        if e.errno == errno.EACCES:
+            raise EngineError("PGA-GEN-043", "cannot read %s: permission denied" % full, "the agent user must be able to read the whole data directory (owner postgres, or ACL)")
+        raise
+    chunks = []
+    try:
+        size = os.fstat(fd).st_size
+        with os.fdopen(fd, "rb", closefd=False) as f:
+            for ci in sorted(chunk_idx):
+                off = ci * CHUNK_SIZE
+                if off >= size:
+                    continue
+                f.seek(off)
+                buf = f.read(CHUNK_SIZE)
+                if not buf:
+                    continue
+                npages = (len(buf) + BLCKSZ - 1) // BLCKSZ
+                stats["pages_read"] += npages
+                keep = len(buf) % BLCKSZ != 0
+                if not keep:
+                    for j in range(0, len(buf), BLCKSZ):
+                        pg = buf[j:j + BLCKSZ]
+                        if pg != ZEROPAGE and page_lsn(pg) >= prev_lsn:
+                            keep = True
+                            break
+                if keep:
+                    stats["pages_kept"] += npages
+                    h, w, dedup = repo.put_chunk(buf)
+                    chunks.append([off, len(buf), h])
+                    stats["bytes_written"] += w
+                    stats["chunks_dedup" if dedup else "chunks_new"] += 1
+            if fadvise:
+                try:
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                except (AttributeError, OSError):
+                    pass
+    finally:
+        os.close(fd)
+    stats["bytes_logical"] = size
+    stats["bytes_not_read"] = max(0, size - stats["pages_read"] * BLCKSZ)
+    return {"size": size, "mode": stat.S_IMODE(st.st_mode), "mtime": int(st.st_mtime), "kind": "pages", "chunks": chunks}, stats
+
+
 def backup_file(repo, rel, full, st, prev_lsn, incremental, fadvise=True):
     """Store one file. Returns (entry or None, stats dict)."""
-    stats = {"bytes_logical": 0, "bytes_written": 0, "chunks_new": 0, "chunks_dedup": 0, "pages_read": 0, "pages_kept": 0, "skipped": 0}
+    stats = _empty_stats()
     try:
         fd = os.open(full, os.O_RDONLY)
     except OSError as e:
@@ -300,22 +362,35 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         control = [x for x in files if x[0] == "global/pg_control"]
         files = [x for x in files if x[0] != "global/pg_control"]
         files.sort(key=lambda x: -x[2].st_size)                       # big first: better parallel tail
-        totals = {"files": 0, "bytes_logical": 0, "bytes_written": 0, "chunks_new": 0, "chunks_dedup": 0, "pages_read": 0, "pages_kept": 0, "skipped_files": 0}
+        totals = {"files": 0, "bytes_logical": 0, "bytes_written": 0, "chunks_new": 0, "chunks_dedup": 0, "pages_read": 0, "pages_kept": 0, "skipped_files": 0,
+                  "bytes_not_read": 0, "files_not_read": 0}
         manifest_files = {}
         lock = threading.Lock()
         planned = sum(x[2].st_size for x in files)
         last = [0.0]
 
+        # ---- PostgreSQL 17+ WAL summaries: which relation files changed since the parent (see engine/walsummary.py)
+        unread, partial = set(), {}
+        if parent is not None:
+            unread, partial, ws_info = _plan_with_summaries(ctx, sess, repo, parent, tli, prev_lsn, start_lsn, files, progress, cancel)
+            if ws_info:
+                meta["wal_summaries"] = ws_info
+
         def one(item):
             rel, full, st = item
             _check_cancel(cancel)
+            if rel in unread:
+                return rel, unread_entry(st)
+            if rel in partial:
+                return rel, backup_file_sparse(repo, rel, full, st, prev_lsn, partial[rel])
             return rel, backup_file(repo, rel, full, st, prev_lsn, parent is not None)
 
         def absorb(rel, entry, st):
             totals["files"] += 1
             totals["skipped_files"] += st["skipped"]
-            for k in ("bytes_logical", "bytes_written", "chunks_new", "chunks_dedup", "pages_read", "pages_kept"):
-                totals[k] += st[k]
+            totals["files_not_read"] += 1 if rel in unread else 0
+            for k in ("bytes_logical", "bytes_written", "chunks_new", "chunks_dedup", "pages_read", "pages_kept", "bytes_not_read"):
+                totals[k] += st.get(k, 0)
             if entry is not None:
                 manifest_files[rel] = entry
 
@@ -388,7 +463,8 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         meta["completed"] = iso()
         repo.write_meta(meta)
         ratio = totals["bytes_logical"] / float(max(totals["bytes_written"], 1))
-        log("info", "backup %s complete: %s read, %s stored (%.1fx) in %.1fs" % (set_id, human(totals["bytes_logical"]), human(totals["bytes_written"]), ratio, time.time() - t_start))
+        log("info", "backup %s complete: %s read, %s stored (%.1fx) in %.1fs%s" % (set_id, human(totals["bytes_logical"] - totals["bytes_not_read"]), human(totals["bytes_written"]), ratio, time.time() - t_start,
+                                                                              (", %s of %d files not read thanks to WAL summaries" % (human(totals["bytes_not_read"]), totals["files_not_read"])) if totals["bytes_not_read"] else ""))
         return meta
     except BaseException as e:
         if started_backup:
@@ -412,6 +488,48 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         raise
     finally:
         sess.close()
+
+
+def _plan_with_summaries(ctx, sess, repo, parent, tli, prev_lsn, start_lsn, files, progress, cancel):
+    """(unread set, partial {rel: chunk indexes}, info for meta) from the WAL summaries, or (set(), {}, info/None) when they cannot be used.
+    A sample of the files that would not be read is scanned in full first: a changed chunk there means the summaries cannot be trusted
+    for this backup, and everything is scanned as before (loud in the log)."""
+    from pg_arca.engine import walsummary
+    log = ctx.log
+    ok, why = walsummary.available(sess, log)
+    if not ok:
+        if sess.version_num >= 170000:
+            log("info", "WAL summaries not used: %s" % why)
+        return set(), {}, {"used": False, "reason": why} if sess.version_num >= 170000 else None
+    if progress:
+        progress({"phase": "summaries"})
+    chain = walsummary.summaries_for(sess, tli, parent["start_lsn"], start_lsn, cancel=cancel, log=log)
+    if not chain:
+        return set(), {}, {"used": False, "reason": "summaries do not cover the range"}
+    try:
+        seg_blocks = int(sess.scalar("SELECT setting FROM pg_settings WHERE name = 'segment_size'"))
+    except (EngineError, ValueError, TypeError):
+        seg_blocks = 131072
+    try:
+        changes = walsummary.changed_chunks(sess, tli, chain, [x[0] for x in files], seg_blocks)
+        pfiles = repo.load_manifest(parent)["files"]
+    except EngineError as e:
+        log("warn", "PGA-INC-013: WAL summaries unreadable (%s): this incremental scans every page" % e)
+        return set(), {}, {"used": False, "reason": str(e)}
+    paged = [x for x in files if is_main_fork(x[0])]
+    skip, partial, full = walsummary.plan_files(paged, changes, pfiles)
+    # the check: a few files the summaries call unchanged, scanned the old way; one changed page there and the summaries are not used
+    for rel in walsummary.sample(skip):
+        item = next(x for x in paged if x[0] == rel)
+        entry, st = backup_file(repo, rel, item[1], item[2], prev_lsn, True)
+        if entry is not None and entry["chunks"]:
+            log("error", "PGA-INC-014: WAL summaries say %s is unchanged since %s but %d chunk(s) carry newer pages: summaries NOT used for this backup "
+                         "(every page scanned). Check summarize_wal and wal_summary_keep_time; report this if it repeats" % (rel, parent["id"], len(entry["chunks"])))
+            return set(), {}, {"used": False, "reason": "sample check failed on %s" % rel}
+    info = {"used": True, "ranges": len(chain), "files_unread": len(skip), "files_partial": len(partial), "files_full": len(full),
+            "bytes_unread": sum(x[2].st_size for x in paged if x[0] in set(skip))}
+    log("info", "WAL summaries: %d relation files unchanged (%s not read), %d read at changed chunks only, %d scanned in full" % (len(skip), human(info["bytes_unread"]), len(partial), len(full)))
+    return set(skip), partial, info
 
 
 def _storage_error(e, ctx):

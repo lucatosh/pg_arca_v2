@@ -65,6 +65,13 @@ import { requiredRole } from '../../server/auth';
     assert.strictEqual(f({ python_zstandard: null }, 'prod')[0].severity, 'warning');
     assert.strictEqual(f({ python_zstandard: 'installed', zstd: null }).length, 0); assert.strictEqual(f(undefined).length, 0); assert.strictEqual(f({ psql: '/usr/bin/psql' }).length, 0);
   }
+  { // PG17+ with summarize_wal off and a policy with incrementals -> one info finding per cluster; on/absent (older PG) or standby -> nothing
+    const base = store.peek(); const g1: any = base.nodes.n1;                      // n1 is in 'p' (prod policy with incrementals)
+    const mk = (settings: any, rec = false): any => ({ ...base, nodes: { ...base.nodes, n1: { ...g1, snapshot: { ...g1.snapshot, postgres: { ...g1.snapshot.postgres, is_in_recovery: rec, settings: { ...g1.snapshot.postgres.settings, ...settings } } } } } });
+    const f = (settings: any, rec?: boolean) => evaluate(mk(settings, rec), now).filter(i => i.clusterId === 'p' && i.code === 'summarize_wal_off');
+    assert.strictEqual(f({ summarize_wal: 'off' }).length, 1); assert.strictEqual(f({ summarize_wal: 'off' })[0].severity, 'info');
+    assert.strictEqual(f({ summarize_wal: 'on' }).length, 0); assert.strictEqual(f({}).length, 0); assert.strictEqual(f({ summarize_wal: 'off' }, true).length, 0);
+  }
   assert(evaluate(store.peek(), now).every(i => i.clusterId !== 'demo'), 'demo cluster is not monitored');
   const slot = evaluate(store.peek(), now).find(i => i.code === 'slot_stale')!; assert.strictEqual(slot.severity, 'critical'); assert(/old_slot/.test(slot.title)); assert(!evaluate(store.peek(), now).some(i => /live/.test(i.title)), 'active slots are fine');
   const b = briefing(store.peek(), now); assert.strictEqual(b.status, 'critical'); assert(b.counts.critical >= 3); assert.strictEqual(b.issues[0].severity, 'critical');

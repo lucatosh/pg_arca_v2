@@ -168,6 +168,10 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         cause: `Patroni reads the replicas’ timeline through a local replication connection (127.0.0.1, user ${plc.denied.join(', ')}), which pg_hba rejects. After a failover a replica (or a whole standby site) that got ahead of the new leader is not realigned with pg_rewind and stays stuck. Rule to add: ${plc.suggest[0] || ''}.`,
         action: { label: 'Open the access rules', page: 'hba' } });
       if (n.snapshot?.postgres?.pending_restart?.length) add({ severity: 'info', code: 'pending_restart', detail: n.id, nodeId: n.id, nodeName: n.name, title: `${n.name}: restart pending`, cause: `Parameters changed but not active yet: ${n.snapshot.postgres.pending_restart.slice(0, 5).join(', ')}.` });
+      // ---- PostgreSQL 17+: with summarize_wal the incrementals read only the changed relation files instead of the whole data directory
+      if (!n.snapshot?.postgres?.is_in_recovery && ps.summarize_wal === 'off' && pol?.enabled && pol.incrEveryHours && !out.some(x => x.key === `${c.id}:summarize_wal_off:dcs`))
+        add({ severity: 'info', code: 'summarize_wal_off', detail: 'dcs', nodeId: n.id, nodeName: n.name, title: 'Incremental backups read the whole data directory (summarize_wal is off)',
+          cause: 'PostgreSQL 17 can keep WAL summaries: with summarize_wal = on an incremental backup reads only the relation files that changed since the parent backup instead of every page of the cluster (same mechanism as pg_basebackup --incremental). Set summarize_wal = on (reload is enough; on Patroni through the dynamic configuration); the first incremental after that still scans everything, the next ones do not.', action: { label: 'Open parameters', page: 'params' } });
       // ---- compression: without python zstandard the agent compresses backup chunks with zlib (measured 5-10x slower per core); without the zstd binary WAL is archived uncompressed
       const tc = n.snapshot?.toolchain;
       if (tc && typeof tc === 'object' && 'python_zstandard' in tc) {
