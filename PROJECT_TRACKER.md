@@ -1,6 +1,6 @@
 # pg_arca — registro dei componenti
 
-Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguito**; non c’è nulla di "validato" senza un test dietro.
+Ultimo aggiornamento: 2026-10-16. Ogni riga dice **cosa è stato davvero eseguito**; non c’è nulla di "validato" senza un test dietro.
 
 ## Componenti
 
@@ -39,7 +39,7 @@ Ultimo aggiornamento: 2026-10-09. Ogni riga dice **cosa è stato davvero eseguit
 | Salute, briefing, notifiche | `server/health.ts`, `server/notify.ts`, `src/pages/Today.tsx` | Reale; webhook non provati contro servizi reali | `health.test.ts` |
 | Approvazioni a due persone, impostazioni avanzate | `server/approvals.ts`, `src/pages/Settings.tsx` | Reale | `approvals.test.ts` |
 | HBA: adozione e regole temporanee | `hba.py`, `hba_ops.py`, `server/scheduler.ts::hbaExpiryTick` | Reale (non su Patroni) | `test_hba_pg.py`, `hba.test.ts` |
-| LDAP/AD | — | **Anteprima** (marcato in UI) | — |
+| LDAP/AD | `server/ldap.ts` | Implementato; **mai provato contro un AD vero** | `ldap.test.ts` |
 
 ## Cosa coprono i test del motore (PostgreSQL 16)
 backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’istanza; ripristino sparso di un database; ripristino di un oggetto; ripristino fallito che non lascia nulla; `target_time` senza fuso rifiutato; percorsi protetti; verifica e info; prova di ripristino; rilevamento di blocchi corrotti; ricerca DROP/TRUNCATE; sicurezza dopo un backup interrotto; pulizia.
@@ -54,13 +54,14 @@ backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’
 - `server.ts` ridotto da ~2700 a ~90 righe: le rotte simulate (HA, HBA, LDAP, RBAC, PITR, stanze, politiche, parametri, tuning) sono state eliminate; HA e parametri passano dal motore operazioni.
 
 ## Da fare
+- **[16/10 notte — semplicità e allarmi veri]** fatto: frase «è protetto?», data unica, verdetto unico del restore, vocabolario unico con test di guardia, navigazione per compiti («What do you need?» + Ctrl+K), Activity log unico, storage in un posto, editor policy in giorni, pg_hba leggibile, set di backup con nomi leggibili, RPO vero su cluster inattivi, quarantena WAL classificata dall'agent, set con WAL in ritardo completati invece che buttati, bozze dimenticate davvero al logout. Da fare: livelli base/esperto (idea 5), editor date 24 h nel passo «When» del restore, matrice PG14-18 completa (in corso sulla VM: `/tmp/matrix-summary.txt`).
 - **[release 1.0.0-rc.1 — ramo `release/1.0.0-rc.1`]** (dettagli in HANDOFF, checkpoint 1-6 del 15/10):
   - [x] Build di release sulla VM: tar, deb, rpm, `npm audit` clean (BUILDINFO).
   - [x] `tools/lab/release-test.sh` su Debian 12 / Rocky 9 / Ubuntu 24: primo giro 13 fallimenti per distro = 3 bug dell'installer, corretti (9c8c987). [x] Secondo ciclo: 4 fallimenti per distro = CA della console non leggibile dall'agent, corretto (e26b656). [ ] Terzo ciclo (`~/lablogs/reltest.log`).
   - [ ] L'utente prova l'installazione su un'altra macchina (`TEST-INSTALLAZIONE.md`): raccogliere l'esito.
   - [x] F1 fencing geo (c9de688, df5e233, 5ddd942), F2 ritiro del ramo morto (4f848ef), F3 badge della testata (0acc185 e seguenti), 9 copie in `conflicts/` spiegate (tentativi prima della deduplica), `package-lock.json` versionato.
-  - [ ] Leggere il `rejoinError` di hy-mi (13:19:25 UTC del 14/10) e capire perché il riallineamento automatico è fallito.
-  - [ ] Deploy del ramo sul lab (`tools/lab/deploy.sh release/1.0.0-rc.1`), backup full reale con il formato 2 (pack), misura su una share NFS vera (gate di release).
+  - [x] Rejoin di hy-mi: cause trovate e corrette nel prodotto (rejoin falso, timeline abbandonate, job interrotti, peer noti); dal 15/10 sera hy-mi è standby di hy-rm in streaming su TL12 (verificato 16/10 00:40).
+  - [x] Deploy del ramo sul lab (15/10 22:20, poi a ogni correzione) e aggiornamento di tutti gli agent con il comando di upgrade della console (16/16 online, nessun nodo duplicato); backup su NFS vero OK. [ ] misura di velocità del formato 2 su NFS.
   - [ ] Formato 2 del repository (pack file, 3934597): fatto e provato su PG16; [ ] pack su storage di rete reale; [x] cache dell'indice in layout nativo (`cas/packs/index.cache`, 1,6 M voci in 0,09 s — checkpoint 11).
   - [x] Obiettivi RPO/RTO dichiarati nella policy con finding e metriche (e719e8c). [x] Revisione di sicurezza agent + console con sub-agent indipendenti, 19 segnalazioni corrette (77d5c3f, 2f43eda); [ ] revisione esterna (gate).
 000. **Studio (richiesta utente 12/10): destinazione dei backup personalizzabile dalla console per ambiente e per cluster**, sia **in locale** sia su una **macchina di destinazione o un servizio** (backup server come bk1, NAS, S3/MinIO, SFTP...). Secondo l'utente oggi dal webtool non si può fare. Esiste una base (`server/destinations.ts`, pagina Ripristino e archivi → Destinazione dei backup: ambiti globale/ambiente/cartella/cluster, segnaposto {env}/{cluster}, controllo per nodo prima di applicare), ma è limitata a cartelle locali o condivisioni NFS/SMB **già montate**; S3/Azure/GCS/SFTP sono solo «Anteprima», rifiutati. Da capire: (a) perché l'utente non la trova o non la ritiene sufficiente (visibilità dal cluster/ambiente, flusso), verificandolo sul lab; (b) quale soluzione offrire per una macchina remota senza mount: repository sul backup server raggiunto tramite il suo agent (push via agent worker), SFTP/SSH, oppure backend a oggetti (S3 compatibile) nel motore; (c) migrazione dei backup esistenti al cambio di destinazione (oggi non vengono spostati), archivio WAL per cluster, cifratura, conservazione, effetti su PITR/restore e sull'istanza di recupero centrale. Requisiti aggiunti dall'utente (11:39): configurare l'utente che scrive (o un servizio), prove di scrittura/permessi, migrazione in background del contenuto vecchio con occupazione attuale e spazio sulla nuova. **Progetto scritto: `DESTINAZIONE-BACKUP.md`** (due identità agent/postmaster provate entrambe, prove estese, cambio senza perdere PITR, migrazione riprendibile e verificata, sicurezza, fase 2 agent ricevitore/S3/SFTP). **§1-4 implementati e provati su PG16 (12/10 sera)**; restano prove sul lab con NFS/SMB veri e Patroni, e la fase 2 (agent ricevitore, S3, SFTP).
