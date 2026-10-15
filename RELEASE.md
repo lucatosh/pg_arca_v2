@@ -65,5 +65,6 @@ Fixed during the rc.1 test round (15/10):
 - Dialogs no longer steal the cursor while typing (polling pages re-focused the first field; copy/paste lost its selection).
 - Cluster header badge agrees with the health findings.
 - Backup copy and restore extraction run with a sliding window over the worker threads instead of batches with a barrier.
+- Prometheus metrics on `/metrics` (enabled by `PG_ARCA_METRICS_TOKEN`), daily snapshots of the console state, install command for a console with a private/self-signed certificate, backup policy option to prefer a standby, geo rejoin of a site that came back on a higher timeline.
 
 Known limits: see the release gate above and [COMPAT.md](COMPAT.md).
