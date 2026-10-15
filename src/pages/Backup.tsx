@@ -167,12 +167,12 @@ function SetsCard({ sets, d }: { sets: SetRow[]; d: any }) {
 
 /** What would be lost right now (RPO) and how long a whole-cluster restore would take (RTO): the two numbers an auditor asks first. */
 function Objectives({ clusterId }: { clusterId: string }) {
-  const q = useQuery<{ rpo: { seconds: number | null; state: string; text: string; openSegment?: boolean }; rto: { estimateSeconds: number | null; state: string; text: string; drill: any } }>(`/api/clusters/${encodeURIComponent(clusterId)}/objectives`, { interval: 30000 });
+  const q = useQuery<{ rpo: { seconds: number | null; state: string; text: string; openSegment?: boolean }; rto: { estimateSeconds: number | null; state: string; text: string; drill: any }; targets?: { rpoSeconds: number | null; rtoSeconds: number | null } }>(`/api/clusters/${encodeURIComponent(clusterId)}/objectives`, { interval: 30000 });
   const o = q.data; if (!o) return null;
   const badge = (st: string) => st === 'ok' ? <Badge kind="ok">OK</Badge> : st === 'bad' ? <Badge kind="bad">At risk</Badge> : st === 'warn' || st === 'stale' ? <Badge kind="warn">{st === 'stale' ? 'Outdated' : 'Check'}</Badge> : <Badge>Unknown</Badge>;
-  const dur = (s: number | null) => s == null ? '—' : s >= 7200 ? `${(s / 3600).toFixed(1)} h` : s >= 120 ? `${Math.round(s / 60)} min` : `${s} s`;
+  const dur = (s: number | null) => s == null ? '—' : s >= 7200 ? `${(s / 3600).toFixed(1).replace(/\.0$/, '')} h` : s >= 120 ? `${Math.round(s / 60)} min` : `${s} s`;
   return <div className="objectives" data-testid="objectives"><dl className="kv small">
-    <dt>Recovery point (RPO)</dt><dd><strong>{o.rpo.seconds == null ? (o.rpo.state === 'bad' ? 'unbounded' : '—') : `≤ ${dur(o.rpo.seconds)}${o.rpo.openSegment ? ' + the segment being written' : ''}`}</strong> {badge(o.rpo.state)} <span className="muted">{o.rpo.text}</span></dd>
-    <dt>Recovery time (RTO)</dt><dd><strong>{o.rto.estimateSeconds == null ? 'not measured' : `≈ ${dur(o.rto.estimateSeconds)}`}</strong> {badge(o.rto.state)} <span className="muted">{o.rto.text}</span></dd>
+    <dt>Recovery point (RPO)</dt><dd><strong>{o.rpo.seconds == null ? (o.rpo.state === 'bad' ? 'unbounded' : '—') : `≤ ${dur(o.rpo.seconds)}${o.rpo.openSegment ? ' + the segment being written' : ''}`}</strong>{o.targets?.rpoSeconds ? <span className="muted"> / objective {dur(o.targets.rpoSeconds)}</span> : null} {badge(o.rpo.state)} <span className="muted">{o.rpo.text}</span></dd>
+    <dt>Recovery time (RTO)</dt><dd><strong>{o.rto.estimateSeconds == null ? 'not measured' : `≈ ${dur(o.rto.estimateSeconds)}`}</strong>{o.targets?.rtoSeconds ? <span className="muted"> / objective {dur(o.targets.rtoSeconds)}</span> : null} {badge(o.rto.state)} <span className="muted">{o.rto.text}</span></dd>
   </dl></div>;
 }

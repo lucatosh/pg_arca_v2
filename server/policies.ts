@@ -25,6 +25,10 @@ export interface BackupPolicy {
   /** Full backups and verifications only between these hours of the console's clock (0-23; end exclusive; wraps over midnight; equal = no window). Incrementals are not constrained. */
   windowStart?: number;
   windowEnd?: number;
+  /** Recovery objectives the business committed to (0 = none declared): the console measures the actual recovery point and the estimated recovery time
+   *  (health.objectives) and reports when they are above these, or when the configuration cannot meet them (archive_timeout above the RPO). */
+  rpoTargetMinutes?: number;
+  rtoTargetMinutes?: number;
   retryAfterMinutes: number;
 }
 export const DEFAULT_POLICY: BackupPolicy = { enabled: false, fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168, verifyDeep: false, retryAfterMinutes: 30 };
@@ -45,6 +49,8 @@ export function validatePolicy(p: any): { ok: true; policy: BackupPolicy } | { o
       readLimitMBs: n(p.readLimitMBs ?? 0, 0, 100000, 'readLimitMBs'),
       windowStart: n(p.windowStart ?? 0, 0, 23, 'windowStart'),
       windowEnd: n(p.windowEnd ?? 0, 0, 23, 'windowEnd'),
+      rpoTargetMinutes: n(p.rpoTargetMinutes ?? 0, 0, 10080, 'rpoTargetMinutes'),
+      rtoTargetMinutes: n(p.rtoTargetMinutes ?? 0, 0, 100000, 'rtoTargetMinutes'),
       retryAfterMinutes: n(p.retryAfterMinutes ?? DEFAULT_POLICY.retryAfterMinutes, 5, 1440, 'retryAfterMinutes'),
     };
     if (out.incrEveryHours && out.incrEveryHours >= out.fullEveryHours) return { ok: false, error: 'incrEveryHours must be smaller than fullEveryHours' };
@@ -58,10 +64,10 @@ export interface Template { id: string; name: string; description: string; built
 
 const P = (o: Partial<BackupPolicy>): BackupPolicy => ({ ...DEFAULT_POLICY, enabled: true, ...o });
 export const BUILTIN_TEMPLATES: Template[] = [
-  { id: 'prod-critical', name: 'Critical production', builtin: true, description: 'Weekly full, incremental every 4 hours, 4 chains kept, daily verification with a test restore.',
-    policy: P({ fullEveryHours: 168, incrEveryHours: 4, retentionFull: 4, verifyEveryHours: 24, verifyDeep: false, retryAfterMinutes: 15 }) },
-  { id: 'prod-standard', name: 'Standard production', builtin: true, description: 'Weekly full, daily incremental, 2 chains, weekly verification.',
-    policy: P({ fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168 }) },
+  { id: 'prod-critical', name: 'Critical production', builtin: true, description: 'Weekly full, incremental every 4 hours, 4 chains kept, daily verification with a test restore. Objectives: 15 minutes of data at most, back in 4 hours.',
+    policy: P({ fullEveryHours: 168, incrEveryHours: 4, retentionFull: 4, verifyEveryHours: 24, verifyDeep: false, retryAfterMinutes: 15, rpoTargetMinutes: 15, rtoTargetMinutes: 240 }) },
+  { id: 'prod-standard', name: 'Standard production', builtin: true, description: 'Weekly full, daily incremental, 2 chains, weekly verification. Objectives: one hour of data at most, back in 8 hours.',
+    policy: P({ fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168, rpoTargetMinutes: 60, rtoTargetMinutes: 480 }) },
   { id: 'preprod', name: 'Pre-production / integration', builtin: true, description: 'Weekly full, incremental every 24 hours, 2 chains, verification every two weeks.',
     policy: P({ fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 336 }) },
   { id: 'dev-light', name: 'Development and test (light)', builtin: true, description: 'One full per week, no incrementals, 1 chain, no automatic verification.',

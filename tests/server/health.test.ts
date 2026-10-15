@@ -117,6 +117,27 @@ import { requiredRole } from '../../server/auth';
     st.nodes.n1.snapshot.postgres.archiver = { last_archived_time: iso(now - 2 * 3600_000) };
     assert.strictEqual(objectives(st, 'p', now)!.rpo.state, 'bad');
     assert.strictEqual(objectives(st, 'nope', now), null);
+    // declared objectives (prod-standard: RPO 60 min, RTO 8 h): within -> ok and said so; archive_timeout above the RPO -> warn + finding with the exact setting;
+    // measured RPO above -> bad + critical finding; RTO estimate above -> bad + finding; no objectives declared -> nothing of this
+    assert.deepStrictEqual(objectives(st, 'p', now)!.targets, { rpoSeconds: 3600, rtoSeconds: 28800 });
+    st.nodes.n1.snapshot.postgres.archiver = { last_archived_time: iso(now - 20_000) };
+    assert(/Within the 60 min objective/.test(objectives(st, 'p', now)!.rpo.text)); assert(/Within the 8 h objective/.test(objectives(st, 'p', now)!.rto.text));
+    assert(!evaluate(st, now).some(i => i.clusterId === 'p' && /_target$/.test(i.code)), 'no finding while within the objectives');
+    st.nodes.n1.snapshot.postgres.settings.archive_timeout = '7200';
+    { const o = objectives(st, 'p', now)!; assert.strictEqual(o.rpo.state, 'bad'); assert(/Above the 60 min objective: archive_timeout \(7200 s\) alone.*archive_timeout = 3600 s/.test(o.rpo.text), o.rpo.text);
+      const f = evaluate(st, now).find(i => i.clusterId === 'p' && i.code === 'rpo_target')!; assert.strictEqual(f.severity, 'critical'); assert(/archive_timeout = 3600 s/.test(f.cause) && f.action?.page === 'params'); }
+    st.nodes.n1.snapshot.postgres.settings.archive_timeout = '0';
+    { const o = objectives(st, 'p', now)!; assert.strictEqual(o.rpo.state, 'warn'); assert(/not guaranteed/.test(o.rpo.text));
+      const f = evaluate(st, now).find(i => i.clusterId === 'p' && i.code === 'rpo_target')!; assert.strictEqual(f.severity, 'warning'); assert(/archive_timeout is not set/.test(f.cause)); }
+    st.nodes.n1.snapshot.postgres.settings.archive_timeout = '60'; st.nodes.n1.snapshot.postgres.archiver = { last_archived_time: iso(now - 90 * 60_000) };
+    { const o = objectives(st, 'p', now)!; assert.strictEqual(o.rpo.state, 'bad'); assert(/Above the 60 min objective/.test(o.rpo.text));
+      const f = evaluate(st, now).find(i => i.clusterId === 'p' && i.code === 'rpo_target')!; assert.strictEqual(f.severity, 'critical'); assert(/above the 60 min objective/.test(f.title)); }
+    st.nodes.n1.snapshot.postgres.archiver = { last_archived_time: iso(now - 20_000) }; st.nodes.n1.snapshot.postgres.databases = [{ name: 'a', size: 400 * GB }];
+    { const o = objectives(st, 'p', now)!; assert.strictEqual(o.rto.state, 'bad'); assert.strictEqual(o.rto.estimateSeconds, 60000);
+      const f = evaluate(st, now).find(i => i.clusterId === 'p' && i.code === 'rto_target')!; assert(/above the 8 h objective/.test(f.title), f.title); }
+    st.settings.policyAssignments = { 'env:prod': { templateId: 'preprod' } };
+    { const o = objectives(st, 'p', now)!; assert.deepStrictEqual(o.targets, { rpoSeconds: null, rtoSeconds: null }); assert.strictEqual(o.rto.state, 'ok'); assert(!/objective/.test(o.rpo.text + o.rto.text));
+      assert(!evaluate(st, now).some(i => i.clusterId === 'p' && /_target$/.test(i.code))); }
   }
   assert(evaluate(store.peek(), now).every(i => i.clusterId !== 'demo'), 'demo cluster is not monitored');
   const slot = evaluate(store.peek(), now).find(i => i.code === 'slot_stale')!; assert.strictEqual(slot.severity, 'critical'); assert(/old_slot/.test(slot.title)); assert(!evaluate(store.peek(), now).some(i => /live/.test(i.title)), 'active slots are fine');

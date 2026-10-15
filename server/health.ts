@@ -22,6 +22,7 @@ const GB = 1024 ** 3;
 const hrs = (h: number) => (h >= 48 ? `${Math.round(h / 24)} days` : `${Math.round(h)} hours`);
 const bytesH = (b: number) => (b >= GB ? `${(b / GB).toFixed(1)} GB` : `${Math.round(b / 1048576)} MB`);
 const ts = (s?: string) => (s ? Date.parse(s) : NaN);
+const durH = (s: number) => s >= 7200 ? `${(s / 3600).toFixed(1).replace(/\.0$/, '')} h` : s >= 120 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`;
 
 export function evaluate(st: any, now = Date.now()): Issue[] {
   const out: Issue[] = [];
@@ -150,6 +151,22 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         if (behind >= 16) add({ severity: behind >= 128 ? 'critical' : 'warning', code: 'archiver_lag', title: `WAL archiving is ${behind} segments behind (${bytesH(behind * segBytes)})`,
           cause: `The archiver has not caught up with what PostgreSQL writes: archive_command is slower than the WAL rate (slow destination, zlib instead of zstd, a saturated node). Until it catches up these segments sit in pg_wal (disk) and are not restorable from the archive (recovery point). If it keeps growing: faster destination, python3-zstandard on the node, or less WAL (wal_compression=on).`, action: { label: 'See the backups', page: 'backup' } });
       }
+    }
+    // ---- recovery objectives declared in the policy: measured recovery point / estimated recovery time above them, or a configuration that cannot meet them
+    if (pol?.enabled && (pol.rpoTargetMinutes || pol.rtoTargetMinutes) && primary) {
+      const ob = objectives(st, c.id, now)!;
+      if (ob.targets.rpoSeconds && ob.rpo.seconds != null && ob.rpo.state !== 'ok') {
+        const t = Number(pg.settings?.archive_timeout) || 0, tgt = ob.targets.rpoSeconds, mins = Math.round(tgt / 60);
+        const setting = `Set archive_timeout = ${tgt} s on the cluster (through the DCS on Patroni); the cost is one ${bytesH(Number(pg.settings?.wal_segment_size) || 16 * 1048576)} segment every ${mins} min when idle.`;
+        if (ob.rpo.state === 'bad') add({ severity: 'critical', code: 'rpo_target', title: `Recovery point above the ${mins} min objective`,
+          cause: `${ob.rpo.text} Data written in the last ${Math.round(ob.rpo.seconds / 60)} minutes would be lost with the primary. ${t > tgt ? setting : 'The archiver is late: see the WAL archiving findings of this cluster.'}`,
+          action: t > tgt ? { label: 'Open the parameters', page: 'params' } : { label: 'See the backups', page: 'backup' } });
+        else add({ severity: 'warning', code: 'rpo_target', title: `The ${mins} min recovery point objective is not guaranteed`,
+          cause: `archive_timeout is not set: a segment with little traffic can stay on the primary longer than the ${mins} min objective. ${setting}`, action: { label: 'Open the parameters', page: 'params' } });
+      }
+      if (ob.targets.rtoSeconds && ob.rto.state === 'bad' && ob.rto.estimateSeconds != null)
+        add({ severity: 'warning', code: 'rto_target', title: `Recovery time above the ${durH(ob.targets.rtoSeconds)} objective`,
+          cause: `${ob.rto.text} A faster restore host (CPU, disks, network to the repository), python3-zstandard on the nodes, or a smaller database would bring it down; otherwise the objective should be renegotiated before it is needed.`, action: { label: 'See the backups', page: 'backup' } });
     }
     if (pol?.enabled && pg.settings && pg.settings.archive_mode === 'off') add({ severity: 'warning', code: 'archive_off', title: 'archive_mode is off', cause: 'The backup policy is active but PostgreSQL does not archive WAL: no point-in-time recovery.', action: { label: 'See the backups', page: 'backup' } });
 
@@ -301,6 +318,9 @@ export function objectives(st: any, clusterId: string, now = Date.now()) {
   const arch = pg.archiver || {};
   const sizeBytes = ((pg.databases || []) as any[]).reduce((a, d) => a + (Number(d?.size) || 0), 0);
   const timeout = Number(pg.settings?.archive_timeout) || 0;
+  const pol = resolvePolicy(st, c).policy;
+  const rpoTarget = pol?.enabled ? (Number(pol.rpoTargetMinutes) || 0) * 60 : 0, rtoTarget = pol?.enabled ? (Number(pol.rtoTargetMinutes) || 0) * 60 : 0;
+  const dur = durH;
   const lastArch = ts(arch.last_archived_time);
   const failing = !!arch.last_failed_time && (!arch.last_archived_time || ts(arch.last_failed_time) > lastArch);
   let rpo: { seconds: number | null; state: 'ok' | 'warn' | 'bad' | 'unknown'; text: string; openSegment?: boolean };
@@ -313,18 +333,24 @@ export function objectives(st: any, clusterId: string, now = Date.now()) {
     const spoolAge = Number(primary?.snapshot?.wal?.spool?.oldest_age_sec) || 0;          // asynchronous archiving: what waits in the local spool is not archived yet
     const bound = Math.max(since, timeout || 0) + spoolAge;
     rpo = { seconds: Math.round(bound), state: bound <= Math.max(timeout, 60) * 2 ? 'ok' : bound <= 3600 ? 'warn' : 'bad', openSegment: !timeout,
-      text: `Up to ${bound >= 120 ? Math.round(bound / 60) + ' min' : Math.round(bound) + ' s'} of transactions are not in the archive yet (last segment archived ${since >= 120 ? Math.round(since / 60) + ' min' : Math.round(since) + ' s'} ago${timeout ? `, archive_timeout ${timeout} s` : ', archive_timeout not set: an idle segment can wait for a long time'}${spoolAge ? `, ${primary.snapshot.wal.spool.pending} segments still in the local spool` : ''}).` };
+      text: `Up to ${dur(bound)} of transactions are not in the archive yet (last segment archived ${dur(since)} ago${timeout ? `, archive_timeout ${timeout} s` : ', archive_timeout not set: an idle segment can wait for a long time'}${spoolAge ? `, ${primary.snapshot.wal.spool.pending} segments still in the local spool` : ''}).` };
+    if (rpoTarget) {
+      if (bound > rpoTarget) { rpo.state = 'bad'; rpo.text += ` Above the ${dur(rpoTarget)} objective${timeout > rpoTarget ? `: archive_timeout (${timeout} s) alone is above it; set archive_timeout = ${rpoTarget} s` : ''}.`; }
+      else if (!timeout) { rpo.state = 'warn'; rpo.text += ` The ${dur(rpoTarget)} objective is not guaranteed: archive_timeout is not set, so a segment with little traffic can wait longer; set archive_timeout = ${rpoTarget} s.`; }
+      else rpo.text += ` Within the ${dur(rpoTarget)} objective.`;
+    }
   }
   const drills = (st.operations as any[]).filter(o => o.clusterId === clusterId && o.type === 'restore_drill' && o.status === 'succeeded' && Number(o.result?.rto_seconds) > 0).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
   const d = drills[drills.length - 1];
-  let rto: { estimateSeconds: number | null; state: 'ok' | 'unknown' | 'stale'; text: string; drill: null | { at: string; seconds: number; bytes: number; mbs: number } };
-  if (!d) rto = { estimateSeconds: null, state: 'unknown', text: 'Never measured: run a disaster recovery drill to know how long a whole-cluster restore takes here.', drill: null };
+  let rto: { estimateSeconds: number | null; state: 'ok' | 'unknown' | 'stale' | 'bad'; text: string; drill: null | { at: string; seconds: number; bytes: number; mbs: number } };
+  if (!d) rto = { estimateSeconds: null, state: 'unknown', text: `Never measured: run a disaster recovery drill to know how long a whole-cluster restore takes here${rtoTarget ? ` (the objective is ${dur(rtoTarget)})` : ''}.`, drill: null };
   else {
     const r = d.result; const bytes = Number(r.data_bytes) || 0; const secs = Number(r.rto_seconds);
     const est = bytes > 0 && sizeBytes > 0 ? Math.round(secs * Math.max(1, sizeBytes / bytes)) : Math.round(secs);
     const ageDays = (now - Date.parse(d.updatedAt)) / 86400_000;
     rto = { estimateSeconds: est, state: ageDays > 90 ? 'stale' : 'ok', drill: { at: d.updatedAt, seconds: secs, bytes, mbs: Number(r.throughput_mb_s) || 0 },
-      text: `About ${est >= 120 ? Math.round(est / 60) + ' min' : est + ' s'} for today's ${bytesH(sizeBytes)} (drill of ${d.updatedAt.slice(0, 10)}: ${secs >= 120 ? Math.round(secs / 60) + ' min' : Math.round(secs) + ' s'} for ${bytesH(bytes)}${ageDays > 90 ? '; older than 90 days, run a new one' : ''}). Plus the WAL to replay up to the chosen point.` };
+      text: `About ${dur(est)} for today's ${bytesH(sizeBytes)} (drill of ${d.updatedAt.slice(0, 10)}: ${dur(secs)} for ${bytesH(bytes)}${ageDays > 90 ? '; older than 90 days, run a new one' : ''}). Plus the WAL to replay up to the chosen point.` };
+    if (rtoTarget) { if (est > rtoTarget) { rto.state = 'bad'; rto.text += ` Above the ${dur(rtoTarget)} objective.`; } else rto.text += ` Within the ${dur(rtoTarget)} objective.`; }
   }
-  return { rpo, rto, sizeBytes, archiveTimeoutSec: timeout || null };
+  return { rpo, rto, sizeBytes, archiveTimeoutSec: timeout || null, targets: { rpoSeconds: rpoTarget || null, rtoSeconds: rtoTarget || null } };
 }
