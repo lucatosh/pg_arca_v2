@@ -307,9 +307,20 @@ class PackTests(unittest.TestCase):
             meta = json.load(open(os.path.join(pd, packs.CACHE_NAME + ".json")))
             self.assertEqual(len(meta["packs"]), len([f for f in os.listdir(pd) if f.endswith(".idx")]), "cache covers every pack")
             self.assertEqual(meta["count"], 60)
-            r3 = Repo(self.root, "main", algo="zlib")                   # loads from the cache
-            for h in hs:
-                self.assertIsNotNone(r3.locate(h))
+            # loads from the cache ALONE: hide the .idx files' content behind unreadable copies? simpler: count what the loader reads
+            import pg_arca.engine.packs as pk
+            calls = []
+            orig = pk.read_idx
+            pk.read_idx = lambda path: (calls.append(path), orig(path))[1]
+            try:
+                r3 = Repo(self.root, "main", algo="zlib")
+                for h in hs:
+                    self.assertIsNotNone(r3.locate(h))
+                self.assertEqual(calls, [], "every pack is in the cache: no .idx file is read")
+            finally:
+                pk.read_idx = orig
+            for i, h in enumerate(hs[:5]):
+                self.assertEqual(r3.get_chunk(h), self.repo.get_chunk(h), "locations from the cache are right")
             # a pack disappears (GC): the cache is stale and ignored, the index is rebuilt and the cache rewritten without that pack
             victim = r3.locate(hs[0])[0]
             os.remove(victim)

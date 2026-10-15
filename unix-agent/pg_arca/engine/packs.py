@@ -35,7 +35,7 @@ FORMAT = 2
 HDR_LEN = 16                         # magic(8) + u32 format + u32 reserved
 REC_HDR = struct.Struct("<32sI")     # hash, blob length
 IDX_REC = struct.Struct("<32sQI")    # hash, offset, blob length
-CACHE_REC = struct.Struct("<32sIQI")  # hash, pack number (within the root's cache), offset, blob length
+CACHE_LAYOUT = 2                     # index.cache = keys (32 B each) + locations (int64, pack number relative to the root) + lengths (uint32)
 PACK_MAX = int(os.environ.get("PG_ARCA_PACK_MAX_MB", "256")) * 1048576
 FOLD_AT = 262144                     # recent entries folded into the sorted index (about 64 packs of 64 KiB chunks)
 OFF_BITS = 40                        # pack number << 40 | offset (packs of up to 1 TiB)
@@ -261,27 +261,30 @@ class ChunkIndex(object):
                 import json
                 meta = json.load(f)
             names = list(meta.get("packs") or [])
-            if names and all(n in idx_names for n in names):
+            cnt = int(meta.get("count") or 0)
+            if names and meta.get("layout") == CACHE_LAYOUT and all(n in idx_names for n in names):
                 with open(cp, "rb") as f:
                     blob = f.read()
-                cnt = int(meta.get("count") or 0)
-                if len(blob) == cnt * IDX_REC.size:
+                if len(blob) == cnt * 44:
                     cached_names = names
                     cached = (blob, cnt)
         except (IOError, OSError, ValueError):
             cached = None
         for n in cached_names:
             packs.append(os.path.join(d, n[:-4] + ".pack"))
-        streams = []
-        if cached is not None:
+        tab = None
+        if cached is not None:                                 # the table's own layout: three slices, no per-record work
             blob, cnt = cached
-
-            def cache_stream(blob=blob, cnt=cnt, base=base):
-                for i in range(cnt):
-                    hb, pn, off, ln = CACHE_REC.unpack_from(blob, i * CACHE_REC.size)
-                    yield hb, ((base + pn) << OFF_BITS) | off, ln
-            streams.append(cache_stream())
+            locs = array.array("q")
+            locs.frombytes(blob[32 * cnt:40 * cnt])
+            lens = array.array("I")
+            lens.frombytes(blob[40 * cnt:44 * cnt])
+            if base:
+                shift = base << OFF_BITS
+                locs = array.array("q", (v + shift for v in locs))
+            tab = Table(blob[:32 * cnt], locs, lens)
         fresh = [n for n in idx_names if n not in cached_names]
+        streams = [tab.records()] if tab is not None and fresh else []
         for n in fresh:
             try:
                 entries = read_idx(os.path.join(d, n))
@@ -291,22 +294,27 @@ class ChunkIndex(object):
             pn = len(packs)
             packs.append(os.path.join(d, n[:-4] + ".pack"))
             streams.append(_idx_stream(entries, pn))           # a function, not a generator expression: pn and entries are bound NOW
-        tab = Table.merge(streams) if streams else Table()
+        if streams:
+            tab = Table.merge(streams)
+        elif tab is None:
+            tab = Table()
         if writable and fresh and tab.n and len(fresh) + len(cached_names) >= 2:   # never written into a previous location (read-only)
             self._write_cache(d, tab, base, packs[base:])
         return tab
 
     def _write_cache(self, d, tab, base, pack_paths):
-        """index.cache (records with the pack number RELATIVE to this root) + .json listing the packs it covers; best effort."""
+        """index.cache in the table's own layout (keys, locations with pack numbers RELATIVE to this root, lengths) + .json listing the packs; best effort."""
         import json
         tmp = os.path.join(d, CACHE_NAME + ".tmp.%d" % os.getpid())
         try:
+            locs = tab.locs if not base else array.array("q", (v - (base << OFF_BITS) for v in tab.locs))
             with open(tmp, "wb") as f:
-                for hb, loc, ln in tab.records():
-                    f.write(CACHE_REC.pack(hb, (loc >> OFF_BITS) - base, loc & ((1 << OFF_BITS) - 1), ln))
+                f.write(tab.keys)
+                f.write(locs.tobytes())
+                f.write(tab.lens.tobytes())
             os.rename(tmp, os.path.join(d, CACHE_NAME))
             with open(tmp, "w") as f:
-                json.dump({"packs": [os.path.basename(p)[:-5] + ".idx" for p in pack_paths], "count": tab.n}, f)
+                json.dump({"layout": CACHE_LAYOUT, "packs": [os.path.basename(p)[:-5] + ".idx" for p in pack_paths], "count": tab.n}, f)
             os.rename(tmp, os.path.join(d, CACHE_NAME + ".json"))
         except OSError:
             try:
