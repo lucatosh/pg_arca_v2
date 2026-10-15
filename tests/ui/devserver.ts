@@ -51,6 +51,7 @@ const withAgent = process.env.NO_AGENT !== '1';
     const full = addSet(new Date(Date.now() - 6 * 86400e3), 'F');
     for (let i = 5; i >= 1; i--) addSet(new Date(Date.now() - i * 86400e3), 'I', full);
     let xact = 1000;
+    let offsiteCfg: any = null;
     let hbaManaged: any[] = []; const hbaRev = () => createHash('sha1').update(JSON.stringify(hbaManaged)).digest('hex').slice(0, 16);
     let migrated = false;                 // the previous backup location left by a destination change (until the migration below)
     const snap = () => ({
@@ -92,6 +93,11 @@ const withAgent = process.env.NO_AGENT !== '1';
         migrated = true; return report(op.id, { status: 'succeeded', result: { complete: true, copied: { sets: 2, chunks: 18234, wal: 412, bytes: 4.3e9 }, seconds: 21.4, left: { sets: [], wal_files: 0 } } }); }
       if (op.type === 'destination_check') { await sleep(400); return report(op.id, { status: 'succeeded', result: { type: p.type, ok: true, paths: [p.repo_path && { kind: 'repo', path: p.repo_path, ok: true, mount: { mountpoint: '/mnt/backup', fstype: 'nfs4', source: 'nas:/export' }, free_bytes: 5e11, checks: [{ id: 'fs', level: 'ok', text: `${p.repo_path} is on nfs4 (nas:/export)` }, { id: 'write', level: 'ok', text: 'writable: exclusive create, fsync and atomic rename work (3.1 ms)' }], bench: p.bench ? { mb: 32, write_mb_s: 212.4, read_mb_s: 480.1, note: 'read may be served from the page cache' } : undefined }, p.wal_path && { kind: 'wal', path: p.wal_path, ok: true, mount: { mountpoint: '/mnt/backup', fstype: 'nfs4', source: 'nas:/export' }, free_bytes: 5e11, checks: [{ id: 'fs', level: 'ok', text: `${p.wal_path} is on nfs4 (nas:/export)` }, { id: 'write', level: 'ok', text: 'writable' }] }].filter(Boolean) } }); }
       if (op.type === 'agent_config_set') { await sleep(300); return report(op.id, { status: 'succeeded', result: { changed: p.set } }); }
+      if (op.type === 'offsite_get') { await sleep(200); return report(op.id, { status: 'succeeded', result: { offsite: offsiteCfg, problem: null, status: offsiteCfg ? { ok: true, last_ok: Date.now() / 1000 - 120, remote_objects: 812, finished: Date.now() / 1000 - 120 } : null } }); }
+      if (op.type === 'offsite_set') { await sleep(400); if (p.offsite && /refuse/.test(p.offsite.bucket || '')) return report(op.id, { status: 'failed', error: 'the bucket cannot be used: 403 AccessDenied: bad or missing signature' });
+        offsiteCfg = p.offsite ? { ...p.offsite, secret_key: undefined, secret_key_set: true } : null; return report(op.id, { status: 'succeeded', result: { offsite: offsiteCfg, probe: p.offsite ? 'bucket reachable, list/put/get/delete ok' : undefined, cleared: !p.offsite } }); }
+      if (op.type === 'offsite_sync') { await sleep(300); return report(op.id, { status: 'succeeded', result: p.dry_run ? { dry_run: true, to_upload: 3, bytes_to_upload: 5e8, to_delete: 0 } : { ok: true, uploaded: 3, uploaded_bytes: 5e8, deleted: 0, failed: 0 } }); }
+      if (op.type === 'offsite_rehydrate') { await sleep(300); return report(op.id, { status: 'succeeded', result: { downloaded: 0, bytes: 0, already_local: 812, differ: [], differ_count: 0 } }); }
       if (op.type === 'restore_db_swap') { await sleep(300); return report(op.id, { status: 'succeeded', result: { replaced: true, restored: p.restored, original: p.original, old_kept_as: p.original + '_before_20260101_000000', sessions_ended: 1 } }); }
       if (op.type === 'restore_promote') {
         await sleep(300);

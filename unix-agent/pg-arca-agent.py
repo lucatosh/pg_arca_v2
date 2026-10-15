@@ -65,6 +65,8 @@ def main():
         from pg_arca.wal_rescue import WalRescue
         WalRescue(rt, wal, config).start()
     ex = OperationExecutor(config, rt.db, rt.patroni, discovery=lambda: rt.refresh(), runtime=rt)
+    from pg_arca.offsite import Mirror                      # offsite copy on S3-compatible storage: runs only when configured (console -> agent settings)
+    Mirror(config, config.get("state_dir", "/var/lib/pgarca/state"), log=lambda lv, m: logger.log({"warn": logging.WARNING, "error": logging.ERROR}.get(lv, logging.INFO), "[offsite] %s", m)).start()
     stop = threading.Event()
     client = None
     mode = config["connection_mode"]

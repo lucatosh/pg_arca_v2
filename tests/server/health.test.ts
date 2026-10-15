@@ -72,6 +72,16 @@ import { requiredRole } from '../../server/auth';
     assert.strictEqual(f({ summarize_wal: 'off' }).length, 1); assert.strictEqual(f({ summarize_wal: 'off' })[0].severity, 'info');
     assert.strictEqual(f({ summarize_wal: 'on' }).length, 0); assert.strictEqual(f({}).length, 0); assert.strictEqual(f({ summarize_wal: 'off' }, true).length, 0);
   }
+  { // offsite copy: failing or behind -> finding; fresh -> nothing; not configured -> nothing
+    const base = store.peek(); const g1: any = base.nodes.n3;
+    const mk = (off: any): any => ({ ...base, clusters: [...base.clusters, { id: 'o', name: 'o-db', environment: 'dev', source: 'agent' }], nodes: { ...base.nodes, o1: { ...g1, id: 'o1', name: 'o1', clusterId: 'o', snapshot: { ...g1.snapshot, offsite: off } } } });
+    const f = (off: any) => evaluate(mk(off), now).filter(i => i.clusterId === 'o' && i.code === 'offsite_behind');
+    assert.strictEqual(f(null).length, 0); assert.strictEqual(f({ configured: true, enabled: true, last_ok: now / 1000 - 600, bucket: 'b', endpoint: 'e' }).length, 0);
+    assert.strictEqual(f({ configured: true, enabled: false, last_ok: null, bucket: 'b', endpoint: 'e' }).length, 0, 'paused: no finding');
+    const b = f({ configured: true, enabled: true, last_ok: now / 1000 - 8 * 3600, bucket: 'b', endpoint: 'e' }); assert.strictEqual(b.length, 1); assert.strictEqual(b[0].severity, 'warning'); assert(/behind/.test(b[0].title));
+    const e = f({ configured: true, enabled: true, last_ok: now / 1000 - 600, last_error: '403 AccessDenied', bucket: 'b', endpoint: 'e' }); assert.strictEqual(e.length, 1); assert(/failing/.test(e[0].title) && /AccessDenied/.test(e[0].cause));
+    assert.strictEqual(f({ configured: true, enabled: true, last_ok: null, bucket: 'b', endpoint: 'e' })[0].severity, 'critical', 'never synced');
+  }
   { // recovery objectives: RPO from the archiver (failing -> bad; fresh -> ok with the archive_timeout bound), RTO from the last drill scaled to today's size
     const base = store.peek();
     const o1 = objectives(base, 'p', now)!; assert.strictEqual(o1.rpo.state, 'bad'); assert(/failing/.test(o1.rpo.text)); assert.strictEqual(o1.rto.state, 'unknown');

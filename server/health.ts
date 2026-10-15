@@ -172,6 +172,15 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       if (!n.snapshot?.postgres?.is_in_recovery && ps.summarize_wal === 'off' && pol?.enabled && pol.incrEveryHours && !out.some(x => x.key === `${c.id}:summarize_wal_off:dcs`))
         add({ severity: 'info', code: 'summarize_wal_off', detail: 'dcs', nodeId: n.id, nodeName: n.name, title: 'Incremental backups read the whole data directory (summarize_wal is off)',
           cause: 'PostgreSQL 17 can keep WAL summaries: with summarize_wal = on an incremental backup reads only the relation files that changed since the parent backup instead of every page of the cluster (same mechanism as pg_basebackup --incremental). Set summarize_wal = on (reload is enough; on Patroni through the dynamic configuration); the first incremental after that still scans everything, the next ones do not.', action: { label: 'Open parameters', page: 'params' } });
+      // ---- offsite copy (S3): configured on this node but failing or behind -> the "copy outside the building" is not current
+      const off = n.snapshot?.offsite;
+      if (off?.configured && off.enabled) {
+        const lastOk = Number(off.last_ok) ? Number(off.last_ok) * 1000 : NaN;
+        const behindH = Number.isFinite(lastOk) ? (now - lastOk) / 3600_000 : Infinity;
+        if (off.last_error || behindH > 6) add({ severity: behindH > 48 || !Number.isFinite(lastOk) ? 'critical' : 'warning', code: 'offsite_behind', detail: n.id, nodeId: n.id, nodeName: n.name,
+          title: off.last_error ? `${n.name}: the offsite copy is failing` : `${n.name}: the offsite copy is ${hrs(behindH)} behind`,
+          cause: `${off.last_error ? `Last error: ${String(off.last_error).slice(0, 200)}. ` : ''}${Number.isFinite(lastOk) ? `Last successful sync ${hrs(behindH)} ago` : 'No successful sync so far'}${off.pending ? `; ${off.pending} objects waiting` : ''}. Bucket ${off.bucket} at ${off.endpoint}: check the credentials, the network path and the bucket policy on this node (Status → Nodes → Offsite copy).`, action: { label: 'Open the nodes', page: 'nodes' } });
+      }
       // ---- compression: without python zstandard the agent compresses backup chunks with zlib (measured 5-10x slower per core); without the zstd binary WAL is archived uncompressed
       const tc = n.snapshot?.toolchain;
       if (tc && typeof tc === 'object' && 'python_zstandard' in tc) {

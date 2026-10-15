@@ -371,7 +371,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (!key) return res.status(400).json({ error: 'idempotency_key_required', message: 'Send an Idempotency-Key header (any unique string per user action).' });
     const bad = validateOp(String(type), params);
     if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
-    if (type === 'agent_config_set' && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can change the agent’s paths and settings.' });
+    if ((type === 'agent_config_set' || type === 'offsite_set') && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can change the agent’s paths and settings.' });
     const spec = OP_SPECS[type];
     if (type === 'pg_set_param' && !params.force) { const g = geoParamGuard(st, cluster.id, String(params.name), params.value); if (g) return res.status(409).json({ error: 'geo_standby_lower', message: g, overridable: true }); }
     if (requiresApproval(st, cluster, type, params)) {

@@ -27,6 +27,7 @@ SPEC = [
 HIDDEN = [
     ("repo_previous", "rdirs", "Previous repository locations (read-only)"),
     ("wal_previous", "rdirs", "Previous WAL archive locations (read-only)"),
+    ("offsite", "offsite", "Offsite copy (S3-compatible object storage)"),       # edited through its own screen (secrets): not in the generic list
 ]
 KINDS = {k: kind for k, kind, _ in SPEC + HIDDEN}
 LABELS = {k: label for k, _, label in SPEC + HIDDEN}
@@ -88,6 +89,12 @@ def validate(key, value):
         if not _HOST.match(s):
             raise OverrideError("invalid host")
         return s
+    if kind == "offsite":
+        from pg_arca import offsite
+        try:
+            return offsite.validate(value)
+        except ValueError as e:
+            raise OverrideError(str(e))
     if kind == "rdirs":
         vals = value if isinstance(value, list) else [x for x in str(value).split(",") if x.strip()]
         if len(vals) > 8:

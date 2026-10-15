@@ -115,6 +115,10 @@ class OperationExecutor:
         r("hba_expire", self.h_hba_expire, False)
         r("agent_config_get", self.h_cfg_get, True)
         r("agent_config_set", self.h_cfg_set, True)       # same input -> same file: idempotent
+        r("offsite_get", self.h_offsite_get, True)
+        r("offsite_set", self.h_offsite_set, True)
+        r("offsite_sync", self.h_offsite_sync, False)
+        r("offsite_rehydrate", self.h_offsite_rehydrate, False)
         r("destination_check", self.h_destination_check, True)
         r("destination_migrate", self.h_destination_migrate, True)      # resumable: running it again continues where it stopped
         r("destination_drop_old", self.h_destination_drop_old, False)
@@ -1337,6 +1341,66 @@ class OperationExecutor:
     def h_hba_apply(self, p):
         from pg_arca import hba_ops
         return hba_ops.apply(self, p, OpError)
+
+    # ---- offsite copy (S3-compatible object storage) -------------------------------------------------------------
+    def _mirror(self):
+        from pg_arca.offsite import Mirror
+        return Mirror(self.config, self._state_dir(), log=lambda lv, m: logger.log({"warn": logging.WARNING, "error": logging.ERROR}.get(lv, logging.INFO), "[offsite] %s", m))
+
+    def h_offsite_get(self, p):
+        from pg_arca import offsite
+        cfg = self.config.get("offsite") or None
+        try:
+            clean = offsite.validate(cfg)
+        except ValueError as e:
+            clean = None
+            bad = str(e)
+        else:
+            bad = None
+        shown = None
+        if clean:
+            shown = dict((k, v) for k, v in clean.items() if k != "secret_key")
+            shown["secret_key_set"] = bool(clean.get("secret_key"))
+        return {"offsite": shown, "problem": bad, "status": self._mirror().status()}
+
+    def h_offsite_set(self, p):
+        """Save (validated) or clear the offsite configuration; with test=true the bucket is probed first and nothing is saved when it fails."""
+        from pg_arca import offsite, overrides
+        cfg = p.get("offsite")
+        if cfg is None or cfg == {} or cfg is False:
+            overrides.save(self.config, {"offsite": None})
+            self.config.pop("offsite", None)
+            return {"offsite": None, "cleared": True}
+        if isinstance(cfg, dict) and not cfg.get("secret_key") and (self.config.get("offsite") or {}).get("secret_key"):
+            cfg = dict(cfg, secret_key=self.config["offsite"]["secret_key"])       # the secret is shown nowhere: an empty field keeps the stored one
+        try:
+            clean = offsite.validate(cfg)
+        except ValueError as e:
+            raise OpError(str(e))
+        probe = None
+        if p.get("test", True):
+            try:
+                probe = offsite.client_for(clean).check()
+            except Exception as e:
+                raise OpError("the bucket cannot be used: %s" % e)
+        overrides.save(self.config, {"offsite": clean})
+        self.config["offsite"] = clean
+        shown = dict((k, v) for k, v in clean.items() if k != "secret_key")
+        shown["secret_key_set"] = True
+        return {"offsite": shown, "probe": probe}
+
+    def h_offsite_sync(self, p):
+        st = self._mirror().sync(cancel=self._cancelled, progress=self._progress, dry_run=bool(p.get("dry_run")))
+        if st.get("ok") is False:
+            raise OpError(st.get("last_error") or "offsite sync failed")
+        return st
+
+    def h_offsite_rehydrate(self, p):
+        from pg_arca.s3 import S3Error
+        try:
+            return self._mirror().rehydrate(what=str(p.get("what") or "all"), progress=self._progress, cancel=self._cancelled)
+        except S3Error as e:
+            raise OpError(str(e))
 
     def h_cfg_get(self, p):
         from pg_arca import overrides

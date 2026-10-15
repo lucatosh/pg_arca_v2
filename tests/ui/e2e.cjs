@@ -175,6 +175,15 @@ const base = process.env.BASE || 'http://localhost:5188';
   await tab('Maintenance', 'Operations'); await p.waitForSelector('text=Operation log'); await shot('13-ops');
   await tab('Maintenance', 'Logs'); await p.waitForSelector('text=Live logs');
   await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console'); await p.waitForSelector('text=Active replicas without'); await shot('14-hba');
+  // offsite copy (S3): no copy yet -> set it up -> test+save -> status shown -> sync and dry run -> a refused bucket is reported, not saved
+  await tab('Status', 'Nodes'); await p.waitForSelector('text=Offsite copy (S3-compatible object storage)'); await p.waitForSelector('text=No offsite copy on this node');
+  await p.fill('input[placeholder="https://minio.corp.example:9000"]', 'https://minio.corp.example:9000'); const offCard = p.locator('.card:has-text("Offsite copy (S3")');
+  await offCard.locator('.field:has-text("Bucket") input').first().fill('refuse-me'); await offCard.locator('.field:has-text("Access key") input').first().fill('AKIA');
+  await p.click('button:has-text("Test the bucket and save")'); await p.waitForSelector('.banner.bad:has-text("AccessDenied")', { timeout: 10000 });
+  await offCard.locator('.field:has-text("Bucket") input').first().fill('pg-backups'); await p.click('button:has-text("Test the bucket and save")');
+  await p.waitForSelector('text=Last successful sync', { timeout: 10000 }); await p.waitForSelector('.badge:has-text("Active")'); await shot('32-offsite');
+  await p.click('button:has-text("What would be uploaded?")'); await p.waitForSelector('.banner:has-text("would be uploaded")', { timeout: 10000 });
+  await p.click('button:has-text("Sync now")'); await p.waitForSelector('.banner:has-text("3 objects uploaded")', { timeout: 10000 });
   await tab('Maintenance', 'Tuning'); await p.waitForSelector('text=16.0 GB RAM'); await p.waitForSelector('tr:has-text("shared_buffers") >> text=4GB'); await shot('14e-tuning');
   await p.click('tr:has-text("work_mem") button:has-text("Apply")'); await p.click('.modal button:has-text("Apply")'); await p.waitForSelector('text=Succeeded', { timeout: 10000 });
   await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console');

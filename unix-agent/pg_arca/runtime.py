@@ -210,6 +210,12 @@ class Runtime(object):
             logger.debug("restored instances housekeeping failed", exc_info=True)
             return None
 
+    def _offsite_status(self):
+        try:
+            return _offsite_summary(self.config)
+        except Exception:
+            return None
+
     def build_snapshot(self, wal, cas):
         if self.worker:
             return {"node_name": self.config["node_name"], "agent_version": AGENT_VERSION, "node_kind": "worker", "worker": self.inventory.get(), "restored": self._restored(),
@@ -260,6 +266,7 @@ class Runtime(object):
             pg["archive_error"] = ae
         restored = self._restored()
         return {
+            "offsite": self._offsite_status(),
             "restored": restored,
             "node_name": self.config["node_name"], "agent_version": AGENT_VERSION,
             "postgres": pg, "patroni": self.patroni_view(),
@@ -271,6 +278,21 @@ class Runtime(object):
             "storage": dict({"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))}, **self._previous_locations()),
             "cluster_key": inst.get("cluster_key") or (("patroni:%s" % self.patroni_info["scope"]) if (self.patroni_info or {}).get("scope") else None),
         }
+
+
+def _offsite_summary(config):
+    """Heartbeat view of the offsite copy: configured? last successful sync, pending uploads, last error (never the credentials)."""
+    off = config.get("offsite")
+    if not off:
+        return None
+    try:
+        from pg_arca.offsite import Mirror
+        st = Mirror(config, config.get("state_dir", "/var/lib/pgarca/state")).status() or {}
+    except Exception:
+        st = {}
+    return {"configured": True, "enabled": bool(off.get("enabled", True)), "endpoint": off.get("endpoint"), "bucket": off.get("bucket"), "prefix": off.get("prefix") or "",
+            "last_ok": st.get("last_ok"), "last_error": st.get("last_error"), "pending": st.get("to_upload"), "pending_bytes": st.get("bytes_to_upload"),
+            "remote_objects": st.get("remote_objects"), "finished": st.get("finished")}
 
 
 def _archive_error(wal_dir):

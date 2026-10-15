@@ -223,6 +223,11 @@ Object.assign(OP_SPECS, {
   hba_apply:    { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => hbaRulesErr(p) || (p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
   agent_config_get: { mutating: false, target: 'node', lane: 'control', validate: () => null },
   agent_config_set: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => cfgErr(p) },
+  // offsite copy on S3-compatible storage (per node: the one that holds or mounts the repository)
+  offsite_get:       { mutating: false, target: 'node', lane: 'control', validate: () => null },
+  offsite_set:       { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.offsite === null || p.offsite === undefined || (typeof p.offsite === 'object' && !Array.isArray(p.offsite)) ? null : 'offsite must be an object or null') },
+  offsite_sync:      { ...dataOp, target: 'node', validate: (p: any) => (p.dry_run !== undefined && typeof p.dry_run !== 'boolean' ? 'dry_run must be boolean' : null) },
+  offsite_rehydrate: { ...dataOp, target: 'node', validate: (p: any) => (p.what === undefined || ['all', 'repo', 'wal'].includes(p.what) ? null : 'what must be all|repo|wal') },
   hba_expire:   { mutating: true,  target: 'node', lane: 'control', validate: () => null },
   hba_restore:  { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (!Array.isArray(p.list) || !p.list.length || p.list.length > 600 || p.list.some((x: any) => typeof x !== 'string' || x.length > 600 || /[\r\n]/.test(x)) ? 'list must be pg_hba lines' : p.base_rev && !/^[0-9a-f]{16}$/.test(String(p.base_rev)) ? 'invalid base_rev' : null) },
   hba_rollback: { mutating: true,  target: 'node', lane: 'control', validate: (p: any) => (p.backup && !/^[\w.\-]{1,100}$/.test(String(p.backup)) ? 'invalid backup name' : null) },

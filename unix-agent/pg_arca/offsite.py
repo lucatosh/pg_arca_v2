@@ -1,0 +1,307 @@
+"""Offsite copy of the repository and the WAL archive on S3-compatible object storage (AWS S3, MinIO, Ceph RGW, ...).
+
+What it is: a MIRROR, kept by the agent in the background, of what the local repository and WAL archive hold - pack files, backup sets
+(meta, manifest, catalog, label), repository/stanza descriptors, archived WAL segments with their .meta - so that a site that loses its
+backup storage can get everything back (`rehydrate`) and so that the copy auditors ask for ("a copy outside the building") exists without
+touching the hot path: backups and WAL archiving keep writing locally at local speed; the uploader follows.
+
+Rules that keep the copy restorable at every moment: packs go up before the sets that reference them; sets come down before the packs
+they reference; nothing is deleted remotely while the local side looks empty (an unmounted share must not wipe the offsite copy);
+every object is checked by size (and uploaded again when it differs). The cycle is idempotent and resumable: a crash between two uploads
+costs nothing but the upload.
+
+Layout in the bucket, under the configured prefix:  repo/<path as in the repository>   and   wal/<segment files>
+"""
+
+import json
+import os
+import threading
+import time
+
+from pg_arca.s3 import S3Client, S3Error
+
+INTERVAL_SEC = 60
+KEEP_DELETE_GRACE = 6 * 3600               # a remote object with no local counterpart is deleted only after this (local removal must be older than a cycle)
+SET_FILES = ("meta.json", "manifest.json.z", "catalog.json.z", "backup_label")
+
+
+def validate(cfg):
+    """Cleaned offsite configuration (a dict) or OverrideError-like ValueError. None/empty = off."""
+    if not cfg:
+        return None
+    if not isinstance(cfg, dict):
+        raise ValueError("an object is required")
+    out = {"type": "s3"}
+    if (cfg.get("type") or "s3") != "s3":
+        raise ValueError("only type 's3' is supported")
+    ep = str(cfg.get("endpoint") or "").strip().rstrip("/")
+    if not ep.startswith(("http://", "https://")) or "@" in ep or " " in ep:
+        raise ValueError("endpoint: an http(s):// URL without credentials, e.g. https://s3.eu-central-1.amazonaws.com or https://minio.corp:9000")
+    out["endpoint"] = ep
+    b = str(cfg.get("bucket") or "").strip()
+    if not b or len(b) > 63 or not all(c.isalnum() or c in ".-" for c in b):
+        raise ValueError("bucket: 1-63 characters, letters, digits, '.' and '-'")
+    out["bucket"] = b
+    out["prefix"] = str(cfg.get("prefix") or "").strip().strip("/")
+    out["region"] = str(cfg.get("region") or "us-east-1").strip()
+    out["access_key"] = str(cfg.get("access_key") or "").strip()
+    out["secret_key"] = str(cfg.get("secret_key") or "")
+    if not out["access_key"] or not out["secret_key"]:
+        raise ValueError("access key and secret key are required")
+    out["path_style"] = bool(cfg.get("path_style", True))
+    out["tls_verify"] = bool(cfg.get("tls_verify", True))
+    ca = str(cfg.get("ca_file") or "").strip()
+    if ca and not os.path.isfile(ca):
+        raise ValueError("ca_file does not exist: %s" % ca)
+    out["ca_file"] = ca or None
+    out["enabled"] = bool(cfg.get("enabled", True))
+    return out
+
+
+def client_for(cfg):
+    return S3Client(cfg["endpoint"], cfg["bucket"], cfg["access_key"], cfg["secret_key"], region=cfg.get("region") or "us-east-1", prefix=cfg.get("prefix") or "",
+                    path_style=cfg.get("path_style", True), tls_verify=cfg.get("tls_verify", True), ca_file=cfg.get("ca_file"))
+
+
+def _local_repo_files(repo_path):
+    """{relative path: size} of what the repository must have offsite: sealed packs + indexes, descriptors, COMPLETE sets."""
+    out = {}
+    rj = os.path.join(repo_path, "repo.json")
+    if not os.path.isfile(rj):
+        return out
+    out["repo.json"] = os.path.getsize(rj)
+    pd = os.path.join(repo_path, "cas", "packs")
+    if os.path.isdir(pd):
+        for n in os.listdir(pd):
+            if n.endswith(".pack") and os.path.exists(os.path.join(pd, n[:-5] + ".idx")):
+                for f in (n, n[:-5] + ".idx"):
+                    try:
+                        out["cas/packs/" + f] = os.path.getsize(os.path.join(pd, f))
+                    except OSError:
+                        pass
+    sroot = os.path.join(repo_path, "stanza")
+    if os.path.isdir(sroot):
+        for st in os.listdir(sroot):
+            sj = os.path.join(sroot, st, "stanza.json")
+            if os.path.isfile(sj):
+                out["stanza/%s/stanza.json" % st] = os.path.getsize(sj)
+            bd = os.path.join(sroot, st, "backup")
+            if not os.path.isdir(bd):
+                continue
+            for sid in os.listdir(bd):
+                mp = os.path.join(bd, sid, "meta.json")
+                try:
+                    with open(mp, "r", encoding="utf-8") as f:
+                        if json.load(f).get("status") != "COMPLETE":
+                            continue
+                except (IOError, OSError, ValueError):
+                    continue
+                for fn in SET_FILES:
+                    p = os.path.join(bd, sid, fn)
+                    if os.path.isfile(p):
+                        out["stanza/%s/backup/%s/%s" % (st, sid, fn)] = os.path.getsize(p)
+    return out
+
+
+def _local_wal_files(wal_dir):
+    """{file name: size} of the archive: segments, .meta, .history, retention/floor markers; not the quarantine, not temporary files."""
+    out = {}
+    if not wal_dir or not os.path.isdir(wal_dir):
+        return out
+    for n in os.listdir(wal_dir):
+        if n.startswith(".") and n not in (".retention_floor.json",):
+            continue
+        if n.endswith((".tmp", ".part")) or n == "conflicts":
+            continue
+        p = os.path.join(wal_dir, n)
+        if os.path.isfile(p):
+            try:
+                out[n] = os.path.getsize(p)
+            except OSError:
+                pass
+    return out
+
+
+def _order(key):
+    """Upload order: packs and descriptors first, then set files (meta.json last of all), then WAL. Deletion uses the reverse."""
+    if key.startswith("repo/cas/packs/"):
+        return 0
+    if key in ("repo/repo.json",) or key.endswith("/stanza.json"):
+        return 1
+    if key.startswith("repo/stanza/"):
+        return 3 if key.endswith("/meta.json") else 2
+    return 4
+
+
+def plan(local, remote):
+    """local/remote: {key: size}. Returns (to_upload, to_delete) in a safe order."""
+    up = sorted((k for k, sz in local.items() if remote.get(k) != sz), key=lambda k: (_order(k), k))
+    down = sorted((k for k in remote if k not in local), key=lambda k: (-_order(k), k))
+    return up, down
+
+
+class Mirror(object):
+    """One sync cycle = list remote once, upload what is missing or different, delete what is gone locally (after the grace)."""
+
+    def __init__(self, config, state_dir, log=None):
+        self.config = config
+        self.state_dir = state_dir
+        self.log = log or (lambda lv, m: None)
+        self.status_path = os.path.join(state_dir, "offsite", "status.json")
+        self.gone_path = os.path.join(state_dir, "offsite", "gone.json")     # remote key -> first time it was seen without a local file
+
+    def cfg(self):
+        try:
+            return validate(self.config.get("offsite"))
+        except ValueError:
+            return None
+
+    def status(self):
+        try:
+            with open(self.status_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (IOError, OSError, ValueError):
+            return None
+
+    def _write(self, path, obj):
+        d = os.path.dirname(path)
+        os.makedirs(d, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+        os.rename(tmp, path)
+
+    def local_inventory(self):
+        repo, wal = self.config.get("repo_path"), self.config.get("wal_archive_dir")
+        local = {}
+        for k, sz in _local_repo_files(repo).items():
+            local["repo/" + k] = sz
+        for k, sz in _local_wal_files(wal).items():
+            local["wal/" + k] = sz
+        return local
+
+    def sync(self, cancel=None, progress=None, dry_run=False):
+        cfg = self.cfg()
+        if not cfg or not cfg.get("enabled", True):
+            return {"enabled": False}
+        t0 = time.time()
+        st = {"enabled": True, "started": t0, "endpoint": cfg["endpoint"], "bucket": cfg["bucket"], "prefix": cfg.get("prefix") or ""}
+        try:
+            local = self.local_inventory()
+            c = client_for(cfg)
+            remote = c.list("")
+            up, down = plan(local, remote)
+            # deletions: only what has been gone locally for a while, and never when the local side looks empty (share not mounted?)
+            try:
+                with open(self.gone_path, "r", encoding="utf-8") as f:
+                    gone = json.load(f)
+            except (IOError, OSError, ValueError):
+                gone = {}
+            now = time.time()
+            gone = dict((k, v) for k, v in gone.items() if k in down)
+            for k in down:
+                gone.setdefault(k, now)
+            local_empty = not any(k.startswith("repo/") for k in local) or (self.config.get("wal_archive_dir") and not any(k.startswith("wal/") for k in local))
+            deletable = [] if local_empty else [k for k in down if now - gone[k] >= KEEP_DELETE_GRACE]
+            st.update(to_upload=len(up), bytes_to_upload=sum(local[k] for k in up), to_delete=len(deletable), waiting_delete=len(down) - len(deletable), local_empty=local_empty, remote_objects=len(remote))
+            if dry_run:
+                st["dry_run"] = True
+                return st
+            if not dry_run:
+                self._write(self.gone_path, gone)
+            done_b = 0
+            uploaded = deleted = failed = 0
+            first_err = None
+            for i, k in enumerate(up):
+                if cancel and cancel():
+                    raise S3Error(0, "Cancelled", "cancelled")
+                path = self._local_path(k)
+                try:
+                    c.put(k, path)
+                except (IOError, OSError) as e:
+                    self.log("warn", "offsite: %s vanished while uploading (%s)" % (k, e))
+                    continue
+                except S3Error as e:                                   # one object failing must not stop the others; the next cycle retries it
+                    failed += 1
+                    first_err = first_err or str(e)
+                    if e.status in (401, 403) or failed >= 20:
+                        raise
+                    continue
+                uploaded += 1
+                done_b += local[k]
+                if progress and (i % 20 == 0 or i == len(up) - 1):
+                    progress({"phase": "offsite", "uploaded": uploaded, "to_upload": len(up), "bytes": done_b, "bytes_total": st["bytes_to_upload"]})
+            for k in deletable:
+                c.delete(k)
+                deleted += 1
+                gone.pop(k, None)
+            self._write(self.gone_path, gone)
+            st.update(ok=failed == 0, uploaded=uploaded, uploaded_bytes=done_b, deleted=deleted, failed=failed, seconds=round(time.time() - t0, 1), finished=time.time(),
+                      last_error=("%d upload(s) failed, first: %s" % (failed, first_err)) if failed else None)
+            if uploaded or deleted or failed:
+                self.log("warn" if failed else "info", "offsite: %d objects uploaded (%d MB), %d deleted%s in %.0fs" % (uploaded, done_b // 1048576, deleted, (", %d FAILED" % failed) if failed else "", time.time() - t0))
+        except S3Error as e:
+            st.update(ok=False, last_error=str(e), finished=time.time(), seconds=round(time.time() - t0, 1))
+            self.log("warn", "offsite sync failed: %s" % e)
+        except (IOError, OSError) as e:
+            st.update(ok=False, last_error="local storage: %s" % e, finished=time.time())
+            self.log("warn", "offsite sync skipped: %s" % e)
+        prev = self.status() or {}
+        if st.get("ok"):
+            st["last_ok"] = st["finished"]
+        else:
+            st["last_ok"] = prev.get("last_ok")
+        self._write(self.status_path, st)
+        return st
+
+    def _local_path(self, key):
+        if key.startswith("repo/"):
+            return os.path.join(self.config["repo_path"], key[5:])
+        return os.path.join(self.config["wal_archive_dir"], key[4:])
+
+    def rehydrate(self, what="all", progress=None, cancel=None):
+        """Download from the offsite copy what the local repository / archive lacks (what: all | repo | wal). Local files are never overwritten:
+        a differing local file is reported, not replaced."""
+        cfg = self.cfg()
+        if not cfg:
+            raise S3Error(0, "NotConfigured", "no offsite copy is configured on this node")
+        c = client_for(cfg)
+        remote = c.list("")
+        local = self.local_inventory()
+        keys = sorted((k for k in remote if k not in local and (what == "all" or k.startswith(what + "/"))), key=lambda k: (_order(k), k))
+        differ = [k for k in remote if k in local and local[k] != remote[k]]
+        total = sum(remote[k] for k in keys)
+        done = 0
+        got = 0
+        for i, k in enumerate(keys):
+            if cancel and cancel():
+                raise S3Error(0, "Cancelled", "cancelled")
+            path = self._local_path(k)
+            os.makedirs(os.path.dirname(path), mode=0o750, exist_ok=True)
+            c.get_to_file(k, path)
+            got += 1
+            done += remote[k]
+            if progress and (i % 10 == 0 or i == len(keys) - 1):
+                progress({"phase": "rehydrate", "downloaded": got, "to_download": len(keys), "bytes": done, "bytes_total": total})
+        return {"downloaded": got, "bytes": done, "already_local": len(remote) - len(keys) - len(differ), "differ": differ[:20], "differ_count": len(differ)}
+
+    # ---- background thread
+    def start(self, interval=INTERVAL_SEC):
+        self._stop = threading.Event()
+
+        def loop():
+            time.sleep(15)                                     # let the agent settle first
+            while not self._stop.is_set():
+                try:
+                    if self.cfg():
+                        self.sync()
+                except Exception as e:                         # never let the mirror thread die
+                    self.log("warn", "offsite mirror: %s" % e)
+                self._stop.wait(interval)
+        t = threading.Thread(target=loop, name="offsite-mirror", daemon=True)
+        t.start()
+        return t
+
+    def stop(self):
+        if getattr(self, "_stop", None):
+            self._stop.set()
