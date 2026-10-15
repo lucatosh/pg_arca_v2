@@ -196,6 +196,7 @@ function HbaInner({ c }: { c: any }) {
   const probs = (first.errors || []) as any[];
 
   return <div className="stack-l">
+    <p className="muted" style={{ margin: 0 }}>Who can connect to which database, from where and how: the rules PostgreSQL checks top to bottom (pg_hba.conf). Changes are checked against the live connections before they are applied.</p>
     <div className="row wrap">
       {patroni ? <Badge kind="accent" title="The rules live in Patroni’s dynamic configuration (DCS): a change applies to all members.">Patroni · shared configuration (DCS)</Badge>
         : okReads.length > 1 ? <Badge title="Each node has its own pg_hba.conf: the change is applied to all of them.">{okReads.length} nodes · one file per node</Badge> : <Badge title={first.hba_file}>Single node · pg_hba.conf file</Badge>}
@@ -207,7 +208,7 @@ function HbaInner({ c }: { c: any }) {
     {patroni && first.dcs_seed ? <Banner kind="info" title="The Patroni DCS does not hold pg_hba yet">The rules shown are those in effect according to PostgreSQL (pg_hba_file_rules), i.e. the ones Patroni wrote from the nodes’ local configuration. On the first change they become the DCS list and from then on apply to all members.{first.seed_skipped ? ` ${nof(first.seed_skipped, 'line')} with errors ${first.seed_skipped === 1 ? 'was' : 'were'} not carried over.` : ''}</Banner> : null}
     {first.pg_down ? <Banner kind="warn" title={`PostgreSQL is not running on ${okReads[0].nodeName}`}>The DCS list can be read and edited, but the simulation against active connections and the verification run on a member with PostgreSQL running.</Banner> : null}
     {st.reads.some(r => !r.ok) ? <Banner kind="warn" title="Some nodes did not respond">{st.reads.filter(r => !r.ok).map(r => `${r.nodeName}: ${r.error}`).join(' · ')}</Banner> : null}
-    {drift.length ? <Banner kind="warn" title="The nodes have different rules">{drift.map(d => d.nodeName).join(', ')} {drift.length > 1 ? 'differ' : 'differs'} from {okReads[0].nodeName}. Applying from here gives every node the same managed block; rules written by hand outside the block stay as they were.</Banner> : null}
+    {drift.length ? <Banner kind="warn" title="The nodes have different rules">{drift.map(d => d.nodeName).join(', ')} {drift.length > 1 ? 'differ' : 'differs'} from {okReads[0].nodeName}. Applying from here gives every node the same rules managed by pg_arca; rules written by hand outside them stay as they were.</Banner> : null}
     {probs.length ? <Banner kind="bad" title="PostgreSQL reports errors in the current file">{probs.slice(0, 3).map((p: any) => `line ${p.line_number}: ${p.error}`).join(' · ')}</Banner> : null}
     {first.has_includes ? <Banner kind="info" title="The file uses include">Rules imported with include are not analyzed here: the order shown may not reflect the whole file.</Banner> : null}
 
@@ -229,7 +230,7 @@ function HbaInner({ c }: { c: any }) {
 
     <Templates ck={c.id} tpls={tpls.data?.templates || []} sugg={sugg} env={c.environment} all={all} hosts={hosts} onAdd={rs => add(rs)} />
 
-    {existing.length ? <Card title={patroni ? `Other rules in the DCS list (${existing.length})` : `Rules already in the file (${existing.length})`} pad={false} actions={!adopt ? <Button sm onClick={() => add(serverUnmanaged)} title="Moves them into the managed block keeping the same evaluation order: you can then edit and reorder them.">Adopt into the managed block</Button> : <span className="small muted">Evaluated after the managed block · read-only</span>}>
+    {existing.length ? <Card title={patroni ? `Other rules in the DCS list (${existing.length})` : `Rules already in the file (${existing.length})`} pad={false} actions={!adopt ? <Button sm onClick={() => add(serverUnmanaged)} title="Moves them into the rules managed by pg_arca keeping the same evaluation order: you can then edit and reorder them.">Take over these rules</Button> : <span className="small muted">Evaluated after the rules managed by pg_arca · read-only</span>}>
       <div className="tablewrap"><table className="t hba"><tbody>{existing.map((r, i) => {
         const gi = shown.length + i; const is = issues.filter(x => x.index === gi);
         return <tr key={i}><td className="num muted" style={{ width: 28 }}>{gi + 1}</td><td><div>{describe(r)}</div>{is.map((x, k) => <div key={k} className={`small ${x.level === 'error' ? 'hba-err' : 'muted'}`}>{x.message}</div>)}</td>
@@ -255,7 +256,7 @@ function HbaInner({ c }: { c: any }) {
     <details className="card"><summary className="hd" style={{ cursor: 'pointer' }}><h2>{patroni ? (first.dcs_seed ? 'Rules in effect (from PostgreSQL)' : 'DCS list (postgresql.pg_hba)') : 'Raw file content'}</h2></summary><div className="bd"><pre className="out">{first.raw}</pre>{first.truncated ? <p className="small muted">Only the first 200,000 bytes are shown.</p> : null}</div></details>
 
     {confirmApply ? <Confirm title={patroni ? 'Apply to the cluster?' : 'Apply the rules?'} confirmLabel="Apply" onClose={() => setConfirmApply(false)} onConfirm={doApply} danger={lock.length > 0}>
-      <p>{patroni ? `The list is written to Patroni’s dynamic configuration (DCS) and every member reloads it.${first.dcs_seed ? ' The DCS has no pg_hba list today: the rules in effect are copied into the DCS together with the change, so nothing is lost.' : ''} The current version is kept among the previous versions.` : `The managed block is written atomically on ${nof(okReads.length, 'node')}, reloaded and verified with pg_hba_file_rules. If verification fails, the previous file is put back.`}</p>
+      <p>{patroni ? `The list is written to Patroni’s dynamic configuration (DCS) and every member reloads it.${first.dcs_seed ? ' The DCS has no pg_hba list today: the rules in effect are copied into the DCS together with the change, so nothing is lost.' : ''} The current version is kept among the previous versions.` : `The rules managed by pg_arca are written atomically on ${nof(okReads.length, 'node')}, reloaded and verified with pg_hba_file_rules. If verification fails, the previous file is put back.`}</p>
       {lock.length ? <Banner kind="bad" title="Override active">This change blocks: {lock.join('; ')}.</Banner> : null}</Confirm> : null}
     {rb ? <Confirm title="Restore the previous version?" confirmLabel="Restore" onClose={() => setRb(false)} onConfirm={doRollback}><p>The file goes back to the copy saved before the last change ({first.backups[first.backups.length - 1]}). The current version is saved before it is overwritten.</p></Confirm> : null}
   </div>;
@@ -311,8 +312,8 @@ function ClusterAccess({ c, all, first, add, patroni, perNode }: { c: any; all: 
   const title = blocked.length ? `${nof(blocked.length, 'cluster-internal connection')} ${blocked.length === 1 ? 'is' : 'are'} rejected by a rule above ${blocked.length === 1 ? 'it' : 'them'}` : missing.length ? `${nof(missing.length, 'rule')} missing for the nodes to reach each other` : 'Every node can replicate from and administer every other node';
   return <Card title="Cluster access (every node → every node)" actions={<Button sm kind="ghost" onClick={() => setOpen(!open)}>{open ? 'Hide settings' : 'Settings'}</Button>}>
     <div className="stack">
-      <Banner kind={kind} title={title} actions={missing.length ? <Button sm kind="primary" icon="plus" onClick={() => { const n = add(missing); if (n) toast(`${nof(n, 'rule')} added to the managed block: check the effect, then apply`, 'ok'); }}>{missing.length === 1 ? 'Add the missing rule' : `Add the ${missing.length} missing rules`}</Button> : undefined}>
-        <span>Any member can become the primary, be re-cloned or re-aligned with pg_rewind: the replication user <strong>{replUser || '?'}</strong>{superuser ? <> and the superuser <strong>{superuser}</strong></> : null} must be accepted from the address of every member, with one explicit /32 per node ({ssl ? 'TLS only, ' : ''}{method}).{patroni ? ' Under Patroni the list is one for the whole cluster, written to the DCS.' : ' Without Patroni the managed block is applied to every node.'}</span>
+      <Banner kind={kind} title={title} actions={missing.length ? <Button sm kind="primary" icon="plus" onClick={() => { const n = add(missing); if (n) toast(`${nof(n, 'rule')} added to the rules managed by pg_arca: check the effect, then apply`, 'ok'); }}>{missing.length === 1 ? 'Add the missing rule' : `Add the ${missing.length} missing rules`}</Button> : undefined}>
+        <span>Any member can become the primary, be re-cloned or re-aligned with pg_rewind: the replication user <strong>{replUser || '?'}</strong>{superuser ? <> and the superuser <strong>{superuser}</strong></> : null} must be accepted from the address of every member, with one explicit /32 per node ({ssl ? 'TLS only, ' : ''}{method}).{patroni ? ' Under Patroni the list is one for the whole cluster, written to the DCS.' : ' Without Patroni the rules managed by pg_arca are applied to every node.'}</span>
       </Banner>
       {open ? <div className="grid g3">
         <Field label="Replication user" hint={learnt ? `Seen replicating today: ${(facts.replication_users || []).join(', ')}` : 'The user in primary_conninfo (Patroni: postgresql.authentication.replication.username)'}><input className="input mono" value={replUser} onChange={e => setReplUser(e.target.value)} /></Field>
@@ -391,6 +392,7 @@ function AddRule({ ck, rows, existing, first, hosts, order, onAdd }: { ck: strin
 }
 
 function Templates({ ck, tpls, sugg, env, all, hosts, onAdd }: { ck: string; tpls: Tpl[]; sugg: string[]; env: string; all: Rule[]; hosts: string[]; onAdd: (r: Rule[]) => number }) {
+  const [shown, setShown] = useDraft(`hba:tpl:${ck}:shown`, false);
   const [sel, setSel] = useDraft<Tpl | null>(`hba:tpl:${ck}:sel`, null); const [vars, setVars] = useDraft<Record<string, string>>(`hba:tpl:${ck}:vars`, {});
   const ordered = useMemo(() => [...tpls].sort((a, b) => (sugg.includes(a.id) ? sugg.indexOf(a.id) : 99) - (sugg.includes(b.id) ? sugg.indexOf(b.id) : 99)), [tpls, sugg]);
   const present = (t: Tpl) => { const defaults = Object.fromEntries(t.vars.map(v => [v.key, v.def])); const rs = fill(t, defaults); return rs.length > 0 && rs.every(r => all.some(e => key(e) === key(r) || (covers(e, r) && e.method === r.method))); };
@@ -398,11 +400,13 @@ function Templates({ ck, tpls, sugg, env, all, hosts, onAdd }: { ck: string; tpl
   const rules = sel ? fill(sel, vars) : [];
   const errs = sel ? sel.vars.filter(v => /net$/i.test(v.key) && !validCidr(vars[v.key] || '')).map(v => v.label) : [];
   if (!ordered.length) return null;
-  return <Card title="Templates" actions={<span className="small muted">Suggested for the <strong>{env}</strong> environment first</span>}>
-    <div className="grid g3">{ordered.map(t => { const pr = present(t); return <div key={t.id} className="tpl">
+  // collapsed until asked: the page reads top to bottom as "who can connect" -> "check and apply" (a review found it one very long scroll)
+  return <Card title="Templates" actions={<Button sm kind="ghost" aria-expanded={shown} onClick={() => setShown(!shown)}>{shown ? 'Hide' : `Show ${ordered.length} templates`}</Button>}>
+    {!shown ? <p className="small muted" style={{ margin: 0 }}>Ready-made rules for common needs (application network, replication, monitoring…), {sugg.length ? <>suggested for the <strong>{env}</strong> environment first.</> : 'adapted to your addresses before they are added.'}</p> : null}
+    {shown ? <div className="grid g3">{ordered.map(t => { const pr = present(t); return <div key={t.id} className="tpl">
       <div className="row"><strong className="grow">{t.name}</strong>{sugg.includes(t.id) ? <Badge kind="accent">Recommended</Badge> : null}</div>
       <p className="small muted" style={{ margin: '6px 0 10px' }}>{t.description}</p>
-      <div className="row">{pr ? <Badge kind="ok" title="The template’s rules with the default values are already covered by existing rules.">Already present</Badge> : null}<div className="grow" /><Button sm icon="plus" onClick={() => open(t)}>{pr ? 'Add anyway' : 'Use'}</Button></div></div>; })}</div>
+      <div className="row">{pr ? <Badge kind="ok" title="The template’s rules with the default values are already covered by existing rules.">Already present</Badge> : null}<div className="grow" /><Button sm icon="plus" onClick={() => open(t)}>{pr ? 'Add anyway' : 'Use'}</Button></div></div>; })}</div> : null}
     {sel ? <Modal title={sel.name} onClose={() => setSel(null)} footer={<><Button onClick={() => setSel(null)}>Cancel</Button><Button kind="primary" disabled={!!errs.length} onClick={() => { const n = onAdd(rules); setSel(null); if (n) toast(`${nof(n, 'rule')} added to the list`, 'ok'); }}>Add to the list</Button></>}>
       <div className="stack"><p className="muted">{sel.description}</p>
         {sel.vars.map(v => <Field key={v.key} label={v.label} hint={v.hint} error={/net$/i.test(v.key) && !validCidr(vars[v.key] || '') ? 'CIDR notation, for example 10.0.20.0/24' : null}><input className="input" value={vars[v.key] || ''} onChange={e => setVars({ ...vars, [v.key]: e.target.value.trim() })} /></Field>)}

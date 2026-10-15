@@ -214,8 +214,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   // temporary rule + adopt existing rules
   await p.click('button:has-text("Add a rule")'); await p.fill('input[list=hba-users]', 'ext'); await p.fill('input[placeholder="10.0.20.0/24"]', '10.9.9.0/24');
   await p.selectOption('select[aria-label="Rule validity"]', '8'); await p.click('button:has-text("Add to the list")'); await p.waitForSelector('text=Temporary · expires in 8 h');
-  await p.click('button:has-text("Adopt into the managed block")'); await p.waitForSelector('td:has-text("administ")', { timeout: 3000 }).catch(() => {});
-  await shot('14e0-adopt'); assert.equal(await p.locator('button:has-text("Adopt into the managed block")').count(), 0, 'adopted');
+  await p.click('button:has-text("Take over these rules")'); await p.waitForSelector('td:has-text("administ")', { timeout: 3000 }).catch(() => {});
+  await shot('14e0-adopt'); assert.equal(await p.locator('button:has-text("Take over these rules")').count(), 0, 'adopted');
   await p.click('button:has-text("Check the effect")'); await p.waitForSelector('text=Simulated connection'); await shot('14f-hba-adopt');
   // palette
   await p.keyboard.press('Control+k'); await p.waitForSelector('[role=dialog][aria-label="Quick search"]'); await p.keyboard.type('audit'); await p.keyboard.press('Enter');
