@@ -8,6 +8,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+WRITE_WINDOW = 128                       # chunks fetched together while a file is rebuilt (8 MiB of 64 KiB chunks)
+
 from pg_arca.engine.backup import _check_cancel, build_chain
 from pg_arca.pgcompat import Profile, require_supported, set_profile
 from pg_arca.engine.pgdata import list_directories
@@ -142,6 +144,7 @@ def _write_one(repo, dest, rel, info, delta):
     exists = delta and os.path.isfile(out)
     mode = "r+b" if exists else "wb"
     with open(out, mode) as f:
+        need = []
         for off in sorted(info["chunks"]):
             ln, h = info["chunks"][off]
             if off >= size:
@@ -151,12 +154,17 @@ def _write_one(repo, dest, rel, info, delta):
                 cur = f.read(ln)
                 if len(cur) == ln and repo.hash(cur) == h:
                     continue                                              # delta: identical range, skip the write
-            data = repo.get_chunk(h)
-            if off + len(data) > size:
-                data = data[:size - off]
-            f.seek(off)
-            f.write(data)
-            written += len(data)
+            need.append((off, h))
+        for i in range(0, len(need), WRITE_WINDOW):                       # a window of chunks at a time: adjacent ones come with one read
+            part = need[i:i + WRITE_WINDOW]
+            datas = repo.get_chunks([h for _, h in part])
+            for off, h in part:
+                data = datas[h]
+                if off + len(data) > size:
+                    data = data[:size - off]
+                f.seek(off)
+                f.write(data)
+                written += len(data)
         f.truncate(size)
     try:
         os.chmod(out, info["mode"] & 0o777)

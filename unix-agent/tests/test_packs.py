@@ -274,6 +274,25 @@ class PackTests(unittest.TestCase):
         self.assertTrue(r.locate(h)[0].startswith(self.root))
         self.assertFalse(r.put_chunk(self._data(1))[2], "a previous location is read-only: never a dedup target (the new location gets its own copy)")
 
+    def test_get_chunks_reads_adjacent_chunks_in_one_call(self):
+        datas = [self._data(i) for i in range(300)]
+        hs = [self.repo.put_chunk(x)[0] for x in datas]
+        self.repo.flush()
+        r2 = Repo(self.root, "main", algo="zlib")
+        calls = []
+        rd = r2._reader()
+        orig = rd.read
+        rd.read = lambda p, o, l: (calls.append(l), orig(p, o, l))[1]
+        got = r2.get_chunks(hs)
+        self.assertTrue(all(got[h] == x for h, x in zip(hs, datas)))
+        self.assertEqual(len(calls), 1, "one read for a run of adjacent chunks")
+        calls[:] = []
+        got = r2.get_chunks([hs[5], hs[6], hs[100], hs[7]])              # two runs and a lone chunk
+        self.assertEqual([got[h] for h in (hs[5], hs[6], hs[100], hs[7])], [datas[5], datas[6], datas[100], datas[7]])
+        self.assertEqual(len(calls), 3)
+        with self.assertRaises(EngineError):
+            r2.get_chunks([hs[1], "00" * 32])
+
     # ---- low level
     def test_scan_pack_matches_the_index_and_stops_at_a_torn_record(self):
         hs = [self.repo.put_chunk(self._data(i))[0] for i in range(10)]

@@ -24,6 +24,7 @@ from pg_arca.engine.util import (read_file, CHUNK_SIZE, HASH_NAME, EngineError, 
                                  write_file_atomic, write_json)
 
 DEDUP_TOUCH_AFTER = 3600          # refresh mtime of a reused chunk at most once per hour (GC grace relies on it)
+READ_RUN_MAX = 8 * 1048576        # a restore reads adjacent chunks of a pack in one call, up to this many bytes
 GC_GRACE = 48 * 3600
 
 
@@ -374,8 +375,7 @@ class Repo(object):
                 raise EngineError("PGA-REPO-014", "chunk missing from repository: %s" % h, "run verify --deep; if the chunk is lost the sets referencing it are unrecoverable")
             raise
 
-    def get_chunk(self, h):
-        blob = self.get_blob(h)
+    def _decode(self, blob, h):
         try:
             data = decompress(self._unpack(blob, h))
         except EngineError:
@@ -385,6 +385,43 @@ class Repo(object):
         if self.hash(data) != h:
             raise EngineError("PGA-VRF-001", "chunk %s failed hash verification" % h, "storage bit-rot: restore the repository from a copy")
         return data
+
+    def get_chunk(self, h):
+        return self._decode(self.get_blob(h), h)
+
+    def get_chunks(self, hashes):
+        """{hash: data} for several chunks with as few reads as possible: chunks that sit next to each other in the same pack (a file backed
+        up by one thread is stored in order) come with ONE read of the whole run instead of one per 64 KiB. Each chunk is verified as usual."""
+        locs = [(h, self.locate(h)) for h in hashes]
+        out = {}
+        i = 0
+        while i < len(locs):
+            h, r = locs[i]
+            if r is None or not r[0].endswith(".pack"):
+                out[h] = self.get_chunk(h)
+                i += 1
+                continue
+            path, off, ln = r
+            end = off + ln
+            j = i
+            while j + 1 < len(locs):
+                h2, r2 = locs[j + 1]
+                if r2 is None or r2[0] != path or r2[1] != end + _packs.REC_HDR.size or r2[1] + r2[2] - off > READ_RUN_MAX:
+                    break
+                end = r2[1] + r2[2]
+                j += 1
+            if j == i:
+                out[h] = self.get_chunk(h)
+            else:
+                try:
+                    buf = self._reader().read(path, off, end - off)
+                except (IOError, OSError):
+                    buf = None                                         # pack gone or short: the per-chunk path reloads the index and says what is wrong
+                for k in range(i, j + 1):
+                    hk, (_, ok, lk) = locs[k]
+                    out[hk] = self._decode(buf[ok - off:ok - off + lk], hk) if buf is not None else self.get_chunk(hk)
+            i = j + 1
+        return out
 
     # ------------------------------------------------------------------ sets
     def _sets_in(self, root):
