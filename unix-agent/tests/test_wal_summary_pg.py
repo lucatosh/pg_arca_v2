@@ -83,7 +83,15 @@ class WalSummaryTests(unittest.TestCase):
             self.assertEqual(q2("SELECT count(*), sum(length(pad)) FROM big"), "60000|30000000")
             self.assertEqual(q2("SELECT count(*) FROM small WHERE v = 'changed'"), "100")
             self.assertEqual(q2("SELECT count(*) FROM trunc_me"), "0")
-            self.assertEqual(q2("SELECT count(*) FROM newt"), "5000")
+            got = q2("SELECT count(*) FROM newt")
+            if got != "5000":                                      # say WHY (the PG17 matrix saw 0 rows once): what the incremental stored for newt
+                newt_rel = T.q("ws", "SELECT pg_relation_filepath('newt')")[0][0]
+                ent = man["files"].get(newt_rel)
+                full_ent = F.ctx.repo.load_manifest(full)["files"].get(newt_rel)
+                src = os.path.join(F.ctx.pgdata, newt_rel)
+                self.fail("newt has %s rows; rel %s; incremental entry %s; full entry %s; source size %s; wal_summaries %s; restored size %s" % (
+                    got, newt_rel, {k: (v if k != "chunks" else len(v)) for k, v in (ent or {}).items()}, bool(full_ent),
+                    os.path.getsize(src) if os.path.exists(src) else None, ws, os.path.getsize(os.path.join(dest, newt_rel)) if os.path.exists(os.path.join(dest, newt_rel)) else None))
         finally:
             T.sh(os.path.join(T.BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
 
