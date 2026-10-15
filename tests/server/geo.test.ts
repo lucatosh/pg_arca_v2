@@ -6,7 +6,7 @@ import { Store } from '../../server/store';
 import { sameTimelineDiverged, parseHistory, followsPrimary } from '../../server/geodr';
 import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, stanzaOf, geoReadiness } from '../../server/geo';
 import { evaluate } from '../../server/health';
-import { GEO_DR_TIMING, geoMonitorTick, watchOf } from '../../server/geodr';
+import { GEO_DR_TIMING, geoMonitorTick, watchOf, recoverInterruptedGeoJobs } from '../../server/geodr';
 import { deriveCluster } from '../../server/view';
 
 (async () => {
@@ -310,6 +310,15 @@ import { deriveCluster } from '../../server/view';
     for (let i = 0; i < 120 && jobs().find(j => j.type === 'rejoin')!.status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
     const rj4 = jobs().find(j => j.type === 'rejoin')!; assert.strictEqual(rj4.status, 'succeeded', JSON.stringify(rj4.steps)); assert(/ahead of hy-rm \(12\)/.test(rj4.steps[0].text), rj4.steps[0].text); assert(rj4.steps.some((x: any) => /timeline 13 of hy-mi abandoned/.test(x.text)), JSON.stringify(rj4.steps));
     assert(st4.peek().settings.geoFailovers[key].rejoinedAt, 'rejoined for real');
+  }
+  { // a console restart while a geo job runs: the job is closed as interrupted and the pair released (it blocked switchover, failover and rejoin for good)
+    const st5 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'geojobs-')));
+    await st5.mutate(d => { d.settings.geoJobs = { g1: { id: 'g1', type: 'rejoin', from: 'm', to: 'r', status: 'running', steps: [] }, g2: { id: 'g2', type: 'switchover', from: 'a', to: 'b', status: 'succeeded', steps: [] } };
+      d.settings.geoFailovers = { k: { from: 'm', to: 'r', rejoinJob: 'g1', rejoinFailedAt: now() } }; });
+    assert.deepStrictEqual(await recoverInterruptedGeoJobs(st5), ['g1']);
+    const p5 = st5.peek(); assert.strictEqual(p5.settings.geoJobs.g1.status, 'interrupted'); assert.strictEqual(p5.settings.geoJobs.g2.status, 'succeeded');
+    assert(!p5.settings.geoFailovers.k.rejoinJob, 'the pair is released'); assert(/console restarted/.test(p5.settings.geoJobs.g1.error));
+    assert.deepStrictEqual(await recoverInterruptedGeoJobs(st5), [], 'idempotent');
   }
   console.log('geo tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

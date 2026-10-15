@@ -279,7 +279,29 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
   }
 }
 
+/** Geo jobs run inside the console process: a restart (upgrade, deploy, crash) while one runs leaves it 'running' in the state with nobody
+ *  executing it, and that blocked the pair for good (no switchover: 'busy'; no automatic failover or rejoin, which wait for running jobs).
+ *  Seen on the lab: a rejoin interrupted by a console restart stayed 'running' and the old site was never rejoined. At start they are closed
+ *  as interrupted (with what to check) and the pair is released: the monitor re-evaluates it from the real state at its next tick. */
+export async function recoverInterruptedGeoJobs(store: Store) {
+  const st = store.peek();
+  const stuck = (Object.values(st.settings.geoJobs || {}) as any[]).filter(j => j.status === 'running');
+  if (!stuck.length) return [];
+  await store.mutate(d => {
+    for (const j of stuck) {
+      const x = (d.settings.geoJobs || {})[j.id]; if (!x) continue;
+      x.status = 'interrupted'; x.finishedAt = nowIso();
+      x.error = 'The console restarted while this job was running: it was stopped where it was. Check both sites in Geo-redundancy; an automatic rejoin starts again by itself, a switchover must be started again.';
+      (x.steps ||= []).push({ at: nowIso(), text: `interrupted: ${x.error}`, status: 'failed' });
+      ops.audit(d, { clusterId: x.from, actor: 'pg_arca', action: 'geo.job', status: 'INTERRUPTED', details: { job: x.id, type: x.type } });
+    }
+    for (const f of Object.values(d.settings.geoFailovers || {}) as any[]) if (f.rejoinJob && stuck.some(j => j.id === f.rejoinJob)) { delete f.rejoinJob; delete f.rejoinFailedAt; }
+  });
+  return stuck.map(j => j.id);
+}
+
 export function startGeoMonitor(store: Store, everyMs = 5000) {
+  recoverInterruptedGeoJobs(store).catch(e => console.error('[geo-monitor] interrupted jobs:', e.message));
   let busy = false;
   const t = setInterval(() => { if (busy) return; busy = true; geoMonitorTick(store).catch(e => console.error('[geo-monitor]', e.message)).finally(() => { busy = false; }); }, everyMs);
   t.unref?.();

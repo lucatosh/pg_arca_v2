@@ -18,7 +18,7 @@ interface Failover { from: string; to: string; fromName: string; toName: string;
 interface Group { sysid: string; sites: Site[]; primary: string | null; readiness?: Ready; policy?: Policy; watch?: Watch | null; failover?: Failover | null }
 interface Job { id: string; type?: string; fromName: string; toName: string; status: string; createdBy: string; createdAt: string; steps: { at: string; text: string }[]; error?: string }
 const JOB_LABEL: Record<string, string> = { switchover: 'Planned switchover', failover: 'Disaster recovery (manual promotion)', failover_auto: 'Automatic disaster recovery', rejoin: 'Rejoin of the old primary' };
-const JOB_ST: Record<string, [string, 'ok' | 'bad' | 'warn' | 'accent']> = { running: ['running', 'accent'], succeeded: ['completed', 'ok'], failed: ['stopped', 'bad'], held: ['waiting for a decision', 'warn'] };
+const JOB_ST: Record<string, [string, 'ok' | 'bad' | 'warn' | 'accent']> = { running: ['running', 'accent'], succeeded: ['completed', 'ok'], failed: ['stopped', 'bad'], held: ['waiting for a decision', 'warn'], interrupted: ['interrupted (console restarted)', 'warn'] };
 
 const ROLE_LABEL = { primary: 'Primary site', standby: 'Standby site (DR)', unknown: 'Role not determined' };
 
