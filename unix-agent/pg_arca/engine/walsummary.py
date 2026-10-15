@@ -94,12 +94,29 @@ def summaries_for(sess, tli, prev_lsn, start_lsn, wait=WAIT_SUMMARIZER_SEC, canc
 def changed_chunks(sess, tli, chain, files, seg_blocks, default_spc_oid=1663, global_spc_oid=1664):
     """{relation file path -> set(chunk index) | ALL} from the summary chain. `files` = relative paths of the data directory walk (gives the
     pg_tblspc/<oid>/<version dir> prefixes). Chunk index = (block within the 1 GB segment) // 8."""
-    spc_prefix = {}
+    spc_dirs = {}
     for rel in files:
         m = RE_TBLSPC.match(rel)
-        if m and m.group(1) not in spc_prefix:
-            spc_prefix[m.group(1)] = "pg_tblspc/%s/%s" % (m.group(1), m.group(2))
+        if m:
+            spc_dirs.setdefault(m.group(1), set()).add(m.group(2))
+    # a tablespace directory can hold more than one version directory (PG_15_… left behind by pg_upgrade next to PG_16_…): the server's own is
+    # the one named after its major version; when that cannot be told, every file of that tablespace is scanned in full (never skipped by mistake)
+    try:
+        major = int(sess.scalar("SELECT current_setting('server_version_num')")) // 10000
+    except Exception:
+        major = None
+    spc_prefix, spc_unsure = {}, set()
+    for oid, dirs in spc_dirs.items():
+        mine = [d for d in dirs if major and d.startswith("PG_%d_" % major)] if len(dirs) > 1 else list(dirs)
+        if len(mine) == 1:
+            spc_prefix[oid] = "pg_tblspc/%s/%s" % (oid, mine[0])
+        else:
+            spc_unsure.add(oid)
     out = {}
+    for oid in spc_unsure:
+        for rel in files:
+            if rel.startswith("pg_tblspc/%s/" % oid):
+                out[rel] = ALL
     pages_per_chunk = CHUNK_SIZE // 8192
     for s, e in chain:
         sql = ("SELECT relfilenode, reltablespace, reldatabase, relforknumber, relblocknumber, is_limit_block "
@@ -115,7 +132,7 @@ def changed_chunks(sess, tli, chain, files, seg_blocks, default_spc_oid=1663, gl
             else:
                 p = spc_prefix.get(str(spc))
                 if not p:
-                    continue                                   # a tablespace that is not in the data directory walk any more (dropped)
+                    continue                                   # dropped tablespace (not in the walk any more), or one marked ALL above
                 base = "%s/%d/%d" % (p, db, relfilenode)
             if limit:                                          # truncated: every segment of the relation is examined in full
                 out[base] = ALL

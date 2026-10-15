@@ -69,6 +69,9 @@ Known limits (not solved): `unix_socket_directories` with several entries uses t
 - Memory: the chunk index costs 44 bytes per chunk in the agent while a backup, restore or verify runs (≈ 70 MB for a 100 GB database, ≈ 700 MB for 1 TB); it is cached on disk (`cas/packs/index.cache`) so that loading it does not re-read every pack index. Packs are limited to 256 MB (`PG_ARCA_PACK_MAX_MB`); the garbage collection rewrites a pack when at least 25 % of it is dead and never touches packs younger than 48 hours.
 - Tests: `unix-agent/tests/test_packs.py`; the real-PostgreSQL suites (`test_engine_pg`, `test_engine_standby_pg`, `test_engine_failover_pg`, `test_backup_crash_pg`, `test_destination_migrate_pg`, …) run on format 2.
 
+## Locks on shared storage — 15/10
+Backups, expire/garbage collection and migrations coordinate through `flock` files in the repository (`stanza` lock per stanza, `cas/gc.lock` for the whole repository: backups and migrations shared, the collector exclusive). On NFS this needs working locks: **do not mount the repository with `nolock`** (NFSv4 or NFSv3 with lockd/statd). Without them two writers could run at once and a collector could delete a pack a backup is deduplicating against; the agent's destination check does not detect this yet.
+
 ## Worker hosts (backup server, recovery host) — 11/10
 - Agent role `node_role`: `auto` (default: the console decides), `database`, `worker`. At installation `PG_ARCA_ROLE=worker`; without a `postgres` user the installer creates the system user `pgarca`.
 - In `worker` mode the agent **does not look for PostgreSQL** (no instance discovery, no cluster created) and reports: PostgreSQL installations per version (system, pg_arca private, configured), real filesystems with their type (local, NFS, SMB, Ceph, …) and space, pg_arca directories (scratch, repository, WAL archive), CPU/RAM and privileges (root / passwordless sudo).

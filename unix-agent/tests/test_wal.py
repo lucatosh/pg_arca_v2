@@ -201,5 +201,35 @@ class WalTests(unittest.TestCase):
         self.assertFalse(self.wm.has_segment(seg(1, 0, 2)))
         self.assertTrue(self.wm.has_segment(seg(1, 0, 9)))
 
+    def test_two_writers_same_name_different_content_only_one_wins(self):
+        """Two servers archive the same segment name with different content at the same moment (split-brain): exactly one succeeds, the other
+        gets PGA-WAL-031, and the stored object's meta always describes the stored object (an independent review found the loser could
+        overwrite the winner's meta when the meta was written before the object: both succeeded, every later retrieve failed)."""
+        import threading
+        n = seg(1, 0, 9)
+        srcs = [self.mk(n, b"a"), None]
+        d2 = os.path.join(self.t, "src2"); os.makedirs(d2); srcs[1] = os.path.join(d2, n)
+        with open(srcs[1], "wb") as f: f.write(b"b" * MB)
+        for _ in range(8):                                                       # repeated: the race window is small
+            results = [None, None]
+            def go(i):
+                try: results[i] = ("ok",) + tuple(self.wm.archive_segment(srcs[i], n))
+                except WalArchiveError as e: results[i] = ("err", e.code)
+                except Exception as e:
+                    import traceback; results[i] = ("exc", traceback.format_exc())
+            ts = [threading.Thread(target=go, args=(i,)) for i in (0, 1)]
+            for t in ts: t.start()
+            for t in ts: t.join()
+            oks = [r for r in results if r[0] == "ok"]; errs = [r for r in results if r[0] == "err"]
+            self.assertEqual(len(oks), 1, results); self.assertEqual(len(errs), 1, results); self.assertEqual(errs[0][1], "PGA-WAL-031")
+            out = os.path.join(self.t, "r9"); code, _ = self.wm.retrieve_segment(n, out)
+            self.assertEqual(code, 0, "the stored segment verifies against its meta")
+            self.assertEqual(open(out, "rb").read(), (b"a" if oks[0][3] == hashlib.sha256(b"a" * MB).hexdigest() else b"b") * MB)
+            # reset for the next round
+            for x in os.listdir(self.wm.wal_dir):
+                px = os.path.join(self.wm.wal_dir, x)
+                if x.startswith(n): os.unlink(px)
+            for x in os.listdir(os.path.join(self.wm.wal_dir, "conflicts")): os.unlink(os.path.join(self.wm.wal_dir, "conflicts", x))
+
 
 if __name__ == "__main__": unittest.main()

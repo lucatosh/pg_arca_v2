@@ -29,6 +29,7 @@ import stat as stat_mod
 import re
 import shutil
 import subprocess
+import threading
 import time
 
 logger = logging.getLogger("pg_arca.wal_manager")
@@ -325,9 +326,14 @@ class WalManager:
         existing, codec = self._find(name)
         if existing:
             meta = self._read_meta(name)
+            for _ in range(20):                                 # the winner of a publish race writes its meta right after the object: wait for it
+                if meta is not None:
+                    break
+                time.sleep(0.1)
+                meta = self._read_meta(name)
             stored = meta.get("sha256") if meta else None
             if stored is None:                                  # legacy object without meta: hash its decompressed content
-                tmp = os.path.join(self.wal_dir, ".verify.%d" % os.getpid())
+                tmp = os.path.join(self.wal_dir, ".verify.%d.%d" % (os.getpid(), threading.get_ident()))
                 try:
                     self._decompress(existing, tmp, codec)
                     stored = _sha256_file(tmp)
@@ -341,6 +347,7 @@ class WalManager:
             prev = [x for x in (os.listdir(qdir) if os.path.isdir(qdir) else []) if x.startswith("%s.%s." % (name, raw_sha[:12]))]
             qname = prev[0] if prev else "%s.%s.%d" % (name, raw_sha[:12], int(time.time()))
             if not prev:
+                os.makedirs(qdir, mode=0o750, exist_ok=True)
                 shutil.copyfile(src_path, os.path.join(qdir, qname))
             if is_history:
                 raise WalArchiveError("PGA-WAL-033", "timeline history %s already in the archive with DIFFERENT content (stored %s.. vs incoming %s..): two servers promoted "
@@ -349,7 +356,7 @@ class WalManager:
                                       % (name, stored[:12], raw_sha[:12], qname))
             raise WalArchiveError("PGA-WAL-031", "DIVERGENT content for %s (stored %s.. vs incoming %s..): possible split-brain; incoming copy quarantined as conflicts/%s" % (name, stored[:12], raw_sha[:12], qname))
 
-        tmp = os.path.join(self.wal_dir, ".%s.tmp.%d" % (name, os.getpid()))
+        tmp = os.path.join(self.wal_dir, ".%s.tmp.%d.%d" % (name, os.getpid(), threading.get_ident()))     # unique per writer, also per thread (spool pusher)
         codec_used = ""
         try:
             codec_used = "" if is_history else self._compress(src_path, tmp)     # history files are tiny: keep readable
@@ -369,18 +376,21 @@ class WalManager:
             if self.crypto and not is_history:
                 meta["enc"] = "aes-256-gcm"
                 meta["key_id"] = self.crypto.key_id
-            mtmp = os.path.join(self.wal_dir, ".%s.meta.tmp.%d" % (name, os.getpid()))
-            with open(mtmp, "w", encoding="utf-8") as f:
-                json.dump(meta, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.rename(mtmp, os.path.join(self.wal_dir, name + ".meta"))      # meta first: an object without meta is never trusted blindly
+            # the object is published first, write-once (link): of two writers only one wins, and only the winner writes the meta.
+            # (Meta first would let the LOSER overwrite the winner's meta with its own sha: both would report success and the stored
+            # segment would fail every later verification.) An object without meta is never trusted blindly: its content is hashed.
             try:
                 os.link(tmp, final)                                          # write-once publish
             except FileExistsError:                                          # lost a race with another writer: re-evaluate (idempotent / conflict)
                 os.unlink(tmp)
                 return self.archive_segment(src_path, name)
             os.unlink(tmp)
+            mtmp = os.path.join(self.wal_dir, ".%s.meta.tmp.%d.%d" % (name, os.getpid(), threading.get_ident()))
+            with open(mtmp, "w", encoding="utf-8") as f:
+                json.dump(meta, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(mtmp, os.path.join(self.wal_dir, name + ".meta"))
             _fsync_dir(self.wal_dir)
             return True, final, raw_sha, "archived"
         finally:

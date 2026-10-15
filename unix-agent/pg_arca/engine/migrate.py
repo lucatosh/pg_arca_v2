@@ -266,35 +266,39 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
             shutil.copyfile(sj_old, sj_new)
         from pg_arca.engine.repo import Repo
         old = Repo(src_repo, ctx.stanza, crypto=ctx.crypto, readonly=True)
-        for i, s in enumerate(p["sets"]):
-            man = old.load_manifest({"id": s["id"]})
-            for h in sorted(set(h for e in man["files"].values() for _, _, h in e["chunks"])):
+        gcl = ctx.repo.gc_lock(shared=True)                        # no garbage collection of the destination while chunks are deduplicated against its index
+        try:
+            for i, s in enumerate(p["sets"]):
+                man = old.load_manifest({"id": s["id"]})
+                for h in sorted(set(h for e in man["files"].values() for _, _, h in e["chunks"])):
+                    _check_cancel(cancel)
+                    n = _copy_chunk(old, ctx.repo, h, th)
+                    if n:
+                        copied["chunks"] += 1
+                        done_b += n
+                        if copied["chunks"] % 200 == 0:
+                            tick("chunks", {"set": s["id"], "sets_done": i, "sets_total": len(p["sets"])})
+                ctx.repo.flush()                                       # the set's chunks are sealed and indexed before its directory appears
                 _check_cancel(cancel)
-                n = _copy_chunk(old, ctx.repo, h, th)
-                if n:
-                    copied["chunks"] += 1
-                    done_b += n
-                    if copied["chunks"] % 200 == 0:
-                        tick("chunks", {"set": s["id"], "sets_done": i, "sets_total": len(p["sets"])})
-            ctx.repo.flush()                                       # the set's chunks are sealed and indexed before its directory appears
-            _check_cancel(cancel)
-            src_d, dst_d = os.path.join(old_sets, s["id"]), os.path.join(new_sets, s["id"])
-            if not os.path.isdir(dst_d):
-                tmp_d = os.path.join(new_sets, ".mig-" + s["id"])
-                shutil.rmtree(tmp_d, ignore_errors=True)
-                os.makedirs(tmp_d, mode=0o750)
-                for f in sorted(os.listdir(src_d)):
-                    if os.path.isfile(os.path.join(src_d, f)):
-                        done_b += _copy_verified(os.path.join(src_d, f), os.path.join(tmp_d, f), th, fresh_mtime=False)
-                _fsync_dir(tmp_d)
-                os.rename(tmp_d, dst_d)
-                _fsync_dir(new_sets)
-                copied["sets"] += 1
-            state.setdefault("sets_done", [])
-            if s["id"] not in state["sets_done"]:
-                state["sets_done"].append(s["id"])
-                write_json(st_path, state)
-            tick("sets", {"set": s["id"], "sets_done": i + 1, "sets_total": len(p["sets"])})
+                src_d, dst_d = os.path.join(old_sets, s["id"]), os.path.join(new_sets, s["id"])
+                if not os.path.isdir(dst_d):
+                    tmp_d = os.path.join(new_sets, ".mig-" + s["id"])
+                    shutil.rmtree(tmp_d, ignore_errors=True)
+                    os.makedirs(tmp_d, mode=0o750)
+                    for f in sorted(os.listdir(src_d)):
+                        if os.path.isfile(os.path.join(src_d, f)):
+                            done_b += _copy_verified(os.path.join(src_d, f), os.path.join(tmp_d, f), th, fresh_mtime=False)
+                    _fsync_dir(tmp_d)
+                    os.rename(tmp_d, dst_d)
+                    _fsync_dir(new_sets)
+                    copied["sets"] += 1
+                state.setdefault("sets_done", [])
+                if s["id"] not in state["sets_done"]:
+                    state["sets_done"].append(s["id"])
+                    write_json(st_path, state)
+                tick("sets", {"set": s["id"], "sets_done": i + 1, "sets_total": len(p["sets"])})
+        finally:
+            gcl.release()
     # ---- WAL: metas first, then segments / histories / labels
     if src_wal:
         for n in _wal_files(src_wal):

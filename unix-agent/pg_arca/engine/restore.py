@@ -135,6 +135,22 @@ def estimate(merged):
 
 
 # --------------------------------------------------------------------------- materialization
+_ZEROS = b"\0" * (1 << 20)
+
+
+def _zero_range(f, off, ln):
+    """Zero [off, off+ln) of an existing file, skipping the parts that already are (a delta restore over a copy: most holes are holes already)."""
+    end = off + ln
+    while off < end:
+        n = min(len(_ZEROS), end - off)
+        f.seek(off)
+        cur = f.read(n)
+        if cur != _ZEROS[:len(cur)] or len(cur) < n:
+            f.seek(off)
+            f.write(_ZEROS[:n])
+        off += n
+
+
 def _write_one(repo, dest, rel, info, delta):
     safe_relpath(rel)
     out = os.path.join(dest, rel)
@@ -145,16 +161,22 @@ def _write_one(repo, dest, rel, info, delta):
     mode = "r+b" if exists else "wb"
     with open(out, mode) as f:
         need = []
-        for off in sorted(info["chunks"]):
-            ln, h = info["chunks"][off]
+        pos = 0                                                           # delta: a range no chunk covers was all zeros when the backup was taken
+        for off in sorted(info["chunks"]):                                # (an incremental never keeps zero chunks): the old file's bytes there must
+            ln, h = info["chunks"][off]                                   # go too, or pages written later than the target survive the restore
             if off >= size:
                 continue
+            if exists and off > pos:
+                _zero_range(f, pos, min(off, size) - pos)
+            pos = min(off + ln, size)
             if exists:
                 f.seek(off)
                 cur = f.read(ln)
                 if len(cur) == ln and repo.hash(cur) == h:
                     continue                                              # delta: identical range, skip the write
             need.append((off, h))
+        if exists and pos < size:
+            _zero_range(f, pos, size - pos)
         for i in range(0, len(need), WRITE_WINDOW):                       # a window of chunks at a time: adjacent ones come with one read
             part = need[i:i + WRITE_WINDOW]
             datas = repo.get_chunks([h for _, h in part])

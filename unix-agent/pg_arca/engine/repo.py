@@ -185,17 +185,56 @@ class Repo(object):
             r = self._tl.reader = _packs.PackReader()
         return r
 
+    def _own_open_pack(self, path):
+        """True when `path` is the final name of a pack this process is still writing (it exists only as .pack.open until sealed)."""
+        with self._index_lock:
+            return any(w.final == path and not w.sealed for w in self._writers)
+
     def _touch_pack(self, path):
-        """A pack we deduplicated against is in use by a backup that has no manifest yet: refresh its mtime so that the GC grace covers it."""
+        """A pack we deduplicated against is in use by a backup that has no manifest yet: refresh its mtime so that the GC grace covers it.
+        Returns False when the pack is gone (deleted or rewritten by a garbage collection since the index was loaded): the caller must not
+        deduplicate against it. The check is cached for an hour per pack (a pack touched less than an hour ago is inside the 48 h grace);
+        when the mtime cannot be refreshed (another owner on a shared mount) it is cached for a minute only."""
         now = time.time()
         if now - self._touched.get(path, 0) < DEDUP_TOUCH_AFTER:
-            return
-        self._touched[path] = now
+            return True
         try:
-            if now - os.stat(path).st_mtime > DEDUP_TOUCH_AFTER:
+            st = os.stat(path)
+        except OSError as e:
+            if e.errno in (errno.ENOENT, errno.ESTALE):
+                self._touched.pop(path, None)
+                return False
+            self._touched[path] = now - DEDUP_TOUCH_AFTER + 60
+            return True
+        self._touched[path] = now
+        if now - st.st_mtime > DEDUP_TOUCH_AFTER:
+            try:
                 os.utime(path, None)
-        except OSError:
-            pass
+            except OSError:
+                self._touched[path] = now - DEDUP_TOUCH_AFTER + 60
+        return True
+
+    # ------------------------------------------------------------------ repository-wide lock between writers and the garbage collector
+    def gc_lock(self, shared):
+        """cas/gc.lock: backups and migrations hold it SHARED for their whole run, the garbage collector takes it EXCLUSIVE (non-blocking).
+        Chunks are deduplicated against an index loaded at the start of a run: a pack the collector deletes meanwhile would leave a COMPLETE
+        set pointing at nothing. Stanza locks cannot give this guarantee (every stanza of a shared repository has its own). Returns a Lock,
+        or None when the exclusive lock is busy (the collector then skips its pass)."""
+        os.makedirs(self.p("cas"), mode=0o750, exist_ok=True)
+        lp = self.p("cas", "gc.lock")
+        f = open(lp, "a+")
+        try:
+            fcntl.flock(f.fileno(), (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+        except (IOError, OSError) as e:
+            f.close()
+            if e.errno not in (errno.EAGAIN, errno.EACCES):
+                raise
+            if shared:                                             # a collector is inside its (short) pass: wait for it rather than fail the backup
+                f = open(lp, "a+")
+                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            else:
+                return None
+        return Lock(f, 0, lp)
 
     def cas_stats(self):
         """{"chunks", "stored_bytes", "packs", "files"}: packs counted from their index headers, format-1 files walked (none in a new repository)."""
@@ -304,8 +343,9 @@ class Repo(object):
         hb = bytes.fromhex(h)
         r = self.index().find(hb, own_only=True)                   # never against a previous location (read-only, migrated or dropped later)
         if r is not None:                                          # in a sealed pack (durable and indexed: nothing to re-verify) or written by this process
-            self._touch_pack(r[0])
-            return h, 0, True
+            if self._own_open_pack(r[0]) or self._touch_pack(r[0]):
+                return h, 0, True
+            self.index().forget_pack(r[0])                         # the pack vanished under a garbage collection: store the chunk again
         if self.has_legacy_chunks():
             dst = self.cas_path(h)
             try:

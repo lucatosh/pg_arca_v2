@@ -273,7 +273,8 @@ def run_backup(ctx, btype="incr", archive_timeout=120, progress=None, cancel=Non
     if not ctx.pgdata or not os.path.exists(os.path.join(ctx.pgdata, "PG_VERSION")):
         raise EngineError("PGA-CFG-014", "%s is not a PGDATA (PG_VERSION missing)" % ctx.pgdata)
     with repo.lock("stanza", owner or "backup"):
-        return _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast, ReadLimiter(read_limit_mb_s))
+        with repo.gc_lock(shared=True):                            # no garbage collection in the repository (any stanza, any node) while this run deduplicates
+            return _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast, ReadLimiter(read_limit_mb_s))
 
 
 def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=None, limiter=_NO_LIMIT):

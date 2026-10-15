@@ -1,5 +1,6 @@
 """Repository inspection and care: info, verify (shallow/deep), expire (retention + CAS GC + WAL), forensics."""
 
+import logging
 import os
 import re
 import shutil
@@ -12,6 +13,8 @@ from pg_arca.engine.repo import GC_GRACE
 
 REPACK_FRACTION = 0.25            # a pack whose dead chunks weigh at least this share of it is rewritten without them
 from pg_arca.engine.util import EngineError, last_wal_segno, lsn_to_int, parse_wal_name, read_json, wal_name, wal_segno
+
+logger = logging.getLogger("pg_arca.maintenance")
 
 
 # --------------------------------------------------------------------------- info
@@ -180,8 +183,12 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         fulls = [s for s in done if s["type"] == "full"]
         doomed_fulls = fulls[:max(0, len(fulls) - keep_full)]
         if days and doomed_fulls:
+            # every point of the last N days must stay restorable: a point just after the cutoff needs the newest full that STARTED BEFORE it
+            # (its chain and WAL carry the point forward), so that full is kept too, not only the fulls younger than the cutoff
             cutoff = time.time() - days * 86400
-            doomed_fulls = [f for f in doomed_fulls if (f.get("started_ts") or 0) < cutoff]
+            older = [f for f in fulls if (f.get("started_ts") or 0) < cutoff]
+            spanning = older[-1]["id"] if older else None
+            doomed_fulls = [f for f in doomed_fulls if (f.get("started_ts") or 0) < cutoff and f["id"] != spanning]
         doomed = []
         for f in doomed_fulls:
             doomed += _dependents(sets, f)
@@ -189,7 +196,10 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         junk = [s for s in sets if s.get("status") in ("FAILED", "UNRECOVERABLE", "RUNNING", "PENDING_WAL", "EXPIRING") and s not in doomed]
         doomed_ids = set(s["id"] for s in doomed) | set(s["id"] for s in junk)
         keep = [s for s in done if s["id"] not in doomed_ids]
-        oldest_lsn = min((lsn_to_int(s["start_lsn"]) for s in keep), default=None)
+        # sets still only in a previous location (destination changed, not migrated yet / kept on purpose) are restorable from here, and the
+        # WAL they need after the switch lives in THIS archive: the floor must not cut below their start either
+        prev_lsns = [lsn_to_int(s["start_lsn"]) for s in repo.sets() if s.get("location") and s.get("status") == "COMPLETE" and s.get("start_lsn")]
+        oldest_lsn = min([lsn_to_int(s["start_lsn"]) for s in keep] + prev_lsns, default=None)
         plan = {"delete_sets": sorted(doomed_ids), "keep_sets": [s["id"] for s in keep], "retention_full": keep_full}
         if oldest_lsn is not None:
             plan["wal_keep_from_lsn"] = "%X/%08X" % (oldest_lsn >> 32, oldest_lsn & 0xFFFFFFFF)
@@ -223,7 +233,20 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
 
 
 def _gc_cas(repo):
-    """Mark & sweep over EVERY stanza in the repository (chunks are shared). Young chunks are never swept (GC grace)."""
+    """Mark & sweep over EVERY stanza in the repository (chunks are shared). Young chunks are never swept (GC grace). Skipped (0, 0) while a
+    backup or a migration holds the repository's shared lock: they deduplicate against an index loaded at their start, and a pack deleted or
+    rewritten meanwhile would leave their set pointing at nothing."""
+    lk = repo.gc_lock(shared=False)
+    if lk is None:
+        logger.info("garbage collection postponed: a backup or migration is running in this repository (next expire)")
+        return 0, 0
+    try:
+        return _gc_cas_locked(repo)
+    finally:
+        lk.release()
+
+
+def _gc_cas_locked(repo):
     live = set()
     sroot = repo.p("stanza")
     for st in os.listdir(sroot):

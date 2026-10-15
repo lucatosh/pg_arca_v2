@@ -353,6 +353,47 @@ class PackTests(unittest.TestCase):
         with self.assertRaises(EngineError):
             packs.read_idx(p)                                            # not an index
 
+    def test_dedup_never_points_at_a_pack_the_collector_removed(self):
+        """A backup deduplicates against the index it loaded at its start. If a garbage collection (another stanza's expire on the shared
+        repository, another node) deletes a pack meanwhile, the chunk is stored again - never 'deduplicated' into nothing (found by an
+        independent review: a COMPLETE set referencing a missing chunk, unrestorable)."""
+        from pg_arca.engine import maintenance
+        data = self._data(1)
+        h = self.repo.put_chunk(data)[0]
+        self.repo.flush()                                                # a failed attempt 3 days ago: sealed pack, no manifest
+        pd = os.path.join(self.root, "cas", "packs")
+        for n in os.listdir(pd):
+            _age(os.path.join(pd, n), GC_GRACE + 3600)
+        self.assertIsNotNone(self.repo.index().find(bytes.fromhex(h)))   # the backup's index knows the pack
+        other = Repo(self.root, "other", algo="zlib")
+        other.init()
+        freed, removed = maintenance._gc_cas(other)                      # nobody holds the shared lock: the collector removes the dead pack
+        self.assertEqual(removed, 1)
+        h2, written, dedup = self.repo.put_chunk(data)
+        self.assertEqual(h2, h); self.assertFalse(dedup); self.assertGreater(written, 0)
+        self.repo.flush()
+        fresh = Repo(self.root, "main", algo="zlib")
+        self.assertEqual(fresh.get_chunk(h), data)
+
+    def test_collector_waits_for_running_backups(self):
+        """While a backup (any stanza, any node) holds the repository's shared lock, the collector skips its pass: it is the same lock
+        run_backup and the migration take for their whole run."""
+        from pg_arca.engine import maintenance
+        h = self.repo.put_chunk(self._data(2))[0]
+        self.repo.flush()
+        pd = os.path.join(self.root, "cas", "packs")
+        for n in os.listdir(pd):
+            _age(os.path.join(pd, n), GC_GRACE + 3600)
+        lk = self.repo.gc_lock(shared=True)
+        try:
+            self.assertEqual(maintenance._gc_cas(Repo(self.root, "other", algo="zlib")), (0, 0))
+            self.assertEqual(self.repo.get_chunk(h), self._data(2))
+        finally:
+            lk.release()
+        self.assertEqual(maintenance._gc_cas(Repo(self.root, "other", algo="zlib"))[1], 1)
+        lk2 = self.repo.gc_lock(shared=True); lk3 = self.repo.gc_lock(shared=True)   # shared locks do not exclude each other (primary + standby backups)
+        lk2.release(); lk3.release()
+
 
 if __name__ == "__main__":
     unittest.main()
