@@ -137,7 +137,8 @@ def check(ctx, plan, merged_sel=None, target_set=None, need_dest=0, into=None, n
         checked, miss, ex, sampled = missing_chunks(ctx.repo, merged_sel)
         if miss:
             add("chunks", "bad", "%d of the %d backup chunks this restore needs are missing from the repository (e.g. %s)" % (miss, checked, ", ".join(ex[:3])),
-                "restore the repository from its copy, or choose an older backup set / point in time that does not depend on them; run a deep verify")
+                ("the offsite copy is configured on this node: Status → Nodes → Offsite copy → 'Download what is missing here' brings them back; " if getattr(ctx, "has_offsite", False) else "")
+                + "restore the repository from its copy, or choose an older backup set / point in time that does not depend on them; run a deep verify")
         else:
             add("chunks", "ok", "all %d backup chunks needed are present in the repository%s" % (checked, " (random sample)" if sampled else ""))
     # ---- scratch + ephemeral instance

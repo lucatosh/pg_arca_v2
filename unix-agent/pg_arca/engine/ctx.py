@@ -100,11 +100,13 @@ class Ctx(object):
         # never restore into (or above/below) the repository, the WAL archive, the agent state/config or the key file
         keep = [config.get("repo_path"), config.get("wal_archive_dir"), config.get("state_dir"), os.path.dirname(config.get("credentials_file") or ""), config.get("encryption_key_file")] \
             + list(config.get("repo_previous") or []) + list(config.get("wal_previous") or [])
-        return cls(conn, _resolve_pgdata(config, inst, log), config["repo_path"], stanza, config["wal_archive_dir"],
-                   config.get("scratch_dir", "/var/tmp/pg_arca_scratch"), config.get("process_max", 4), config.get("compression", "zstd"),
-                   config.get("compression_level", 3), bool(config.get("start_fast", False)), config.get("retention_full", 2),
-                   config.get("retention_days", 0), seg, log, wal_bin, key_file=config.get("encryption_key_file") or os.environ.get("PG_ARCA_KEY_FILE") or None, protected_extra=[k for k in keep if k],
-                   repo_previous=config.get("repo_previous") or None, wal_previous=config.get("wal_previous") or None)
+        ctx = cls(conn, _resolve_pgdata(config, inst, log), config["repo_path"], stanza, config["wal_archive_dir"],
+                  config.get("scratch_dir", "/var/tmp/pg_arca_scratch"), config.get("process_max", 4), config.get("compression", "zstd"),
+                  config.get("compression_level", 3), bool(config.get("start_fast", False)), config.get("retention_full", 2),
+                  config.get("retention_days", 0), seg, log, wal_bin, key_file=config.get("encryption_key_file") or os.environ.get("PG_ARCA_KEY_FILE") or None, protected_extra=[k for k in keep if k],
+                  repo_previous=config.get("repo_previous") or None, wal_previous=config.get("wal_previous") or None)
+        ctx.has_offsite = bool(config.get("offsite"))                  # restore pre-flight: a missing chunk may be one download away
+        return ctx
 
 
 def _resolve_pgdata(config, inst, log=None):
