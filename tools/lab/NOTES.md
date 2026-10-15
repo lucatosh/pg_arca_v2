@@ -80,3 +80,11 @@ Uso (sull'host Proxmox, root): `./virgin.sh list`, `./virgin.sh create all` (o i
 - `tools/lab/ui/node.sh <nodo> '<comando>'` esegue un comando come root su un nodo della console, sia container Docker della VM sia CT Proxmox (per hostname, via `pct exec`). `sql.sh` lo usa, e l'SQL viaggia dentro il comando: lo stdin non passa attraverso ssh + `pct exec`.
 - `restore-ui.cjs` attiva da sé l'archiviazione WAL dalla UI (con il riavvio dalla scheda Backup) sui server appena collegati. Lo scenario `server` sostituisce la produzione: va bene solo su standalone e viene rifiutato con un motivo su Patroni, tablespace e container.
 - `hy.sh fixip`: IP fissi per hy1/hy2/etcd/HAProxy senza ricreare i container (dopo un reboot si erano scambiati). `scenario-hy.py setup,switch,dr,wan`: tutta la coppia geo dalla console.
+
+## Copia offsite S3 (15/10): prova contro MinIO reale (da fare sul lab)
+```bash
+docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=pgarca -e MINIO_ROOT_PASSWORD=pgarca-secret-1 quay.io/minio/minio server /data
+docker exec minio mc alias set local http://127.0.0.1:9000 pgarca pgarca-secret-1 && docker exec minio mc mb local/bk
+cd unix-agent && PG_ARCA_TEST_S3_ENDPOINT=http://127.0.0.1:9000 PG_ARCA_TEST_S3_KEY=pgarca PG_ARCA_TEST_S3_SECRET=pgarca-secret-1 PG_ARCA_TEST_S3_BUCKET=bk python3 -m unittest tests.test_offsite tests.test_s3 -v
+```
+Poi dalla console: Status → Nodes → Offsite copy su un nodo del cluster pg17 (endpoint http://<vm>:9000, bucket bk, prefix pg17), «Test the bucket and save», «Sync now», verificare gli oggetti con `mc ls -r local/bk`.

@@ -12,10 +12,24 @@ from pg_arca.engine.repo import Repo
 from tests.fake_s3 import FakeS3
 
 
+REAL = os.environ.get("PG_ARCA_TEST_S3_ENDPOINT")        # e.g. http://127.0.0.1:9000 (MinIO on the lab) with PG_ARCA_TEST_S3_KEY / _SECRET / _BUCKET: the same tests against a real store
+
+
+class _Real(object):
+    def __init__(self):
+        self.endpoint = REAL
+
+    def close(self):
+        pass
+
+
 class OffsiteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.srv = FakeS3()
+        cls.srv = _Real() if REAL else FakeS3()
+        cls.ak = os.environ.get("PG_ARCA_TEST_S3_KEY", "AKTEST") if REAL else "AKTEST"
+        cls.sk = os.environ.get("PG_ARCA_TEST_S3_SECRET", "s") if REAL else "s"
+        cls.bucket = os.environ.get("PG_ARCA_TEST_S3_BUCKET", "bk") if REAL else "bk"
 
     @classmethod
     def tearDownClass(cls):
@@ -31,7 +45,7 @@ class OffsiteTests(unittest.TestCase):
         self.repo.init()
         self.prefix = "t%d" % int(time.time() * 1000)
         self.config = {"repo_path": self.repo_path, "wal_archive_dir": self.wal, "state_dir": self.state,
-                       "offsite": {"type": "s3", "endpoint": self.srv.endpoint, "bucket": "bk", "prefix": self.prefix, "access_key": "AKTEST", "secret_key": "s", "region": "us-east-1"}}
+                       "offsite": {"type": "s3", "endpoint": self.srv.endpoint, "bucket": self.bucket, "prefix": self.prefix, "access_key": self.ak, "secret_key": self.sk, "region": "us-east-1"}}
         self.logs = []
         self.m = offsite.Mirror(self.config, self.state, log=lambda lv, m: self.logs.append((lv, m)))
 
@@ -133,6 +147,8 @@ class OffsiteTests(unittest.TestCase):
         self.assertEqual((st["deleted"], len(offsite.client_for(self.m.cfg()).list(""))), (0, n), "nothing deleted while the local side looks empty")
 
     def test_failed_upload_is_retried_next_cycle(self):
+        if REAL:
+            self.skipTest("simulated failures need the fake server")
         srv = FakeS3(fail_every=3)
         try:
             self.config["offsite"]["endpoint"] = srv.endpoint
@@ -181,16 +197,16 @@ class OffsiteTests(unittest.TestCase):
         ex = OperationExecutor(self.config, None, None)
         self.assertEqual(ex.h_offsite_get({})["offsite"], None)
         with self.assertRaises(OpError):
-            ex.h_offsite_set({"offsite": {"endpoint": "http://127.0.0.1:1", "bucket": "bk", "access_key": "AKTEST", "secret_key": "s"}, "test": True})
+            ex.h_offsite_set({"offsite": {"endpoint": "http://127.0.0.1:1", "bucket": self.bucket, "access_key": self.ak, "secret_key": self.sk}, "test": True})
         self.assertIsNone(self.config.get("offsite"), "nothing saved when the probe fails")
-        r = ex.h_offsite_set({"offsite": {"endpoint": self.srv.endpoint, "bucket": "bk", "prefix": self.prefix + "x", "access_key": "AKTEST", "secret_key": "s"}, "test": True})
+        r = ex.h_offsite_set({"offsite": {"endpoint": self.srv.endpoint, "bucket": self.bucket, "prefix": self.prefix + "x", "access_key": self.ak, "secret_key": self.sk}, "test": True})
         self.assertTrue(r["offsite"]["secret_key_set"] and "secret_key" not in r["offsite"] and "reachable" in r["probe"])
-        self.assertEqual(self.config["offsite"]["secret_key"], "s")
+        self.assertEqual(self.config["offsite"]["secret_key"], self.sk)
         got = ex.h_offsite_get({})
-        self.assertEqual(got["offsite"]["bucket"], "bk")
+        self.assertEqual(got["offsite"]["bucket"], self.bucket)
         self.assertNotIn('"secret_key"', json.dumps(got))
-        r = ex.h_offsite_set({"offsite": {"endpoint": self.srv.endpoint, "bucket": "bk", "prefix": self.prefix + "x", "access_key": "AKTEST", "secret_key": ""}, "test": False})
-        self.assertEqual(self.config["offsite"]["secret_key"], "s", "an empty secret keeps the stored one")
+        r = ex.h_offsite_set({"offsite": {"endpoint": self.srv.endpoint, "bucket": self.bucket, "prefix": self.prefix + "x", "access_key": self.ak, "secret_key": ""}, "test": False})
+        self.assertEqual(self.config["offsite"]["secret_key"], self.sk, "an empty secret keeps the stored one")
         self.assertTrue(ex.h_offsite_sync({"dry_run": True})["dry_run"])
         hs = [self.repo.put_chunk(b"z" * 500)[0]]
         self.repo.flush()
