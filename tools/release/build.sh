@@ -57,6 +57,7 @@ node_modules/.bin/esbuild server.ts --bundle --platform=node --target=node20 --f
   --legal-comments=external --log-level=warning
 cp VERSION "$S/"; cp -a dist "$S/dist"
 mkdir -p "$S/unix-agent"; tar cf - -C unix-agent --exclude=__pycache__ --exclude=tests --exclude='*.pyc' . | tar xf - -C "$S/unix-agent"
+chmod 0755 "$S/unix-agent/install-agent.sh" "$S/unix-agent/pg-arca-agent.py" "$S/unix-agent/pg-arca-cli" "$S/unix-agent/pg-arca-wal"
 cp packaging/console/install-console.sh packaging/console/Dockerfile packaging/console/healthcheck.cjs "$S/"
 [[ -f LICENSE ]] && cp LICENSE "$S/"
 if [[ $WITH_NODE == 1 ]]; then
@@ -97,6 +98,7 @@ tar czf "$OUT/$CON.tar.gz" --owner=0 --group=0 -C "$WORK" "$CON"
 AG="pg-arca-agent-$V"; A="$WORK/$AG"; mkdir -p "$A"
 tar cf - -C unix-agent --exclude=__pycache__ --exclude=tests --exclude='*.pyc' . | tar xf - -C "$A"
 cp VERSION "$A/"
+chmod 0755 "$A/install-agent.sh" "$A/pg-arca-agent.py" "$A/pg-arca-cli" "$A/pg-arca-wal"      # modes do not survive every checkout: set them, the offline install runs ./install-agent.sh
 tar czf "$OUT/$AG.tar.gz" --owner=0 --group=0 -C "$WORK" "$AG"
 # the agent packages carry exactly the code the console of this release serves (same fingerprint: no "outdated agent" after installing them)
 FP_CON="$(cd "$S/unix-agent" && python3 -B -c 'import sys; sys.path.insert(0, "."); from pg_arca.build import fingerprint; print(fingerprint("."))' 2>/dev/null || echo ?)"

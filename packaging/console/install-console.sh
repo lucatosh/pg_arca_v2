@@ -139,7 +139,7 @@ restore)
   keep="$(backup_state "$DATA_DIR/backups" "before-restore")"
   find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name backups -exec rm -rf {} +
   tar xzf "$RESTORE_FILE" -C "$DATA_DIR" --exclude=./backups; chown -R "$SVC_USER:$SVC_USER" "$DATA_DIR"; chmod 0700 "$DATA_DIR"
-  systemctl start "$UNIT"
+  systemctl reset-failed "$UNIT" 2>/dev/null || true; systemctl start "$UNIT"
   wait_healthy "$cur" && echo "state restored from $RESTORE_FILE (previous state kept in $keep)" || { journalctl -u "$UNIT" -n 30 --no-pager; die "the console does not answer after the restore (previous state: $keep)"; }
   echo "If the console moved to another host: agents still point at the old address; on each node set \"web_server_url\" in /etc/pg-arca/agent.conf to the new address and restart pg-arca-agent (the enrollment stays valid: same secret key)."
   exit 0 ;;
@@ -161,7 +161,7 @@ rollback)
   tar xzf "$snap" -C "$DATA_DIR"; chown -R "$SVC_USER:$SVC_USER" "$DATA_DIR"
   ln -sfn "releases/$prev" "$PREFIX/current"; rm -f "$PREFIX/previous"
   NB="$(node_bin "$PREFIX/current")" || die "no usable Node.js runtime for release $prev"
-  sed -i "s#^ExecStart=.*#ExecStart=$NB $PREFIX/current/server.mjs#" "$UNIT_FILE"; systemctl daemon-reload
+  sed -i "s#^ExecStart=.*#ExecStart=$NB $PREFIX/current/server.mjs#" "$UNIT_FILE"; systemctl daemon-reload; systemctl reset-failed "$UNIT" 2>/dev/null || true
   systemctl start "$UNIT"
   wait_healthy "$prev" && echo "rolled back to $prev (state of $cur kept in $keep)" || { journalctl -u "$UNIT" -n 30 --no-pager; die "release $prev does not answer after the rollback"; }
   exit 0 ;;
@@ -267,6 +267,7 @@ was_active=0; systemctl is-active --quiet "$UNIT" 2>/dev/null && was_active=1
 if [[ -d "$REL" ]]; then rm -rf "$REL.old"; mv "$REL" "$REL.old"; fi
 mv "$STAGE" "$REL"; rm -rf "$REL.old"
 ln -sfn "releases/$NEW" "$PREFIX/current"
+PREV_REC="$(cat "$PREFIX/previous" 2>/dev/null || true)"            # what --rollback pointed at before this upgrade (restored if this one is rolled back)
 [[ -n "$OLD" && "$OLD" != "$NEW" ]] && echo "$OLD" > "$PREFIX/previous"
 
 # --- systemd unit --------------------------------------------------------------------------------------------
@@ -328,17 +329,21 @@ if ! wait_healthy "$NEW"; then
     echo "The new release does not answer: going back to $PREV_TARGET" >&2
     systemctl stop "$UNIT" || true
     if [[ -n "$SNAP" ]]; then find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name backups -exec rm -rf {} +; tar xzf "$SNAP" -C "$DATA_DIR"; chown -R "$SVC_USER:$SVC_USER" "$DATA_DIR"; fi
-    ln -sfn "$PREV_TARGET" "$PREFIX/current"; rm -f "$PREFIX/previous"
+    ln -sfn "$PREV_TARGET" "$PREFIX/current"
+    if [[ -n "$PREV_REC" ]]; then echo "$PREV_REC" > "$PREFIX/previous"; else rm -f "$PREFIX/previous"; fi
     PNB="$(node_bin "$PREFIX/current")" && sed -i "s#^ExecStart=.*#ExecStart=$PNB $PREFIX/current/server.mjs#" "$UNIT_FILE"
-    systemctl daemon-reload; systemctl start "$UNIT" || true
-    die "upgrade to $NEW failed and was rolled back (the failed release stays in $PREFIX/releases/$NEW for analysis)"
+    # the failed release may have crash-looped into systemd's start limit: clear it, or the start of the old release is refused
+    systemctl daemon-reload; systemctl reset-failed "$UNIT" 2>/dev/null || true; systemctl start "$UNIT" || true
+    if wait_healthy "${OLD:-}"; then die "upgrade to $NEW failed and was rolled back: release $OLD is running again (the failed release stays in $PREFIX/releases/$NEW for analysis)"; fi
+    die "upgrade to $NEW failed and was rolled back to $OLD, but the console does not answer: journalctl -u $UNIT"
   fi
   die "the console does not answer on $(health_url): see the log above (journalctl -u $UNIT)"
 fi
 
 # --- housekeeping: keep the last releases and pre-upgrade backups ------------------------------------------------
-ls -1dt "$PREFIX"/releases/*/ 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) | while read -r d; do [[ "$(readlink -f "$d")" == "$(readlink -f "$PREFIX/current")" ]] || rm -rf "$d"; done
-ls -1t "$DATA_DIR"/backups/console-state-pre-upgrade-*.tar.gz 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) | xargs -r rm -f
+# (ls of a pattern with no match fails: with pipefail that would abort a successful first install at its very last step)
+(ls -1dt "$PREFIX"/releases/*/ 2>/dev/null || true) | tail -n +$((KEEP_RELEASES + 1)) | while read -r d; do [[ "$(readlink -f "$d")" == "$(readlink -f "$PREFIX/current")" ]] || rm -rf "$d"; done
+(ls -1t "$DATA_DIR"/backups/console-state-pre-upgrade-*.tar.gz 2>/dev/null || true) | tail -n +$((KEEP_RELEASES + 1)) | xargs -r rm -f
 
 URL="$(health_url)"; URL="${URL%/api/health}"; URL="${URL/127.0.0.1/$(hostname -f 2>/dev/null || hostname)}"
 echo
