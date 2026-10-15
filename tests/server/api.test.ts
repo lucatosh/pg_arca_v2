@@ -58,6 +58,13 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   const A = (x: any = {}) => ({ authorization: 'Bearer ' + en.body.agent_token, 'x-arca-node': en.body.node_id, ...x });
   assert.strictEqual((await call('POST', '/api/agent/heartbeat', {}, { authorization: 'Bearer nope', 'x-arca-node': en.body.node_id })).status, 401);
   const snap = { postgres: { alive: true, is_in_recovery: false, role: 'primary', version: '16.4', current_lsn: '0/3000000', timeline: 2, xact_total: 1000, connections: { used: 2, max: 100 }, databases: [{ oid: 5, name: 'app', size: 1234 }] }, patroni: { accessible: true, role: 'leader', scope: 'prodpg' }, system: { load_avg_1m: 0.5, cpu_count: 2, memory_used_percent: 30 } };
+  { // an agent that trusts the console through a private CA says so: its upgrade command (when outdated) carries the same file
+    await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 0, tls_ca_file: '/etc/pg-arca-console-ca.pem', agent_build: 'stale000000' }, A());
+    const me = (await call('GET', '/api/nodes', undefined, H())).body.nodes.find((n: any) => n.id === en.body.node_id);
+    assert(/--cacert \/etc\/pg-arca-console-ca.pem/.test(me.upgradeCommand) && /PG_ARCA_TLS_CA=\/etc\/pg-arca-console-ca.pem/.test(me.upgradeCommand), me.upgradeCommand);
+    assert.strictEqual((await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 0, tls_ca_file: '../evil' }, A())).status, 200);
+    assert.strictEqual(store.peek().nodes[en.body.node_id].tlsCaFile, '/etc/pg-arca-console-ca.pem', 'a relative path is ignored');
+  }
   const hb1 = await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 1 }, A());
   assert.strictEqual(hb1.status, 200); assert.deepStrictEqual(hb1.body.ops, []);
   assert.strictEqual(hb1.body.log_mode, 'alerts', 'nobody watches the logs: agents ship warnings and errors only');

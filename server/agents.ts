@@ -197,6 +197,8 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       if (b.agent_version) n.agentVersion = String(b.agent_version);
       if (typeof b.agent_build === 'string' && /^[0-9a-f]{12}$/.test(b.agent_build)) n.agentBuild = b.agent_build;
       if (typeof b.console_url === 'string' && /^https?:\/\/[^\s'"`$;|&<>]{1,200}$/.test(b.console_url)) n.consoleUrl = b.console_url.replace(/\/+$/, '');
+      // the CA file the agent trusts the console with (a private / self-signed certificate): the upgrade command must use the same one
+      if (typeof b.tls_ca_file === 'string' && /^\/[^\s'"`$;|&<>]{1,200}$/.test(b.tls_ca_file)) n.tlsCaFile = b.tls_ca_file; else if (b.tls_ca_file === null) delete n.tlsCaFile;
       const started = Number(b.agent_started);
       if (Number.isFinite(started) && started > 0 && n.agentStarted !== started) { if (n.agentStarted) ops.requeueOnRestart(d, n.id); n.agentStarted = started; }
       if (snap) {
@@ -329,7 +331,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     res.json({ consoleBuild: consoleAgentBuild(), nodes: Object.values(st.nodes).map(n => ({
       id: n.id, name: n.name, clusterId: n.clusterId, agentVersion: n.agentVersion, lastSeen: n.lastSeen, remoteIp: n.remoteIp, agentBuild: n.agentBuild || null, agentOutdated: agentOutdated(n),
       // re-running the installer is the upgrade (config and credentials kept), from the address THIS node already uses to reach the console
-      upgradeCommand: agentOutdated(n) ? `curl -fsSL ${n.consoleUrl || cb.base}/agent/install.sh | sudo PG_ARCA_URL=${n.consoleUrl || cb.base} bash` : undefined,
+      upgradeCommand: agentOutdated(n) ? `curl -fsSL${n.tlsCaFile ? ` --cacert ${n.tlsCaFile}` : ''} ${n.consoleUrl || cb.base}/agent/install.sh | sudo PG_ARCA_URL=${n.consoleUrl || cb.base}${n.tlsCaFile ? ` PG_ARCA_TLS_CA=${n.tlsCaFile}` : ''} bash` : undefined,
       online: !!n.lastSeen && now - Date.parse(n.lastSeen) < 45000, tps: n.tps,
       role: n.snapshot?.postgres?.role, pgVersion: n.snapshot?.postgres?.version,
     })) });

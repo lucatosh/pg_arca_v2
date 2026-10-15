@@ -257,7 +257,7 @@ class ConsoleClient(threading.Thread):
 
         free_slots = max(0, WORKERS - len(self.inflight))
         wait = 0 if self.inflight or not free_slots else min(8, int(self.config.get("heartbeat_interval_seconds", 10)))
-        resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "agent_build": AGENT_BUILD, "console_url": self.base, "max_ops": free_slots, "agent_started": _STARTED,
+        resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "agent_build": AGENT_BUILD, "console_url": self.base, "tls_ca_file": self.config.get("tls_ca_file") or None, "max_ops": free_slots, "agent_started": _STARTED,
                                                    "discovery": full_discovery, "wait_seconds": wait}, timeout=wait + 15)
         if self.logs:
             self.logs.set_mode(resp.get("log_mode"))
