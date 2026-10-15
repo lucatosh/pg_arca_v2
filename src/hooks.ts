@@ -23,7 +23,11 @@ export function revalidate(key: string): Promise<any> {
 }
 /** The activity dock and the operation lists must notice a new or finished operation immediately, not at the next poll. */
 export const OPS_SLIM_KEY = '/api/operations?slim=1&recent=86400';
-export function revalidateOps() { return Promise.all([revalidate(OPS_SLIM_KEY), revalidate('/api/operations')]); }
+export function revalidateOps(clusterId?: string) {
+  const keys = [OPS_SLIM_KEY, '/api/operations'];
+  if (clusterId && !clusterId.startsWith('worker:')) keys.push(`/api/clusters/${encodeURIComponent(clusterId)}/activity`);   // "Running on this cluster" strip: at once, not at its next 5 s poll
+  return Promise.all(keys.map(k => revalidate(k)));
+}
 export function mutateCache(key: string, fn: (d: any) => any) { const e = entry(key); if (e.data !== undefined) { e.data = fn(e.data); e.version++; e.subs.forEach(f => f()); } }
 
 export function useQuery<T = any>(key: string | null, opts: { interval?: number } = {}) {
@@ -119,7 +123,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
       const r = await get<{ operation: Op }>(`/api/operations/${id}`);
       if (!alive.current) return;
       setOp(r.operation); setError(null);
-      if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; revalidateOps(); onDone?.(r.operation); return; }
+      if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; revalidateOps(clusterId); onDone?.(r.operation); return; }
     } catch (e: any) { if (!alive.current) return; setError(e.body?.error === 'console_unreachable' ? 'Cannot refresh the status: the console is not responding. The operation keeps running on the server; the status updates as soon as the console is reachable again.' : e.message); }
     timer.current = setTimeout(() => poll(id), 1000);
   }, [onDone, setOp]);
@@ -137,7 +141,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
       const url = clusterId.startsWith('worker:') ? `/api/workers/${encodeURIComponent(clusterId.slice(7))}/operations` : `/api/clusters/${clusterId}/operations`;   // operational machines have their own endpoint
       const r = await api<{ operation: Op; approval?: any }>('POST', url, { type, params, nodeId: extra.nodeId }, { key: keyRef.current.key });
       if (r.approval) { setOp(null); setBusy(false); keyRef.current = null; revalidate('/api/approvals'); toast('Request sent: another administrator must approve it (Today page).', 'info', 9000); return null; }
-      setOp(r.operation); revalidateOps();
+      setOp(r.operation); revalidateOps(clusterId);
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); } else poll(r.operation.id);
       return r.operation;
     } catch (e: any) {
