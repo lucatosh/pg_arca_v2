@@ -252,6 +252,10 @@ class OperationExecutor:
         return getattr(self._tl, "op_id", None) in self._cancel
 
     def _finish(self, op_id, op_type, status, result, error):
+        if status == "failed" and not (error or "").strip():
+            # an exception without text (raise OpError(), a bare KeyError...) reached the console as a failure with error null (lab: a geo_demote)
+            error = "PGA-GEN-101: %s failed without an explanation from the step that stopped it: the agent log on this node (journalctl -u pg-arca-agent) has the trace" % op_type
+            logger.error("operation %s (%s) failed without a message", op_id, op_type)
         try:
             atomic_write_json(self._path(op_id), {"id": op_id, "type": op_type, "status": status, "result": result, "error": error, "finished": time.time()})
         except Exception:

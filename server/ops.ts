@@ -245,6 +245,8 @@ export function report(store: Store, nodeId: string, opId: string, status: 'runn
     }
     if (status === 'failed' && op.cancelRequested) { push(op, 'cancelled', 'cancelled by operator while running'); op.error = error; op.leaseUntil = undefined; op.progress = undefined;
       audit(draft, { clusterId: op.clusterId, actor: `agent:${nodeId}`, action: `op.${op.type}`, status: 'CANCELLED', details: { opId } }); return { ok: true, op }; }
+    // a failure always says something: an older agent may report one without text (the console showed 'error: null')
+    if (status === 'failed' && !String(error || '').trim()) error = `${op.type} failed on the agent without an explanation: see the agent log on that node (journalctl -u pg-arca-agent)`;
     push(op, status, status === 'failed' ? error : undefined);
     op.progress = undefined;
     setResult(op, result);

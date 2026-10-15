@@ -21,6 +21,8 @@ class ConflictKindTest(unittest.TestCase):
                      "000000010000000000000003", "000000040000000000000009", "000000030000000000000007"):
             self._q(name + ".aaaaaaaaaaaa.1700000000")
         self._q("000000020000000000000005.partial.bbbbbbbbbbbb.1700000001")
+        self._q("00000002.history.cccccccccccc.1700000002")                   # ancestor history: recovery reads 00000003.history
+        self._q("00000002.history.cccccccccccc.1700000003")                   # the same content quarantined twice by an older agent
 
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)
@@ -30,7 +32,7 @@ class ConflictKindTest(unittest.TestCase):
             fh.write(b"x")
 
     def kinds(self, tl):
-        return {c["file"].split(".aaaa")[0].split(".bbbb")[0]: c["kind"] for c in self.wm.classify_conflicts(tl)}
+        return {c["file"].split(".aaaa")[0].split(".bbbb")[0].split(".cccc")[0]: c["kind"] for c in self.wm.classify_conflicts(tl)}
 
     def test_against_current_history(self):
         k = self.kinds(3)
@@ -40,6 +42,7 @@ class ConflictKindTest(unittest.TestCase):
         self.assertEqual(k["000000010000000000000002"], "divergent")        # ends exactly where timeline 1 ended: read
         self.assertEqual(k["000000010000000000000003"], "off_history")
         self.assertEqual(k["000000020000000000000005.partial"], "off_history")
+        self.assertEqual(k["00000002.history"], "off_history")
         self.assertEqual(k["000000030000000000000007"], "divergent")        # the current timeline itself: a real split-brain signal
         self.assertEqual(k["000000040000000000000009"], "divergent")        # newer than the reporter: never hidden
 
@@ -55,12 +58,35 @@ class ConflictKindTest(unittest.TestCase):
 
     def test_counts_in_continuity(self):
         rep = self.wm.verify_continuity(max_age=0, current_timeline=3)
-        self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (4, 4))
+        self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (4, 5))        # the twice-quarantined history counts once
         rep = self.wm.verify_continuity(max_age=0)
-        self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (8, 0))
+        self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (9, 0))
         self.wm.conflicts_reviewed([c["file"] for c in self.wm.classify_conflicts(3) if c["kind"] == "off_history"])
         rep = self.wm.verify_continuity(max_age=0, current_timeline=3)
         self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (4, 0))
+
+
+class QuarantineOnceTest(unittest.TestCase):
+    def test_same_content_quarantined_once_and_not_after_review(self):
+        d = tempfile.mkdtemp(prefix="walq-")
+        try:
+            wm = WalManager(d)
+            src = os.path.join(d, "src")
+            with open(src, "wb") as f:
+                f.write(b"y" * 100)
+            a = wm._quarantine(src, "00000007.history", "4311481423d4" + "0" * 52)
+            b = wm._quarantine(src, "00000007.history", "4311481423d4" + "0" * 52)
+            self.assertEqual(a, b)
+            self.assertEqual([c["file"] for c in wm.conflicts()], [a])
+            self.assertEqual(wm.conflicts()[0]["sha"], "4311481423d4")
+            wm.conflicts_reviewed()
+            wm._quarantine(src, "00000007.history", "4311481423d4" + "0" * 52)
+            self.assertEqual(wm.conflicts(), [])                              # already filed away: no new alarm
+            p = wm._quarantine(src, "000000020000000000000005.partial", "ab" * 32)
+            self.assertEqual([(c["name"], c["sha"]) for c in wm.conflicts()], [("000000020000000000000005.partial", "abababababab")])
+            self.assertTrue(p)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -258,13 +258,14 @@ class WalManager:
         out = []
         for f in (sorted(os.listdir(qdir)) if os.path.isdir(qdir) else []):
             p = os.path.join(qdir, f)
-            if not os.path.isfile(p) or f.endswith(".dead-branch"):
-                continue
+            if f.startswith(".") or not os.path.isfile(p) or f.endswith(".dead-branch"):
+                continue                                         # .<key>.tmp.*: a quarantine being published
             parts = f.split(".")
-            name = ".".join(parts[:2]) if len(parts) > 1 and parts[1] in ("history", "partial") else parts[0]
+            two = len(parts) > 1 and parts[1] in ("history", "partial")
+            name = ".".join(parts[:2]) if two else parts[0]
             try:
                 st = os.stat(p)
-                out.append({"file": f, "name": name, "sha": parts[2] if name.endswith(".history") and len(parts) > 2 else (parts[1] if len(parts) > 1 else ""),
+                out.append({"file": f, "name": name, "sha": (parts[2] if len(parts) > 2 else "") if two else (parts[1] if len(parts) > 1 else ""),
                             "at": st.st_mtime, "size": st.st_size, "timeline": int(name[:8], 16) if re.match(r"^[0-9A-F]{8}", name) else None})
             except OSError:
                 pass
@@ -295,6 +296,9 @@ class WalManager:
                     kind, why = "off_history", "timeline %d is not in the history of the current timeline %d" % (tli, cur)
                 elif name.endswith(".partial"):
                     kind, why = "off_history", "partial segment of timeline %d: recovery never reads partial segments" % tli
+                elif name.endswith(".history"):
+                    kind, why = "off_history", ("history file of ancestor timeline %d: recovery along timeline %d reads %08X.history, which lists every "
+                                                "ancestor with its end point; the segments of timeline %d are judged one by one" % (tli, cur, cur, tli))
                 elif m and not name.endswith(".history"):
                     start = (int(m.group(2), 16) * per_id + int(m.group(3), 16)) * seg
                     if start + seg > forks[tli]:
@@ -405,6 +409,37 @@ class WalManager:
                 os.close(dfd)
         return report
 
+    def _quarantine(self, src_path, name, raw_sha):
+        """Keep the refused copy ONCE per (name, content), whoever archives it and however often PostgreSQL retries: the name is
+        deterministic and published with link(2), which fails if it exists. A listdir() check was not enough on NFS (cached directory
+        listings: the lab's shared archive held one history file quarantined dozens of times, seconds apart, each one an alarm).
+        A copy already filed away as reviewed is not quarantined again."""
+        qdir = os.path.join(self.wal_dir, "conflicts")
+        os.makedirs(qdir, mode=0o750, exist_ok=True)
+        key = "%s.%s" % (name, raw_sha[:12])
+        rdir = os.path.join(qdir, "reviewed")
+        for d in (qdir, rdir):
+            try:
+                same = [x for x in os.listdir(d) if x == key or x.startswith(key + ".")]
+            except OSError:
+                same = []
+            if same:
+                return same[0]
+        tmp = os.path.join(qdir, ".%s.tmp.%d.%d" % (key, os.getpid(), threading.get_ident()))
+        try:
+            shutil.copyfile(src_path, tmp)
+            try:
+                os.link(tmp, os.path.join(qdir, key))
+            except OSError as e:
+                if e.errno != errno.EEXIST:
+                    raise
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        return key
+
     def conflicts_reviewed(self, files=None):
         """A person looked at them: moved to conflicts/reviewed/ (kept), so they stop raising an alarm. files=None: all of them."""
         qdir = os.path.join(self.wal_dir, "conflicts")
@@ -453,12 +488,7 @@ class WalManager:
             if stored == raw_sha:
                 return True, existing, raw_sha, "already archived (identical content)"
             qdir = os.path.join(self.wal_dir, "conflicts")
-            # PostgreSQL retries the archive_command every minute: the same incoming content is quarantined ONCE, not once per retry
-            prev = [x for x in (os.listdir(qdir) if os.path.isdir(qdir) else []) if x.startswith("%s.%s." % (name, raw_sha[:12]))]
-            qname = prev[0] if prev else "%s.%s.%d" % (name, raw_sha[:12], int(time.time()))
-            if not prev:
-                os.makedirs(qdir, mode=0o750, exist_ok=True)
-                shutil.copyfile(src_path, os.path.join(qdir, qname))
+            qname = self._quarantine(src_path, name, raw_sha)
             if is_history:
                 raise WalArchiveError("PGA-WAL-033", "timeline history %s already in the archive with DIFFERENT content (stored %s.. vs incoming %s..): two servers promoted "
                                       "themselves to the same timeline number (a split-brain between sites, or a server promoted without access to this archive). "
@@ -728,8 +758,10 @@ class WalManager:
     def _conflict_counts(self, current_timeline=None):
         cl = self.classify_conflicts(current_timeline)
         div = [c for c in cl if c.get("kind") == "divergent"]
-        return {"conflicts": len(div), "conflicts_newest": max([c["at"] for c in div] or [0]) or None,
-                "conflicts_off_history": len(cl) - len(div), "conflicts_classified": current_timeline is not None}
+        # one divergent CONTENT is one problem, however many times older agents quarantined it (they used a timestamp in the name)
+        uniq = lambda xs: len(set((c["name"], c["sha"]) for c in xs))
+        return {"conflicts": uniq(div), "conflicts_newest": max([c["at"] for c in div] or [0]) or None,
+                "conflicts_off_history": uniq([c for c in cl if c.get("kind") != "divergent"]), "conflicts_classified": current_timeline is not None}
 
     def _compute_continuity(self, current_timeline=None):
         per_id = 0x100000000 // self.segment_size
