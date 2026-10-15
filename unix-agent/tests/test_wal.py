@@ -97,6 +97,26 @@ class WalTests(unittest.TestCase):
             f.write("9\t0/9000000\tx\n11\t0/1A000000\tx\n")
         with self.assertRaises(WalArchiveError): self.wm.archive_segment(self.mk(n, b"b"), n)
 
+    def test_abandoned_timeline_is_set_aside(self):
+        """A site that promoted itself while cut off (timeline 13) and was rebuilt from the primary (timeline 12): its history file in the
+        archive made the rebuilt members try to follow timeline 13 at start (lab). retire_abandoned sets every object of it aside; refused
+        for the primary's own timeline or an older one."""
+        for n in (seg(13, 0, 0x18), seg(13, 0, 0x19)):
+            self.wm.archive_segment(self.mk(n), n)
+        hp = os.path.join(self.src, "0000000D.history")
+        with open(hp, "w") as f: f.write("12\t0/17000000\tno recovery target specified\n")
+        self.wm.archive_segment(hp, "0000000D.history")
+        keep = seg(12, 0, 0x18); self.wm.archive_segment(self.mk(keep, b"k"), keep)
+        with self.assertRaises(WalArchiveError) as cm: self.wm.retire_abandoned(12, 12)
+        self.assertEqual(cm.exception.code, "PGA-WAL-035")
+        dry = self.wm.retire_abandoned(13, 12, dry_run=True)
+        self.assertIn("0000000D.history", dry["retired"]); self.assertTrue(os.path.exists(os.path.join(self.wm.wal_dir, "0000000D.history")))
+        rep = self.wm.retire_abandoned(13, 12)
+        self.assertFalse(any(f.startswith("0000000D") for f in os.listdir(self.wm.wal_dir)), os.listdir(self.wm.wal_dir))
+        self.assertIn("0000000D.history", os.listdir(rep["dead_branch_dir"]))
+        out = os.path.join(self.t, "k"); self.assertEqual(self.wm.retrieve_segment(keep, out)[0], 0, "the primary's timeline is untouched")
+        self.assertEqual(self.wm.retire_abandoned(13, 12)["retired"], [], "idempotent")
+
     def test_divergent_copy_is_refused_and_quarantined(self):
         n = seg(1, 0, 2); self.wm.archive_segment(self.mk(n, b"a"), n)
         with self.assertRaises(WalArchiveError) as cm: self.wm.archive_segment(self.mk(n, b"b"), n)

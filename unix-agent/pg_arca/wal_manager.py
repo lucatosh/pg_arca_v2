@@ -270,6 +270,30 @@ class WalManager:
                 pass
         return out
 
+    def retire_abandoned(self, timeline, current_timeline, dry_run=False):
+        """A timeline NEWER than the primary's current one can only be a dead branch (a site that promoted itself while it was cut off and
+        was then rebuilt from the primary): its history file in the archive makes every member that recovers from the archive with
+        recovery_target_timeline=latest try to follow it ('requested timeline N is not a child of this server's history', a restart loop;
+        seen on the lab right after a geo rejoin). Every stored object of that timeline (history, segments, partials, backup labels, metas)
+        moves to conflicts/dead-branch-<tli>/; nothing is deleted. Refused for the current timeline or an older one."""
+        tli, cur = int(timeline), int(current_timeline)
+        if tli <= cur:
+            raise WalArchiveError("PGA-WAL-035", "timeline %d is not newer than the primary's current timeline %d: it is part of the primary's history or "
+                                  "its present, never an abandoned branch" % (tli, cur))
+        prefix = "%08X" % tli
+        ddir = os.path.join(self.wal_dir, "conflicts", "dead-branch-%s" % prefix)
+        names = sorted(f for f in os.listdir(self.wal_dir) if f.startswith(prefix) and not f.startswith(".") and os.path.isfile(os.path.join(self.wal_dir, f)))
+        report = {"timeline": tli, "current_timeline": cur, "abandoned": True, "retired": names, "dead_branch_dir": ddir, "dry_run": bool(dry_run)}
+        if dry_run or not names:
+            return report
+        os.makedirs(ddir, mode=0o750, exist_ok=True)
+        for f in names:
+            os.rename(os.path.join(self.wal_dir, f), os.path.join(ddir, f))
+        _fsync_dir(ddir)
+        _fsync_dir(self.wal_dir)
+        self._cont_cache = (0, None, None)
+        return report
+
     def retire_branch(self, timeline, survivor_pgdata=None, dry_run=False):
         """Two servers used the SAME timeline number (split-brain, or a promotion without access to the archive): the archive holds the
         first writer's copies and refused the other's (conflicts/). When the operator says which server is the right one - the current

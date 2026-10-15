@@ -283,6 +283,9 @@ import { deriveCluster } from '../../server/view';
     const d1 = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/9300000', 'waiting', 30), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
     assert(!d1.params.force_rewind, 'first demotion is plain (different timeline numbers)');
     await answerTl('m', { timeline: 4, history: hist3 + '3\t0/9200000\tno recovery target specified\n', lsn: '0/9300000' }); await answerTl('r', { timeline: 3, history: hist3, lsn: '0/9200000' });
+    // its abandoned timeline 4 is set aside in the archive first, on the primary site and on the old site
+    const rt = await answer4('wal_retire_branch'); assert.deepStrictEqual([rt.clusterId, rt.params.timeline, rt.params.abandoned], ['r', 4, true]);
+    const rt2 = await answer4('wal_retire_branch'); assert.deepStrictEqual([rt2.clusterId, rt2.params.primary_timeline], ['m', 3]);
     const d2 = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/9200000', 'streaming', 1), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
     assert.strictEqual(d2.params.force_rewind, true, 'higher timeline on the old site: rebuilt from the new primary');
     await answerTl('m', { timeline: 3, history: hist3, lsn: '0/9200000' }); await answerTl('r', { timeline: 3, history: hist3, lsn: '0/9200000' });
@@ -300,11 +303,12 @@ import { deriveCluster } from '../../server/view';
     assert(!st4.peek().settings.geoFailovers[key].rejoinedAt, 'a false rejoin is reopened');
     assert(st4.peek().audit.some((a: any) => a.action === 'geo.rejoin' && a.status === 'REOPENED'));
     await tick(610_000);
+    for (const want of [['r', undefined], ['m', 12]]) { const r = await answer4('wal_retire_branch'); assert.deepStrictEqual([r.clusterId, r.params.timeline, r.params.primary_timeline], [want[0], 13, want[1]]); }
     const d3 = await answer4('geo_demote', d => { d.nodes.m1.snapshot.postgres.timeline = 12; d.nodes.m1.snapshot.postgres.current_lsn = '0/9500000'; });
     assert.strictEqual(d3.params.force_rewind, true, 'a standby ahead of the primary is rebuilt at once');
     await answerTl('m', { timeline: 12, history: hist3, lsn: '0/9500000' }); await answerTl('r', { timeline: 12, history: hist3, lsn: '0/9500000' });
     for (let i = 0; i < 120 && jobs().find(j => j.type === 'rejoin')!.status === 'running'; i++) await new Promise(r => setTimeout(r, 50));
-    const rj4 = jobs().find(j => j.type === 'rejoin')!; assert.strictEqual(rj4.status, 'succeeded', JSON.stringify(rj4.steps)); assert(/ahead of hy-rm \(12\)/.test(rj4.steps[0].text), rj4.steps[0].text);
+    const rj4 = jobs().find(j => j.type === 'rejoin')!; assert.strictEqual(rj4.status, 'succeeded', JSON.stringify(rj4.steps)); assert(/ahead of hy-rm \(12\)/.test(rj4.steps[0].text), rj4.steps[0].text); assert(rj4.steps.some((x: any) => /timeline 13 of hy-mi abandoned/.test(x.text)), JSON.stringify(rj4.steps));
     assert(st4.peek().settings.geoFailovers[key].rejoinedAt, 'rejoined for real');
   }
   console.log('geo tests OK'); process.exit(0);

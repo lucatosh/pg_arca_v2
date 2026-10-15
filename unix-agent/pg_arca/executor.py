@@ -833,6 +833,31 @@ class OperationExecutor:
         except Exception:
             pgdata = None
         wm = WalManager(wal_dir)
+        if p.get("abandoned"):
+            # a timeline newer than the primary's: only the primary itself can say which timeline it is on
+            cur = None
+            try:
+                if self.db and self.db.ping():
+                    ok, out, _ = self.db.run_psql("SELECT CASE WHEN pg_is_in_recovery() THEN '' ELSE substr(pg_walfile_name(pg_current_wal_lsn()), 1, 8) END")
+                    if ok and out.strip():
+                        cur = int(out.strip(), 16)
+            except Exception:
+                cur = None
+            if cur is None and p.get("primary_timeline") is not None:
+                try:                                                   # a node of the OTHER site, whose own archive also holds the dead branch:
+                    cur = int(p.get("primary_timeline"))               # the console says which timeline the primary is on
+                except (TypeError, ValueError):
+                    cur = None
+            if cur is None:
+                raise OpError("an abandoned timeline is retired on the PRIMARY of the cluster (it checks its own timeline), or with primary_timeline given: this node is not a reachable primary")
+            from pg_arca.wal_manager import WalArchiveError
+            try:
+                rep = wm.retire_abandoned(tli, cur, dry_run=dry)
+            except WalArchiveError as e:
+                raise OpError(str(e))
+            rep["wal_dir"] = wal_dir
+            rep["conflicts_left"] = len(wm.conflicts())
+            return rep
         rep = wm.retire_branch(tli, survivor_pgdata=pgdata, dry_run=dry)
         rep["wal_dir"] = wal_dir
         rep["verified_against_primary"] = bool(pgdata)

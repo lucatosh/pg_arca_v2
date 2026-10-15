@@ -210,6 +210,23 @@ async function timelines(store: Store, id: string, tag: string, oldId: string, n
   return { o: await one(oldId, 'old'), n: await one(nid, 'new') };
 }
 
+/** Timelines (newTl, oldTl] of a site that was ahead of the new primary: their objects in the WAL archive are set aside before the rebuild. */
+async function retireAbandoned(store: Store, id: string, f: any, oldTl: number, newTl: number, oldName: string) {
+  if (!(oldTl > newTl) || oldTl - newTl > 20) return;
+  const moved: string[] = [];
+  for (let t = newTl + 1; t <= oldTl; t++) {
+    const o = await submitTo(store, f.to, 'wal_retire_branch', { timeline: t, abandoned: true, confirm: 'RETIRE' }, `geo:${id}:retire-${t}`, 'pg_arca (automatic rejoin)');
+    const r = await waitOp(store, o.id, 120_000);
+    if (r.status !== 'succeeded') throw new Error(`the abandoned timeline ${t} of ${oldName} could not be set aside in the WAL archive: ${r.error || r.status}`);
+    moved.push(...(r.result?.retired || []));
+    try {                                                                 // the old site's own archive (best effort: often the same directory)
+      const o2 = await submitTo(store, f.from, 'wal_retire_branch', { timeline: t, abandoned: true, confirm: 'RETIRE', primary_timeline: newTl }, `geo:${id}:retire-old-${t}`, 'pg_arca (automatic rejoin)');
+      const r2 = await waitOp(store, o2.id, 120_000); if (r2.status === 'succeeded') moved.push(...(r2.result?.retired || []));
+    } catch { /* the old site may not answer yet: its archive is checked again by the next rejoin attempt */ }
+  }
+  await step(store, id, `1c timeline${oldTl - newTl > 1 ? 's' : ''} ${newTl + 1}${oldTl - newTl > 1 ? `–${oldTl}` : ''} of ${oldName} abandoned: ${moved.length} object(s) of the WAL archive set aside in conflicts/dead-branch-… (nothing deleted), so the rebuilt members do not try to follow ${oldTl - newTl > 1 ? 'them' : 'it'}`);
+}
+
 async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Site, neu: Site, ep: { host: string; port: number } | null | undefined) {
   try {
     const div = old.lsn && f.forkLsn ? (() => { const a = lsnToBig(old.lsn), b = lsnToBig(f.forkLsn); return a !== null && b !== null && a > b ? Number(a - b) : 0; })() : null;
@@ -225,6 +242,11 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     const t1 = old.role === 'primary' ? await timelines(store, id, 'pre', f.from, f.to) : { o: null, n: null };
     const force = sameTimelineDiverged(t1.o, t1.n);
     if (force) await step(store, id, `1b ${old.name} promoted itself when it came back, on the SAME timeline ${t1.o.timeline} as ${neu.name} but with a different history: Patroni (and pg_rewind) compare only the number and it would follow ${neu.name} with a hole in the data. It is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`);
+    // a site AHEAD of the new primary left its timelines' history files in the WAL archive: a member rebuilt from the primary would then
+    // try to follow them at its first start ('requested timeline N is not a child of this server's history', a restart loop; seen on
+    // the lab). They are set aside (conflicts/dead-branch-…, nothing deleted) before the rebuild, in the primary site's archive and in the
+    // old site's own (the same directory when the archive is shared)
+    if (ahead) await retireAbandoned(store, id, f, Number(old.timeline), Number(neu.timeline), old.name);
     // a fenced site is still starting PostgreSQL: give Patroni more time to bring up the standby leader (the DCS write itself is immediate)
     const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force || ahead ? { force_rewind: true } : {}), ...(ahead ? { timeout: 3600 } : old.role !== 'primary' ? { timeout: 600 } : {}) }, `geo:${id}:demote`, 'pg_arca (automatic rejoin)');
     const r = await waitOp(store, o.id, ahead ? 3700_000 : 300_000);
@@ -238,6 +260,7 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
       const ts = await timelines(store, id, 'stuck', f.from, f.to);
       if (ts.o && ts.n && Number(ts.o.timeline) > Number(ts.n.timeline)) {
         await step(store, id, `2b ${old.name} is on timeline ${ts.o.timeline}, ahead of ${neu.name} (${ts.n.timeline}): it promoted itself while it was away. A standby cannot follow a lower timeline, so it is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`);
+        await retireAbandoned(store, id, f, Number(ts.o.timeline), Number(ts.n.timeline), old.name);
         const o2 = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', force_rewind: true, timeout: 3600 }, `geo:${id}:demote-rebuild`, 'pg_arca (automatic rejoin)');
         const r2 = await waitOp(store, o2.id, 3700_000);
         if (r2.status !== 'succeeded') throw new Error(`rebuild of ${old.name} from ${neu.name} failed: ${r2.error || r2.status}`);
