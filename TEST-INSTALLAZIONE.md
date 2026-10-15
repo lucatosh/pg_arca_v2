@@ -86,6 +86,15 @@ journalctl -u pg-arca-agent -f
 ```
 Poi nella console: il cluster compare in **Clusters**; scheda **Backup → Enable WAL archiving**, poi un backup completo.
 
+## 2b. Facoltativo: copia e ripristino dello stato della console, token API
+```bash
+sudo /opt/pg-arca-console/current/install-console.sh --backup-state /root/arca-bk          # stampa il percorso dell'archivio
+sudo /opt/pg-arca-console/current/install-console.sh --restore-state /root/arca-bk/console-state-*.tar.gz --yes   # ferma, salva lo stato attuale in backups/, carica, riparte
+```
+Da Users → *API tokens* crea un token (ruolo Read-only, scadenza 1 giorno) e prova: `curl -sk -H "Authorization: Bearer arca_api_…" https://<IP-CONSOLE>:8443/api/clusters`.
+
+Nota: questi tre percorsi (installazione pulita, rollback automatico, pacchetti agent) sono già passati da `tools/lab/release-test.sh` su container Debian 12 / Rocky 9 / Ubuntu 24 **solo con la build ≥ 9c8c987**: una build precedente dà «install exits 2» alla fine della prima installazione (la console funziona lo stesso) e `install-agent.sh: Permission denied` dai pacchetti.
+
 ## 3. Pulizia
 ```bash
 # agent (tutti i metodi; tiene backup e archivio WAL, rifiutato se PostgreSQL archivia ancora con pg_arca: prima spegni l'archiviazione)
