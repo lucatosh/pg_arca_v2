@@ -200,8 +200,11 @@ class OffsiteTests(unittest.TestCase):
         if not REAL:
             self.srv.objects[(self.bucket, key)] = data
             return
-        from pg_arca.s3 import S3Client
-        S3Client(self.srv.endpoint, self.bucket, self.ak, self.sk).put(key, data)
+        from pg_arca.s3 import S3Client, S3Error
+        try:
+            S3Client(self.srv.endpoint, self.bucket, self.ak, self.sk).put(key, data)
+        except S3Error:
+            pass                                                   # the server itself refuses the name (400 for '..'/'//' on some stores): nothing to defend against
 
     def test_rehydrate_refuses_hostile_object_names(self):
         """Whoever controls the bucket chooses the object names: a key that resolves outside the repository / archive, or onto an existing
