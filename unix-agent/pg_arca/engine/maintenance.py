@@ -179,6 +179,12 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         raise EngineError("PGA-GEN-066", "retention_full must be >= 1")
     with repo.lock("stanza", "expire"):
         sets = repo.own_sets()                                     # retention never touches a previous location (read-only until migrated or removed on purpose)
+        if not dry_run:
+            # a set whose only fault was late WAL (archiver blocked, repaired since) is a good backup now: complete it instead of deleting it as junk
+            from pg_arca.engine.backup import _finish_pending_wal
+            for s in sets:
+                if s.get("status") == "UNRECOVERABLE" and s.get("wal_timeout"):
+                    _finish_pending_wal(ctx, s)
         done = [s for s in sets if s.get("status") == "COMPLETE"]
         fulls = [s for s in done if s["type"] == "full"]
         doomed_fulls = fulls[:max(0, len(fulls) - keep_full)]

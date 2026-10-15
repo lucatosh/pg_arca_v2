@@ -14,7 +14,7 @@ assert.deepStrictEqual(missing, [], `operation types without a label in src/page
 
 // retired words stay retired: the names a person meets are the single terms of the glossary
 const RETIRED: [RegExp, string][] = [[/quarantine database/i, 'staging database'], [/Repository health/, 'Backup storage'], [/Where backups go/, 'Destination'],
-  [/Ready with reservations/, 'Ready for disaster recovery, N things to fix'], [/Instance restore'|Database restore'|Object restore'/, 'Restore server / database / tables'],
+  [/Ready with reservations/, 'Can take over, with N things to fix'], [/Instance restore'|Database restore'|Object restore'/, 'Restore server / database / tables'],
   [/Operation history'|'Audit log'/, 'Activity log'], [/Recovery &(amp;)? storage/, 'Storage & recovery']];
 const files: string[] = [];
 const walk = (d: string) => { for (const f of fs.readdirSync(d)) { const p = path.join(d, f); if (fs.statSync(p).isDirectory()) walk(p); else if (/\.tsx?$/.test(f)) files.push(p); } };

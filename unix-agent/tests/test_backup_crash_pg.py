@@ -103,6 +103,25 @@ class Crash(unittest.TestCase):
         run_backup(F.ctx, "incr")
         self.assertEqual(repo.set_meta(nxt["id"])["status"], "FAILED")
 
+    def test_y2_late_wal_completes_an_unrecoverable_set(self):
+        """A backup marked UNRECOVERABLE because its WAL did not arrive in time (archiver blocked: seen on the lab's geo pair, 7 sets in a row) is a
+        good backup once that WAL reaches the archive: the next run (or retention) completes it instead of deleting it as junk. A set whose WAL
+        never comes stays UNRECOVERABLE; an UNRECOVERABLE set for another reason is never touched."""
+        from pg_arca.engine.maintenance import expire
+        repo = F.ctx.repo
+        a = run_backup(F.ctx, "incr")
+        m = repo.set_meta(a["id"]); m["status"] = "UNRECOVERABLE"; m["wal_timeout"] = True; m["reason"] = "WAL segment(s) not archived within 120s: x"; m.pop("completed", None); repo.write_meta(m)
+        b = run_backup(F.ctx, "incr")
+        self.assertEqual(repo.set_meta(a["id"])["status"], "COMPLETE", "its WAL is in the archive now")
+        self.assertIn("reached the archive late", repo.set_meta(a["id"]).get("note", ""))
+        self.assertNotIn("reason", repo.set_meta(a["id"]))
+        m = repo.set_meta(b["id"]); m["status"] = "UNRECOVERABLE"; m["wal_timeout"] = True; m["stop_lsn"] = "FF/00000000"; repo.write_meta(m)
+        run_backup(F.ctx, "incr")
+        self.assertEqual(repo.set_meta(b["id"])["status"], "UNRECOVERABLE", "WAL never archived: stays unrecoverable")
+        m = repo.set_meta(b["id"]); m.pop("wal_timeout"); m["stop_lsn"] = a["stop_lsn"]; repo.write_meta(m)
+        expire(F.ctx, dry_run=True)
+        self.assertEqual(repo.set_meta(b["id"])["status"], "UNRECOVERABLE", "another reason: never completed")
+
     def test_z_killed_incremental_does_not_break_the_chain(self):
         q("crashdb", "UPDATE big SET v = md5(v) WHERE id % 3 = 0")
         p = child("incr")

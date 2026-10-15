@@ -1,5 +1,6 @@
 """Backup: physical, page-aware, deduplicated, parallel; full / differential / incremental (page-LSN)."""
 
+import json
 import base64
 import errno
 import os
@@ -320,6 +321,8 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         for s in repo.own_sets():
             if s.get("status") == "PENDING_WAL" and _finish_pending_wal(ctx, s):
                 continue                                    # died while waiting for its WAL, which arrived since: the set is good
+            if s.get("status") == "UNRECOVERABLE" and s.get("wal_timeout") and _finish_pending_wal(ctx, s):
+                continue                                    # its WAL was late (archiver blocked, then repaired): the data was always good
             if s.get("status") in ("RUNNING", "PENDING", "PENDING_WAL"):
                 s["status"] = "FAILED"
                 s["reason"] = "interrupted (agent or host died before commit)"
@@ -486,6 +489,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         if not ok:
             meta["status"] = "UNRECOVERABLE"
             if wal_diag == "stale":
+                meta["wal_timeout"] = True
                 meta["reason"] = ("nothing reached this node's WAL archive (%s) while waiting for %s: the archive this node reads is not receiving "
                                   "the primary's segments" % (ctx.wal.wal_dir, ", ".join(need_missing[:3])))
                 repo.write_meta(meta)
@@ -494,7 +498,8 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                                   "node). Point every node at the same archive (Backup tab, 'Backup storage' -> 'Destination'), or run backups on the primary. "
                                   "If the archive IS shared, the primary's archiver is failing: check pg_stat_archiver there. The set is marked UNRECOVERABLE")
             else:
-                meta["reason"] = "WAL segment(s) not archived within %ds: %s" % (archive_timeout, ", ".join(need_missing[:5]))
+                meta["reason"] = "WAL segment(s) not archived within %ds: %s%s" % (archive_timeout, ", ".join(need_missing[:5]), _archiver_diagnosis(ctx, sess, in_recovery))
+                meta["wal_timeout"] = True                     # completed by a later run once that WAL reaches the archive (_finish_pending_wal)
                 repo.write_meta(meta)
                 raise EngineError("PGA-WAL-020", meta["reason"],
                                   ("check archive_command / pg_stat_archiver on the primary (this backup ran on a standby: the primary archives its WAL)"
@@ -627,8 +632,31 @@ def _wal_needed(tli, start_lsn, stop_lsn, seg_size, from_standby):
     return [wal_name(tli, n, seg_size) for n in range(first, last + 1)]
 
 
+def _archiver_diagnosis(ctx, sess, in_recovery):
+    """Why the WAL did not arrive, when it can be told: PostgreSQL's archiver failing (pg_stat_archiver on the primary) and the reason
+    pg-arca-wal recorded for its last refusal (PostgreSQL keeps only the segment name). '' when nothing more is known."""
+    out = []
+    if not in_recovery:
+        try:
+            r = sess.query("SELECT COALESCE(last_failed_wal,''), COALESCE(last_failed_time::text,''), COALESCE(last_archived_time::text,''), failed_count "
+                           "FROM pg_stat_archiver")
+            if r and r[0][0] and (not r[0][2] or r[0][1] > r[0][2]):
+                out.append("PostgreSQL's archiver is failing on %s since %s (%s failures)" % (r[0][0], r[0][1][:19], r[0][3]))
+        except Exception:
+            pass
+    try:
+        with open(os.path.join(ctx.wal.wal_dir, ".last_archive_error.json"), "r", encoding="utf-8") as f:
+            e = json.load(f)
+        if e.get("error"):
+            out.append("last refusal by the archive: %s" % str(e["error"])[:300])
+    except (IOError, OSError, ValueError, AttributeError):
+        pass
+    return (". " + "; ".join(out)) if out else ""
+
+
 def _finish_pending_wal(ctx, s):
-    """A set left in PENDING_WAL by a crash (agent or host died while waiting for the archiver): its data and manifest are durable, only the
+    """A set left in PENDING_WAL by a crash (agent or host died while waiting for the archiver), or marked UNRECOVERABLE because its WAL was
+    late (wal_timeout: the archiver was blocked and has been repaired since): its data and manifest are durable, only the
     WAL was missing. If every segment it needs is in the archive now, it is complete (it used to be marked FAILED and later deleted as junk:
     a good backup thrown away). Returns True when the set was completed."""
     try:
@@ -639,7 +667,9 @@ def _finish_pending_wal(ctx, s):
             return False
         s["status"] = "COMPLETE"
         s["completed"] = iso()
-        s["note"] = ((s.get("note") or "") + " (completed at the next run: its WAL reached the archive after the agent stopped)").strip()
+        s["note"] = ((s.get("note") or "") + (" (completed at a later run: its WAL reached the archive late)" if s.get("wal_timeout") else
+                                             " (completed at the next run: its WAL reached the archive after the agent stopped)")).strip()
+        s.pop("reason", None)
         ctx.repo.write_meta(s)
         ctx.log("info", "backup %s completed: the WAL it was waiting for when the agent stopped is in the archive now" % s.get("id"))
         return True
