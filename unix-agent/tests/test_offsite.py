@@ -218,10 +218,13 @@ class OffsiteTests(unittest.TestCase):
         # a real server may normalize or refuse some of these names on upload: count what the bucket really holds
         held = set(self._client().list().keys()) if REAL else set(bad)
         hostile = [k for k in held if k in bad and k != "repo/x"]
+        legit = {"wal/000000010000000000000009.zst", "wal/000000010000000000000009.zst.meta"}
+        normalized = sorted(held - set(bad) - legit)                   # names the server rewrote on upload ('wal/./x' -> 'wal/x'): harmless, inside the tree
+        self.assertTrue(all(k.split("/", 1)[0] in ("wal", "repo") and ".." not in k.split("/") for k in normalized), normalized)
         existing = os.path.join(self.wal, "000000010000000000000009.zst")
         os.remove(os.path.join(self.wal, "000000010000000000000009.zst.meta"))             # the archive lost one file: that one is fetched
         r = self.m.rehydrate()
-        self.assertEqual(r["downloaded"], 2, r)                                                 # the .meta and the harmless repo/x
+        self.assertEqual(r["downloaded"], 2 + len(normalized), (r, normalized))                 # the .meta, the harmless repo/x (and what the server normalized)
         self.assertEqual(r["refused_count"], len(hostile), (r, sorted(held)))
         self.assertFalse(os.path.exists("/tmp/pga-evil"))
         self.assertFalse(os.path.exists(os.path.join(self.d, "evil")))
