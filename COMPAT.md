@@ -34,7 +34,7 @@ A single module knows the differences between versions: `unix-agent/pg_arca/pgco
 ## Custom paths and variables (`Nodes` → "Paths and discovery")
 - For every setting the agent shows the detected value, the configured value and the source (detected / agent.conf / set here / environment).
 - Editable only by an administrator, only the listed settings (PGDATA, binaries, port, socket/host, user, repository, WAL archive, scratch directory, Patroni URL).
-- The agent checks every value on the server before saving it (PGDATA must contain PG_VERSION and global/pg_control; write paths cannot be system directories; no `..`; URLs without credentials). All-or-nothing save to `agent.local.json` (0640), applied at once.
+- The agent checks every value on the server before saving it (PGDATA must contain PG_VERSION and global/pg_control; write paths cannot be system directories; no `..`; URLs without credentials). All-or-nothing save to `agent.local.json` (0640, so that `pg-arca-wal` can read it when PostgreSQL runs as another user) plus `agent.secrets.json` (0600, owner only: the offsite access and secret keys never go into the group-readable file), applied at once.
 - Precedence: defaults < agent.conf < agent.local.json < the service's environment variables.
 - Tested: validation, saving, precedence, agent handlers (unit tests), console-side operations. **Not tested in the browser** with a real agent.
 - Object restore v2, configurable recovery instance and backup destination: tested only on real PostgreSQL 16; installing the binaries of other major versions (`ephemeral_install`) uses apt/dnf and has never run on a real system.

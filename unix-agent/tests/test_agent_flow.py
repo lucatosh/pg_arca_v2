@@ -99,15 +99,23 @@ class AgentFlow(unittest.TestCase):
         self.assertEqual(len(calls), 1); self.assertNotIn("DROP TABLE", calls[0]["sql"])          # value never interpolated into SQL text
         self.assertIn("pval=64MB'; DROP TABLE x;--", calls[0]["args"])
     def test_denied_and_invalid_params(self):
-        for name in ("data_directory", "Work_Mem;", "../x"):
-            st, _, err = self.ex.execute({"id": "op-00000000%04d" % (10 + len(name)), "type": "pg_set_param", "params": {"name": name, "value": "1"}})
-            self.assertEqual(st, "failed")
+        for i, name in enumerate(("data_directory", "Work_Mem;", "../x", "archive_command", "restore_command", "shared_preload_libraries", "ssl_passphrase_command", "log_directory")):
+            st, _, err = self.ex.execute({"id": "op-0000000000%02x" % (0x10 + i), "type": "pg_set_param", "params": {"name": name, "value": "1"}})
+            self.assertEqual(st, "failed", name)
     def test_pause_verified(self):
         st, res, _ = self.ex.execute({"id": "op-000000000009", "type": "patroni_pause", "params": {"enable": True}})
         self.assertEqual((st, res), ("succeeded", {"paused": True}))
     def test_config_patch_cannot_touch_dangerous_sections(self):
         st, _, err = self.ex.execute({"id": "op-00000000000a", "type": "patroni_config_patch", "params": {"patch": {"postgresql": {"pg_hba": ["host all all 0.0.0.0/0 trust"]}}}})
         self.assertEqual(st, "failed"); self.assertEqual(FakePatroni.posts, [])
+        # the agent refuses the same things the console refuses (a tampered console or a daemon-token holder gets no command execution through the DCS)
+        for i, patch in enumerate(({"postgresql": {"parameters": {"archive_command": "sh -c evil"}}}, {"postgresql": {"callbacks": {"on_start": "/tmp/x"}}},
+                                   {"postgresql": {"create_replica_methods": ["x"], "x": {"command": "/tmp/x"}}}, {"standby_cluster": {"restore_command": "x"}},
+                                   {"bootstrap": {"post_init": "/tmp/x"}}, {"watchdog": {"mode": "off"}}, {"postgresql": {"recovery_conf": {"restore_command": "x"}}}, "not-a-dict")):
+            st, _, err = self.ex.execute({"id": "op-0000000000%02x" % (0x20 + i), "type": "patroni_config_patch", "params": {"patch": patch}})
+            self.assertEqual(st, "failed", json.dumps(patch)); self.assertEqual(FakePatroni.posts, [])
+        st, _, _ = self.ex.execute({"id": "op-0000000000ff", "type": "patroni_config_patch", "params": {"patch": {"postgresql": {"parameters": {"work_mem": "64MB"}}}}})
+        self.assertEqual(st, "succeeded"); self.assertEqual(len(FakePatroni.posts), 1)
     def test_unknown_op_and_bad_id(self):
         self.assertEqual(self.ex.execute({"id": "op-00000000000b", "type": "rm_rf", "params": {}})[0], "failed")
         self.assertEqual(self.ex.execute({"id": "../../etc", "type": "pg_reload", "params": {}})[0], "failed")

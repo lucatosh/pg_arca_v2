@@ -138,7 +138,10 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       // a token may serve several servers (maxUses: the nodes of one Patroni cluster); the same server re-enrolling shortly after (installer re-run) is not a new use
       const used = t.usedBy || (t.usedAt && t.usedByNode ? [{ node: t.usedByNode, at: t.usedAt }] : []);
       const mine = used.find(u => u.node === nodeName);
-      const reuse = !!mine && Date.now() - Date.parse(mine.at) < REENROLL_WINDOW_MS;
+      // ...but only while that server has not started reporting yet: once its agent heartbeats, the token (visible in the install command and shell
+      // history) can no longer replace the node's secret with someone else's
+      const enrolledNode = mine ? Object.values(d.nodes).find(n => n.name === nodeName && (t.kind === 'worker' || b.node_role === 'worker' ? n.kind === 'worker' : n.kind !== 'worker')) : undefined;
+      const reuse = !!mine && Date.now() - Date.parse(mine.at) < REENROLL_WINDOW_MS && !enrolledNode?.firstHeartbeatAt;
       if (!reuse && (mine || used.length >= Math.max(1, t.maxUses || 1))) return { err: 'token_already_used' as const };
       const spend = () => { if (!mine) { t.usedBy = [...used, { node: nodeName, at: nowIso() }]; } t.usedAt = t.usedAt || nowIso(); t.usedByNode = nodeName; };
 
@@ -194,10 +197,12 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       if (!n) return;
       const nowMs = Date.now();
       n.lastSeen = new Date(nowMs).toISOString();
+      if (!n.firstHeartbeatAt) n.firstHeartbeatAt = n.lastSeen;
       n.remoteIp = req.socket.remoteAddress || n.remoteIp;
       if (b.agent_version) n.agentVersion = String(b.agent_version);
       if (typeof b.agent_build === 'string' && /^[0-9a-f]{12}$/.test(b.agent_build)) n.agentBuild = b.agent_build;
       if (typeof b.console_url === 'string' && /^https?:\/\/[^\s'"`$;|&<>]{1,200}$/.test(b.console_url)) n.consoleUrl = b.console_url.replace(/\/+$/, '');
+      if (typeof b.tls_insecure === 'boolean') n.tlsInsecure = b.tls_insecure;
       // the CA file the agent trusts the console with (a private / self-signed certificate): the upgrade command must use the same one
       if (typeof b.tls_ca_file === 'string' && /^\/[^\s'"`$;|&<>]{1,200}$/.test(b.tls_ca_file)) n.tlsCaFile = b.tls_ca_file; else if (b.tls_ca_file === null) delete n.tlsCaFile;
       const started = Number(b.agent_started);
@@ -372,6 +377,13 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     const bad = validateOp(String(type), params);
     if (bad) return res.status(400).json({ error: 'invalid_operation', message: bad });
     if ((type === 'agent_config_set' || type === 'offsite_set') && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can change the agent’s paths and settings.' });
+    // an explicit delivery address (`into`) sends restored data, with the credentials given, to any reachable host: for administrators only (the UI never
+    // sends one; the console fills it in for a central recovery host)
+    if (params?.into !== undefined && params?.into !== null && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can deliver a restore to an explicit address (into).' });
+    if (type === 'geo_demote') {                                              // the site may only follow a registered peer site: the agent connects there with the cluster's replication credentials
+      const me = geoOf(st, cluster.id); const eps = (me?.peers || []).map((p: any) => p.endpoint).filter(Boolean);
+      if (!eps.some((e: any) => e.host === String(params.host) && Number(e.port) === Number(params.port))) return res.status(409).json({ error: 'not_a_peer', message: 'A site can only be demoted under a registered peer site (Geo-redundancy → “Address of …”): the address given is not one.' });
+    }
     const spec = OP_SPECS[type];
     if (type === 'pg_set_param' && !params.force) { const g = geoParamGuard(st, cluster.id, String(params.name), params.value); if (g) return res.status(409).json({ error: 'geo_standby_lower', message: g, overridable: true }); }
     if (requiresApproval(st, cluster, type, params)) {

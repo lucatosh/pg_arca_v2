@@ -191,6 +191,33 @@ class OffsiteTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.wal, "000000010000000000000004.zst.meta")))
         self.assertEqual(self.m.rehydrate()["downloaded"], 0, "nothing left to fetch")
 
+    def test_rehydrate_refuses_hostile_object_names(self):
+        """Whoever controls the bucket chooses the object names: a key that resolves outside the repository / archive, or onto an existing
+        local file, is refused and reported, never written."""
+        self._wal("000000010000000000000009.zst")
+        self.assertTrue(self.m.sync()["ok"])
+        pre = self.prefix + "/"
+        bad = ["wal/../../../../tmp/pga-evil", "repo/../evil", "repo//abs", "evil/x", "wal/./x", "wal/a/../../x", "repo/" + "x"]
+        for k in bad:
+            self.srv.objects[(self.bucket, pre + k)] = b"evil"
+        existing = os.path.join(self.wal, "000000010000000000000009.zst")
+        os.remove(os.path.join(self.wal, "000000010000000000000009.zst.meta"))             # the archive lost one file: that one is fetched
+        r = self.m.rehydrate()
+        self.assertEqual(r["downloaded"], 2, r)                                                 # the .meta and the harmless repo/x
+        self.assertEqual(r["refused_count"], len(bad) - 1, r)
+        self.assertFalse(os.path.exists("/tmp/pga-evil"))
+        self.assertFalse(os.path.exists(os.path.join(self.d, "evil")))
+        self.assertTrue(os.path.exists(existing))
+        self.assertTrue(any("refused" in m for _, m in self.logs))
+        # a local file already in the way is not overwritten even when the inventory does not know it (written between listing and download)
+        with open(os.path.join(self.wal, "000000010000000000000009.zst.meta"), "w") as f:
+            f.write("mine")
+        self.srv.objects[(self.bucket, pre + "wal/000000010000000000000009.zst.meta")] = b"theirs"
+        local = self.m.local_inventory()
+        self.assertIn("wal/000000010000000000000009.zst.meta", local)
+        with open(os.path.join(self.wal, "000000010000000000000009.zst.meta")) as f:
+            self.assertEqual(f.read(), "mine")
+
     def test_executor_ops(self):
         from pg_arca.executor import OperationExecutor, OpError
         cfgfile = os.path.join(self.d, "agent.conf")

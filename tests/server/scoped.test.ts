@@ -72,6 +72,7 @@ import { isRisky } from '../../server/approvals';
 (async () => {
   assert(isRisky('ephemeral_install'));
   const store2 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'scp-'))); const app = new MiniApp();
+  let role = 'admin'; app.use((req: any, _r: any, next: any) => { req.actor = 'mario'; req.role = role; return next(); });
   mountScopedRoutes(app, store2); mountOperatorRoutes(app, store2, {}); mountAgentRoutes(app, store2);
   const now = new Date().toISOString();
   await store2.mutate(d => {
@@ -98,7 +99,11 @@ import { isRisky } from '../../server/approvals';
   r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_plan', params: { scope: 'database', database: 'db' } }, 'k3b'); assert.equal(r.body.operation.nodeId, 'rh', 'the plan is checked where the recovery will run');
   r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_plan', params: { scope: 'instance', destination: '/x' } }, 'k3c'); assert.equal(r.body.operation.nodeId, 'p1', 'an instance restore runs on the cluster node');
   r = await call('POST', '/api/clusters/c1/operations', { type: 'backup_run', params: { type: 'incr' } }, 'k4'); assert.equal(r.body.operation.nodeId, 'p1', 'backups always run on the cluster itself');
-  r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_object', params: { object: 'db.public.t', into: { host: 'other', port: 5432 } } }, 'k5'); assert.equal(r.body.operation.params.into.host, 'other', 'an explicit target is respected');
+  r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_object', params: { object: 'db.public.t', into: { host: 'other', port: 5432 } } }, 'k5'); assert.equal(r.body.operation.params.into.host, 'other', 'an explicit target is respected (administrator)');
+  role = 'operator';
+  r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_object', params: { object: 'db.public.t', into: { host: 'other', port: 5432 } } }, 'k5b'); assert.equal(r.status, 403, 'an operator cannot deliver restored data to an arbitrary host');
+  r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_object', params: { object: 'db.public.t' } }, 'k5c'); assert.equal(r.status, 202); assert.equal(r.body.operation.params.into.host, '10.1.1.1', 'the console-resolved delivery address is still filled in');
+  role = 'admin';
   // the central node vanishes -> a clear refusal, nothing queued
   await store2.mutate(d => { delete d.nodes.rh; });
   r = await call('POST', '/api/clusters/c1/operations', { type: 'restore_object', params: { object: 'db.public.t' } }, 'k6'); assert.equal(r.status, 409); assert.equal(r.body.error, 'central_node_missing');

@@ -52,9 +52,15 @@ class PgConn(object):
 
     @classmethod
     def from_dict(cls, d, bindir=""):
+        """A delivery address from an operation (`into`): host, port, user, password, dbname only. The binaries are always the agent's own
+        (`bindir` argument): an operation must never choose the directory the agent runs executables from."""
         d = d or {}
-        return cls(d.get("host", ""), d.get("port", 5432), d.get("user", "postgres"), d.get("password"), d.get("dbname", "postgres"),
-                   d.get("bindir", bindir))
+        port = d.get("port", 5432)
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            raise EngineError("PGA-SEC-040", "into.port is not a number: %r" % (port,))
+        return cls(d.get("host", ""), port, d.get("user", "postgres"), d.get("password"), d.get("dbname", "postgres"), bindir)
 
 
 def _psql_major(conn):

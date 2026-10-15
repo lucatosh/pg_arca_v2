@@ -26,7 +26,17 @@ from pg_arca.engine.util import Cancelled, EngineError
 logger = logging.getLogger("pg_arca.executor")
 
 PATRONI_LOCAL_PARAMS = {"listen_addresses", "port"}
-DENY_PARAMS = {"data_directory", "config_file", "hba_file", "ident_file", "external_pid_file", "include", "include_dir", "include_if_exists"}
+# GUCs whose value the server executes or loads, or that relocate its files: never settable through an operation (the console refuses them too -
+# server/optypes.ts DANGEROUS_GUCS - and the agent refuses again, so that a holder of the daemon token or a tampered console cannot run commands as postgres).
+# archive_command / restore_command are only ever written by the agent itself (archive_enable, restores), never from a parameter.
+DENY_PARAMS = {"data_directory", "config_file", "hba_file", "ident_file", "external_pid_file", "include", "include_dir", "include_if_exists",
+               "archive_command", "archive_cleanup_command", "restore_command", "recovery_end_command", "ssl_passphrase_command",
+               "shared_preload_libraries", "local_preload_libraries", "session_preload_libraries", "dynamic_library_path", "unix_socket_directories",
+               "log_directory", "krb_server_keyfile", "ssl_cert_file", "ssl_key_file", "ssl_ca_file", "ssl_crl_file", "stats_temp_directory"}
+# Patroni configuration sections / keys an operation may never patch (same list as the console's): the DCS value runs commands on every member
+PATRONI_DENY_SECTIONS = {"restapi", "etcd", "etcd3", "consul", "zookeeper", "kubernetes", "ctl", "scope", "name", "namespace", "watchdog", "bootstrap", "standby_cluster"}
+PATRONI_DENY_PG_KEYS = {"authentication", "pg_hba", "pg_ident", "bin_dir", "data_dir", "config_dir", "listen", "connect_address", "custom_conf", "pgpass", "callbacks",
+                        "create_replica_methods", "basebackup", "recovery_conf"}
 
 
 class OpError(Exception):
@@ -620,13 +630,21 @@ class OperationExecutor:
     def h_config_patch(self, p):
         self._require_patroni()
         patch = p.get("patch")
-        # never let the console touch settings that can lock operators out of the DB
-        forbidden = {"postgresql": {"authentication", "pg_hba", "listen", "connect_address", "data_dir", "bin_dir"}, "restapi": None, "etcd": None, "etcd3": None}
+        if not isinstance(patch, dict):
+            raise OpError("patch must be an object")
+        # never let an operation touch settings that run commands on the members or lock operators out of the database (standby_cluster only through geo ops)
         for k, v in list(patch.items()):
-            if k in forbidden and forbidden[k] is None:
+            if k in PATRONI_DENY_SECTIONS:
                 raise OpError("section '%s' cannot be patched from the console" % k)
-            if k == "postgresql" and isinstance(v, dict) and (set(v) & forbidden["postgresql"]):
-                raise OpError("postgresql.%s cannot be patched from the console" % sorted(set(v) & forbidden["postgresql"])[0])
+            if k == "postgresql" and isinstance(v, dict):
+                bad = set(v) & PATRONI_DENY_PG_KEYS
+                if bad:
+                    raise OpError("postgresql.%s cannot be patched from the console" % sorted(bad)[0])
+                params = v.get("parameters")
+                if isinstance(params, dict):
+                    bad = set(params) & DENY_PARAMS
+                    if bad:
+                        raise OpError("%s cannot be changed from the console (it runs commands or relocates files)" % sorted(bad)[0])
         st, d = self.patroni.patch_config(patch)
         if st >= 300:
             raise OpError("Patroni rejected the patch (%s): %s" % (st, json.dumps(d)[:300]))

@@ -300,9 +300,22 @@ class Mirror(object):
         return st
 
     def _local_path(self, key):
+        """Where an object key lands locally, or None when the key must not be written: the bucket is not trusted (anyone with its keys, or a
+        tampered endpoint, chooses the object names), so only `repo/...` and `wal/...` with a plain relative remainder are accepted, and
+        the resolved path must stay inside the repository / archive directory (no `..`, no absolute part, no symlinked escape)."""
         if key.startswith("repo/"):
-            return os.path.join(self.config["repo_path"], key[5:])
-        return os.path.join(self.config["wal_archive_dir"], key[4:])
+            base, rel = self.config["repo_path"], key[5:]
+        elif key.startswith("wal/"):
+            base, rel = self.config["wal_archive_dir"], key[4:]
+        else:
+            return None
+        if not rel or rel.startswith("/") or "\x00" in rel or any(p in ("..", "", ".") for p in rel.split("/")):
+            return None
+        path = os.path.join(base, rel)
+        root = os.path.realpath(base)
+        if os.path.realpath(os.path.dirname(path)) != root and not os.path.realpath(os.path.dirname(path)).startswith(root + os.sep):
+            return None
+        return path
 
     def rehydrate(self, what="all", progress=None, cancel=None):
         """Download from the offsite copy what the local repository / archive lacks (what: all | repo | wal). Local files are never overwritten:
@@ -318,17 +331,25 @@ class Mirror(object):
         total = sum(remote[k] for k in keys)
         done = 0
         got = 0
+        refused = []
         for i, k in enumerate(keys):
             if cancel and cancel():
                 raise S3Error(0, "Cancelled", "cancelled")
             path = self._local_path(k)
+            if path is None or os.path.lexists(path):              # unsafe name, or something is already there: never write over it
+                refused.append(k)
+                done += remote[k]
+                continue
             os.makedirs(os.path.dirname(path), mode=0o750, exist_ok=True)
             c.get_to_file(k, path)
             got += 1
             done += remote[k]
             if progress and (i % 10 == 0 or i == len(keys) - 1):
                 progress({"phase": "rehydrate", "downloaded": got, "to_download": len(keys), "bytes": done, "bytes_total": total})
-        return {"downloaded": got, "bytes": done, "already_local": len(remote) - len(keys) - len(differ), "differ": differ[:20], "differ_count": len(differ)}
+        if refused:
+            self.log("warn", "offsite rehydrate: %d object(s) refused (name outside the repository/archive or a local file in the way), e.g. %s" % (len(refused), refused[0]))
+        return {"downloaded": got, "bytes": done, "already_local": len(remote) - len(keys) - len(differ), "differ": differ[:20], "differ_count": len(differ),
+                "refused": refused[:20], "refused_count": len(refused)}
 
     # ---- background thread
     def start(self, interval=INTERVAL_SEC):

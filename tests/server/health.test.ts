@@ -139,6 +139,16 @@ import { requiredRole } from '../../server/auth';
     { const o = objectives(st, 'p', now)!; assert.deepStrictEqual(o.targets, { rpoSeconds: null, rtoSeconds: null }); assert.strictEqual(o.rto.state, 'ok'); assert(!/objective/.test(o.rpo.text + o.rto.text));
       assert(!evaluate(st, now).some(i => i.clusterId === 'p' && /_target$/.test(i.code))); }
   }
+  { // agent transport: clear http:// or certificate check disabled -> finding (warning in prod, info elsewhere); https with verification -> nothing
+    const st: any = JSON.parse(JSON.stringify(store.peek()));
+    const f = () => evaluate(st, now).filter(i => i.clusterId === 'p' && i.code === 'agent_insecure_transport');
+    assert.strictEqual(f().length, 0);
+    st.nodes.n1.tlsInsecure = true; st.nodes.n1.consoleUrl = 'http://console.lan:3000';
+    assert.strictEqual(f().length, 1); assert.strictEqual(f()[0].severity, 'warning'); assert(/without TLS/.test(f()[0].title) && /PG_ARCA_TLS_CERT/.test(f()[0].cause));
+    st.nodes.n1.consoleUrl = 'https://console.lan';
+    assert(/does not verify/.test(f()[0].title) && /tls_insecure_skip_verify/.test(f()[0].cause));
+    st.nodes.n1.tlsInsecure = false; assert.strictEqual(f().length, 0);
+  }
   assert(evaluate(store.peek(), now).every(i => i.clusterId !== 'demo'), 'demo cluster is not monitored');
   const slot = evaluate(store.peek(), now).find(i => i.code === 'slot_stale')!; assert.strictEqual(slot.severity, 'critical'); assert(/old_slot/.test(slot.title)); assert(!evaluate(store.peek(), now).some(i => /live/.test(i.title)), 'active slots are fine');
   const b = briefing(store.peek(), now); assert.strictEqual(b.status, 'critical'); assert(b.counts.critical >= 3); assert.strictEqual(b.issues[0].severity, 'critical');

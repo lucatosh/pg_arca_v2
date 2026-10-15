@@ -164,6 +164,8 @@ const intoErr = (p: Record<string, any>) => {
   if (i.host && !noCtl(String(i.host))) return 'invalid into.host';
   if (i.port && !(Number(i.port) > 0 && Number(i.port) < 65536)) return 'invalid into.port';
   if (i.user && !pgName(i.user)) return 'invalid into.user';
+  for (const k of Object.keys(i)) if (!['host', 'port', 'user', 'password', 'dbname', 'disk'].includes(k)) return `into.${k} is not allowed`;     // never a binary directory
+  if (i.dbname && !pgName(i.dbname)) return 'invalid into.dbname';
   return null;
 };
 
@@ -250,8 +252,13 @@ Object.assign(OP_SPECS, {
 /** Lane of an operation type: 'data' ops (backup/restore) run in parallel to 'control' ops (HA, parameters). */
 export const laneOf = (type: string): string => OP_SPECS[type]?.laneKey || OP_SPECS[type]?.lane || 'control';
 
+/** Parameters the console itself resolves when it hands an operation to the agent (withEphemeral): a client must not be able to pre-fill them,
+ *  because they carry a directory the agent will run binaries from. */
+const RESERVED_PARAMS = ['ephemeral'];
 export function validateOp(type: string, params: Record<string, any>): string | null {
   const spec = OP_SPECS[type];
   if (!spec) return `unsupported operation '${type}'`;
-  return spec.validate(params || {});
+  const p = params || {};
+  if (typeof p === 'object' && !Array.isArray(p)) for (const k of RESERVED_PARAMS) if (k in p) return `${k} is set by the console, not by the client`;
+  return spec.validate(p);
 }

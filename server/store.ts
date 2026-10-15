@@ -45,6 +45,8 @@ export interface NodeRecord {
   name: string;
   tokenHash: string;          // sha256 of per-agent secret
   enrolledAt: string;
+  /** First heartbeat after enrollment: from then on the enrollment token cannot re-enroll this node (replace its secret). */
+  firstHeartbeatAt?: string;
   lastSeen?: string;
   clusterId?: string;
   clusterKey?: string;        // "patroni:<scope>" | "sysid:<id>" computed by agent discovery
@@ -52,6 +54,7 @@ export interface NodeRecord {
   tlsCaFile?: string;            // the CA file the agent trusts the console with (private certificate): reused by its upgrade command
   agentBuild?: string;        // fingerprint of the agent code it runs (pg_arca/build.py); differs from the console's -> outdated
   consoleUrl?: string;        // the console address this agent uses (upgrade command)
+  tlsInsecure?: boolean;      // the agent talks to the console in clear (http://) or without verifying its certificate
   agentStarted?: number;     // start time of the agent process (a change = restart: what the old process had leased is handed back)
   remoteIp?: string;
   /** inbound URL, only if the operator chose inbound mode */

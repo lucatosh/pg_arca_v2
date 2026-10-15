@@ -282,3 +282,16 @@ class Python36(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeliveryAddress(unittest.TestCase):
+    """`into` (where a restored database is delivered) is an operation parameter: it may choose host/port/user/password/dbname, never the
+    directory the agent runs executables from."""
+    def test_into_cannot_choose_the_binaries(self):
+        from pg_arca.engine.pgsession import PgConn
+        from pg_arca.engine.util import EngineError
+        c = PgConn.from_dict({"host": "db2", "port": "5433", "user": "app", "password": "p", "dbname": "x", "bindir": "/tmp/evil"}, "/usr/lib/postgresql/16/bin")
+        self.assertEqual(c.bindir, "/usr/lib/postgresql/16/bin"); self.assertEqual(c.exe("psql"), "/usr/lib/postgresql/16/bin/psql")
+        self.assertEqual((c.host, c.port, c.user, c.dbname), ("db2", 5433, "app", "x"))
+        with self.assertRaises(EngineError):
+            PgConn.from_dict({"port": "54;33"}, "/x")

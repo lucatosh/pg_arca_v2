@@ -49,6 +49,10 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   const disc2 = { postgres_instances: [{ cluster_key: 'sysid:222', patroni: { scope: 'pat' } }], patroni_clusters: [{ scope: 'pat' }] };
   const e1 = await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat1', discovery: disc2 }); assert.strictEqual(e1.status, 201);
   const e1b = await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat1', discovery: disc2 }); assert.strictEqual(e1b.status, 201, 'installer re-run on the same server is not a new use');
+  // once pat1's agent reports, the token seen in the install command cannot take over pat1's identity any more (the secret would be replaced)
+  assert.strictEqual((await call('POST', '/api/agent/heartbeat', { snapshot: {}, max_ops: 0 }, { authorization: `Bearer ${e1b.body.agent_token}`, 'x-arca-node': e1b.body.node_id })).status, 200);
+  assert.strictEqual((await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat1', discovery: disc2 })).status, 403, 're-enroll refused after the first heartbeat');
+  assert.strictEqual((await call('POST', '/api/agent/heartbeat', { snapshot: {}, max_ops: 0 }, { authorization: `Bearer ${e1b.body.agent_token}`, 'x-arca-node': e1b.body.node_id })).status, 200, 'the node keeps its secret');
   const e2 = await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat2', discovery: disc2 }); assert.strictEqual(e2.status, 201);
   assert.strictEqual(e1.body.cluster_id, e2.body.cluster_id);
   assert.strictEqual((await call('POST', '/api/agent/enroll', { enrollment_token: tok2.body.token, node_name: 'pat3', discovery: disc2 })).status, 403);

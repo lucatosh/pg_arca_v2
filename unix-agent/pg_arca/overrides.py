@@ -155,15 +155,33 @@ def validate(key, value):
     return p
 
 
-def load(config):
-    path = local_path(config)
+# Keys of the offsite setting that are credentials: kept in agent.secrets.json (owner only), not in agent.local.json, which other local programs
+# (the archive_command of a PostgreSQL that runs as another user) must be able to read.
+SECRET_KEYS = {"offsite": ("access_key", "secret_key")}
+
+
+def secrets_path(config):
+    return os.path.join(os.path.dirname(local_path(config)), "agent.secrets.json")
+
+
+def _read_json(path):
     try:
         import json
         with open(path, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        return {k: v for k, v in d.items() if k in KINDS}
+            return json.load(f)
     except (IOError, OSError, ValueError):
         return {}
+
+
+def load(config):
+    d = {k: v for k, v in _read_json(local_path(config)).items() if k in KINDS}
+    sec = _read_json(secrets_path(config))
+    for k, names in SECRET_KEYS.items():
+        if isinstance(d.get(k), dict) and isinstance(sec.get(k), dict):
+            for n in names:
+                if n in sec[k]:
+                    d[k][n] = sec[k][n]
+    return d
 
 
 def apply_to(config, overrides):
@@ -193,7 +211,15 @@ def save(config, changes):
             cur.pop(k, None)
         else:
             cur[k] = v
-    atomic_write_json(local_path(config), cur, 0o640)
+    public, secret = {}, {}
+    for k, v in cur.items():
+        if k in SECRET_KEYS and isinstance(v, dict):
+            public[k] = {n: x for n, x in v.items() if n not in SECRET_KEYS[k]}
+            secret[k] = {n: x for n, x in v.items() if n in SECRET_KEYS[k]}
+        else:
+            public[k] = v
+    atomic_write_json(secrets_path(config), secret, 0o600)               # credentials: the agent's user only
+    atomic_write_json(local_path(config), public, 0o640)                 # readable by the group: pg-arca-wal may run as PostgreSQL's user
     return cur
 
 

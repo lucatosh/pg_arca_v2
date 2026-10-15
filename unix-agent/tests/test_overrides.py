@@ -44,6 +44,21 @@ class Overrides(unittest.TestCase):
         self.assertEqual(ov.load(self.cfg), {"pg_data": d, "pg_port": 5433})
         self.assertEqual(oct(os.stat(ov.local_path(self.cfg)).st_mode & 0o777), "0o640")
 
+    def test_offsite_credentials_live_in_the_owner_only_file(self):
+        import json
+        off = {"type": "s3", "endpoint": "https://s3.example.net", "bucket": "b", "prefix": "p", "access_key": "AKIA1", "secret_key": "S3CR3T", "region": "eu-west-1"}
+        ov.save(self.cfg, {"offsite": off})
+        with open(ov.local_path(self.cfg)) as f:
+            pub = json.load(f)
+        self.assertNotIn("secret_key", pub["offsite"]); self.assertNotIn("access_key", pub["offsite"]); self.assertEqual(pub["offsite"]["bucket"], "b")
+        self.assertEqual(oct(os.stat(ov.secrets_path(self.cfg)).st_mode & 0o777), "0o600")
+        self.assertEqual(ov.load(self.cfg)["offsite"]["secret_key"], "S3CR3T")             # merged back for the agent
+        self.assertEqual(load_config(self.conf)["offsite"]["access_key"], "AKIA1")
+        ov.save(self.cfg, {"offsite": None})
+        self.assertNotIn("offsite", ov.load(self.cfg))
+        with open(ov.secrets_path(self.cfg)) as f:
+            self.assertEqual(json.load(f), {})
+
     def test_layering_file_overrides_env(self):
         d = mkpgdata(self.t); ov.save(self.cfg, {"pg_data": d, "repo_path": os.path.join(self.t, "r2")})
         c2 = load_config(self.conf); self.assertEqual(c2["pg_data"], d); self.assertEqual(c2["repo_path"], os.path.join(self.t, "r2"))   # agent.local.json beats agent.conf
