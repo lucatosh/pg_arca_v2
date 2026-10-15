@@ -80,6 +80,13 @@ class WalSummaryTests(unittest.TestCase):
         self.assertEqual(rr.returncode, 0, rr.stderr + open(os.path.join(F.base, "ws-restored.log")).read()[-2000:])
         try:
             q2 = lambda sql: T.sh(os.path.join(T.BIN, "psql"), "-X", "-At", "-h", F.sock, "-p", str(port2), "-d", "ws", "-c", sql).stdout.strip()
+            # pg_ctl -w returns at the first read-only connection, and with the base full's backup_label PostgreSQL calls the copy consistent at the
+            # FULL's end while the files already hold the incremental's pages: until replay reaches the end of the chain (the target pg_arca sets)
+            # a query sees a torn state (the PG17 matrix read 0 rows from a table created between the two backups). Read after recovery ended.
+            for _ in range(120):
+                if q2("SELECT pg_is_in_recovery()") == "f":
+                    break
+                time.sleep(1)
             self.assertEqual(q2("SELECT count(*), sum(length(pad)) FROM big"), "60000|30000000")
             self.assertEqual(q2("SELECT count(*) FROM small WHERE v = 'changed'"), "100")
             self.assertEqual(q2("SELECT count(*) FROM trunc_me"), "0")
