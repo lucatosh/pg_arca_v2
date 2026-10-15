@@ -36,6 +36,14 @@ if [[ $TESTS == 1 ]]; then
   log "tests"
   npm test >"$WORK/tests.log" 2>&1 || { tail -40 "$WORK/tests.log"; die "tests failed (full log: rerun npm test)"; }
 fi
+# dependency audit of what ships (production dependencies only): recorded in BUILDINFO; a high/critical advisory stops a release build
+log "dependency audit"
+AUDIT=unavailable
+if timeout 120 npm audit --omit=dev --json >"$WORK/audit.json" 2>/dev/null || [[ -s "$WORK/audit.json" ]]; then
+  AUDIT=$(node -e 'const a=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=a.metadata&&a.metadata.vulnerabilities;if(!v){console.log("unavailable");process.exit()}console.log(Object.entries(v).filter(([k,n])=>k!=="total"&&n>0).map(([k,n])=>k+"="+n).join(",")||"clean")' "$WORK/audit.json" 2>/dev/null || echo unavailable)
+  [[ $AUDIT =~ (high|critical)= && ${PG_ARCA_AUDIT_OK:-0} != 1 ]] && { npm audit --omit=dev 2>/dev/null | tail -30; die "npm audit: $AUDIT (fix, or PG_ARCA_AUDIT_OK=1 records it and continues)"; }
+fi
+[[ $AUDIT == unavailable ]] && log "npm audit not reachable (no registry access): recorded as unavailable"
 
 # --- 2. console ------------------------------------------------------------------------------------------------
 log "web UI"
@@ -173,7 +181,8 @@ SPEC
       if [[ -z "$IMG" ]]; then
         [[ -n "$BASE" ]] || { BASE=rockylinux:9; timeout 600 docker pull -q "$BASE" >/dev/null || die "no EL9 image with rpmbuild and cannot pull rockylinux:9 (set RPM_BUILD_IMAGE, or --no-rpm)"; }
         log "building the rpm builder image once (pg-arca-rpmbuild:el9, from $BASE)"
-        printf 'FROM %s\nRUN dnf -y install rpm-build && dnf clean all\n' "$BASE" | timeout 900 docker build -q -t pg-arca-rpmbuild:el9 - >"$WORK/rpmimg.log" 2>&1 \
+        # ip_resolve=4: Docker's default bridge has no IPv6 route; dnf picks AAAA records of the mirrors first and hangs or fails
+        printf 'FROM %s\nRUN dnf -y --setopt=ip_resolve=4 install rpm-build && dnf clean all\n' "$BASE" | timeout 900 docker build -q -t pg-arca-rpmbuild:el9 - >"$WORK/rpmimg.log" 2>&1 \
           || { tail -20 "$WORK/rpmimg.log"; die "cannot prepare an image with rpmbuild (network from Docker to the distribution mirrors?). Set RPM_BUILD_IMAGE to an EL9 image that has rpm-build, or --no-rpm"; }
         IMG=pg-arca-rpmbuild:el9
       fi
@@ -193,6 +202,7 @@ built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 node_runtime=$([[ $WITH_NODE == 1 ]] && echo "$NV" || echo none)
 agent_fingerprint=$FP_AG
 tests=$([[ $TESTS == 1 ]] && echo passed || echo skipped)
+npm_audit=$AUDIT
 INFO
 (cd "$OUT" && sha256sum -- *.tar.gz *.deb $(ls *.rpm 2>/dev/null) BUILDINFO > SHA256SUMS)
 log "artifacts in $OUT"; (cd "$OUT" && ls -l)

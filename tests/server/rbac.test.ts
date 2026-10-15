@@ -12,13 +12,13 @@ import { mountAdvancedRoutes } from '../../server/approvals';
 import { mountJoinRoutes } from '../../server/join';
 import { briefing } from '../../server/health';
 import { audit } from '../../server/ops';
-import { mountAuthRoutes, requireAdmin, requiredRole, can } from '../../server/auth';
+import { mountAuthRoutes, mountApiTokenRoutes, requireAdmin, requiredRole, can } from '../../server/auth';
 
 (async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rbac-')); const store = new Store(dir), app = new MiniApp(); const direct = new DirectDriver(store, loadSecretKey(dir));
   const demo = () => ({ id: 'cluster-demo', name: 'DEMO', environment: 'dev', isSandbox: true, databases: [], haState: { nodes: [] } });
   app.use(requireAdmin(store));
-  mountAuthRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec }); mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountNotifyRoutes(app, store); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store); app.get('/api/briefing', (_q: any, r: any) => r.json(briefing(store.peek())));
+  mountAuthRoutes(app, store); mountApiTokenRoutes(app, store); mountAgentRoutes(app, store); mountOperatorRoutes(app, store, { directExec: direct.exec }); mountClusterRoutes(app, store, direct, demo); mountPlatformRoutes(app, store); mountHbaRoutes(app, store); mountPolicyRoutes(app, store); mountNotifyRoutes(app, store); mountAdvancedRoutes(app, store, audit); mountJoinRoutes(app, store); app.get('/api/briefing', (_q: any, r: any) => r.json(briefing(store.peek())));
   await seedDemoOnFirstRun(store, demo);
   const call = (m: string, u: string, body?: any, cookie?: string) => app.call(m, u, { body, headers: cookie ? { cookie } : {} });
   const PW = 'correct-horse-battery';

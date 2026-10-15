@@ -27,7 +27,7 @@ tools/release/set-version.sh 1.0.0-rc.1       # if not set already; commit it
 tools/release/build.sh                         # out/release-<v>/
 ```
 
-The build stops on: a version mismatch, failing tests (`npm test`: server, UI logic and agent unit tests), a failing UI build, a packaged console that does not start or does not serve the UI and the agent (smoke test), a Node.js runtime with a wrong checksum, an agent package whose code differs from the one the console serves. A build from a working tree with uncommitted changes is marked `-dirty` in `BUILDINFO` and is not a release build.
+The build stops on: a version mismatch, failing tests (`npm test`: server, UI logic and agent unit tests), a failing UI build, a packaged console that does not start or does not serve the UI and the agent (smoke test), a Node.js runtime with a wrong checksum, an agent package whose code differs from the one the console serves, a high or critical `npm audit` advisory in the production dependencies (the result is recorded as `npm_audit=` in `BUILDINFO`; `unavailable` when the registry cannot be reached). A build from a working tree with uncommitted changes is marked `-dirty` in `BUILDINFO` and is not a release build.
 
 ## Release gate
 
@@ -40,7 +40,7 @@ A release candidate (`-rc.N`) is published when the build passes and the lab run
 | Console install, upgrade from the previous release and rollback on clean VMs (RHEL family and Debian/Ubuntu) | to run on the lab |
 | Agent upgrade through `.deb`/`.rpm` on a registered node, and removal refused while WAL archiving is active | to run on the lab |
 | Security review: authentication and sessions, RBAC on every route, agent enrollment and tokens, command execution on nodes, TLS, systemd hardening, dependency audit | not done |
-| Console state backup and restore procedure tested (`install-console.sh --backup-state`, restore on another host) | not done |
+| Console state backup and restore procedure tested (`install-console.sh --backup-state`, `--restore-state` on another host) | implemented; to run on the lab |
 | Installation and administration guide reviewed by someone who did not write it | first version in INSTALL.md |
 | No open defect classified as data loss or wrong restore | no open one known |
 
@@ -51,7 +51,7 @@ A release candidate (`-rc.N`) is published when the build passes and the lab run
 First packaged release. Changes since the development builds:
 - One version for console and agent (`VERSION`); shown in the UI and in `/api/health`.
 - Console: native TLS (`PG_ARCA_TLS_CERT`/`PG_ARCA_TLS_KEY`, reload with SIGHUP), listen address (`PG_ARCA_LISTEN`), paths resolved from the install directory instead of the working directory.
-- Console installer for systemd hosts: system user, hardened unit, settings file kept across upgrades, state backup before every upgrade, automatic rollback when the new release does not start, `--rollback`, `--backup-state`, `--uninstall`.
+- Console installer for systemd hosts: system user, hardened unit, settings file kept across upgrades, state backup before every upgrade, automatic rollback when the new release does not start, `--rollback`, `--backup-state`, `--restore-state`, `--uninstall`.
 - Container image recipe for the console.
 - Agent packages: offline tarball, `.deb`, `.rpm`; the installer has a no-package mode for them (`PG_ARCA_NO_PKG=1`).
 - The whole interface, server messages and agent messages in English (guard tests on all three).

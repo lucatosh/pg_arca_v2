@@ -8,6 +8,7 @@
 #   sudo ./install-console.sh --tls-self-signed       trial: generates a self-signed certificate
 #   sudo ./install-console.sh --status
 #   sudo ./install-console.sh --backup-state [DIR]    copy of the console state (users, clusters, policies, history, secret key)
+#   sudo ./install-console.sh --restore-state FILE --yes   load a state backup (same or another host: install the console first, then restore)
 #   sudo ./install-console.sh --rollback --yes        back to the previous release AND its pre-upgrade state
 #   sudo ./install-console.sh --uninstall [--purge]   remove the service and code; --purge also deletes the state
 #
@@ -25,7 +26,7 @@ ENV_FILE=$CONF_DIR/console.env; UNIT_FILE=/etc/systemd/system/$UNIT.service; KEE
 die() { echo "ERROR: $*" >&2; exit 1; }
 note() { echo "-- $*"; }
 
-ACTION=install; PURGE=0; YES=0; NO_START=0; SELF_SIGNED=0; BACKUP_DEST=""
+ACTION=install; PURGE=0; YES=0; NO_START=0; SELF_SIGNED=0; BACKUP_DEST=""; RESTORE_FILE=""
 OPT_PORT="${PORT:-}"; OPT_LISTEN="${PG_ARCA_LISTEN:-}"; OPT_CERT="${PG_ARCA_TLS_CERT:-}"; OPT_KEY="${PG_ARCA_TLS_KEY:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     --no-start) NO_START=1 ;;
     --status) ACTION=status ;;
     --backup-state) ACTION=backup; if [[ -n "${2:-}" && "${2:0:2}" != -- ]]; then BACKUP_DEST="$2"; shift; fi ;;
+    --restore-state) ACTION=restore; RESTORE_FILE="${2:?--restore-state needs the backup file}"; shift ;;
     --rollback) ACTION=rollback ;;
     --uninstall) ACTION=uninstall ;;
     --purge) PURGE=1 ;;
@@ -121,6 +123,25 @@ uninstall)
     echo "pg_arca console removed. State kept in $DATA_DIR and settings in $CONF_DIR (reinstalling picks them up; --uninstall --purge --yes deletes them)."
   fi
   echo "The agents on the database servers keep running and keep archiving WAL; remove them there with PG_ARCA_UNINSTALL=1 if needed."
+  exit 0 ;;
+# ------------------------------------------------------------------------------
+restore)
+  [[ -f "$RESTORE_FILE" ]] || die "backup file not found: $RESTORE_FILE"
+  id "$SVC_USER" &>/dev/null && [[ -f "$UNIT_FILE" ]] || die "install the console first (same release as the one that made the backup, or newer), then restore its state"
+  tar tzf "$RESTORE_FILE" 2>/dev/null | grep -qx './state.json' || die "$RESTORE_FILE is not a console state backup (no state.json inside; expected a file made by --backup-state)"
+  cur="$(installed_version)"
+  if [[ $YES != 1 ]]; then
+    echo "Restoring $RESTORE_FILE replaces the whole state of this console (users, clusters, policies, history, secret key) with the one in the backup;"
+    echo "the current state is saved in $DATA_DIR/backups first. Agents enrolled with the old console keep working only if its secret key is the same one."
+    die "add --yes to confirm"
+  fi
+  systemctl stop "$UNIT"
+  keep="$(backup_state "$DATA_DIR/backups" "before-restore")"
+  find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name backups -exec rm -rf {} +
+  tar xzf "$RESTORE_FILE" -C "$DATA_DIR" --exclude=./backups; chown -R "$SVC_USER:$SVC_USER" "$DATA_DIR"; chmod 0700 "$DATA_DIR"
+  systemctl start "$UNIT"
+  wait_healthy "$cur" && echo "state restored from $RESTORE_FILE (previous state kept in $keep)" || { journalctl -u "$UNIT" -n 30 --no-pager; die "the console does not answer after the restore (previous state: $keep)"; }
+  echo "If the console moved to another host: agents still point at the old address; on each node set \"web_server_url\" in /etc/pg-arca/agent.conf to the new address and restart pg-arca-agent (the enrollment stays valid: same secret key)."
   exit 0 ;;
 # ------------------------------------------------------------------------------
 rollback)

@@ -109,7 +109,13 @@ sudo /opt/pg-arca-console/current/install-console.sh --backup-state /srv/backup/
 
 The archive holds users, clusters, policies, schedules, history and the secret key (which decrypts stored credentials): protect it like the console. Schedule it daily (cron or a systemd timer). The database backups themselves are not in it: they live in the repositories on the nodes and worker hosts.
 
-To restore on a new host: install the same release, `systemctl stop pg-arca-console`, extract the archive into `/var/lib/pg-arca-console` (owner `pgarca-console`), start the service.
+To restore, on the same host or a new one: install the same release (or a newer one), then
+
+```bash
+sudo /opt/pg-arca-console/current/install-console.sh --restore-state /srv/backup/pg-arca/console-state-v1.0.0-rc.1-20261015T060000Z.tar.gz --yes
+```
+
+It stops the service, keeps a copy of the current state in `/var/lib/pg-arca-console/backups/`, loads the archive, starts the service and waits for it to answer. The agents stay enrolled (same secret key); if the console changed address, set `web_server_url` in `/etc/pg-arca/agent.conf` on each node and restart `pg-arca-agent`.
 
 ## 7. Operations
 
