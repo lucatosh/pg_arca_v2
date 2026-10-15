@@ -120,6 +120,8 @@ app.post('/api/selftest', async (_req: Request, res: Response) => {
 });
 
 // Agent bundle served by the console itself: `curl .../agent/install.sh | bash` needs no other infrastructure.
+// the console's own TLS certificate (public): a node that must trust a private/self-signed console fetches it once (PG_ARCA_TLS_CA)
+app.get('/agent/ca.pem', (_req: Request, res: Response) => { if (!TLS_CERT) return res.status(404).json({ error: 'no_native_tls', message: 'The console does not serve TLS itself (a reverse proxy does): get the CA from your proxy / PKI.' }); res.type('application/x-pem-file').send(fs.readFileSync(TLS_CERT)); });
 app.get('/agent/install.sh', (_req: Request, res: Response) => res.type('text/x-shellscript').sendFile(path.join(APP_ROOT, 'unix-agent', 'install-agent.sh')));
 app.get('/agent/pg-arca-agent.tar.gz', (_req: Request, res: Response) => {
   res.type('application/gzip');

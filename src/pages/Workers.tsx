@@ -3,7 +3,7 @@ import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago, bytes } from '../ui';
 import { revalidate, toast, useOpRunner, useQuery, useDraft, clearDrafts } from '../hooks';
 import { go } from '../router';
-import { OP_LABEL, OpPanel, statusBadge } from './shared';
+import { InstallCommand, OP_LABEL, OpPanel, statusBadge } from './shared';
 import { CheckList, DestPaths } from './Infra';
 
 /* ====================================================================================================================================================
@@ -59,8 +59,7 @@ function AddWorker({ onClose }: { onClose: () => void }) {
     <div className="stack">
       {!r ? <><Field label="What it is for" hint="For example: “Backup server DC1”, “Recovery host for production”."><input className="input" value={label} onChange={e => setLabel(e.target.value)} /></Field>
         <p className="small muted">The machine needs Python 3.6+. PostgreSQL is not needed: for restores pg_arca can install the binaries of the required version in a private directory, without touching the system.</p></> :
-        <><p>Run on the machine, as root (the command works once, for 2 hours):</p><pre className="mono small" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{r.installCommand}</pre>
-          <Button sm icon="copy" onClick={() => { navigator.clipboard?.writeText(r.installCommand); toast('Copied', 'ok'); }}>Copy</Button>
+        <><p>Run on the machine, as root (the command works once, for 2 hours):</p><InstallCommand r={r} />
           <p className="small muted">The agent runs as the postgres user if it exists, otherwise as a dedicated system user “pgarca”. The host will appear in the sidebar within a few seconds.</p></>}
       {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
 }

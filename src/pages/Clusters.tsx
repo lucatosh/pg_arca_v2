@@ -1,3 +1,4 @@
+import { InstallCommand } from './shared';
 import React, { useEffect, useRef, useState } from 'react';
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, CopyBlock, Dot, Empty, Field, Icon, Modal, Skeleton, bytes, num } from '../ui';
@@ -140,7 +141,7 @@ function AgentFlow({ onClose, back }: { onClose: () => void; back: () => void })
   return <div className="stack">
     <p>Run this command <strong>as root</strong> {count > 1 ? <>on each of the {count} servers</> : <>on the database server</>}. {count > 1 ? `The token is valid for ${count} servers` : 'The token is valid for a single server'} and expires in one hour.</p>
     {tok.addressWarning ? <Banner kind="warn" title="The servers will not reach this address">{tok.addressWarning}</Banner> : null}
-    <CopyBlock text={tok.installCommand} />
+    <InstallCommand r={tok} />
     <p className="small muted">Requirements: Linux with systemd, Python 3.6 or later, network access from this server to the console ({tok.consoleUrl || location.origin}{tok.consoleUrlConfigured ? ', address set in Settings' : ''}). Installation takes a few seconds and reports at the end whether the server was registered.</p>
     <Banner kind="info"><span className="row gap-s"><Icon n="refresh" spin />{joinedAll.length ? `${joinedAll.length} of ${count} connected: ${joinedAll.map(j => j.name).join(', ')}. Waiting for the others…` : 'Waiting for the agent to connect…'}</span></Banner>
     <div className="row"><Button onClick={onClose}>Close</Button><span className="faint small">You can close this: the node will appear in the list anyway.</span></div></div>;

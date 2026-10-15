@@ -57,7 +57,7 @@ scp root@<IP-CONSOLE>:/etc/pg-arca-console/tls/console.crt /root/console.crt
 
 Il token: console → **Clusters → Connect cluster → With agent → Generate the install command**, copia il valore `arca_enr_…` (vale 1 ora, per un server).
 
-**A. Dalla console (curl)** — il comando che mostra la console, con il certificato aggiunto:
+**A. Dalla console (curl)** — nella finestra del comando spunta «The console uses a private or self-signed certificate»: il comando scarica e fissa il certificato della console da solo. Equivale a:
 ```bash
 curl -fsSL --cacert /root/console.crt https://<IP-CONSOLE>:8443/agent/install.sh | \
   sudo PG_ARCA_URL=https://<IP-CONSOLE>:8443 PG_ARCA_TLS_CA=/root/console.crt PG_ARCA_ENROLL_TOKEN=arca_enr_XXXX bash

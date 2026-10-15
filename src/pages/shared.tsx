@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Op, isTerminal, useQuery } from '../hooks';
 import { openOpLog } from '../OpLog';
-import { Badge, Banner, Button, Progress, ago, bytes, dur, num } from '../ui';
+import { Badge, Banner, Button, CopyBlock, Progress, ago, bytes, dur, num } from '../ui';
 import { itCheck } from '../i18n';
 
 export const OP_LABEL: Record<string, string> = {
@@ -114,4 +114,16 @@ export function hintFor(msg?: string | null): string {
   if (/PGA-GEN-096/.test(m)) return 'After the swap some rows would reference rows that do not exist (foreign key): nothing was changed. Restore the related tables to the same point in time too, or restore them “next to the originals” and recover the rows you need. If you know this is fine you can proceed: those foreign keys will stay NOT VALID.';
   if (/NOT confirmed/.test(m)) return 'Patroni accepted the request but the change was not confirmed in time: check the member states and the Patroni logs.';
   return '';
+}
+
+
+/** The agent install command, with the variant for a console whose TLS certificate is private / self-signed (the node pins the console's certificate). */
+export function InstallCommand({ r, nodeName }: { r: { installCommand: string; installCommandPrivateCa?: string }; nodeName?: string }) {
+  const [priv, setPriv] = React.useState(false);
+  const withNode = (cmd: string) => (nodeName ? cmd.replace('sudo PG_ARCA_URL=', `sudo PG_ARCA_NODE_NAME=${nodeName} PG_ARCA_URL=`) : cmd);
+  const cmd = withNode(priv && r.installCommandPrivateCa ? r.installCommandPrivateCa : r.installCommand);
+  return <div className="stack-s">
+    <CopyBlock text={cmd} />
+    {r.installCommandPrivateCa ? <label className="check small"><input type="checkbox" checked={priv} onChange={e => setPriv(e.target.checked)} /><span>The console uses a private or self-signed certificate <span className="muted">— the command first fetches the console’s certificate and pins it for the download and for the agent (PG_ARCA_TLS_CA)</span></span></label> : null}
+  </div>;
 }

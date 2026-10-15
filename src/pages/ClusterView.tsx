@@ -5,7 +5,7 @@ import { Op, readDraft, revalidate, toast, useDraft, useOpRunner, useQuery, isTe
 import { go } from '../router';
 import { statusKind } from '../App';
 import { useHealth } from './Today';
-import { OP_LABEL, OpPanel, Result, statusBadge } from './shared';
+import { InstallCommand, OP_LABEL, OpPanel, Result, statusBadge } from './shared';
 const BackupTab = lazy(() => import('./Backup').then(m => ({ default: m.BackupTab })));
 const RestoreTab = lazy(() => import('./Restore').then(m => ({ default: m.RestoreTab })));
 const LogsTab = lazy(() => import('./Logs').then(m => ({ default: m.LogsTab })));
@@ -106,7 +106,7 @@ function Nodes({ c }: { c: any }) {
   const leaderName = (l => l?.memberName || l?.name)(nodes.find(n => n.role === 'primary'));
   const selNode = nodes.find(n => n.name === sel); const selAgent = mine.find(n => n.name === sel);
   const doRevoke = async () => { setBusy(true); try { await api('DELETE', `/api/nodes/${revoke.id}`); toast(`Agent on ${revoke.name} revoked`, 'ok'); revalidate('/api/nodes'); revalidate(`/api/clusters/${encodeURIComponent(c.id)}`); setRevoke(null); } catch (e: any) { toast(e.message, 'bad'); } finally { setBusy(false); } };
-  const mint = async (nodeName?: string) => { setBusy(true); try { const t: any = await api('POST', '/api/enrollment-tokens', { label: `${c.name} +${nodeName || 'node'}`, clusterId: c.id, ttlMinutes: 60 }, { key: 'tok-' + Date.now() }); setTok(nodeName ? { ...t, node: nodeName, installCommand: t.installCommand.replace('sudo PG_ARCA_URL=', `sudo PG_ARCA_NODE_NAME=${nodeName} PG_ARCA_URL=`) } : t); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
+  const mint = async (nodeName?: string) => { setBusy(true); try { const t: any = await api('POST', '/api/enrollment-tokens', { label: `${c.name} +${nodeName || 'node'}`, clusterId: c.id, ttlMinutes: 60 }, { key: 'tok-' + Date.now() }); setTok(nodeName ? { ...t, node: nodeName } : t); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
   return <div className="stack-l">
     {nodes.some(n => n.source === 'patroni') ? <Banner kind="info" title={`${nodes.filter(n => n.source === 'patroni').length} cluster nodes do not have the agent yet`}>Patroni sees them, but managing them (backup, restore, access) needs the agent. If the only node with an agent goes down, backups and restores do not start. Use “Install agent” next to each node: the command is already bound to this cluster.</Banner> : null}
     <Card title="Cluster members" actions={<Badge>{c.haState?.managedByPatroni ? `Patroni cluster · ${nodes.length} nodes` : nodes.length > 1 ? `${nodes.length} independent servers` : "Single instance"}</Badge>} pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Node</th><th>Role</th><th>State</th><th className="num">Lag</th><th className="num">CPU</th><th className="num">Memory</th><th className="num">Connections</th><th /></tr></thead>
@@ -122,7 +122,7 @@ function Nodes({ c }: { c: any }) {
           {!mine.length ? <tr><td colSpan={5} className="muted">No agents.</td></tr> : null}</tbody></table></div></Card> : null}
     {!c.isSandbox && c.source !== 'direct' ? <AgentSettings clusterId={c.id} nodes={mine.map(n => ({ id: n.id, name: n.name, online: n.online }))} /> : null}
     {selNode ? <NodePanel c={c} node={selNode} agent={selAgent} leader={leaderName} isAdmin={isAdmin} onClose={() => setSel(null)} onInstall={() => { setSel(null); mint(selNode.name); }} onRevoke={() => { setRevoke(selAgent); setSel(null); }} /> : null}
-    {tok ? <Modal title={tok.node ? `Install the agent on ${tok.node}` : 'Add a node'} onClose={() => setTok(null)} footer={<Button onClick={() => setTok(null)}>Close</Button>}><div className="stack"><p>Run this command as root on the server{tok.node ? ` ${tok.node}` : ''}. The token is valid for a single node and expires in one hour.</p><CopyBlock text={tok.installCommand} /><p className="faint small">Alternative without a token: install the agent giving only the console address. The server announces itself and you approve it from the “New server detected” banner.</p></div></Modal> : null}
+    {tok ? <Modal title={tok.node ? `Install the agent on ${tok.node}` : 'Add a node'} onClose={() => setTok(null)} footer={<Button onClick={() => setTok(null)}>Close</Button>}><div className="stack"><p>Run this command as root on the server{tok.node ? ` ${tok.node}` : ''}. The token is valid for a single node and expires in one hour.</p><InstallCommand r={tok} nodeName={tok.node} /><p className="faint small">Alternative without a token: install the agent giving only the console address. The server announces itself and you approve it from the “New server detected” banner.</p></div></Modal> : null}
     {revoke ? <Confirm danger title={`Revoke the agent on ${revoke.name}?`} confirmLabel="Revoke" busy={busy} onClose={() => setRevoke(null)} onConfirm={doRevoke}>
       <p>The agent’s secret becomes invalid immediately and queued operations for this node are cancelled. PostgreSQL on the node is not touched; reconnecting it needs a new token.</p></Confirm> : null}
   </div>;

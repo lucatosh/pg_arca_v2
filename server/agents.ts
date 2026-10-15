@@ -305,6 +305,8 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     res.status(201).json({
       id: rec.id, token, expiresAt: rec.expiresAt, consoleUrl: base, consoleUrlConfigured: cb.configured, addressWarning: cb.warning,
       installCommand: `curl -fsSL ${base}/agent/install.sh | sudo PG_ARCA_URL=${base} PG_ARCA_ENROLL_TOKEN=${token}${kind === 'worker' ? ' PG_ARCA_ROLE=worker' : ''} bash`,
+      // a console with a private / self-signed certificate: the node fetches the console's certificate once (trust on first use, as the operator decided) and pins it for curl and for the agent
+      installCommandPrivateCa: base.startsWith('https://') ? `curl -fsSLk ${base}/agent/ca.pem -o /etc/pg-arca-console-ca.pem && curl -fsSL --cacert /etc/pg-arca-console-ca.pem ${base}/agent/install.sh | sudo PG_ARCA_URL=${base} PG_ARCA_TLS_CA=/etc/pg-arca-console-ca.pem PG_ARCA_ENROLL_TOKEN=${token}${kind === 'worker' ? ' PG_ARCA_ROLE=worker' : ''} bash` : undefined,
       maxUses: uses,
       note: uses > 1 ? `The token is shown once and can enroll up to ${uses} servers.` : 'The token is shown once and can enroll exactly one node.',
     });
