@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago } from '../ui';
 import { clearDrafts, isTerminal, Op, revalidate, toast, useDraft, useQuery } from '../hooks';
-import { Issue, Rule, accessCoverage, analyze, clusterNeeds, covers, describe, fill, fromEffective, key, sortRules, stripUntil, tag, untilLabel, untilOf, validCidr, withUntil } from '../hbaLogic';
+import { AccessNeed, Issue, Rule, accessCoverage, analyze, clusterNeeds, covers, describe, fill, fromEffective, key, sortRules, stripUntil, tag, untilLabel, untilOf, validCidr, withUntil } from '../hbaLogic';
 
 type Row = Rule & { _id: string };
 type Tpl = { id: string; name: string; description: string; envs: string[]; vars: { key: string; label: string; def: string; hint?: string }[]; rules: Rule[] };
@@ -80,6 +80,12 @@ export function HbaTab({ c }: { c: any }) {
   if (c.isSandbox) return <Banner kind="info" title="Not available on the demo cluster">Connect a real cluster with the agent to manage pg_hba.</Banner>;
   if (c.source === 'direct') return <Card><Empty icon="lock" title="The agent is required">pg_hba.conf is edited on the database server: install the agent on a node of this cluster.</Empty></Card>;
   return <HbaInner c={c} />;
+}
+
+/** The rules PostgreSQL applies on one node besides the managed block: the other DCS entries on Patroni, else what the server loaded from its file. */
+function outsideOf(data: any): Rule[] {
+  return Array.isArray(data?.dcs_rules) ? (data.dcs_rules as any[]).map(r => ({ type: r.type, database: r.database, user: r.user, address: r.address || '', method: r.method, options: r.options || undefined }) as Rule)
+    : ((data?.effective || []) as any[]).filter(r => !r.error).map(fromEffective);
 }
 
 function HbaInner({ c }: { c: any }) {
@@ -205,7 +211,7 @@ function HbaInner({ c }: { c: any }) {
     {probs.length ? <Banner kind="bad" title="PostgreSQL reports errors in the current file">{probs.slice(0, 3).map((p: any) => `line ${p.line_number}: ${p.error}`).join(' · ')}</Banner> : null}
     {first.has_includes ? <Banner kind="info" title="The file uses include">Rules imported with include are not analyzed here: the order shown may not reflect the whole file.</Banner> : null}
 
-    <ClusterAccess c={c} all={all} first={first} add={add} patroni={patroni} />
+    <ClusterAccess c={c} all={all} first={first} add={add} patroni={patroni} perNode={patroni ? [] : okReads.map(r => ({ node: r.nodeName, all: [...shown, ...outsideOf(r.data).filter(x => !shown.some(y => key(y) === key(x)))] }))} />
     <Suggestions rows={shown} existing={existing} first={first} add={add} c={c} />
 
     <Card title="Rules managed by the console" actions={<div className="row">
@@ -271,7 +277,7 @@ function RuleLine({ r, n, issues, manual, onMove, onRemove }: { r: Row; n: numbe
 /** Suggestions derived from live data: replication clients that no rule would currently allow. */
 /** Every node -> every node: the replication user and the superuser must be accepted from each member's address, otherwise a failover,
  *  a re-clone (pg_basebackup) or a pg_rewind towards THAT member fails. Shown as a matrix with one click to add what is missing. */
-function ClusterAccess({ c, all, first, add, patroni }: { c: any; all: Rule[]; first: any; add: (r: Rule[]) => number; patroni: boolean }) {
+function ClusterAccess({ c, all, first, add, patroni, perNode }: { c: any; all: Rule[]; first: any; add: (r: Rule[]) => number; patroni: boolean; perNode: { node: string; all: Rule[] }[] }) {
   const nodes: { name: string; host?: string }[] = (c.haState?.nodes || []).map((n: any) => ({ name: n.name, host: String(n.host || '') }));
   const facts = first?.facts || {};
   const learnt: string = (facts.replication_users || [])[0] || (first?.suggest?.replication_clients || [])[0]?.user || '';
@@ -285,13 +291,18 @@ function ClusterAccess({ c, all, first, add, patroni }: { c: any; all: Rule[]; f
   const extraNets = extra.split(/[\s,]+/).filter(Boolean);
   const needs = useMemo(() => clusterNeeds(nodes, { replUser: replUser.trim(), superuser: superuser.trim(), ssl, method, extraNets }), [JSON.stringify(nodes), replUser, superuser, ssl, method, extra]);
   const cov = useMemo(() => accessCoverage(all, needs), [all, needs]);
-  const missing = cov.filter(x => x.by === null).map(x => x.need.rule);
+  // without Patroni every node has its own file: a need is covered only where EVERY node's rules cover it (the draft block is applied to all)
+  const perNodeCov = useMemo(() => perNode.map(pn => ({ node: pn.node, cov: accessCoverage(pn.all, needs) })), [perNode, needs]);
+  const missingOn = (need: AccessNeed) => perNodeCov.filter(pn => { const x = pn.cov.find(y => y.need === need); return x && (x.by === null || x.blocked); }).map(pn => pn.node);
+  const missing = cov.filter(x => x.by === null || (perNodeCov.length > 1 && missingOn(x.need).length > 0)).map(x => x.need.rule);
   const blocked = cov.filter(x => x.blocked);
   const froms = [...new Set(needs.map(n => n.from))];
   const cell = (from: string, kind: 'replication' | 'admin') => {
     const x = cov.find(y => y.need.from === from && y.need.kind === kind); if (!x) return <span className="faint">—</span>;
     if (x.blocked) return <Badge kind="bad" title={`Rule #${x.by! + 1} rejects it: ${describe(all[x.by!])}`}>blocked by #{x.by! + 1}</Badge>;
     if (x.by === null) return <Badge kind="warn">missing</Badge>;
+    const elsewhere = perNodeCov.length > 1 ? missingOn(x.need) : [];
+    if (elsewhere.length) return <Badge kind="warn" title="Each node has its own pg_hba.conf: covered here, not on every node">missing on {elsewhere.join(', ')}</Badge>;
     return <Badge kind="ok" title={describe(all[x.by])}>rule #{x.by + 1}</Badge>;
   };
   const noAddr = nodes.filter(n => !n.host || !/^[0-9a-fA-F.:]+$/.test(String(n.host).split('/')[0]));
