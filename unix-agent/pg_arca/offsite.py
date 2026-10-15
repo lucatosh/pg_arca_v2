@@ -177,6 +177,33 @@ class Mirror(object):
             json.dump(obj, f)
         os.rename(tmp, path)
 
+    def dir_signature(self):
+        """mtimes of the directories whose content the mirror follows: unchanged = the local inventory of last time is still right (no
+        thousands of stat calls per minute on a share for a quiet archive)."""
+        out = []
+        repo, wal = self.config.get("repo_path"), self.config.get("wal_archive_dir")
+        for d in [wal, os.path.join(repo or "", "cas", "packs"), os.path.join(repo or "", "stanza")]:
+            try:
+                out.append(os.stat(d).st_mtime)
+            except OSError:
+                out.append(None)
+        sroot = os.path.join(repo or "", "stanza")
+        try:
+            for st in sorted(os.listdir(sroot)):
+                bd = os.path.join(sroot, st, "backup")
+                try:
+                    out.append(os.stat(bd).st_mtime)
+                    for sid in sorted(os.listdir(bd)):
+                        try:
+                            out.append(os.stat(os.path.join(bd, sid)).st_mtime)
+                        except OSError:
+                            out.append(None)
+                except OSError:
+                    out.append(None)
+        except OSError:
+            pass
+        return tuple(out)
+
     def local_inventory(self):
         repo, wal = self.config.get("repo_path"), self.config.get("wal_archive_dir")
         local = {}
@@ -193,12 +220,16 @@ class Mirror(object):
         t0 = time.time()
         st = {"enabled": True, "started": t0, "endpoint": cfg["endpoint"], "bucket": cfg["bucket"], "prefix": cfg.get("prefix") or ""}
         try:
+            prev = self.status() or {}
+            dsig = self.dir_signature()
+            if not force and not dry_run and prev.get("ok") and getattr(self, "_last_dsig", None) == dsig and time.time() - (prev.get("finished") or 0) < FULL_LIST_EVERY:
+                return dict(prev, skipped=True)                 # directories untouched since the last clean cycle: not even a local walk
             local = self.local_inventory()
             # nothing changed locally since the last clean cycle and the bucket was listed recently: no request at all (a quiet cluster must not
             # cost thousands of LIST calls a day); a change, an error or FULL_LIST_EVERY elapsed -> the real cycle
             sig = _sig(local)
-            prev = self.status() or {}
             if not force and not dry_run and prev.get("ok") and prev.get("local_sig") == sig and time.time() - (prev.get("finished") or 0) < FULL_LIST_EVERY:
+                self._last_dsig = dsig
                 return dict(prev, skipped=True)
             c = client_for(cfg)
             remote = c.list("")
@@ -262,6 +293,7 @@ class Mirror(object):
         if st.get("ok"):
             st["last_ok"] = st["finished"]
             st["local_sig"] = _sig(self.local_inventory())
+            self._last_dsig = self.dir_signature()
         else:
             st["last_ok"] = prev.get("last_ok")
         self._write(self.status_path, st)
