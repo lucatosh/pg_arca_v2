@@ -21,6 +21,7 @@ import time
 from pg_arca.s3 import S3Client, S3Error
 
 INTERVAL_SEC = 60
+FULL_LIST_EVERY = 10 * 60                  # a quiet repository is listed in the bucket at most this often
 KEEP_DELETE_GRACE = 6 * 3600               # a remote object with no local counterpart is deleted only after this (local removal must be older than a cycle)
 SET_FILES = ("meta.json", "manifest.json.z", "catalog.json.z", "backup_label")
 
@@ -122,6 +123,11 @@ def _local_wal_files(wal_dir):
     return out
 
 
+def _sig(local):
+    import hashlib
+    return hashlib.sha1(repr(sorted(local.items())).encode("utf-8")).hexdigest()
+
+
 def _order(key):
     """Upload order: packs and descriptors first, then set files (meta.json last of all), then WAL. Deletion uses the reverse."""
     if key.startswith("repo/cas/packs/"):
@@ -180,7 +186,7 @@ class Mirror(object):
             local["wal/" + k] = sz
         return local
 
-    def sync(self, cancel=None, progress=None, dry_run=False):
+    def sync(self, cancel=None, progress=None, dry_run=False, force=False):
         cfg = self.cfg()
         if not cfg or not cfg.get("enabled", True):
             return {"enabled": False}
@@ -188,6 +194,12 @@ class Mirror(object):
         st = {"enabled": True, "started": t0, "endpoint": cfg["endpoint"], "bucket": cfg["bucket"], "prefix": cfg.get("prefix") or ""}
         try:
             local = self.local_inventory()
+            # nothing changed locally since the last clean cycle and the bucket was listed recently: no request at all (a quiet cluster must not
+            # cost thousands of LIST calls a day); a change, an error or FULL_LIST_EVERY elapsed -> the real cycle
+            sig = _sig(local)
+            prev = self.status() or {}
+            if not force and not dry_run and prev.get("ok") and prev.get("local_sig") == sig and time.time() - (prev.get("finished") or 0) < FULL_LIST_EVERY:
+                return dict(prev, skipped=True)
             c = client_for(cfg)
             remote = c.list("")
             up, down = plan(local, remote)
@@ -249,6 +261,7 @@ class Mirror(object):
         prev = self.status() or {}
         if st.get("ok"):
             st["last_ok"] = st["finished"]
+            st["local_sig"] = _sig(self.local_inventory())
         else:
             st["last_ok"] = prev.get("last_ok")
         self._write(self.status_path, st)

@@ -1390,7 +1390,7 @@ class OperationExecutor:
         return {"offsite": shown, "probe": probe}
 
     def h_offsite_sync(self, p):
-        st = self._mirror().sync(cancel=self._cancelled, progress=self._progress, dry_run=bool(p.get("dry_run")))
+        st = self._mirror().sync(cancel=self._cancelled, progress=self._progress, dry_run=bool(p.get("dry_run")), force=True)
         if st.get("ok") is False:
             raise OpError(st.get("last_error") or "offsite sync failed")
         return st

@@ -108,8 +108,10 @@ class OffsiteTests(unittest.TestCase):
         self.assertIn("wal/000000010000000000000001.zst", remote)
         self.assertIn("wal/000000010000000000000001.zst.meta", remote)
         self.assertEqual(st["uploaded"], len(remote))
-        # idempotent: a second cycle uploads nothing
+        # idempotent: a second cycle uploads nothing; and with nothing changed locally it does not even list the bucket
         st2 = self.m.sync()
+        self.assertTrue(st2.get("skipped"), st2)
+        st2 = self.m.sync(force=True)
         self.assertEqual((st2["uploaded"], st2["deleted"]), (0, 0))
         # the status file the heartbeat reads
         status = self.m.status()
@@ -125,7 +127,7 @@ class OffsiteTests(unittest.TestCase):
         for k in gone:
             gone[k] = time.time() - offsite.KEEP_DELETE_GRACE - 1
         json.dump(gone, open(self.m.gone_path, "w"))
-        st4 = self.m.sync()
+        st4 = self.m.sync(force=True)
         self.assertEqual(st4["deleted"], 4)
         self.assertFalse(any(k.startswith("repo/stanza/main/backup/20260101-000000F/") for k in offsite.client_for(self.m.cfg()).list("")))
 
@@ -143,7 +145,7 @@ class OffsiteTests(unittest.TestCase):
         self.assertTrue(st["local_empty"])
         self.assertEqual(st["deleted"], 0)
         json.dump(dict((k, gone_t) for k in offsite.client_for(self.m.cfg()).list("")), open(self.m.gone_path, "w"))
-        st = self.m.sync()
+        st = self.m.sync(force=True)
         self.assertEqual((st["deleted"], len(offsite.client_for(self.m.cfg()).list(""))), (0, n), "nothing deleted while the local side looks empty")
 
     def test_failed_upload_is_retried_next_cycle(self):
