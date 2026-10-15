@@ -227,6 +227,20 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('tr:has-text("prodpg") button:has-text("Assign")'); await p.click('label.opt:has-text("Long retention")'); await p.click('.modal button:has-text("Save")');
   await p.waitForSelector('tr:has-text("prodpg"):has-text("Assigned to this cluster")');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Backup policy'); await p.waitForSelector('.card .badge:has-text("Long retention")'); await shot('15d-backup-strategy');
+  // a template with the rc.1 policy fields: days of recoverability, heavy-work hours, read rate limit -> summarized on the card, kept on reopen
+  { await p.goto(base + '/#/strategy'); await p.waitForSelector('button:has-text("New template")'); await p.click('button:has-text("New template")'); await p.waitForSelector('.modal:has-text("New template")');
+    const fld = (l) => `.modal .field:has(label:text-is("${l}")) input`;
+    await p.fill(fld('Name'), 'Night window'); await p.fill(fld('…unless younger than (days)'), '30'); await p.fill(fld('Read rate limit (MB/s, 0 = none)'), '50');
+    await p.fill('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=0', '22'); await p.fill('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=1', '6');
+    await shot('15d1-template-fields'); await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Template saved');
+    const card = p.locator('.tpl:has-text("Night window")'); await card.waitFor();
+    for (const s of ['30 days of history', 'read limit 50 MB/s', 'fulls and verifications 22:00–06:00']) assert.ok((await card.innerText()).includes(s), `template summary shows "${s}"`);
+    await card.locator('button:has-text("Edit")').click(); await p.waitForSelector('.modal:has-text("Edit template")');
+    assert.equal(await p.inputValue(fld('…unless younger than (days)')), '30'); assert.equal(await p.inputValue(fld('Read rate limit (MB/s, 0 = none)')), '50');
+    assert.equal(await p.inputValue('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=0'), '22'); assert.equal(await p.inputValue('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=1'), '6');
+    await p.fill(fld('Read rate limit (MB/s, 0 = none)'), '0'); await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Template saved');
+    await p.waitForFunction(() => { const c = [...document.querySelectorAll('.tpl')].find(e => e.textContent.includes('Night window')); return c && !c.textContent.includes('read limit'); });
+    await shot('15d2-template-saved'); }
   // a server announces itself (agent installed without a token) -> banner -> approve
   { const fp = 'e2efingerprint0000000001', secret = 'a'.repeat(64); const sh = require('crypto').createHash('sha256').update(secret).digest('hex');
     const r = await p.request.post(base + '/api/agent/request-join', { data: { fingerprint: fp, secret_hash: sh, node_name: 'e2e-new', agent_version: '2.0', discovery: { postgres_instances: [{ version: '16.4', data_directory: '/var/lib/postgresql/16/main', port: 5432, cluster_key: 'sysid:e2e-new-key', role: 'primary' }] } } });
