@@ -1077,7 +1077,8 @@ class OperationExecutor:
                         raise EngineError("PGA-RST-084", "this server is a standby: replace the PRIMARY (the standby is then rebuilt from it)")
                     n = int(s.scalar("SELECT count(*) FROM pg_stat_replication") or 0)
                     if n:
-                        warn.append("%d standby server(s) stream from this server: after the replacement they follow a past timeline and must be rebuilt from it" % n)
+                        warn.append(("1 standby server streams from this server: after the replacement it follows a past timeline and must be rebuilt from it" if n == 1 else
+                                     "%d standby servers stream from this server: after the replacement they follow a past timeline and must be rebuilt from it" % n))
                 finally:
                     s.close()
             except EngineError as e:

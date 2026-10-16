@@ -7,6 +7,10 @@ import { itCheck, itFix } from '../../src/i18n';
 assert.strictEqual(itCheck('/var/tmp/pg_arca_scratch: 26.5 GiB free, about 16.1 GiB needed'), '/var/tmp/pg_arca_scratch: 26.5 GiB free, about 16.1 GiB needed');
 assert.strictEqual(itFix('make sure it has about 3 GiB free'), 'make sure it has about 3 GiB free');
 assert.strictEqual(itCheck(null), '');
+// older agents' "N thing(s)" plurals read as people write them
+assert.strictEqual(itCheck('WAL archive is missing 1 segment(s) required (first: X)'), 'WAL archive is missing 1 segment required (first: X)');
+assert.strictEqual(itCheck('3 backup set(s) and 1 WAL file(s) of this cluster'), '3 backup sets and 1 WAL file of this cluster');
+assert.strictEqual(itCheck('WAL segment(s) not archived'), 'WAL segments not archived');
 assert.strictEqual(itFix(undefined), '');
 
 // the UI is English: no Italian left in the string literals / JSX text of src/ (comments are ignored)

@@ -1,7 +1,7 @@
 import { RecoveryPlacement } from './Placement';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { takePendingIntent } from '../tasks';
-import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago, nof, setName } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago, nof, setName, dday } from '../ui';
 import { Op, useDraft, useOpRunner, useQuery } from '../hooks';
 import { OpPanel, Result, hintFor } from './shared';
 import { DestPicker, RestoredCard, RestoredList, TTL_CHOICES } from './Restored';
@@ -165,7 +165,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   // the end of the job overwrites something that exists now: typed confirmation
   const overwrites = () => fixServer() || (fin === 'fix' && ((scope === 'database' && dbExists()) || (scope === 'object' && intent !== 'rows' && finMode() === 'replace')));
   const okWhere = fixServer() ? true : scope === 'instance' ? destNow().startsWith('/') : scope === 'database' ? (fin === 'fix' || okName) : true;
-  const [whenBad, setWhenBad] = useState(false);   // a time typed but not understood: never restore to the previous one silently
+  const [whenBad, setWhenBad] = useState(false);
+  const objq = useQuery<any>(`/api/clusters/${encodeURIComponent(c.id)}/objectives`, { interval: 120000 });   // a time typed but not understood: never restore to the previous one silently
   const okWhen = !!tgt && (tgt.mode !== 'time' || (!whenBad && tgt.ms >= from && tgt.ms <= to + 60000));
   const lastPlan = useRef<any>(null); if (plan.op?.status === 'succeeded') lastPlan.current = plan.op.result; else if (!plan.op && !plan.busy) lastPlan.current = null;
   const pres = plan.op?.status === 'succeeded' ? plan.op.result : plan.busy ? lastPlan.current : null;
@@ -287,7 +288,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
             <label className="check"><input type="checkbox" checked={delta} onChange={e => setDelta(e.target.checked)} />Delta restore onto an already restored directory (copies only what differs)</label>
             <label className="check"><input type="checkbox" checked={keepArch} onChange={e => setKeepArch(e.target.checked)} />This copy will replace the original server: keep WAL archiving enabled (pg_arca does not start it: you start it in its final place)</label>
             <p className="small muted">{keepArch ? 'Once started, the copy will archive into the same WAL archive as production: do this only if the original server will not come back.' : 'By default the copy starts with WAL archiving off, no synchronous standbys to wait for, no primary to follow, no active logical replication subscriptions and no libraries that act on other servers by themselves (pg_cron…): you can start it next to production without affecting it.'}</p></div></Details></> : null}
-        {pres && (plan.op?.status === 'succeeded' || plan.busy) ? <div className={plan.busy ? 'stale' : ''} aria-busy={plan.busy} title={plan.busy ? 'Checking again…' : undefined}><Verdict p={pres} /></div> : <OpPanel op={plan.op} error={plan.error} label="Pre-flight checks" />}
+        {pres && (plan.op?.status === 'succeeded' || plan.busy) ? <div className={plan.busy ? 'stale' : ''} aria-busy={plan.busy} title={plan.busy ? 'Checking again…' : undefined}><Verdict p={pres} drill={objq.data?.rto?.drill || null} /></div> : <OpPanel op={plan.op} error={plan.error} label="Pre-flight checks" />}
         {scope === 'database' && pres && (pres.missing_roles || []).length ? <div>
           <label className="check"><input type="checkbox" checked={mkRoles} onChange={e => setMkRoles(e.target.checked)} />Create the missing roles ({(pres.missing_roles as string[]).slice(0, 6).join(', ')}{pres.missing_roles.length > 6 ? '…' : ''}) as placeholders, to keep owners and privileges</label>
           <p className="small muted" style={{ margin: '2px 0 0 26px' }}>{mkRoles ? 'The roles are created without login (NOLOGIN), without a password and without membership in other roles: a dropped account never becomes active again, its objects only keep owner and privileges.' : 'Without these roles, the objects of the restored database will be owned by the agent’s user and lose the privileges granted on them.'}</p></div> : null}
@@ -398,12 +399,15 @@ function ForensicsTools({ fx, dml, fxHours, setFxHours, dmlMin, setDmlMin, onPic
 }
 
 /** The verdict of the checks, in plain words: ready / ready with something to know / blocked (and the way out). */
-function Verdict({ p }: { p: any }) {
+function Verdict({ p, drill }: { p: any; drill?: { seconds: number; bytes: number; at: string } | null }) {
   // ONE box, one word for the state (an independent review found two boxes saying the same thing - "All set" + "Restore possible",
   // "Something must be fixed first" + "Cannot start yet" - and a "(checks passed: 1)" nobody needs): the items go inside it.
   const pf = p.preflight; const warn = (pf?.checks || []).filter((x: any) => x.level === 'warn'); const bad = (pf?.checks || []).filter((x: any) => x.level === 'bad');
   if (p.missing_wal?.length) return <Banner kind="bad" title="Blocked: this point in time cannot be reached">{nof(p.missing_wal.length, 'WAL file')} {p.missing_wal.length === 1 ? 'is' : 'are'} missing from the archive (the first: <code>{p.missing_wal[0]}</code>): recovery cannot cross that gap. Pick an earlier point in time or another backup.</Banner>;
-  const size = p.extract_bytes ? ` About ${bytes(p.extract_bytes)} will be extracted.` : p.bytes ? ` About ${bytes(p.bytes)} will be written.` : '';
+  const vol = Number(p.extract_bytes || p.bytes) || 0;
+  // how long, from what THIS installation measured (the last disaster recovery drill): data volume at the drill's speed, plus the WAL replay
+  const eta = vol && drill && drill.bytes > 0 && drill.seconds > 0 ? Math.max(5, Math.round(vol * drill.seconds / drill.bytes)) : null;
+  const size = vol ? ` About ${bytes(vol)} will be ${p.extract_bytes ? 'extracted' : 'written'}${eta != null ? `: roughly ${eta >= 120 ? `${Math.round(eta / 60)} min` : `${eta} s`} at the speed of the last drill (${dday(drill!.at)}), plus the WAL replay` : ''}.` : '';
   if (bad.length) return <Banner kind="bad" title={`Blocked: ${nof(bad.length, 'problem')} to fix first`}><ul className="verdict">{bad.map((x: any) => <li key={x.id}>{cap(itCheck(x.text))}{x.fix ? <div className="fix small">What to do: {cap(itFix(x.fix))}</div> : null}</li>)}</ul></Banner>;
   return <Banner kind={warn.length ? 'warn' : 'ok'} title={warn.length ? `Ready to restore, ${nof(warn.length, 'thing')} to know first` : 'Ready to restore'}>
     <div>The backup and the WAL it needs are available.{size}</div>
