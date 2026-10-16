@@ -38,6 +38,9 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('.modal button:has-text("Start the migration in the background")'); await p.click('.modal >> nth=-1 >> button:has-text("Start")');
   await p.waitForSelector('text=Migration completed', { timeout: 15000 }); await shot('04d-migration-done');
   await p.click('.modal >> nth=0 >> button:has-text("Close")'); await p.waitForSelector('text=Previous location still used by restores', { state: 'detached', timeout: 20000 });
+  // a named restore point before a risky change: marked from the Backup tab, offered in the restore wizard below
+  await p.click('button:has-text("Mark a restore point")'); await p.fill('.modal input[placeholder="Before release 4.2"]', 'Before release 4.2'); await p.click('.modal button:has-text("Mark it now")');
+  await p.waitForSelector('.card:has-text("Restore points") td:has-text("Before release 4.2")', { timeout: 10000 }); await shot('04e-restore-point');
   { const b = p.locator('button:has-text("Disaster recovery drill")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster restored in 13 minutes', { timeout: 10000 }); await shot('04b-drill'); } }
   await p.click('button:has-text("Start backup")'); await p.waitForSelector('text=Copying data'); { const strip = await p.waitForSelector('.activitystrip:has-text("Backup (")', { timeout: 8000 }).catch(() => null);   // the strip polls: a 3 s fake backup may end first
     if (strip) assert(!/backup_run|\bcopy\b,/.test(await strip.innerText()), 'the strip shows labels, not raw operation types or phase keys'); } await shot('05-backup-running');
@@ -65,6 +68,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=To which point in time?'); assert(await p.waitForSelector('label.opt.on:has-text("Just before:") .badge:has-text("Recommended")', { timeout: 10000 }).catch(() => null), 'just-before recommended for a live database');
   assert(await p.locator('label.opt:has-text("The latest saved point") .badge:has-text("Recommended")').count() === 0, 'latest is not recommended for a live database');
   await p.click('label.opt:has-text("The latest saved point") input'); await p.waitForSelector('text=/appdb.*still exists, and the latest point holds/'); await shot('08a-latest-warning');
+  await p.waitForSelector('label.opt:has-text("Restore point: Before release 4.2")');
   await p.click('label.opt:has-text("A specific point in time") input'); await p.click('button:has-text("1 hour ago")'); await p.waitForSelector('input[aria-label^="Date and time"]');
   await p.click('summary:has-text("Find the exact moment")'); await p.waitForSelector('[role=slider]'); await shot('08-timeline');
   const tr = await p.locator('.rt .track').boundingBox();

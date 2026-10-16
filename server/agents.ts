@@ -289,10 +289,22 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
           idempotencyKey: r.op.id + ':walswitch', createdBy: 'pg_arca (backup on a standby)' }).catch(() => undefined);
       }
     }
+    if (r.ok && status === 'succeeded' && r.op?.type === 'restore_point' && result && typeof result === 'object') await recordRestorePoint(store, { ...r.op, result });
     if (r.ok && status === 'succeeded' && r.op?.type === 'discovery_scan' && result && typeof result === 'object') {
       await store.mutate(d => { if (d.nodes[node.id]) { d.nodes[node.id].discovery = result; refreshCluster(d, d.nodes[node.id].clusterId || ''); } });
     }
     res.status(r.ok ? 200 : 409).json({ ok: r.ok, reason: r.reason, status: r.op?.status, cancel: !!r.cancel });
+  });
+}
+
+/** A restore point the agent created: remembered per cluster (at most 200, newest first; replayed reports of the same operation are not doubled). */
+export async function recordRestorePoint(store: Store, op: any) {
+  const r = op?.result; if (!r || typeof r.lsn !== 'string' || !/^[0-9A-F]+\/[0-9A-F]+$/i.test(r.lsn)) return;
+  await store.mutate(d => {
+    const all = ((d.settings as any).restorePoints ||= {}); const list: any[] = (all[op.clusterId] ||= []);
+    if (list.some(x => x.opId === op.id)) return;
+    list.unshift({ name: String(r.name || op.params?.name || '').slice(0, 60), lsn: r.lsn, at: String(r.at || new Date().toISOString()), timeline: r.timeline ?? null, by: op.createdBy || '?', opId: op.id });
+    all[op.clusterId] = list.slice(0, 200);
   });
 }
 
@@ -494,6 +506,12 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       throw e;
     }
   }
+
+  // named restore points of a cluster, newest first (kept with the console state: an operation's history expires, the point does not)
+  app.get('/api/clusters/:id/restore-points', (req: Request, res: Response) => {
+    const st = store.peek(); if (!st.clusters.some((c: any) => c.id === req.params.id)) return res.status(404).json({ error: 'cluster_not_found' });
+    res.json({ points: ((st.settings as any).restorePoints?.[req.params.id] || []) });
+  });
 
   app.get('/api/clusters/:id/objectives', (req: Request, res: Response) => {
     const o = objectives(store.peek(), req.params.id);

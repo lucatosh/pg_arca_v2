@@ -6,6 +6,7 @@ import re
 import shutil
 import threading
 import time
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 WRITE_WINDOW = 128                       # chunks fetched together while a file is rebuilt (8 MiB of 64 KiB chunks)
@@ -15,7 +16,7 @@ from pg_arca.pgcompat import Profile, require_supported, set_profile
 from pg_arca.engine.pgdata import list_directories
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
 from pg_arca.engine.util import (read_file, parse_wal_name, last_wal_segno, EngineError, chunk_hash, human, iso, lsn_to_int, parse_target_time, safe_relpath, target_time_to_dt, wal_name,
-                                 wal_segno, read_json, write_json)
+                                 wal_segno, read_json, write_json, fsync_dir)
 
 
 # --------------------------------------------------------------------------- planning
@@ -230,22 +231,57 @@ def materialize(ctx, merged, dest, delta=False, progress=None, cancel=None):
 
 
 def remove_stale(dest, merged):
-    """--delta: delete files that are not part of the restored set (never directories' roots)."""
+    """--delta: delete files that are not part of the restored set (never directories' roots).
+    pg_wal is emptied too (independent review): segments and .history files left by the previous copy - promoted to its own timeline - would be
+    followed by recovery_target_timeline='latest' when restore_command has no such file, replaying that copy's own writes. A stale tablespace_map
+    would re-point the tablespace links to old paths: it goes as well (backup_label and recovery.signal are rewritten below)."""
     keep = set(merged)
     removed = 0
+    wal = os.path.join(dest, "pg_wal")
+    if os.path.islink(wal):                                   # a WAL directory elsewhere: the link goes (never what it points to), a plain one replaces it
+        os.unlink(wal)
     for cur, dirs, files in os.walk(dest, followlinks=False):
         rel_root = os.path.relpath(cur, dest)
         rel_root = "" if rel_root == "." else rel_root
-        if rel_root.startswith("pg_wal"):
-            continue
         for f in files:
             rel = (rel_root + "/" + f) if rel_root else f
-            if rel not in keep and f not in ("backup_label", "recovery.signal", "tablespace_map", RESUME_MARK):
+            if rel not in keep and f not in ("backup_label", "recovery.signal", RESUME_MARK):
                 try:
                     os.unlink(os.path.join(cur, f))
                     removed += 1
                 except OSError:
                     pass
+    os.makedirs(os.path.join(wal, "archive_status"), mode=0o700, exist_ok=True)
+    return removed
+
+
+def remove_stale_tablespaces(dest, merged):
+    """--delta, once pg_tblspc/<oid> points where this restore writes: the same cleanup INSIDE each tablespace's version directory (os.walk does not
+    follow the links). Without it a relation file the replay recreates keeps the stale extra pages of the previous copy (redo reuses an existing file).
+    Only the version directories this backup has (PG_<major>_<catversion>) are touched: another major's directory at the same location is not ours."""
+    keep = set(merged)
+    removed = 0
+    root = os.path.join(dest, "pg_tblspc")
+    if not os.path.isdir(root):
+        return 0
+    for oid in os.listdir(root):
+        link = os.path.join(root, oid)
+        pre = "pg_tblspc/%s/" % oid
+        mine = set(k[len(pre):].split("/", 1)[0] for k in keep if k.startswith(pre))
+        if not mine or not os.path.isdir(link):
+            continue
+        base = os.path.realpath(link)
+        for vd in mine:
+            top = os.path.join(base, vd)
+            for cur, dirs, files in os.walk(top, followlinks=False):
+                for f in files:
+                    rel = pre + os.path.relpath(os.path.join(cur, f), base).replace(os.sep, "/")
+                    if rel not in keep:
+                        try:
+                            os.unlink(os.path.join(cur, f))
+                            removed += 1
+                        except OSError:
+                            pass
     return removed
 
 
@@ -430,8 +466,23 @@ def scrub_recovery_settings(dest):
             else:
                 out.append(ln)
         if changed:
-            with open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
-                f.write("\n".join(out))
+            # atomically (independent review): this also runs on PRODUCTION's data directory after an in-place restore - a full disk during a
+            # plain rewrite left postgresql.auto.conf truncated. Same mode and owner as before.
+            st = os.stat(path)
+            fd, tmp = tempfile.mkstemp(dir=dest, prefix=".pgarca-conf-")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
+                    f.write("\n".join(out))
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.chmod(tmp, st.st_mode & 0o7777)
+                if hasattr(os, "geteuid") and os.geteuid() == 0:
+                    os.chown(tmp, st.st_uid, st.st_gid)
+                os.rename(tmp, path)
+                fsync_dir(dest)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
 
 
 def install_external_conf(dest, merged_all):
@@ -558,6 +609,38 @@ def _recovery_path(ctx, start_tli, timeline):
     return [(target, None)] + [(t, forks[t]) for t in sorted(forks, reverse=True) if t >= start_tli]
 
 
+def fit_chain_to_timeline(ctx, chain, timeline="latest"):
+    """The chain as the recovery will really replay it. A set taken on timeline T up to stop S is usable only if the recovery stays on T at least up
+    to S: when the target timeline left T earlier (a lagging standby promoted, forking at F < S), the set's files hold pages of the ABANDONED branch
+    between F and S, and - the backup_label being the full's - PostgreSQL believes the cluster consistent: a silently diverged result. Such sets are
+    dropped from the end of the chain (the earlier ones reach the same target through the archived WAL); when even the base full is past the fork
+    nothing from this chain can be used. Returns (chain, note or None). Undecidable (history unreadable): the chain as it is."""
+    if not chain:
+        return chain, None
+    try:
+        path = dict(_recovery_path(ctx, int(chain[0].get("timeline") or 1), timeline))
+    except Exception as e:
+        ctx.log("warning", "timeline history not readable for the chain check: %s" % e)
+        return chain, None
+    keep = []
+    for meta in chain:
+        t = int(meta.get("timeline") or 1)
+        if t not in path:
+            bad = "it was taken on timeline %d, which the recovery does not follow" % t
+        elif path[t] is not None and lsn_to_int(meta.get("stop_lsn") or "0/0") > path[t]:
+            e = path[t]
+            bad = "it ends at %s on timeline %d, after the point where the recovery leaves that timeline (%X/%X)" % (meta.get("stop_lsn"), t, e >> 32, e & 0xFFFFFFFF)
+        else:
+            keep.append(meta)
+            continue
+        if not keep:
+            raise EngineError("PGA-PITR-020", "backup %s cannot be the base of this recovery: %s" % (meta["id"], bad),
+                              "choose a backup taken after the timeline switch, or recover along the backup's own timeline (timeline 'current')")
+        return keep, "backups %s skipped: %s (the recovery replays the archived WAL from %s instead)" % (
+            ", ".join(m["id"] for m in chain[len(keep):]), bad, keep[-1]["id"])
+    return keep, None
+
+
 def clamp_time_target(ctx, chain, target_time, timeline="latest", max_segments=6):
     """PostgreSQL stops at a TIME only on a commit/abort record later than it; with none in the archive (an idle database, the end of an abandoned
     timeline) it replays everything and then refuses to start ('recovery ended before configured recovery target was reached'). The state at that
@@ -675,7 +758,11 @@ def choose_set(repo, spec=None, target_time=None, target_lsn=None, target_xid=No
             ok = []
             for s in done:
                 st = target_time_to_dt((s.get("stop_time") or "").replace("T", " ")) if s.get("stop_time") else None
-                if st is not None and st <= t:
+                # stop_time is the agent's clock truncated to the second, the real end (stop_lsn) can be up to a second later: an incremental whose
+                # end may lie AFTER the target would be stopped short of its own pages - a torn cluster PostgreSQL believes consistent (the label is
+                # the full's). Incrementals therefore need a margin; a full is safe (PostgreSQL itself refuses to stop before its end).
+                margin = 0 if s.get("type") == "full" else 2
+                if st is not None and (t - st).total_seconds() >= margin:
                     ok.append(s)
             if not ok:
                 raise EngineError("PGA-PITR-003", "target time %s is earlier than every backup (oldest ends %s)" % (target_time, done[0].get("stop_time")),
@@ -793,7 +880,7 @@ def target_dir_check(ctx, dest, delta, what="restore destination", resume=False)
         raise EngineError("PGA-SEC-006", "delta restore: '%s' does not look like a PostgreSQL data directory (no PG_VERSION)" % dest,
                           "delta deletes every file that is not in the backup; point it at the old copy of the data directory, or use an empty directory")
     if os.path.exists(dest) and os.listdir(dest) and not delta:
-        raise EngineError("PGA-SEC-005", "%s '%s' is not empty" % (what, dest), "use an empty directory, or delta=true to overwrite in place (existing content will be lost)")
+        raise EngineError("PGA-SEC-005", "%s '%s' is not empty" % (what, dest), "use an empty directory (delta=true is meant only for a directory that holds an earlier pg_arca restore of this cluster: anything else in it is lost)")
     return dest
 
 
@@ -810,7 +897,8 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     if not dest:
         raise EngineError("PGA-GEN-063", "destination directory is required", "restoring over the live data directory is never allowed")
     target = choose_set(repo, set_spec, target_time, target_lsn, target_xid, target_name)
-    chain = build_chain(repo, target)
+    chain, chain_note = fit_chain_to_timeline(ctx, build_chain(repo, target), timeline)
+    target = chain[-1]
     sp = set_profile(chain[0])
     if sp is not None:
         require_supported(sp, "restoring this backup")
@@ -823,6 +911,8 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "destination": os.path.realpath(dest), "missing_wal": missing[:20],
             "pg_version": sp.label if sp else None,
             "target": target_time or target_lsn or target_xid or target_name or ("immediate" if immediate else "end of archive")}
+    if chain_note:
+        plan.setdefault("notes", []).append(chain_note)
     merged, tbs = merge_chain(repo, chain)
     plan["bytes"] = estimate(merged)
     plan["files"] = len(merged)
@@ -900,7 +990,10 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
             created = tablespaces_created_in_window(ctx, chain, target_lsn)
         except EngineError as e:
             created = []
-            chk.append({"id": "ts_created", "level": "warn", "text": "could not check the WAL for tablespaces created after the backup: %s" % e.message[:160]})
+            # nothing certain (WAL unreadable AND the live server not answering): replaying a CREATE TABLESPACE removes what lives at that path, so the
+            # copy must not start blind - a blocker, as the recovery host's build does (independent review: this was only a warning here)
+            chk.append({"id": "ts_created", "level": "bad" if e.code == "PGA-RST-052" else "warn",
+                        "text": ("could not check the WAL for tablespaces created after the backup: %s" % e.message[:160]), **({"fix": e.hint} if e.hint else {})})
         if created:
             g = guard_created_tablespaces(created, "this server")
             plan["tablespaces_created_after_backup"] = created
@@ -932,8 +1025,15 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
             restorecheck.enforce(chk)
     except EngineError:
         raise
-    except Exception as e:                                         # the pre-flight must never be the thing that breaks a restore
-        ctx.log("warning", "restore pre-flight skipped: %s" % e)
+    except Exception as e:
+        # the safety checks did not complete: a whole server is not rebuilt (and started) without them - the tablespace check above protects
+        # production's own files. Said in the plan and as the reason, never only in a log line (independent review)
+        ctx.log("warning", "restore pre-flight failed: %s" % e)
+        plan["preflight"] = {"ok": False, "level": "bad", "checks": [{"id": "preflight", "level": "bad", "text": "the safety checks could not complete: %s" % str(e)[:200],
+                                                                       "fix": "run the check again; if it persists, send the agent log to support"}]}
+        if not dry_run:
+            raise EngineError("PGA-RST-055", "restore not started: the safety checks could not complete (%s)" % str(e)[:200],
+                              "run it again; if it persists, send the agent log to support")
     if dry_run:
         plan["dry_run"] = True
         return plan
@@ -958,6 +1058,8 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
             target_time, target_lsn, inclusive = None, cl["lsn"], True
             plan["target"] = "end of the archive (LSN %s; nothing changed after %s)" % (cl["lsn"], cl["last_xact"])
     link_tablespaces(dest, tbs, remap)
+    if delta:
+        remove_stale_tablespaces(dest, merged)
     stats = materialize(ctx, merged, dest, delta, progress, cancel)
     try:
         from pg_arca.engine.ephemeral import read_pg_control
@@ -1001,6 +1103,9 @@ def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn
     if bad:
         raise EngineError("PGA-SEC-011", "symlinks escape the destination: %s" % bad[:3])
     os.chmod(dest, 0o700)
+    # backup_label, the recovery settings and recovery.signal were written AFTER the data's sync: a crash right after "done" could keep the signal and
+    # lose the label - recovery would then start from pg_control's checkpoint, silently wrong. Everything is on disk before the copy is declared ready
+    os.sync()
     try:
         os.unlink(os.path.join(dest, RESUME_MARK))                     # complete: no longer an interrupted restore
     except OSError:

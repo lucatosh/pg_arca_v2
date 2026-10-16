@@ -40,6 +40,8 @@ Ultimo aggiornamento: 2026-10-16. Ogni riga dice **cosa è stato davvero eseguit
 | Approvazioni a due persone, impostazioni avanzate | `server/approvals.ts`, `src/pages/Settings.tsx` | Reale | `approvals.test.ts` |
 | HBA: adozione e regole temporanee | `hba.py`, `hba_ops.py`, `server/scheduler.ts::hbaExpiryTick` | Reale (non su Patroni) | `test_hba_pg.py`, `hba.test.ts` |
 | LDAP/AD | `server/ldap.ts` | Implementato; **mai provato contro un AD vero** | `ldap.test.ts` |
+| Punti di ripristino con nome (crea sul primario, wizard li propone come target LSN) | `executor.h_restore_point`, `server/agents.ts::recordRestorePoint`, `src/pages/Backup.tsx` | Reale su PG16 locale (incrementale prima del segno incluso); lab no | `test_restore_point_pg.py`, `restorepoints.test.ts`, e2e |
+| Sicurezze del restore (delta, fork di timeline, pre-flight bloccante, replace su mount/spazio, WAL cifrato senza meta) | `engine/restore.py`, `engine/replace.py`, `wal_manager.py` | Reale su PG16 locale; delta e WAL senza meta riprodotti prima della correzione | `test_restore_review.py`, `test_engine_pg.py`, `test_crypto.py` |
 
 ## Cosa coprono i test del motore (PostgreSQL 16)
 backup completo; incrementale (più piccolo, a catena); deduplica; PITR di un’istanza; ripristino sparso di un database; ripristino di un oggetto; ripristino fallito che non lascia nulla; `target_time` senza fuso rifiutato; percorsi protetti; verifica e info; prova di ripristino; rilevamento di blocchi corrotti; ricerca DROP/TRUNCATE; sicurezza dopo un backup interrotto; pulizia.

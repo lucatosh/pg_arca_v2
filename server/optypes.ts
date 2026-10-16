@@ -38,6 +38,8 @@ function cfgErr(p: any): string | null {
 export const OP_SPECS: Record<string, OpSpec> = {
   pg_reload:        { mutating: true,  target: 'node', validate: () => null },
   wal_switch:       { mutating: true,  target: 'primary', validate: () => null },
+  // a named point to come back to ("before release 4.2"): pg_create_restore_point on the primary; the console keeps name, LSN and time
+  restore_point:    { mutating: true,  target: 'primary', validate: p => /^[A-Za-z0-9 _.:/+#()-]{1,60}$/.test(String(p.name ?? '').trim()) ? null : 'name: 1-60 letters, digits, spaces and _ . : / + # ( ) -' },
   checkpoint:       { mutating: true,  target: 'primary', validate: () => null },
   discovery_scan:   { mutating: false, target: 'node', validate: () => null },
   compat_check:     { mutating: false, target: 'node', validate: () => null },

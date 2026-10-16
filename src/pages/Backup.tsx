@@ -4,7 +4,7 @@ import { RestartPg } from './RestartPg';
 import { OffsiteCopy } from './AgentSettings';
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Skeleton, bytes, dt, dur, ago, num, nof, setName } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Modal, Skeleton, bytes, dt, dur, ago, num, nof, setName } from '../ui';
 import { Op, revalidate, toast, useOpRunner, useQuery, useDraft } from '../hooks';
 import { OP_LABEL, OpPanel, Result } from './shared';
 
@@ -56,6 +56,7 @@ export function BackupTab({ c }: { c: any }) {
     <Banner kind={v.kind} title={v.title} actions={!d.policy?.enabled || d.policySource?.scope === 'none' ? (rec.sug && !d.policySource?.disabled ? <Button sm kind="primary" icon="shield" busy={rec.busy} onClick={rec.assign}>Schedule with “{rec.sug.name}” (recommended)</Button> : null) : undefined}>{v.text}</Banner>
     {d.archiveMode === 'off' ? <ArchiveSetup c={c} refresh={q.refresh} /> : null}
     <RunCard c={c} hasFull={done.some(s => s.type === 'full')} running={d.running || []} refresh={q.refresh} />
+    <RestorePoints c={c} />
     <div className="grid g2"><StrategyCard c={c} policy={d.policySource?.scope === 'none' || d.policySource?.disabled ? null : d.policy} source={d.policySource} onSaved={q.refresh} /><HealthCard c={c} d={d} refresh={q.refresh} /></div>
     <SetsCard sets={sets} d={d} />
     {(() => { const ns = (reg.data?.nodes || []).filter((n: any) => n.clusterId === c.id && n.kind !== 'worker'); return ns.length ? <OffsiteCopy clusterId={c.id} nodes={ns.map((n: any) => ({ id: n.id, name: n.name, online: n.online }))} /> : null; })()}
@@ -75,6 +76,30 @@ function ArchiveSetup({ c, refresh }: { c: any; refresh: () => void }) {
       <p className="small muted">The path <code>/usr/local/bin/pg-arca-wal</code> is the one of the standard installation: check with <code>command -v pg-arca-wal</code> where it is on your nodes (it must be the same on all of them); if the agent does not use <code>/etc/pg-arca/agent.conf</code>, prefix <code>env PG_ARCA_CONF=/path/agent.conf</code>. “Enable WAL archiving” above builds the right command by itself. With Patroni, apply the same settings with <code>patronictl edit-config</code>. Incremental backups also need <code>data_checksums</code> or <code>wal_log_hints = on</code>.</p></> : null}
     {ask ? <Confirm title="Enable WAL archiving?" confirmLabel="Enable" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); r.run('archive_enable', {}); }}>
       <p>The PostgreSQL parameters listed above will be changed. If another archiving tool is already configured, the operation stops without touching it. A restart is needed afterwards.</p></Confirm> : null}
+  </div></Card>;
+}
+
+/** Named points to come back to ("Before release 4.2"): marked before a risky change, offered first in the restore wizard. */
+export function useRestorePoints(clusterId: string) { return useQuery<{ points: RestorePoint[] }>(`/api/clusters/${encodeURIComponent(clusterId)}/restore-points`, { interval: 60000 }); }
+export interface RestorePoint { name: string; lsn: string; at: string; timeline: number | null; by: string; opId: string }
+function RestorePoints({ c }: { c: any }) {
+  const q = useRestorePoints(c.id); const list = q.data?.points || [];
+  const r = useOpRunner(c.id, () => { q.refresh(); revalidate(`/api/clusters/${encodeURIComponent(c.id)}/restore-points`); }, `rp:${c.id}`);
+  const [ask, setAsk] = useState(false); const [name, setName] = useDraft(`rp:${c.id}:name`, ''); const ok = /^[A-Za-z0-9 _.:/+#()-]{1,60}$/.test(name.trim());
+  const [all, setAll] = useState(false);
+  return <Card title="Restore points" actions={<Button sm icon="plus" onClick={() => setAsk(true)}>Mark a restore point…</Button>}><div className="stack-s">
+    <p className="small muted">Before a risky change (a release, a migration, a bulk update) mark the moment: if it goes wrong, the restore wizard offers it as the point to go back to.</p>
+    {r.op && r.op.status !== 'succeeded' ? <OpPanel op={r.op} error={r.error} label="Marking the restore point" /> : null}
+    {r.op?.status === 'succeeded' && r.op.result?.warning ? <Banner kind="warn">{r.op.result.warning}</Banner> : null}
+    {list.length ? <div className="tablewrap"><table className="t"><tbody>{(all ? list : list.slice(0, 5)).map(p => <tr key={p.opId}>
+      <td><strong>{p.name}</strong></td><td className="small nowrap">{dt(p.at)}</td><td className="small muted">by {p.by}</td><td className="small mono xp">{p.lsn}</td></tr>)}</tbody></table></div>
+      : <p className="small faint">No restore point yet.</p>}
+    {list.length > 5 ? <button className="linkbtn small" onClick={() => setAll(!all)}>{all ? 'Show the latest 5' : `Show all ${list.length}`}</button> : null}
+    {ask ? <Modal title="Mark a restore point" onClose={() => setAsk(false)} footer={<><div className="grow" /><Button onClick={() => setAsk(false)}>Cancel</Button>
+      <Button kind="primary" disabled={!ok} busy={r.busy} onClick={() => { setAsk(false); r.run('restore_point', { name: name.trim() }); setName(''); }}>Mark it now</Button></>}>
+      <Field label="Name" hint="What is about to happen, e.g. Before release 4.2. Letters, digits, spaces and _ . : / + # ( ) -" error={name && !ok ? 'Up to 60 letters, digits, spaces and _ . : / + # ( ) -' : null}>
+        <input className="input" value={name} onChange={e => setName(e.target.value)} autoFocus placeholder="Before release 4.2" /></Field>
+      <p className="small muted">The point is written in the WAL of the primary and archived at once. You can restore a table, a database or the whole server to it for as long as the backups and the WAL archive reach back to it.</p></Modal> : null}
   </div></Card>;
 }
 

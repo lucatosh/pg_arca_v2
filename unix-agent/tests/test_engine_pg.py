@@ -188,6 +188,46 @@ class EngineTests(unittest.TestCase):
         finally:
             sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
 
+    def test_04_pitr_z_delta_over_a_promoted_copy_does_not_follow_its_timeline(self):
+        """Independent review (16/10): a delta restore kept the previous copy's pg_wal - its own timeline history and segments. Recovering to the end
+        of the archive, PostgreSQL then followed the COPY's timeline and replayed the copy's own writes: neither production nor the requested point."""
+        dest = os.path.join(F.base, "restored_instance")             # test_04's copy: promoted to its own timeline
+        port2 = F.port + 1
+        conf = "\nport=%d\nunix_socket_directories='%s'\nlisten_addresses=''\narchive_mode=off\narchive_command=''\n" % (port2, F.sock)
+        r = sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-l", os.path.join(F.base, "restored.log"), "-w", "-t", "120", "start")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        c2 = PgConn(host=F.sock, port=port2, user="postgres", bindir=BIN, dbname="app")
+        s = PgSession(c2)
+        try:
+            s.query("CREATE TABLE copy_only(x int)")
+            s.query("INSERT INTO copy_only SELECT generate_series(1, 1000)")
+            s.query("CHECKPOINT")
+        finally:
+            s.close()
+        sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-m", "fast", "stop")
+        self.assertTrue(glob.glob(os.path.join(dest, "pg_wal", "0000000[2-9].history")), "the copy has its own timeline")
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(2)
+        want = int(q("app", "SELECT count(*) FROM orders")[0][0])
+        restore_instance(F.ctx, dest=dest, delta=True, action="promote")
+        with open(os.path.join(dest, "postgresql.auto.conf"), "a") as f:
+            f.write(conf)
+        r = sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-l", os.path.join(F.base, "restored-delta.log"), "-w", "-t", "120", "start")
+        self.assertEqual(r.returncode, 0, r.stderr + open(os.path.join(F.base, "restored-delta.log")).read()[-2000:])
+        try:
+            s = PgSession(c2)
+            try:
+                for _ in range(60):
+                    if s.scalar("SELECT pg_is_in_recovery()") == "f":
+                        break
+                    time.sleep(1)
+                self.assertEqual(s.scalar("SELECT to_regclass('copy_only') IS NULL"), "t", "the previous copy's own writes must not come back")
+                self.assertEqual(int(s.scalar("SELECT count(*) FROM orders")), want)
+            finally:
+                s.close()
+        finally:
+            sh(os.path.join(BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
+
     def test_04a_interrupted_restore_is_resumed(self):
         """A restore stopped half-way (cancel, crash, disk full) leaves a marked partial copy: a plain retry is refused with a clear message, a resume
         completes it in place (writing only what is missing or different) and the result starts and holds the data."""

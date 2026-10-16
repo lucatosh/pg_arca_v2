@@ -1380,7 +1380,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
         if rc != 0:
             created_seq = []                                   # -1: the single transaction rolled back, nothing was created
             raise EngineError("PGA-GEN-071", "loading the recovered tables into %s failed: %s" % (dbname, (err.strip() or out.strip())[:900]), "nothing was changed in the live database")
-        # verify what arrived
+        # verify what arrived (here, under the temporary names, nobody else writes: the counts are exact)
+        loaded_oid = {}
+        for r in todo:
+            loaded_oid[(r["schema"], r["name"])] = live.scalar("SELECT %s::regclass::oid" % sql_lit(qi(r["schema"], _short(r["name"], sfx_new))))
         for r in todo:
             want = r["rows_at_target"]
             if want is None or r["kind"] == "p":
@@ -1641,14 +1644,15 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                 live.query("ANALYZE %s" % qi(r["schema"], r["name"]))
             except EngineError:
                 pass
+        # after the swap: each name must now be the very table that was loaded and counted above. Counting rows again here was wrong: the
+        # applications write into the restored table from the moment of the commit, and a busy table failed the check of a swap that had
+        # succeeded (and was committed) - found by the fault suite with an application writing during the promotion
         bad = []
         for r in todo:
-            want = r["rows_at_target"]
-            if want is None or r["kind"] == "p":
-                continue
-            got = int(live.scalar("SELECT count(*) FROM %s" % qi(r["schema"], r["name"])))
-            if got != want:
-                bad.append("%s.%s: %d vs %d" % (r["schema"], r["name"], want, got))
+            want = loaded_oid.get((r["schema"], r["name"]))
+            got = live.scalar("SELECT to_regclass(%s)::oid" % sql_lit(qi(r["schema"], r["name"])))
+            if want and got != want:
+                bad.append("%s.%s is not the restored table (oid %s, expected %s)" % (r["schema"], r["name"], got or "none", want))
         if bad:
             raise EngineError("PGA-VRF-040", "verification after the swap failed: %s" % "; ".join(bad))
         result.update(plan=_slim(plan), promoted=["%s.%s" % (r["schema"], r["name"]) for r in todo],

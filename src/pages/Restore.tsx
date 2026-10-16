@@ -15,7 +15,7 @@ export const restoredName = (db: string) => {
   return b.slice(0, 63 - '_restored'.length) + '_restored';
 };
 import { RecoveryTimeline, TlEvent } from './Timeline';
-import { SetRow, TYPE_LABEL, chains } from './Backup';
+import { SetRow, TYPE_LABEL, chains, useRestorePoints } from './Backup';
 import { CatDb, DbPicker, DroppedNote, DropInfo, kindOf, parseWalTime, fmtWhen, qid, splitId } from './DbPicker';
 
 type Scope = 'instance' | 'database' | 'object';
@@ -166,6 +166,9 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   }, [intent, fx.op, tdropR.op, dml.op, objs, db, scope, selDropped]);
   // both searches for a database: still running while either runs; a failure of either is said
   const dbScan = { busy: fx.busy || dml.busy || (!!fx.op && !isTerminalOp(fx.op)) || (!!dml.op && !isTerminalOp(dml.op)), op: dml.op && dml.op.status !== 'succeeded' ? dml.op : fx.op && fx.op.status !== 'succeeded' ? fx.op : dml.op || fx.op };
+  // named restore points ("Before release 4.2") inside the recoverable window: offered as they are, the operator knows what they mean
+  const rpq = useRestorePoints(c.id);
+  const rpoints = (rpq.data?.points || []).filter(p => Date.parse(p.at) >= from).slice(0, 5);
   const tgtKey = (t: Target | null) => !t ? '' : t.mode === 'lsn' ? 'lsn:' + t.lsn : t.mode === 'xid' ? 'xid:' + t.xid : t.mode;
   // entering "when": the most recent thing that went wrong is the natural choice; a whole database or server defaults to the latest point
   useEffect(() => { if (step !== 2 || tgt) return; if (suggestions.length) setTgt(suggestions[0].tgt); else if ((intent === 'database' && selDropped) || intent === 'cluster') setTgt({ mode: 'latest' }); }, [step, suggestions.length]);
@@ -219,7 +222,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   };
 
   const whatTxt = scope === 'instance' ? 'the whole server' : scope === 'database' ? <>database <strong>{db}</strong></> : objs.length === 1 ? <>{splitId(obj).length === 2 ? 'schema' : 'table'} <strong>{shortName(obj)}</strong> in {splitId(obj)[0]}</> : <><strong>{objs.length}</strong> objects in {db}</>;
-  const whenTxt = !tgt ? '—' : tgt.mode === 'latest' ? (selDropped ? 'just before it was dropped' : 'to the latest saved point') : tgt.mode === 'time' ? <>as it was on <strong>{dt(tgt.ms)}</strong></> : <>just before: <strong>{tgt.label}</strong></>;
+  const whenTxt = !tgt ? '—' : tgt.mode === 'latest' ? (selDropped ? 'just before it was dropped' : 'to the latest saved point') : tgt.mode === 'time' ? <>as it was on <strong>{dt(tgt.ms)}</strong></> : tgt.label?.startsWith('restore point') ? <>at the <strong>{tgt.label}</strong></> : <>just before: <strong>{tgt.label}</strong></>;
   const reachable = (i: number) => i < step && !running && !exec.op && (i !== 1 || intent !== 'cluster');
 
   return <div className="stack-l">
@@ -252,10 +255,14 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         what={intent === 'rows' ? `DELETEs and UPDATEs of at least ${num(dmlMin)} rows in the last 24 hours` : `drops and truncations in the last ${Math.round(fxHours / 24)} days`}
         more={intent === 'rows' ? () => { dml.reset(); setDmlMin(10); setTimeout(() => dml.run('wal_forensics', { mode: 'dml', hours: 168, min_rows: 10, limit: 30 }), 0); } : () => { setFxHours(720); fx.run('wal_forensics', { mode: 'events', hours: 720, limit: 30 }); }} /> : null}
       <div className="stack-s" role="radiogroup" aria-label="Recovery target">
-        {tgt && (tgt.mode === 'lsn' || tgt.mode === 'xid') && !suggestions.some(s => s.key === tgtKey(tgt)) ? <label className="opt on"><input type="radio" checked readOnly /><div className="grow"><div><strong>Just before: {tgt.label}</strong></div><div className="small muted">Picked from the WAL search: everything committed before it is kept.</div></div></label> : null}
+        {tgt && (tgt.mode === 'lsn' || tgt.mode === 'xid') && !suggestions.some(s => s.key === tgtKey(tgt)) && !rpoints.some(p => 'lsn:' + p.lsn === tgtKey(tgt)) ? <label className="opt on"><input type="radio" checked readOnly /><div className="grow"><div><strong>Just before: {tgt.label}</strong></div><div className="small muted">Picked from the WAL search: everything committed before it is kept.</div></div></label> : null}
         {suggestions.map((s, i) => <label key={s.key} className={`opt ${tgtKey(tgt) === s.key ? 'on' : ''}`}><input type="radio" checked={tgtKey(tgt) === s.key} onChange={() => setTgt(s.tgt)} /><div className="grow">
           <div><strong>Just before: {s.title}</strong> {i === 0 ? <Badge kind="ok">Recommended</Badge> : null}</div>
           <div className="small muted">{Number.isFinite(s.at) ? `${s.exact ? '' : 'about '}${fmtWhen(s.at)} · ${ago2(s.at)}` : 'time not recorded in the WAL'}. You go back to the exact state of a moment before: everything committed before it is kept.</div></div></label>)}
+        {rpoints.filter(p => !suggestions.some(s => s.key === 'lsn:' + p.lsn)).map(p => { const t: Target = { mode: 'lsn', lsn: p.lsn, label: `restore point “${p.name}” (${fmtWhen(Date.parse(p.at))})` };
+          return <label key={p.opId} className={`opt ${tgtKey(tgt) === tgtKey(t) ? 'on' : ''}`}><input type="radio" checked={tgtKey(tgt) === tgtKey(t)} onChange={() => setTgt(t)} /><div className="grow">
+            <div><strong>Restore point: {p.name}</strong></div>
+            <div className="small muted">{fmtWhen(Date.parse(p.at))} · {ago2(Date.parse(p.at))}, marked by {p.by}. You go back to the state at that moment.</div></div></label>; })}
         <label className={`opt ${tgt?.mode === 'latest' ? 'on' : ''}`}><input type="radio" checked={tgt?.mode === 'latest'} onChange={() => setTgt({ mode: 'latest' })} /><div className="grow">
           <div><strong>{selDropped ? 'Just before it was dropped' : 'The latest saved point'}</strong> {!suggestions.length && ((intent === 'database' && selDropped) || intent === 'cluster') ? <Badge kind="ok">Recommended</Badge> : null}</div>
           <div className="small muted">{selDropped ? <>pg_arca finds the DROP of <strong>{db}</strong> in the WAL by itself and stops just before it.</> : <>Up to the last archived transaction ({d.archiver?.last_archived_time ? ago2(Date.parse(d.archiver.last_archived_time)) : 'just now'}).</>}</div>

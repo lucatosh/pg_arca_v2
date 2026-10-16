@@ -16,7 +16,7 @@ from pg_arca.engine import objects as objmod, restorecheck
 from pg_arca.engine.catalog import find_object
 from pg_arca.engine.ephemeral import Ephemeral, TargetNotReached
 from pg_arca.engine.pgsession import PgConn, PgSession, dump_size, run_dump, run_tool
-from pg_arca.engine.restore import check_wal_for_chain, flush_current_wal, choose_set, count_targets, estimate, merge_chain, sparse_filter, system_db_oids
+from pg_arca.engine.restore import check_wal_for_chain, flush_current_wal, choose_set, fit_chain_to_timeline, count_targets, estimate, merge_chain, sparse_filter, system_db_oids
 from pg_arca.engine.util import EngineError, human, lsn_to_int, now_utc, parse_target_time, quote_ident, sql_lit, target_time_to_dt, wal_name, wal_segno
 
 import re as _re
@@ -150,7 +150,10 @@ def _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name, immed
     count_targets(target_time, target_lsn, target_xid, target_name, immediate)
     tt = parse_target_time(target_time)
     target = choose_set(ctx.repo, set_spec, tt, target_lsn, target_xid, target_name)
-    chain = build_chain(ctx.repo, target)
+    chain, note = fit_chain_to_timeline(ctx, build_chain(ctx.repo, target))
+    if note:
+        ctx.log("warning", note)
+    target = chain[-1]
     missing = check_wal_for_chain(ctx, chain, target_lsn, target_time=tt, to_end=not (tt or target_lsn or target_xid or target_name or immediate))
     if missing:
         raise EngineError("PGA-WAL-022", "WAL archive is missing %d segment(s) required (first: %s)" % (len(missing), missing[0]),
@@ -410,9 +413,26 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
     PostgreSQL damages the database BEFORE the drop commits and without a timestamp: from PG15 (and PG 12-14 since their 2023 minor releases) it first marks it INVALID with an in-place update (replayed even if the
     transaction's commit is beyond the target), then deletes its directory when redoing XLOG_DBASE_DROP. A time/xid target "just before the DROP's commit" is already too late;
     only an LSN before the dropping transaction's FIRST record gives back a usable database."""
-    seg_size = ctx.seg_size
+    seg_size = int(chain[-1].get("wal_segment_size") or ctx.seg_size)
     first = chain[0]
     tli = int(chain[-1].get("timeline") or first.get("timeline") or 1)
+    # the recovery follows the timeline history ('latest'): a DROP made after a failover is on the NEW timeline - a segment is read on the newest
+    # timeline of the path that already existed at that position (independent review: only the backup's own timeline was searched)
+    try:
+        from pg_arca.engine.restore import _recovery_path
+        path = _recovery_path(ctx, tli, "latest")
+    except Exception:
+        path = [(tli, None)]
+
+    def seg_name(seg):
+        for i, (t, _end) in enumerate(path):
+            begin = path[i + 1][1] if i + 1 < len(path) else 0
+            if begin is None or seg >= begin // seg_size:
+                n = wal_name(t, seg, seg_size)
+                if ctx.wal.has_segment(n):
+                    return n
+        n = wal_name(tli, seg, seg_size)
+        return n if ctx.wal.has_segment(n) else None
     lo = wal_segno(lsn_to_int(first["start_lsn"]), seg_size)
     hi = wal_segno(lsn_to_int(reached_lsn), seg_size)
     exe = ctx.conn.exe("pg_waldump")
@@ -422,8 +442,8 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
         found = None
         names = {}
         for seg in range(hi, lo - 1, -1):
-            name = wal_name(tli, seg, seg_size)
-            if not ctx.wal.has_segment(name):
+            name = seg_name(seg)
+            if not name:
                 continue
             code, msg = ctx.wal.retrieve_segment(name, os.path.join(tmp, name))
             if code != 0:
@@ -446,7 +466,7 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
         for seg in range(seg_hit, max(lo, seg_hit - 1) - 1, -1):        # in-place updates of pg_database (1664/0/1262) just before the drop: they carry NO xid
             # the previous segment was never fetched by the search above (it stops at the segment holding the DROP), but the invalid-marking can sit at its
             # very end when the DROP DATABASE straddles a segment boundary (seen on PostgreSQL 14 in the matrix: only the DROP's segment was looked at)
-            name = names.get(seg) or (wal_name(tli, seg, seg_size) if ctx.wal.has_segment(wal_name(tli, seg, seg_size)) else None)
+            name = names.get(seg) or seg_name(seg)
             if not name:
                 continue
             names[seg] = name
@@ -461,7 +481,7 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
         cands = sorted(set(cands), reverse=True)[:3]
         lsns = []
         for seg in range(seg_hit, lo - 1, -1):                       # the dropping transaction's first record (it has an xid once it deletes the pg_database row)
-            name = names.get(seg) or (wal_name(tli, seg, seg_size) if ctx.wal.has_segment(wal_name(tli, seg, seg_size)) else None)
+            name = names.get(seg) or seg_name(seg)
             if not name:
                 break
             names[seg] = name
@@ -587,7 +607,8 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
     hit = find_drop_database_lsn(ctx, chain, entry["oid"], reached) if reached else None
     if not hit:
         raise EngineError("PGA-PITR-015", "database '%s' does not exist at the requested point (it is damaged or gone at %s and no DROP DATABASE was found in the WAL)" % (entry["name"], reached or "?"),
-                          "choose an earlier time, or an earlier backup set that contains it")
+                          "choose an earlier time (the WAL scan in the console shows when it was dropped); after a failover, check that the new "
+                          "timeline's history file is in the archive")
     cands, drop_lsn, xid = hit
     for n, lsn in enumerate(cands):
         ctx.log("warning", "database '%s' was dropped right after the target: stopping just before the DROP DATABASE (xid %s) at %s" % (entry["name"], xid, lsn))

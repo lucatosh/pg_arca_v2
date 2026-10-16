@@ -85,6 +85,7 @@ class OperationExecutor:
         r("pg_restart", self.h_pg_restart, False)          # never repeated blindly after an agent restart
         r("checkpoint", self.h_checkpoint, True)
         r("wal_switch", self.h_wal_switch, False)           # switching twice would create two segments
+        r("restore_point", self.h_restore_point, False)     # a second call would mark a second point
         r("wal_retire_branch", self.h_wal_retire_branch, True)   # idempotent: already-retired names are simply absent the second time
         r("discovery_scan", self.h_discovery, True)
         r("compat_check", self.h_compat_check, True)
@@ -289,6 +290,33 @@ class OperationExecutor:
         if not ok:
             raise OpError("CHECKPOINT failed: %s" % err)
         return {"done": True}
+
+    RP_NAME = re.compile(r"^[A-Za-z0-9 _.:/+#()-]{1,60}$")
+
+    def h_restore_point(self, p):
+        """A NAMED point to come back to ("before release 4.2"): pg_create_restore_point on the primary, then a WAL switch so the record is archived
+        at once (a point still in pg_wal cannot be restored to). Returns its LSN and time: the console offers it in the restore wizard as an LSN
+        target, which - unlike recovery_target_name - also works from an incremental backup."""
+        self._require_pg()
+        name = str(p.get("name") or "").strip()
+        if not self.RP_NAME.match(name):
+            raise OpError("restore point name: 1-60 letters, digits, spaces and _ . : / + # ( ) -")
+        ok, out, err = self.db.run_psql("SELECT pg_is_in_recovery()::text, current_setting('wal_level');")
+        if not ok:
+            raise OpError("cannot reach PostgreSQL: %s" % err)
+        rec, level = (out.strip().split("|") + [""])[:2]
+        if rec == "true":
+            raise OpError("refused: this node is a standby (in recovery); restore points are created on the primary")
+        if level == "minimal":
+            raise OpError("restore points need wal_level replica or logical (it is minimal): WAL archiving is not set up")
+        ok, out, err = self.db.run_psql("SELECT pg_create_restore_point(:'n')::text, to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), "
+                                        "(SELECT timeline_id FROM pg_control_checkpoint())::text;", variables={"n": name})
+        if not ok:
+            raise OpError("pg_create_restore_point failed: %s" % err)
+        lsn, at, tli = (out.strip().split("|") + ["", "", ""])[:3]
+        ok2, seg, err2 = self.db.run_psql("SELECT pg_walfile_name(pg_switch_wal());")
+        return {"name": name, "lsn": lsn, "at": at, "timeline": int(tli) if tli.isdigit() else None, "segment": seg.strip() if ok2 else None,
+                **({} if ok2 else {"warning": "the WAL segment was not switched (%s): the point is archived with the segment, at the latest after archive_timeout" % err2.strip()[:200]})}
 
     def h_wal_switch(self, p):
         self._require_pg()
@@ -1051,6 +1079,9 @@ class OperationExecutor:
         if os.path.isdir(tbl) and os.listdir(tbl):
             raise EngineError("PGA-RST-083", "this server has tablespaces outside its data directory: replacing it in place is not supported yet",
                               "restore the databases you need (database restore puts them back in place), or restore the whole server as a copy and move it by hand")
+        blk = replace.swap_blocker(pgdata)
+        if blk:
+            raise blk
         m = replace.how_managed(pgdata)
         warn = []
         if not m.get("alive"):

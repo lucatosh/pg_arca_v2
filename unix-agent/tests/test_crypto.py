@@ -117,6 +117,29 @@ class CryptoTests(unittest.TestCase):
         self.assertEqual(other.retrieve_segment(name, out + "3")[0], 126)
         self.assertFalse(os.path.exists(out + "2") or os.path.exists(out + "3"))
 
+    def test_encrypted_wal_without_meta_is_recovered_not_split_brain(self):
+        """The writer died between publishing the encrypted object and writing its meta (independent review): the retry must recognise the same
+        content (and write the missing meta), and a restore must decrypt it - not 'divergent' / 'not encrypted' forever."""
+        wal = os.path.join(self.t, "wal")
+        for comp in ("zlib", "none"):
+            wm = WalManager(wal + comp, compression=comp, segment_size=MB, crypto=self.c)
+            src = os.path.join(self.t, "seg" + comp)
+            open(src, "wb").write((b"WALDATA-" * 1024 * 128)[:MB])
+            name = "000000010000000000000002"
+            ok, dest, sha, msg = wm.archive_segment(src, name)
+            os.unlink(os.path.join(wal + comp, name + ".meta"))          # the crash window
+            out = os.path.join(self.t, "out-" + comp)
+            self.assertEqual(wm.retrieve_segment(name, out)[0], 0, comp)
+            self.assertEqual(open(out, "rb").read(), open(src, "rb").read())
+            ok, _d, _s, msg = wm.archive_segment(src, name)
+            self.assertTrue(ok, comp)
+            self.assertTrue(msg.startswith("already"), msg)
+            meta = __import__("json").load(open(os.path.join(wal + comp, name + ".meta")))
+            self.assertEqual(meta.get("enc"), "aes-256-gcm", comp)
+            self.assertEqual(meta.get("sha256"), sha)
+            os.unlink(out)
+            self.assertEqual(wm.retrieve_segment(name, out)[0], 0, comp + " with the repaired meta")
+
 
 if __name__ == "__main__":
     unittest.main()

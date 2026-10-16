@@ -494,12 +494,39 @@ class WalManager:
             stored = meta.get("sha256") if meta else None
             if stored is None:                                  # legacy object without meta: hash its decompressed content
                 tmp = os.path.join(self.wal_dir, ".verify.%d.%d" % (os.getpid(), threading.get_ident()))
+                sealed = False
                 try:
-                    self._decompress(existing, tmp, codec)
+                    src = existing
+                    if self.crypto and not is_history:
+                        # an encrypted object whose writer died between the publish and its meta (independent review): decrypt it first - hashing the
+                        # ciphertext reported a split-brain, decompressing it failed forever, and the archiver stopped with pg_wal filling up
+                        try:
+                            with open(existing, "rb") as f:
+                                plain = self.crypto.open(f.read(), "wal:" + name)
+                            src = tmp + ".dec"
+                            with open(src, "wb") as f:
+                                f.write(plain)
+                            sealed = True
+                        except Exception:                       # the key says it is not ours (PGA-ENC-020/021)
+                            src = existing                      # really not encrypted (an archive older than the key): as before
+                    try:
+                        self._decompress(src, tmp, codec)
+                    finally:
+                        if src != existing and os.path.exists(src):
+                            os.unlink(src)
                     stored = _sha256_file(tmp)
                 finally:
                     if os.path.exists(tmp):
                         os.unlink(tmp)
+                if stored == raw_sha:
+                    # the same content: the missing meta is written now, so a restore reads the object as what it is
+                    rep = {"sha256": raw_sha, "size": size, "codec": codec or "none", "archived_at": time.time(), "repaired": True}
+                    if sysid:
+                        rep["sysid"] = sysid
+                    if sealed:
+                        rep["enc"] = "aes-256-gcm"
+                        rep["key_id"] = self.crypto.key_id
+                    self._write_meta_once(name, rep)
             if stored == raw_sha:
                 return True, existing, raw_sha, "already archived (identical content)"
             qdir = os.path.join(self.wal_dir, "conflicts")
@@ -564,6 +591,28 @@ class WalManager:
                     except OSError:
                         pass
 
+    def _write_meta_once(self, name, meta):
+        """Write <name>.meta when there is none (repair of an object published by a writer that died before its meta). Never overwrites one."""
+        dst = os.path.join(self.wal_dir, name + ".meta")
+        if os.path.exists(dst):
+            return
+        mtmp = os.path.join(self.wal_dir, ".%s.meta.tmp.%d.%d" % (name, os.getpid(), threading.get_ident()))
+        try:
+            with open(mtmp, "w", encoding="utf-8") as f:
+                json.dump(meta, f)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.link(mtmp, dst)                              # write-once: a concurrent writer's meta wins
+            except FileExistsError:
+                pass
+            _fsync_dir(self.wal_dir)
+        except OSError as e:
+            logger.warning("%s: could not write the missing meta: %s", name, e)
+        finally:
+            if os.path.exists(mtmp):
+                os.unlink(mtmp)
+
     # ------------------------------------------------------------------ retrieve
     def retrieve_segment(self, name, dest_path, verify=True):
         """restore_command %f %p. Returns (exit_code, message). 0=ok, 1=not found, 126=corrupt (abort recovery).
@@ -588,7 +637,15 @@ class WalManager:
                 with open(src, "wb") as f:
                     f.write(plain)
             elif self.crypto and not name.endswith(".history") and not BACKUP_LABEL_RE.match(name):
-                return EXIT_CORRUPT, "PGA-ENC-006 segment %s is not encrypted but an encryption key is configured" % name
+                # no meta: an encrypted object whose writer died before writing it is still ours - decrypt it; only a really plain object is refused
+                try:
+                    with open(path, "rb") as f:
+                        plain = self.crypto.open(f.read(), "wal:" + name)
+                except Exception:
+                    return EXIT_CORRUPT, "PGA-ENC-006 segment %s is not encrypted but an encryption key is configured" % name
+                src = tmp + ".dec"
+                with open(src, "wb") as f:
+                    f.write(plain)
             try:
                 self._decompress(src, tmp, codec)
             finally:

@@ -252,6 +252,45 @@ def carry_wal(old, new):
     return n
 
 
+def swap_blocker(pgdata):
+    """None when the data directory can be swapped by renaming it; else the EngineError that says why not - found BEFORE production is stopped.
+    A data directory that is itself a mount point cannot be renamed (EBUSY): stopping production and then failing the rename left it down."""
+    real = os.path.realpath(pgdata).rstrip("/")
+    try:
+        mounted = os.path.ismount(real) or os.stat(real).st_dev != os.stat(os.path.dirname(real)).st_dev
+    except OSError as e:
+        return EngineError("PGA-RST-089", "cannot inspect the data directory %s: %s" % (real, e))
+    if mounted:
+        return EngineError("PGA-RST-089", "the data directory %s is a mount point: it cannot be swapped in place (a mount point cannot be renamed)" % real,
+                           "restore the whole server as a copy and move it onto the volume by hand, or restore the databases you need (they go back in place)")
+    return None
+
+
+def wal_to_carry(old):
+    """(files, bytes) of production's pg_wal that the recovery must be given after the stop (see carry_wal)."""
+    src = os.path.join(old, "pg_wal")
+    n = b = 0
+    try:
+        for f in os.listdir(src):
+            if _SEG.match(f):
+                n += 1
+                b += os.path.getsize(os.path.join(src, f))
+    except OSError:
+        pass
+    return n, b
+
+
+def _own_like(tree, ref):
+    """An agent running as root writes root-owned files: PostgreSQL refuses to start on them ('wrong ownership'). Give the rebuilt tree the owner of
+    the data directory it replaces (no-op for any other agent user: it cannot chown, and its files are already its own)."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    st = os.stat(ref)
+    for cur, dirs, files in os.walk(tree, followlinks=False):
+        for x in [cur] + [os.path.join(cur, d) for d in dirs] + [os.path.join(cur, f) for f in files]:
+            os.lchown(x, st.st_uid, st.st_gid)
+
+
 def swap_in(ctx, staged, m, bindir, log_dir, progress=None, cancel=None, latest=False, stall_sec=1800):
     """Stop production, put the rebuilt data directory in its place, start, wait. On failure: back as it was and started again (if it was running)."""
     pgdata = os.path.realpath(ctx.pgdata).rstrip("/")
@@ -261,13 +300,39 @@ def swap_in(ctx, staged, m, bindir, log_dir, progress=None, cancel=None, latest=
     for f in ("PG_VERSION", "global/pg_control"):
         if not os.path.exists(os.path.join(staged, f)):
             raise EngineError("PGA-RST-080", "the rebuilt data directory %s is incomplete (%s missing): production was not touched" % (staged, f))
+    blk = swap_blocker(pgdata)
+    if blk:
+        raise blk
+    _own_like(staged, pgdata)
+    if latest:
+        # the WAL production has not archived is COPIED next to the rebuilt data (a hard link would let the new server overwrite the kept original's
+        # segments when it recycles them): the volume must hold it, checked while production still runs (a full volume after the stop left it down)
+        _n, need = wal_to_carry(pgdata)
+        st = os.statvfs(os.path.join(staged, "pg_wal") if os.path.isdir(os.path.join(staged, "pg_wal")) else staged)
+        if need and st.f_bavail * st.f_frsize < need * 1.1 + (256 << 20):
+            raise EngineError("PGA-RST-090", "not enough free space next to the data directory to hand production's not yet archived WAL (%.1f GiB) to the "
+                                             "recovery: production was not stopped" % (need / 2.0 ** 30),
+                              "free space on that volume, or let the archiver catch up (then less WAL is left to carry), or restore to a point in time")
     old = "%s.pgarca-before-%s" % (pgdata, now_utc().strftime("%Y%m%d%H%M%S"))
     steps = []
     if progress:
         progress({"phase": "swap", "msg": "stopping production PostgreSQL"})
     steps.append(stop(m, pgdata, bindir))
-    os.rename(pgdata, old)
-    os.rename(staged, pgdata)
+    try:
+        os.rename(pgdata, old)
+    except OSError as e:
+        # nothing moved: production back up as it was
+        if m.get("alive"):
+            start(dict(m, alive=False), pgdata, bindir, log_dir)
+        raise EngineError("PGA-RST-091", "the data directory could not be moved aside (%s): production was started again on it, nothing changed" % e,
+                          "check the directory's permissions and that nothing else (a mount, an open shell) holds it")
+    try:
+        os.rename(staged, pgdata)
+    except OSError as e:
+        os.rename(old, pgdata)
+        if m.get("alive"):
+            start(dict(m, alive=False), pgdata, bindir, log_dir)
+        raise EngineError("PGA-RST-091", "the rebuilt data directory could not be put in place (%s): production was started again on its own data, nothing changed" % e)
     steps.append("data directory replaced (previous one kept as %s)" % old)
     try:
         if latest:
@@ -297,6 +362,13 @@ def swap_in(ctx, staged, m, bindir, log_dir, progress=None, cancel=None, latest=
         failed = "%s.pgarca-failed-%s" % (pgdata, now_utc().strftime("%Y%m%d%H%M%S"))
         try:
             os.rename(pgdata, failed)
+            if latest:                                  # the carried WAL copies are also in the original: give their space back
+                try:
+                    for f in os.listdir(os.path.join(failed, "pg_wal")):
+                        if _SEG.match(f) and os.path.exists(os.path.join(old, "pg_wal", f)):
+                            os.unlink(os.path.join(failed, "pg_wal", f))
+                except OSError:
+                    pass
             os.rename(old, pgdata)
             if m.get("alive"):
                 start(dict(m, alive=False), pgdata, bindir, log_dir)
