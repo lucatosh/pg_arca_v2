@@ -24,13 +24,13 @@ const bytesH = (b: number) => (b >= GB ? `${(b / GB).toFixed(1)} GB` : `${Math.r
 const ts = (s?: string) => (s ? Date.parse(s) : NaN);
 /** Where PostgreSQL writes compared with the last archived segment: completed segments still waiting for the archiver (backlog) and the
  *  offset inside the segment being written. null when it cannot be told (no LSN, unknown name). */
-export function walPosition(pg: any, lastArchivedWal?: string | null): { backlog: number; offset: number } | null {
+export function walPosition(pg: any, lastArchivedWal?: string | null): { backlog: number; offset: number; sameTimeline: boolean } | null {
   const m = /^([0-9A-F]{8})([0-9A-F]{8})([0-9A-F]{8})$/i.exec(String(lastArchivedWal || '')); const cur = lsnToBig(pg?.current_lsn);
   if (!m || cur === null) return null;
   const segBytes = Number(pg?.settings?.wal_segment_size) > 0 ? Number(pg.settings.wal_segment_size) : 16 * 1048576;
   const segsPerLog = BigInt(Math.floor(0x100000000 / segBytes)); const archived = BigInt('0x' + m[2]) * segsPerLog + BigInt('0x' + m[3]);
   const curSeg = cur / BigInt(segBytes);
-  return { backlog: Number(curSeg - archived - 1n), offset: Number(cur % BigInt(segBytes)) };
+  return { backlog: Number(curSeg - archived - 1n), offset: Number(cur % BigInt(segBytes)), sameTimeline: Number(pg?.timeline) > 0 && parseInt(m[1], 16) === Number(pg.timeline) };
 }
 const durH = (s: number) => s >= 7200 ? `${(s / 3600).toFixed(1).replace(/\.0$/, '')} h` : s >= 120 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`;
 
@@ -147,7 +147,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     // copies a failover left behind (the old primary's tail of a timeline it left, partial segments): the agent proved the current history never
     // reads them, so they are not a split-brain signal. Informational, with the one-click way to file them away
     else if (wal && wal.conflicts_off_history > 0 && !standbySite) add({ severity: 'info', code: 'wal_leftovers', title: `${wal.conflicts_off_history} WAL ${wal.conflicts_off_history === 1 ? 'copy' : 'copies'} left behind by a failover`,
-      cause: 'Kept in the archive’s quarantine. Recovery along the current timeline never reads them (the old primary’s tail of a timeline it left, or partial segments): nothing is at risk. File them away from the Backup tab once seen.',
+      cause: 'Kept in the archive’s quarantine. Recovery along the current timeline does not read them (the old primary’s tail of a timeline it left, whose successor copy is archived, or partial segments); only a restore that deliberately follows the old timeline would. File them away from the Backup tab once seen.',
       action: { label: 'Review', page: 'backup' } });
     const arch = pg.archiver;
     if (arch?.last_failed_time && (!arch.last_archived_time || ts(arch.last_failed_time) > ts(arch.last_archived_time)) && now - ts(arch.last_failed_time) < 3600_000 * 6)
@@ -402,8 +402,11 @@ export function objectives(st: any, clusterId: string, now = Date.now()) {
     //    -> archive_timeout (the archiver is not failing: checked above)
     //  - only the segment being written, exactly at its start: nothing written since the switch -> nothing at risk
     //  - only the segment being written, no archive_timeout: its first write may be as old as the last archive -> `since` (open segment)
-    const pos = walPosition(pg, arch.last_archived_wal);
-    const bound = (pos && pos.backlog <= 0 ? (pos.offset === 0 ? 0 : timeout ? Math.min(timeout, since) : since) : Math.max(since, timeout || 0)) + spoolAge;
+    // the precise bound only when the last archived segment is the one right before the current one ON THE SAME TIMELINE: a negative backlog
+    // (a stale name from another branch) or a timeline switch falls back to the long bound (independent review: a hung archiver read as 'ok')
+    const p0 = walPosition(pg, arch.last_archived_wal); const pos = p0 && p0.backlog === 0 && p0.sameTimeline ? p0 : null;
+    const snapAge = primary?.lastSeen ? Math.max(0, (now - Date.parse(primary.lastSeen)) / 1000) : 0;   // the LSN is as old as the snapshot
+    const bound = (pos && pos.backlog <= 0 ? (pos.offset === 0 ? Math.round(snapAge) : timeout ? Math.min(timeout, since) : since) : Math.max(since, timeout || 0)) + spoolAge;
     rpo = { seconds: Math.round(bound), state: bound <= Math.max(timeout, 60) * 2 ? 'ok' : bound <= 3600 ? 'warn' : 'bad', openSegment: !timeout && !(pos && pos.backlog <= 0 && pos.offset === 0),
       text: pos && pos.backlog <= 0 && pos.offset === 0 && !spoolAge ? `Nothing has been written since the last archived segment (archived ${dur(since)} ago): no transaction is waiting to be archived.` : `Last WAL segment archived ${dur(since)} ago.${spoolAge ? ` ${primary.snapshot.wal.spool.pending} segments are still waiting in the local spool.` : ''}${timeout ? ` archive_timeout (${timeout} s) bounds the wait.` : ' archive_timeout is not set: with little traffic the segment being written can wait a long time before it is archived.'}` };
     if (rpoTarget) {

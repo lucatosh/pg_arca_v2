@@ -1,6 +1,7 @@
 """Backup: physical, page-aware, deduplicated, parallel; full / differential / incremental (page-LSN)."""
 
 import json
+import re
 import base64
 import errno
 import os
@@ -641,7 +642,7 @@ def _archiver_diagnosis(ctx, sess, in_recovery):
             r = sess.query("SELECT COALESCE(last_failed_wal,''), COALESCE(last_failed_time::text,''), COALESCE(last_archived_time::text,''), failed_count "
                            "FROM pg_stat_archiver")
             if r and r[0][0] and (not r[0][2] or r[0][1] > r[0][2]):
-                out.append("PostgreSQL's archiver is failing on %s since %s (%s failures)" % (r[0][0], r[0][1][:19], r[0][3]))
+                out.append("PostgreSQL's archiver is failing: last failure on %s at %s (%s failures so far)" % (r[0][0], r[0][1][:19], r[0][3]))
         except Exception:
             pass
     try:
@@ -652,6 +653,34 @@ def _archiver_diagnosis(ctx, sess, in_recovery):
     except (IOError, OSError, ValueError, AttributeError):
         pass
     return (". " + "; ".join(out)) if out else ""
+
+
+def _late_wal_doubt(ctx, s, need):
+    """Why the archive's copies of `need` may not be THIS server's WAL ('' when there is no such sign): a divergent copy of one of them was
+    quarantined (conflicts/, reviewed/ or a retired dead branch), or a later timeline's history says this set's timeline ended before the set
+    did (its tail is not on the surviving history)."""
+    want = set(need)
+    root = os.path.join(ctx.wal.wal_dir, "conflicts")
+    try:
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                if f.split(".")[0] in want:
+                    return "a divergent copy of %s is in the archive's quarantine (%s): which server's WAL the archive holds must be checked by a person" % (
+                        f.split(".")[0], os.path.relpath(os.path.join(dirpath, f), ctx.wal.wal_dir))
+    except OSError:
+        pass
+    try:
+        tli, stop = int(s["timeline"]), lsn_to_int(s["stop_lsn"])
+        for f in os.listdir(ctx.wal.wal_dir):
+            m = re.match(r"^([0-9A-F]{8})\.history$", f)
+            if m and int(m.group(1), 16) > tli:
+                forks = ctx.wal._history_forks(int(m.group(1), 16)) or {}
+                if tli in forks and forks[tli] < stop:
+                    return "timeline %d ended at %X/%X in %s, before this backup's end: its WAL is not on the surviving history" % (
+                        tli, forks[tli] >> 32, forks[tli] & 0xFFFFFFFF, f)
+    except (OSError, ValueError, KeyError):
+        return "the archive's timeline history could not be read"
+    return ""
 
 
 def _finish_pending_wal(ctx, s):
@@ -665,11 +694,21 @@ def _finish_pending_wal(ctx, s):
         need = _wal_needed(int(s["timeline"]), s["start_lsn"], s["stop_lsn"], int(s.get("wal_segment_size") or ctx.seg_size), bool(s.get("from_standby")))
         if any(not ctx.wal.has_segment(n, anywhere=False) for n in need):
             return False
+        why = _late_wal_doubt(ctx, s, need)
+        if why:
+            # present by NAME is not enough when two servers wrote these names (the usual reason the WAL was late): the stored copies may be the
+            # other server's, and replaying them over this backup would fail or corrupt it (independent engine review, 16/10)
+            if s.get("late_wal_doubt") != why:
+                s["late_wal_doubt"] = why
+                ctx.repo.write_meta(s)
+            ctx.log("warn", "backup %s not completed automatically: %s" % (s.get("id"), why))
+            return False
         s["status"] = "COMPLETE"
         s["completed"] = iso()
         s["note"] = ((s.get("note") or "") + (" (completed at a later run: its WAL reached the archive late)" if s.get("wal_timeout") else
                                              " (completed at the next run: its WAL reached the archive after the agent stopped)")).strip()
         s.pop("reason", None)
+        s.pop("late_wal_doubt", None)
         ctx.repo.write_meta(s)
         ctx.log("info", "backup %s completed: the WAL it was waiting for when the agent stopped is in the archive now" % s.get("id"))
         return True

@@ -23,6 +23,9 @@ class ConflictKindTest(unittest.TestCase):
         self._q("000000020000000000000005.partial.bbbbbbbbbbbb.1700000001")
         self._q("00000002.history.cccccccccccc.1700000002")                   # ancestor history: recovery reads 00000003.history
         self._q("00000002.history.cccccccccccc.1700000003")                   # the same content quarantined twice by an older agent
+        for n in ("000000030000000000000005", "000000030000000000000006", "000000020000000000000003"):   # the successor timelines' copies are archived
+            with open(os.path.join(self.d, n), "wb") as fh:
+                fh.write(b"s")
 
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)
@@ -42,7 +45,7 @@ class ConflictKindTest(unittest.TestCase):
         self.assertEqual(k["000000010000000000000002"], "divergent")        # ends exactly where timeline 1 ended: read
         self.assertEqual(k["000000010000000000000003"], "off_history")
         self.assertEqual(k["000000020000000000000005.partial"], "off_history")
-        self.assertEqual(k["00000002.history"], "off_history")
+        self.assertEqual(k["00000002.history"], "divergent")                  # two promotions to the same number: a person looks once
         self.assertEqual(k["000000030000000000000007"], "divergent")        # the current timeline itself: a real split-brain signal
         self.assertEqual(k["000000040000000000000009"], "divergent")        # newer than the reporter: never hidden
 
@@ -58,12 +61,32 @@ class ConflictKindTest(unittest.TestCase):
 
     def test_counts_in_continuity(self):
         rep = self.wm.verify_continuity(max_age=0, current_timeline=3)
-        self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (4, 5))        # the twice-quarantined history counts once
+        self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (5, 4))        # the twice-quarantined history counts once
         rep = self.wm.verify_continuity(max_age=0)
         self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (9, 0))
         self.wm.conflicts_reviewed([c["file"] for c in self.wm.classify_conflicts(3) if c["kind"] == "off_history"])
         rep = self.wm.verify_continuity(max_age=0, current_timeline=3)
-        self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (4, 0))
+        self.assertEqual((rep["conflicts"], rep["conflicts_off_history"]), (5, 0))
+
+    def test_no_relief_without_proof(self):
+        os.unlink(os.path.join(self.d, "000000030000000000000006"))          # successor copy not archived yet: PostgreSQL would read timeline 2's file
+        self.assertEqual(self.kinds(3)["000000020000000000000006"], "divergent")
+        with open(os.path.join(self.d, "00000003.history"), "w") as f:      # empty / garbled history: undecidable
+            f.write("garbage\n")
+        self.assertTrue(all(v == "divergent" for n, v in self.kinds(3).items() if not n.endswith(".partial")))
+
+    def test_contested_current_history_and_local_history(self):
+        self._q("00000003.history.dddddddddddd.1700000009")                  # the archive's 00000003.history is the OTHER server's
+        self.assertTrue(all(v == "divergent" for n, v in self.kinds(3).items() if not n.endswith(".partial")))
+        os.unlink(os.path.join(self.d, "conflicts", "00000003.history.dddddddddddd.1700000009"))
+        local = tempfile.mkdtemp(prefix="pgwal-")
+        try:                                                                  # the server's own pg_wal history wins over the archive's
+            with open(os.path.join(local, "00000003.history"), "w") as f:
+                f.write("1\t0/3000000\tx\n2\t0/90000A0\tx\n")             # timeline 2 ended later in OUR history: segments 5 and 6 are read
+            k = {c["file"].split(".aaaa")[0].split(".bbbb")[0].split(".cccc")[0]: c["kind"] for c in self.wm.classify_conflicts(3, local_wal_dir=local)}
+            self.assertEqual((k["000000020000000000000005"], k["000000020000000000000006"]), ("divergent", "divergent"))
+        finally:
+            shutil.rmtree(local, ignore_errors=True)
 
 
 class QuarantineOnceTest(unittest.TestCase):

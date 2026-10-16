@@ -211,8 +211,9 @@ class Runtime(object):
             return None
 
     def _wal_view(self, wal, timeline=None):
-        # the local PostgreSQL's timeline classifies the quarantined copies (only the ones on the shared history raise the alarm)
-        v = wal.verify_continuity(current_timeline=timeline) if wal else None
+        # the local PostgreSQL's timeline (and its own pg_wal history) classifies the quarantined copies: only the ones on the shared history raise the alarm
+        pgd = (self.instance or {}).get("data_directory")
+        v = wal.verify_continuity(current_timeline=timeline, local_wal_dir=os.path.join(pgd, "pg_wal") if pgd else None) if wal else None
         if v is not None:
             v = dict(v)
             v.pop("_tl", None)

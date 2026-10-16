@@ -199,7 +199,9 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         for f in doomed_fulls:
             doomed += _dependents(sets, f)
         # failed / unrecoverable / pending leftovers are always collectable
-        junk = [s for s in sets if s.get("status") in ("FAILED", "UNRECOVERABLE", "RUNNING", "PENDING_WAL", "EXPIRING") and s not in doomed]
+        # a set that only waits for late WAL (archiver blocked) is kept for a week: it becomes a good backup the moment the archive catches up
+        grace = lambda s: s.get("status") == "UNRECOVERABLE" and s.get("wal_timeout") and time.time() - (s.get("started_ts") or 0) < 7 * 86400
+        junk = [s for s in sets if s.get("status") in ("FAILED", "UNRECOVERABLE", "RUNNING", "PENDING_WAL", "EXPIRING") and s not in doomed and not grace(s)]
         doomed_ids = set(s["id"] for s in doomed) | set(s["id"] for s in junk)
         keep = [s for s in done if s["id"] not in doomed_ids]
         # sets still only in a previous location (destination changed, not migrated yet / kept on purpose) are restorable from here, and the

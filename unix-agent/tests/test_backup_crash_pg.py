@@ -111,6 +111,16 @@ class Crash(unittest.TestCase):
         repo = F.ctx.repo
         a = run_backup(F.ctx, "incr")
         m = repo.set_meta(a["id"]); m["status"] = "UNRECOVERABLE"; m["wal_timeout"] = True; m["reason"] = "WAL segment(s) not archived within 120s: x"; m.pop("completed", None); repo.write_meta(m)
+        # a divergent copy of one of its segments in the quarantine: the archive's copy may be another server's -> NOT completed automatically
+        from pg_arca.engine.backup import _wal_needed
+        need = _wal_needed(int(m["timeline"]), m["start_lsn"], m["stop_lsn"], int(m.get("wal_segment_size") or F.ctx.seg_size), False)
+        qf = os.path.join(F.ctx.wal.wal_dir, "conflicts", need[0] + ".abcdefabcdef")
+        with open(qf, "wb") as fh:
+            fh.write(b"other server")
+        run_backup(F.ctx, "incr")
+        self.assertEqual(repo.set_meta(a["id"])["status"], "UNRECOVERABLE", "a quarantined copy of its WAL: a person decides")
+        self.assertIn("quarantine", repo.set_meta(a["id"]).get("late_wal_doubt", ""))
+        os.unlink(qf)
         b = run_backup(F.ctx, "incr")
         self.assertEqual(repo.set_meta(a["id"])["status"], "COMPLETE", "its WAL is in the archive now")
         self.assertIn("reached the archive late", repo.set_meta(a["id"]).get("note", ""))

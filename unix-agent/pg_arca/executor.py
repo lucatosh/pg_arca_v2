@@ -810,11 +810,25 @@ class OperationExecutor:
         wm = WalManager(wal_dir)
         files = p.get("files") if isinstance(p.get("files"), list) else None
         tl = self._local_timeline()
+        pgd = ((getattr(self.runtime, "instance", None) or {}) if self.runtime is not None else {}).get("data_directory")
+        lw = os.path.join(pgd, "pg_wal") if pgd else None
         if p.get("reviewed") and p.get("kind") == "off_history":
-            # "these are the leftovers of a failover": only the copies that the current history never reads, decided here, not by the caller
-            files = [c["file"] for c in wm.classify_conflicts(tl) if c.get("kind") == "off_history"]
+            # "these are the leftovers of a failover": decided here, and only by the PRIMARY (a standby or a node stuck on a dead branch would
+            # judge against the wrong history and could file away a real divergence)
+            if not self._is_primary():
+                raise OpError("filing away the failover leftovers is decided by the primary (this node is in recovery or PostgreSQL is not reachable): run it there")
+            files = [c["file"] for c in wm.classify_conflicts(tl, local_wal_dir=lw) if c.get("kind") == "off_history"]
         moved = wm.conflicts_reviewed(files) if p.get("reviewed") and (files is None or files) else []
-        return {"conflicts": wm.classify_conflicts(tl), "current_timeline": tl, "reviewed": moved, "wal_dir": wal_dir}
+        return {"conflicts": wm.classify_conflicts(tl, local_wal_dir=lw), "current_timeline": tl, "reviewed": moved, "wal_dir": wal_dir}
+
+    def _is_primary(self):
+        try:
+            if self.db and self.db.ping():
+                ok, out, _ = self.db.run_psql("SELECT pg_is_in_recovery()")
+                return ok and out.strip() == "f"
+        except Exception:
+            pass
+        return False
 
     def _local_timeline(self):
         """The timeline the local PostgreSQL is on (a standby: the one of its last restartpoint), None when it cannot be asked."""

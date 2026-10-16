@@ -144,14 +144,17 @@ import { requiredRole } from '../../server/auth';
       const f = evaluate(st, now).find(i => i.clusterId === 'p' && i.code === 'rpo_target')!; assert.strictEqual(f.severity, 'critical'); assert(/above the 60 min objective/.test(f.title)); }
     // an IDLE cluster is not at risk: last archive 4 h ago, but PostgreSQL writes in the segment right after it (archive_timeout bounds its age),
     // or exactly at its start (nothing written since the switch); a completed segment still waiting for the archiver keeps the long bound
-    { const pg = st.nodes.n1.snapshot.postgres; const keep = pg.current_lsn;
+    { const pg = st.nodes.n1.snapshot.postgres; const keep = pg.current_lsn; const keepTl = pg.timeline; pg.timeline = 1; st.nodes.n1.lastSeen = iso(now);
       pg.archiver = { last_archived_time: iso(now - 4 * 3600_000), last_archived_wal: '000000010000000000000051' };
       pg.current_lsn = '0/52000100'; { const o = objectives(st, 'p', now)!; assert.deepStrictEqual([o.rpo.state, o.rpo.seconds], ['ok', 60], JSON.stringify(o.rpo)); }
       assert(!evaluate(st, now).some(i => i.clusterId === 'p' && i.code === 'rpo_target'), 'no RPO alarm on an idle cluster');
       pg.current_lsn = '0/52000000'; assert.strictEqual(objectives(st, 'p', now)!.rpo.seconds, 0);
       pg.current_lsn = '0/54000100'; { const o = objectives(st, 'p', now)!; assert.strictEqual(o.rpo.state, 'bad'); assert(o.rpo.seconds! >= 4 * 3600 - 1); }
       pg.settings.archive_timeout = '0'; pg.current_lsn = '0/52000100'; assert(objectives(st, 'p', now)!.rpo.seconds! >= 4 * 3600 - 1, 'no archive_timeout: the open segment may be as old as the last archive');
-      pg.settings.archive_timeout = '60'; pg.current_lsn = keep; }
+      // a stale name from ANOTHER timeline, or numbered after the current segment (negative backlog): never the short bound
+      pg.settings.archive_timeout = '60'; pg.current_lsn = '0/52000100'; pg.archiver.last_archived_wal = '000000020000000000000051'; assert(objectives(st, 'p', now)!.rpo.seconds! >= 4 * 3600 - 1, 'other timeline');
+      pg.archiver.last_archived_wal = '000000010000000000000090'; assert(objectives(st, 'p', now)!.rpo.seconds! >= 4 * 3600 - 1, 'negative backlog');
+      pg.current_lsn = keep; pg.timeline = keepTl; }
     st.nodes.n1.snapshot.postgres.archiver = { last_archived_time: iso(now - 20_000) }; st.nodes.n1.snapshot.postgres.databases = [{ name: 'a', size: 400 * GB }];
     { const o = objectives(st, 'p', now)!; assert.strictEqual(o.rto.state, 'bad'); assert.strictEqual(o.rto.estimateSeconds, 60000);
       const f = evaluate(st, now).find(i => i.clusterId === 'p' && i.code === 'rto_target')!; assert(/above the 8 h objective/.test(f.title), f.title); }
