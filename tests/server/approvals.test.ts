@@ -83,6 +83,9 @@ import { mountHbaRoutes } from '../../server/hba';
   assert.equal(requiredRole('POST', '/api/approvals/x/cancel'), 'operator'); assert.equal(requiredRole('POST', '/api/approvals/x/approve'), 'admin');
   // geo: a standby site is never promoted as a plain operation (only through Geo-redundancy, which checks the primary site)
   assert.equal((await call('POST', '/api/clusters/prod1/operations', { type: 'geo_promote', params: { confirm: 'PROMOTE' } }, O, 'kg1')).body.error, 'use_geo_promote');
+  // demoting a site stops the writes of the whole database: administrators only, the destructive options never as a plain operation
+  assert.equal((await call('POST', '/api/clusters/prod1/operations', { type: 'geo_demote', params: { host: 'x', port: 5432, confirm: 'DEMOTE' } }, O, 'kg2')).status, 403);
+  assert.equal((await call('POST', '/api/clusters/prod1/operations', { type: 'geo_demote', params: { host: 'x', port: 5432, confirm: 'DEMOTE', force_rewind: true } }, A, 'kg3')).body.error, 'use_geo');
   // a DR promotion approved after the primary site came back is refused (requested while it was down)
   { const now = () => new Date().toISOString();
     const P = { postgres: { alive: true, is_in_recovery: false, current_lsn: '0/5000000', system_identifier: '8888', timeline: 1 }, patroni: { accessible: true, scope: 'g1', local_node: { role: 'leader', state: 'running' }, standby_cluster: null } };

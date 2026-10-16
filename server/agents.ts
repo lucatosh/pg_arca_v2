@@ -431,6 +431,10 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     // recorded so that the old primary is fenced and rejoined): never as a plain operation (independent review: an operator could promote it here)
     if (type === 'geo_promote') return res.status(403).json({ error: 'use_geo_promote', message: 'A standby site is promoted from Geo-redundancy (“Promote this site”), which checks that the primary site is really lost.' });
     if (type === 'geo_demote') {                                              // the site may only follow a registered peer site: the agent connects there with the cluster's replication credentials
+      // demoting a site stops the writes of the whole database (and force_rewind re-clones a data directory): administrators only, and the
+      // destructive options only through Geo-redundancy (independent review: an operator could do both here)
+      if ((req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can demote a site (Geo-redundancy).' });
+      if (params?.force_rewind || (Array.isArray(params?.drop_slots) && params.drop_slots.length)) return res.status(403).json({ error: 'use_geo', message: 'A forced rebuild or dropping slots is done by Geo-redundancy itself, not as a plain operation.' });
       const eps = knownPeerEndpoints(st, cluster.id);
       if (!eps.some((e: any) => e.host === String(params.host) && Number(e.port) === Number(params.port))) return res.status(409).json({ error: 'not_a_peer', message: 'A site can only be demoted under a registered peer site (Geo-redundancy → “Address of …”): the address given is not one.' });
     }

@@ -6,6 +6,7 @@ import { evaluate, protectionOf } from '../../server/health';
 import { renderMetrics } from '../../server/metrics';
 import { notifyTick, sealUrl, Sender } from '../../server/notify';
 import { schedulerTick } from '../../server/scheduler';
+import { deriveCluster } from '../../server/view';
 
 const H = 3600_000; const now = Date.now(); const iso = (t: number) => new Date(t).toISOString();
 const base = () => ({ clusters: [{ id: 'c', name: 'prod1', environment: 'prod', source: 'agent' }] as any[], nodes: {} as any, operations: [] as any[],
@@ -94,6 +95,15 @@ const codes = (st: any) => evaluate(st, now).filter(i => i.clusterId === 'c').ma
       d.nodes.n = { id: 'n', name: 'n', clusterId: 'c', lastSeen: iso(t), snapshot: { postgres: { is_in_recovery: false }, backup: { configured: true, sets: 61, recent_sets: incrs, last_full: { id: 'f', start_time: iso(t - 70 * H) } } } } as any; });
     const keys = await schedulerTick(st, t);
     assert(!keys.some(k => k.includes(':full:')), keys.join());
+  }
+  { // the leader's agent is gone and Patroni is paused: the HA facts still come from a replica, and the pause is a finding (critical without a leader)
+    const pt = { accessible: true, scope: 'pg', paused: true, dcs_type: 'etcd', local_node: { role: 'replica', state: 'streaming' } };
+    const nodes: any[] = [{ id: 'p', name: 'pg1', clusterId: 'c', lastSeen: iso(now - 10 * 60_000), snapshot: { postgres: { is_in_recovery: false, alive: true }, patroni: { ...pt, local_node: { role: 'leader' } } } },
+      { id: 's', name: 'pg2', clusterId: 'c', lastSeen: iso(now), snapshot: { postgres: { is_in_recovery: true, alive: true }, patroni: pt } }];
+    const v = deriveCluster({ id: 'c', name: 'c', environment: 'prod', nodes, now });
+    assert.strictEqual(v.haState.managedByPatroni, true, 'Patroni still known'); assert.strictEqual(v.haState.maintenanceMode, true);
+    const st = base(); st.nodes = { p: nodes[0], s: nodes[1] };
+    const pz = evaluate(st, now).find(i => i.code === 'patroni_paused'); assert(pz && pz.severity === 'critical', JSON.stringify(pz));
   }
   console.log('review health/scheduler OK');
 })().catch(e => { console.error(e); process.exit(1); });

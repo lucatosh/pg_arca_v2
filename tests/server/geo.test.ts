@@ -7,7 +7,7 @@ import { sameTimelineDiverged, parseHistory, followsPrimary } from '../../server
 import { knownPeerEndpoints } from '../../server/geo';
 import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, stanzaOf, geoReadiness } from '../../server/geo';
 import { evaluate } from '../../server/health';
-import { GEO_DR_TIMING, geoMonitorTick, watchOf, recoverInterruptedGeoJobs, pruneGeoJobs } from '../../server/geodr';
+import { GEO_DR_TIMING, geoMonitorTick, watchOf, recoverInterruptedGeoJobs, pruneGeoJobs, startFailover } from '../../server/geodr';
 import { deriveCluster } from '../../server/view';
 
 (async () => {
@@ -211,7 +211,8 @@ import { deriveCluster } from '../../server/view';
     // policy: off by default; admin sets it
     assert.strictEqual((await app4.call('GET', '/api/geo')).body.groups[0].policy.autoFailover, false);
     assert.strictEqual((await app4.call('PUT', `/api/geo/policy/${key}`, { body: { confirmSec: 5 } })).status, 400);
-    assert.strictEqual((await app4.call('PUT', `/api/geo/policy/${key}`, { body: { autoFailover: true, confirmSec: 20, maxLossMB: 16 } })).status, 200);
+    assert.strictEqual((await app4.call('PUT', `/api/geo/policy/${key}`, { body: { autoFailover: true, confirmSec: 20, maxLossMB: 16 } })).status, 409, 'automatic failover needs the console declared outside both sites');
+    assert.strictEqual((await app4.call('PUT', `/api/geo/policy/${key}`, { body: { autoFailover: true, consoleOutside: true, confirmSec: 20, maxLossMB: 16 } })).status, 200);
     // a) WAN cut: the standby site is blind, the console still hears the primary -> nothing
     await st4.mutate(d => { d.nodes.r1.snapshot = snapS('0/7000000', 'waiting', 200); });
     await tick(30_000); assert.strictEqual(jobs().length, 0); assert(/not a disaster/.test(watchOf(key)?.note || '') || !watchOf(key), JSON.stringify(watchOf(key)));
@@ -239,6 +240,8 @@ import { deriveCluster } from '../../server/view';
     const answerTl = async (cid: string, result: any) => { for (let i = 0; i < 200; i++) { const o = st4.peek().operations.find(x => x.type === 'pg_timeline' && x.clusterId === cid && x.status === 'queued');
       if (o) { await st4.mutate(d => { const x = d.operations.find(y => y.id === o.id)!; x.status = 'succeeded'; x.result = result; }); return o; } await new Promise(r => setTimeout(r, 50)); } throw new Error('no pg_timeline on ' + cid); };
     const histNew = '1\t0/5000000\tno recovery target specified\n2\t0/7000100\tno recovery target specified\n', histOld = '1\t0/5000000\tno recovery target specified\n2\t0/7400000\tno recovery target specified\n';
+    // fenced FIRST (no more writes on the old primary while its history is analysed), rebuilt after
+    const fence0 = await answer4('geo_demote'); assert(!fence0.params.force_rewind, 'the fence is a plain demotion'); assert(fence0.idempotencyKey.endsWith(':fence'));
     await answerTl('m', { timeline: 3, history: histOld, lsn: '0/7400100' }); await answerTl('r', { timeline: 3, history: histNew, lsn: '0/7100000' });
     const dm = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/7000100', 'streaming', 1), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
     assert.strictEqual(dm.nodeId, 'm1'); assert.deepStrictEqual([dm.params.host, dm.params.port, dm.params.primary_slot_name], ['192.168.1.232', 5000, 'geo_hy_mi']);
@@ -285,10 +288,10 @@ import { deriveCluster } from '../../server/view';
       d.nodes.m1.snapshot = { ...snapP('0/9300000'), patroni: { accessible: true, scope: 'hy-mi', local_node: { role: 'leader', state: 'running' }, standby_cluster: null } }; });
     await tick(500_000);
     const hist3 = '1\t0/5000000\tno recovery target specified\n2\t0/9000000\tno recovery target specified\n';
-    await answerTl('m', { timeline: 4, history: hist3 + '3\t0/9200000\tno recovery target specified\n', lsn: '0/9300000' }); await answerTl('r', { timeline: 3, history: hist3, lsn: '0/9200000' });
-    // demotion answered, but the site stays a standby leader that does NOT stream (waiting)
+    // fenced first (plain demotion), but the site stays a standby leader that does NOT stream (waiting)
     const d1 = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/9300000', 'waiting', 30), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
     assert(!d1.params.force_rewind, 'first demotion is plain (different timeline numbers)');
+    await answerTl('m', { timeline: 4, history: hist3 + '3\t0/9200000\tno recovery target specified\n', lsn: '0/9300000' }); await answerTl('r', { timeline: 3, history: hist3, lsn: '0/9200000' });
     await answerTl('m', { timeline: 4, history: hist3 + '3\t0/9200000\tno recovery target specified\n', lsn: '0/9300000' }); await answerTl('r', { timeline: 3, history: hist3, lsn: '0/9200000' });
     // its abandoned timeline 4 is set aside in the archive first, on the primary site and on the old site
     const rt = await answer4('wal_retire_branch'); assert.deepStrictEqual([rt.clusterId, rt.params.timeline, rt.params.abandoned], ['r', 4, true]);
@@ -332,6 +335,12 @@ import { deriveCluster } from '../../server/view';
     const p5 = st5.peek(); assert.strictEqual(p5.settings.geoJobs.g1.status, 'interrupted'); assert.strictEqual(p5.settings.geoJobs.g2.status, 'succeeded');
     assert(!p5.settings.geoFailovers.k.rejoinJob, 'the pair is released'); assert(/console restarted/.test(p5.settings.geoJobs.g1.error));
     assert.deepStrictEqual(await recoverInterruptedGeoJobs(st5), [], 'idempotent');
+  }
+  { // a site never takes over from itself (an interrupted switchover left the pair's last primary = the site promoted again)
+    const sx = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'geoself-')));
+    await sx.mutate(d => { d.clusters.push({ id: 'a', name: 'a', environment: 'prod', source: 'agent' } as any); });
+    const r = await startFailover(sx, { key: 'k', from: 'a', to: 'a', auto: false, actor: 't' });
+    assert.strictEqual(r.code, 409); assert.strictEqual(r.body.error, 'same_site');
   }
   console.log('geo tests OK'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

@@ -703,10 +703,26 @@ class OperationExecutor:
         st, resp = bridge.reinitialize(bool(p.get("force")))
         if st >= 300 and not (st == 504 and isinstance(resp, dict) and resp.get("timeout")):
             raise OpError("Patroni refused to reinitialize %s (%s): %s" % (member, st, json.dumps(resp)[:300]))
+        # followed to the end: "succeeded" three seconds after the request said nothing about a pg_basebackup that then failed (independent review)
+        deadline = time.time() + int(p.get("timeout", 7200))
         time.sleep(3)
-        s2, n = bridge.get_node_status()
-        return {"requested": True, "member": member, "state": (n or {}).get("state") if isinstance(n, dict) else None,
-                "note": "Patroni is re-cloning the replica from the leader; follow the state in the cluster view"}
+        state, began = None, False
+        while time.time() < deadline:
+            if self._cancelled():
+                raise Cancelled()
+            s2, n = bridge.get_node_status()
+            state = (n or {}).get("state") if isinstance(n, dict) else None
+            role = (n or {}).get("role") if isinstance(n, dict) else None
+            if state in ("creating replica", "starting", "restarting", "stopping", "stopped"):
+                began = True
+            if state in ("running", "streaming") and role in ("replica", "standby_leader") and (began or time.time() > deadline - int(p.get("timeout", 7200)) + 30):
+                return {"requested": True, "member": member, "state": state, "verified": True}
+            if began and state in ("start failed", "crashed", "unknown"):
+                raise OpError("reinitialization of %s failed: Patroni reports '%s' (see its log: pg_basebackup, pg_hba, disk space)" % (member, state))
+            self._progress({"phase": "reinit", "msg": "%s: %s" % (member, state or "no answer yet")})
+            time.sleep(5)
+        return {"requested": True, "member": member, "state": state, "verified": False,
+                "warning": "still not running after %ss: Patroni keeps re-cloning it; follow the state in the cluster view" % p.get("timeout", 7200)}
 
     def h_patroni_reload(self, p):
         self._require_patroni()
@@ -752,10 +768,55 @@ class OperationExecutor:
 
 
     # ------------------------------------------------------------------ handlers: geo-redundancy (Patroni standby clusters), always through the DCS
+    RUN_STATES = ("running", "streaming", "in archive recovery")
+
+    def _member_status(self, member):
+        """/patroni of that member: what its PostgreSQL really is (role, timeline, xlog). /cluster names the leader-key holder from the DCS
+        configuration alone, so right after a PATCH it already shows the new role while PostgreSQL has not changed yet."""
+        url = (member or {}).get("api_url")
+        if not url:
+            return None
+        try:
+            st, d = self.patroni.for_member(url).get_node_status()
+        except Exception:
+            return None
+        return d if isinstance(d, dict) and d.get("role") else None
+
     def _wait_role(self, want, timeout):
-        ok, lead, members = self.patroni.wait_for(lambda l, m: any(x.get("role") in want and x.get("state") in ("running", "streaming") for x in m), timeout=timeout, interval=2)
+        seen = {}
+
+        def done(_l, m):
+            x = next((y for y in m if y.get("role") in want and y.get("state") in self.RUN_STATES), None)
+            if not x:
+                return False
+            ms = self._member_status(x)
+            seen["member"] = ms
+            # the member itself must say so (independent review: "demoted" was reported while the old primary still took writes)
+            return ms is None or (ms.get("role") in want + (("master", "primary") if "leader" in want else ()) and ms.get("state") in self.RUN_STATES)
+        ok, lead, members = self.patroni.wait_for(done, timeout=timeout, interval=2)
         leader = next((x for x in members if x.get("role") in want), None)
+        if leader is not None:
+            leader = dict(leader, _member=seen.get("member"))
         return ok, leader, members
+
+    @staticmethod
+    def _xlog_lsn(ms, *keys):
+        x = (ms or {}).get("xlog") or {}
+        vals = [x.get(k) for k in keys if isinstance(x.get(k), int)]
+        if not vals:
+            return None
+        v = max(vals)
+        return "%X/%X" % (v >> 32, v & 0xFFFFFFFF)
+
+    def _unpause(self):
+        """Patroni back from maintenance mode, verified: a cluster left paused never starts a standby leader and never fails over."""
+        for _ in range(5):
+            st, d = self.patroni.patch_config({"pause": False})
+            s2, cfg = self.patroni.get_config()
+            if s2 == 200 and isinstance(cfg, dict) and not cfg.get("pause"):
+                return True
+            time.sleep(3)
+        return False
 
     def h_geo_promote(self, p):
         """This site (a Patroni standby cluster) becomes a normal, writable cluster: standby_cluster is removed from ITS dynamic configuration (PATCH /config, the same
@@ -780,7 +841,9 @@ class OperationExecutor:
         ok, leader, members = self._wait_role(("leader", "master", "primary"), int(p.get("timeout", 120)))
         if not ok:
             raise OpError("Patroni did not promote within %ss (members: %s)" % (p.get("timeout", 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
-        return {"promoted": True, "leader": leader.get("name"), "timeline": leader.get("timeline"), "slot_for_peer": slot or None}
+        ms = leader.get("_member")
+        return {"promoted": True, "leader": leader.get("name"), "timeline": (ms or {}).get("timeline") or leader.get("timeline"), "slot_for_peer": slot or None,
+                "verified_on_member": ms is not None}
 
     def h_geo_archive_fallback(self, p):
         """Standby site: let it catch up from the shared WAL archive when streaming from the primary site is not possible (slot lost, long WAN outage):
@@ -846,7 +909,17 @@ class OperationExecutor:
             sc["primary_slot_name"] = str(p["primary_slot_name"])
         patch = {"standby_cluster": sc}
         rewind = bool(p.get("force_rewind"))
-        if rewind:
+        # a rebuild already done by this same operation (the agent restarted during the long wait that follows and the operation came back): never
+        # paused and cloned a second time (independent review: it stopped the fresh standby leader and left another full copy on disk)
+        mark = os.path.join(self._state_dir(), "geo-rebuild-%s.json" % (getattr(self._tl, "op_id", "") or "none"))
+        rebuilt_before = None
+        if rewind and os.path.exists(mark):
+            try:
+                with open(mark) as f:
+                    rebuilt_before = json.load(f).get("kept") or "(nothing to keep)"
+            except (OSError, ValueError):
+                rebuilt_before = None
+        if rewind and not rebuilt_before:
             # same timeline number as the new primary, different history (see geo_rewind.py): Patroni would not rewind. Paused while pg_rewind runs here.
             me = (self.runtime.patroni_info or {}) if self.runtime else {}
             lead, _members = self.patroni.leader()
@@ -862,8 +935,8 @@ class OperationExecutor:
         st, d = self.patroni.patch_config(patch)
         if st >= 300:
             raise OpError("Patroni rejected the change (%s): %s" % (st, json.dumps(d)[:300]))
-        rebuilt = None
-        if rewind:
+        rebuilt = rebuilt_before
+        if rewind and not rebuilt_before:
             # pg_rewind cannot help (it also says 'same timeline: no rewind required'): the site is cloned again from the new primary
             from pg_arca import geo_rewind
             me = self.runtime.patroni_info or {}
@@ -871,8 +944,13 @@ class OperationExecutor:
                 user, pw = geo_rewind.patroni_auth(me.get("config_path") or "", ("replication", "superuser"))
                 rebuilt = geo_rewind.rebuild_from(me.get("data_dir") or (self.runtime.instance or {}).get("data_directory"), me.get("bin_dir") or "", host, port, user, pw,
                                                   self.config.get("state_dir"), self._progress) or "(nothing to keep)"
+                try:
+                    atomic_write_json(mark, {"kept": rebuilt, "at": time.time()})
+                except (OSError, IOError):
+                    pass
             finally:
-                self.patroni.patch_config({"pause": False})            # Patroni clones the standby leader from standby_cluster and starts it
+                if not self._unpause():                                # Patroni clones the standby leader from standby_cluster and starts it
+                    raise OpError("the site was rebuilt but Patroni stays PAUSED (maintenance mode could not be switched off): run patronictl resume")
         if rewind:
             # a clone takes time and the member list can still show the old standby leader for a moment: wait for one that STREAMS
             time.sleep(15)
@@ -881,17 +959,29 @@ class OperationExecutor:
             leader = next((x for x in members if x.get("role") == "standby_leader"), None) or {}
             if ok:
                 # the other members of this site carry the same wrong history: rebuilt by Patroni from their new standby leader
+                reinit = []
                 for m in [x for x in members if x.get("name") != leader.get("name") and x.get("api_url")]:
                     try:
-                        self.patroni.for_member(m["api_url"]).reinitialize(True)
-                    except Exception:
-                        logger.warning("reinitialize of %s not requested", m.get("name"))
+                        rs, rd = self.patroni.for_member(m["api_url"]).reinitialize(True)
+                    except Exception as e:
+                        rs, rd = 0, {"error": str(e)}
+                    reinit.append({"member": m.get("name"), "status": rs, "ok": 200 <= rs < 300 or rs == 504})
+                    if not (200 <= rs < 300 or rs == 504):
+                        logger.warning("reinitialize of %s refused (%s): %s", m.get("name"), rs, rd)
         else:
             ok, leader, members = self._wait_role(("standby_leader",), int(p.get("timeout", 120)))
         if not ok:
-            raise OpError("no standby leader within %ss (members: %s)" % (p.get("timeout", 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
-        return {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port), "dropped_slots": drop, "rebuilt_from_new_primary": bool(rebuilt),
-                "old_data_kept_as": rebuilt}
+            raise OpError("no standby leader within %ss (members: %s)" % (p.get("timeout", 3600 if rewind else 120), [(m.get("name"), m.get("role"), m.get("state")) for m in members]))
+        ms = (leader or {}).get("_member")
+        out = {"demoted": True, "standby_leader": leader.get("name"), "upstream": "%s:%d" % (host, port), "dropped_slots": drop, "rebuilt_from_new_primary": bool(rebuilt),
+               "old_data_kept_as": rebuilt, "verified_on_member": ms is not None,
+               # where this site's own WAL ended: the site that is promoted next must have received at least this much (the console waits for it)
+               "demoted_lsn": self._xlog_lsn(ms, "replayed_location", "received_location", "location")}
+        if rewind:
+            out["members_reinitialized"] = locals().get("reinit") or []
+            if any(not r["ok"] for r in out["members_reinitialized"]):
+                out["warning"] = "some members of this site refused to reinitialize (%s): rebuild them with patronictl reinit" % ", ".join(r["member"] for r in out["members_reinitialized"] if not r["ok"])
+        return out
 
     def h_wal_conflicts(self, p):
         """Divergent WAL copies the archive refused (conflicts/): listed, or marked as reviewed (kept under conflicts/reviewed/, no more alarm)."""

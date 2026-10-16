@@ -117,7 +117,11 @@ export function deriveCluster(opts: {
   const lead = primary || standbyLeader;
   const primaryRec = lead ? opts.nodes.find(n => n.id === lead.nodeId) : undefined;
   const pg = primaryRec?.snapshot?.postgres || {};
-  const pt = primaryRec?.snapshot?.patroni || {};
+  // Patroni facts (scope, pause, DCS) are the same on every member: from the leader when it reports, otherwise from ANY online member that reaches
+  // Patroni - exactly when the leader's agent is gone are "Forced failover" and "Leave maintenance mode" needed (independent review: the HA tab
+  // said "Patroni not detected" then)
+  const ptOf = (n: any) => n?.snapshot?.patroni?.accessible !== false && n?.snapshot?.patroni?.scope ? n.snapshot.patroni : null;
+  const pt = ptOf(primaryRec) || opts.nodes.filter(n => dn.some(d => d.nodeId === n.id && d.online)).map(ptOf).find(Boolean) || primaryRec?.snapshot?.patroni || {};
   const anyOffline = dn.some(n => !n.online);
   const lagging = dn.some(n => n.role !== 'primary' && n.role !== 'standby_leader' && n.replicationLagBytes > 64 * 1024 * 1024);
   const status = !lead ? 'degraded' : (anyOffline || lagging ? 'degraded' : 'healthy');

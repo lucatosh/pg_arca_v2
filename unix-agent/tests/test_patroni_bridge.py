@@ -12,9 +12,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pg_arca.patroni_bridge import PatroniBridge
 
 
+CFG = {"ttl": 30}
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
+
+    def do_GET(self):
+        if self.path == "/config":
+            self._send(200, json.dumps(CFG), "application/json")
+        else:
+            self._send(404, "{}", "application/json")
+
+    def do_PATCH(self):
+        n = int(self.headers.get("Content-Length") or 0); body = json.loads(self.rfile.read(n) or b"{}")
+        if body.get("slow_but_applied"):
+            CFG.update(body); time.sleep(1.5); self._send(200, json.dumps(CFG), "application/json")
+        elif body.get("slow_and_lost"):
+            time.sleep(1.5); self._send(200, "{}", "application/json")
+        else:
+            CFG.update(body); self._send(200, json.dumps(CFG), "application/json")
 
     def _send(self, code, body, ctype="text/html"):
         b = body.encode()
@@ -58,6 +76,33 @@ class Bridge(unittest.TestCase):
     def test_slow_write_is_a_timeout_not_unreachable(self):
         st, d = self.b.request("/restart", "POST", {}, timeout=0.5)
         self.assertEqual(st, 504); self.assertTrue(d.get("timeout"))
+
+    def test_patch_that_timed_out_is_read_back(self):
+        """a PATCH the DCS took late is applied, not 'rejected' (independent review: a promotion happened with no failover record)"""
+        import pg_arca.patroni_bridge as pb
+        real = pb.time.sleep
+        pb.time.sleep = lambda s: real(min(s, 0.6))
+        try:
+            st, d = self.b.patch_config({"slow_but_applied": 1, "pause": True}, timeout=0.5)
+            self.assertEqual(st, 200); self.assertTrue(d.get("_applied_after_timeout"))
+            st, d = self.b.patch_config({"slow_and_lost": 1}, timeout=0.5)
+            self.assertEqual(st, 504); self.assertFalse(d.get("applied", True))
+        finally:
+            pb.time.sleep = real
+
+    def test_config_has(self):
+        from pg_arca.patroni_bridge import config_has
+        cfg = {"standby_cluster": None, "pause": True, "postgresql": {"parameters": {"work_mem": "64MB"}}, "slots": {"a": {"type": "physical"}}}
+        self.assertTrue(config_has(cfg, {"standby_cluster": None, "pause": True}))
+        self.assertTrue(config_has(cfg, {"postgresql": {"parameters": {"work_mem": "64MB"}}}))
+        self.assertTrue(config_has(cfg, {"slots": {"b": None}}))
+        self.assertFalse(config_has(cfg, {"slots": {"a": None}}))
+        self.assertFalse(config_has(cfg, {"pause": False}))
+
+    def test_standby_leader_is_the_sites_leader(self):
+        b = PatroniBridge("http://x")
+        b.get_cluster_topology = lambda: (200, {"members": [{"name": "m1", "role": "replica"}, {"name": "m2", "role": "standby_leader"}]})
+        self.assertEqual(b.leader()[0], "m2")
 
     def test_really_unreachable(self):
         st, d = PatroniBridge("http://127.0.0.1:1").request("/x")

@@ -16,6 +16,21 @@ import urllib.request
 logger = logging.getLogger("pg_arca.patroni_bridge")
 
 
+def config_has(cfg, patch):
+    """True when the JSON merge patch `patch` is reflected in `cfg` (null = key absent)."""
+    for k, v in (patch or {}).items():
+        cur = cfg.get(k) if isinstance(cfg, dict) else None
+        if v is None:
+            if cur not in (None, {}, ""):
+                return False
+        elif isinstance(v, dict):
+            if not isinstance(cur, dict) or not config_has(cur, v):
+                return False
+        elif cur != v and str(cur) != str(v):
+            return False
+    return True
+
+
 class PatroniBridge:
     def __init__(self, patroni_url="", user="", password="", ca_file="", insecure=False):
         self.patroni_url = (patroni_url or "").rstrip("/")
@@ -93,7 +108,9 @@ class PatroniBridge:
         if st != 200 or not isinstance(d, dict):
             return None, []
         members = d.get("members", [])
-        lead = next((m.get("name") for m in members if m.get("role") in ("leader", "master", "primary")), None)
+        # the leader key of a STANDBY cluster is held by its standby_leader: a site's leader too (independent review: on a standby site every
+        # "must run on the leader" guard found no leader and let the forced rebuild run on a replica)
+        lead = next((m.get("name") for m in members if m.get("role") in ("leader", "master", "primary", "standby_leader")), None)
         return lead, members
 
     # --- writes (callers verify afterwards) ---
@@ -117,8 +134,23 @@ class PatroniBridge:
     def reinitialize(self, force=False):
         return self.request("/reinitialize", "POST", {"force": True} if force else {}, timeout=60)
 
-    def patch_config(self, patch):
-        return self.request("/config", "PATCH", patch)
+    def patch_config(self, patch, timeout=20):
+        """PATCH /config. A timeout is not a refusal: the DCS may have taken the change while we stopped waiting (etcd/Consul under load). The
+        configuration is read back and compared; only a change that is really absent is reported as not applied (independent review: a promotion
+        reported "rejected" happened anyway, with no failover record and no fencing of the old primary)."""
+        st, d = self.request("/config", "PATCH", patch, timeout=timeout)
+        if st != 504:
+            return st, d
+        for _ in range(6):
+            time.sleep(2)
+            s2, cfg = self.get_config()
+            if s2 == 200 and isinstance(cfg, dict):
+                if config_has(cfg, patch):
+                    cfg = dict(cfg)
+                    cfg["_applied_after_timeout"] = True
+                    return 200, cfg
+                return 504, dict(d if isinstance(d, dict) else {}, error="Patroni did not confirm the change and it is not in the configuration", applied=False)
+        return st, d
 
     def wait_for(self, predicate, timeout=90, interval=2):
         """Poll /cluster until predicate(leader, members) is true. Returns (ok, leader, members)."""

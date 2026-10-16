@@ -123,6 +123,12 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         cause: 'The restore that was filling it did not complete: the content is incomplete. Drop it and run the restore again.', action: { label: 'Go to restore', page: 'restore' } });
     }
 
+    // ---- Patroni in maintenance mode: no automatic failover. Said everywhere (the HA tab alone was not enough), critical when no leader is reachable
+    const paused = online.find(n => n.snapshot?.patroni?.paused);
+    if (paused) add({ severity: primary || standbySite ? 'warning' : 'critical', code: 'patroni_paused', title: 'Patroni is in maintenance mode (paused)',
+      cause: primary || standbySite ? 'Automatic failover is off while it is paused: if the primary fails now, nothing takes over. Leave maintenance mode when the work is done.' : 'Patroni is paused and no primary is reachable: nothing will take over by itself. Leave maintenance mode or fail over by hand.',
+      action: { label: 'High availability', page: 'ha' } });
+
     // ---- backups
     const bkNode = backupSource(nodes, now) || primary;
     const bk = bkNode?.snapshot?.backup;

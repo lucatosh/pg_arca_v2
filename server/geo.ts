@@ -393,10 +393,18 @@ export async function runSwitchover(store: Store, job: { id: string; from: strin
     // the slot the target site used on this one is useless once it is primary (and a standby site must not hold WAL for nobody): dropped in the same DCS change
     const drop = to.upstream?.slot && /^[a-z0-9_]{1,63}$/.test(to.upstream.slot) && to.upstream.slot !== slot ? [to.upstream.slot] : [];
     const d = await submitTo(store, job.from, 'geo_demote', { host: job.toEndpoint.host, port: job.toEndpoint.port, primary_slot_name: slot, drop_slots: drop, confirm: 'DEMOTE' }, `geo:${job.id}:demote`, job.actor);
-    const dr = await waitOp(store, d.id, 240_000);
-    if (dr.status !== 'succeeded') throw new Error(`demotion of ${from.name} failed: ${dr.error || dr.status}`);
+    const dr: any = await waitOp(store, d.id, 330_000).catch((e: any) => ({ status: 'unknown', error: e.message }));    // > the op's queue TTL (300 s) + its own wait
+    if (dr.status !== 'succeeded') {
+      // not confirmed is not "still primary": the DCS may have taken the change late. Said as it is, never "failed" while no site accepts writes
+      const now1 = geoGroups(store.peek()).flatMap(x => x.sites).find(s => s.clusterId === job.from);
+      if (now1?.role === 'standby') throw new Error(`the demotion of ${from.name} was not confirmed (${dr.error || dr.status}) but ${from.name} is now a standby site: NO site accepts writes. ${to.name} was not promoted: promote ${to.name} (or ${from.name} back) from Geo-redundancy`);
+      throw new Error(`demotion of ${from.name} failed: ${dr.error || dr.status} (${from.name} is ${now1?.role || 'unknown'})`);
+    }
     await step(`2/4 waiting for ${to.name} to receive and replay everything ${from.name} wrote`);
-    const fromLsn = lsnToBig(store.peek().nodes[dr.nodeId!]?.snapshot?.postgres?.current_lsn) ?? 0n;
+    // where the demoted site's WAL really ended (reported by the agent from the member itself, after PostgreSQL is in recovery): the last
+    // heartbeat's position can be seconds old, and the promotion must not start before everything written there has arrived (independent review)
+    const snapLsn = lsnToBig(store.peek().nodes[dr.nodeId!]?.snapshot?.postgres?.current_lsn) ?? 0n; const endLsn = lsnToBig(dr.result?.demoted_lsn || null) ?? 0n;
+    const fromLsn = endLsn > snapLsn ? endLsn : snapLsn;
     const t0 = Date.now(); let ok = false;
     while (Date.now() - t0 < 120_000) {
       const t = geoGroups(store.peek()).flatMap(x => x.sites).find(s => s.clusterId === job.to);
@@ -407,8 +415,9 @@ export async function runSwitchover(store: Store, job: { id: string; from: strin
     if (!ok) throw new Error(`${to.name} did not reach the position of ${from.name} within 2 minutes: it is NOT promoted (${from.name} stays a standby site, no data lost: you can go back by promoting ${from.name})`);
     await step(`3/4 promoting ${to.name} (slot ${slot} created for ${from.name})`);
     const p = await submitTo(store, job.to, 'geo_promote', { confirm: 'PROMOTE', slot_for_peer: slot }, `geo:${job.id}:promote`, job.actor);
-    const pr = await waitOp(store, p.id, 240_000);
-    if (pr.status !== 'succeeded') throw new Error(`promotion of ${to.name} failed: ${pr.error || pr.status}`);
+    const pr: any = await waitOp(store, p.id, 330_000).catch((e: any) => ({ status: 'unknown', error: e.message }));
+    if (pr.status !== 'succeeded' && geoGroups(store.peek()).flatMap(x => x.sites).find(s => s.clusterId === job.to)?.role !== 'primary')
+      throw new Error(`promotion of ${to.name} failed: ${pr.error || pr.status} — NO site accepts writes now: promote ${to.name} again, or ${from.name} back, from Geo-redundancy`);
     submitTo(store, job.to, 'geo_archive_fallback', { enable: true }, `geo:${job.id}:archive-primary`, job.actor).catch(() => undefined);   // keeps seeing the shared archive (timeline numbers)
     await step(`4/4 completed: ${to.name} is the primary site, ${from.name} replicates from it`, 'succeeded', { finishedAt: nowIso() });
     await store.mutate(d2 => ops.audit(d2, { clusterId: job.to, actor: job.actor, action: 'geo.switchover', status: 'OK', details: { from: job.from, to: job.to } }));
@@ -460,6 +469,8 @@ export function mountGeoRoutes(app: any, store: Store) {
     const p = { ...GEO_POLICY_DEFAULT, ...(store.peek().settings.geoPolicy?.[key] || {}) };
     if (b.autoFailover !== undefined) p.autoFailover = !!b.autoFailover;
     if (b.autoRejoin !== undefined) p.autoRejoin = !!b.autoRejoin;
+    if (b.consoleOutside !== undefined) p.consoleOutside = !!b.consoleOutside;
+    if (p.autoFailover && !p.consoleOutside) return res.status(409).json({ error: 'witness_not_independent', message: 'Automatic failover needs the console in a third location (neither site): only then is "the console hears nothing from the primary site" independent of "the standby site receives no WAL". State it, or keep failover manual.' });
     if (b.confirmSec !== undefined) { const v = Number(b.confirmSec); if (!(Number.isInteger(v) && v >= 10 && v <= 3600)) return res.status(400).json({ error: 'invalid', message: 'Confirmation wait between 10 seconds and 1 hour.' }); p.confirmSec = v; }
     if (b.maxLossMB !== undefined) { const v = Number(b.maxLossMB); if (!(v >= 0 && v <= 1_000_000)) return res.status(400).json({ error: 'invalid', message: 'Maximum loss: a number of MB (0 = no loss accepted).' }); p.maxLossMB = v; }
     await store.mutate(d => { (d.settings.geoPolicy ||= {})[key] = p; ops.audit(d, { actor: actor(req), action: 'geo.policy', status: 'OK', details: { key, ...p } } as any); });
@@ -507,7 +518,10 @@ export function mountGeoRoutes(app: any, store: Store) {
     const cluster = st.clusters.find((c: any) => c.id === clusterId);
     // the site it replicated from: the visible primary, else the last primary the pair knew (the lost one)
     const grp = geoGroups(st).find(g => g.sites.some(s => s.clusterId === clusterId));
-    const lostId = me.peers.find(p => p.role === 'primary')?.clusterId || (grp ? (st.settings.geoLastPrimary || {})[grp.sysid]?.clusterId : null) || me.peers[0]?.clusterId;
+    // never itself: after an interrupted switchover (A demoted, B not promoted) the pair's last primary IS the site being promoted again - a
+    // "failover from A to A" was then rejoined under its own address, leaving no writable site (independent review)
+    const lastP = grp ? (st.settings.geoLastPrimary || {})[grp.sysid]?.clusterId : null;
+    const lostId = me.peers.find(p => p.role === 'primary')?.clusterId || (lastP && lastP !== clusterId ? lastP : null) || me.peers[0]?.clusterId;
     if (!grp || !lostId) return res.status(409).json({ error: 'no_peer', message: 'Unknown which site it replicated from: declare the relationship in Geo-redundancy.' });
     const params = { from: lostId, to: clusterId, key: grp.sysid, primaryWasAlive: !!alive };      // decided again at approval time (agents.ts approvedFailover)
     if (requiresApproval(st, cluster, 'geo_promote', params)) {
@@ -528,6 +542,8 @@ export function mountGeoRoutes(app: any, store: Store) {
     const st = store.peek(); const me = geoOf(st, clusterId); const target = st.clusters.find((c: any) => c.id === to);
     if (!me || !target || !me.peers.some(p => p.clusterId === to)) return res.status(409).json({ error: 'not_paired', message: 'The two clusters are not sites of the same database.' });
     if (me.role !== 'primary') return res.status(409).json({ error: 'not_primary', message: `${me.name} does not accept writes: it is already a standby site.` });
+    const other = geoOf(st, to);
+    if (!other || other.role !== 'primary' || !other.online) return res.status(409).json({ error: 'target_not_primary', message: `${target.name} is not a writable site reachable now: demoting ${me.name} under it would leave the database with no writable site.` });
     const ep = target.geoEndpoint || geoOf(st, to)?.endpoint;
     if (!ep) return res.status(409).json({ error: 'endpoint_required', message: `First set how to reach ${target.name} (the address of its leader).` });
     const params = { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(me.name), confirm: 'DEMOTE' };
@@ -545,7 +561,9 @@ export function mountGeoRoutes(app: any, store: Store) {
     const { from, to, confirm } = req.body || {};
     if (confirm !== 'SWITCHOVER') return res.status(400).json({ error: 'confirm_required', message: 'Type SWITCHOVER to confirm.' });
     const st = store.peek(); const target = st.clusters.find((c: any) => c.id === to);
-    if (target && requiresApproval(st, target, 'geo_switchover', {})) {
+    const source = st.clusters.find((c: any) => c.id === from);
+    const guard = [target, source].find(x => x && requiresApproval(st, x, 'geo_switchover', {}));     // either site protected: four-eyes
+    if (target && guard) {
       const key = String(req.headers['idempotency-key'] || `geo-sw-${from}-${to}-${Date.now()}`);
       const r = await requestApproval(store, ops.audit, { cluster: target, type: 'geo_switchover', params: { from, to }, key, actor: actor(req) } as any);
       return res.status(202).json({ approval: r, message: 'Switchover between sites in a protected environment: another administrator must approve it.' });

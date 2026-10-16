@@ -21,8 +21,11 @@ import { geoGroups, geoSlotFor, submitTo, waitOp, GeoGroup, Site } from './geo';
 const MB = 1024 * 1024;
 /** Waits of the failover (tests shorten them). */
 export const GEO_DR_TIMING = { stableMs: 25_000, pollMs: 2000, maxCatchupMs: 180_000, rejoinPollMs: 3000, rejoinStreamMs: 300_000 };
-export interface GeoPolicy { autoFailover: boolean; confirmSec: number; maxLossMB: number; autoRejoin: boolean }
-export const GEO_POLICY_DEFAULT: GeoPolicy = { autoFailover: false, confirmSec: 30, maxLossMB: 16, autoRejoin: true };
+// consoleOutside: the administrator states that the console runs in a THIRD location. The two witnesses of a disaster ("the console hears no node of
+// the primary site", "the standby site receives no WAL") are independent only then: with the console inside the standby site, a cut between the sites
+// makes both true and promotes a second primary (independent review). Automatic failover acts only with it.
+export interface GeoPolicy { autoFailover: boolean; confirmSec: number; maxLossMB: number; autoRejoin: boolean; consoleOutside: boolean }
+export const GEO_POLICY_DEFAULT: GeoPolicy = { autoFailover: false, confirmSec: 30, maxLossMB: 16, autoRejoin: true, consoleOutside: false };
 export const policyOf = (st: any, key: string): GeoPolicy => ({ ...GEO_POLICY_DEFAULT, ...((st.settings.geoPolicy || {})[key] || {}) });
 const ONLINE_MS = 45_000;
 const online = (n: NodeRecord, now = Date.now()) => !!n.lastSeen && now - Date.parse(n.lastSeen) < ONLINE_MS;
@@ -42,7 +45,9 @@ const step = (store: Store, id: string, text: string, status = 'running', extra:
   j.steps.push({ at: nowIso(), text }); j.status = status; Object.assign(j, extra);
   if (j.steps.length > 60) j.steps.splice(0, j.steps.length - 60);
 });
-const running = (st: any) => Object.values(st.settings.geoJobs || {}).some((j: any) => j.status === 'running');
+/** A site role change running for THESE clusters (a pair): a rebuild of another pair, which can take an hour, must not hold back the fencing of
+ *  this one (independent review). Without clusters: any. */
+const running = (st: any, ids?: string[]) => Object.values(st.settings.geoJobs || {}).some((j: any) => j.status === 'running' && (!ids || ids.includes(j.from) || ids.includes(j.to)));
 /** The last site known as primary of each pair, with its last reported position: when it disappears the pair still knows whom it lost and how far it was. */
 function remember(store: Store, key: string, site: Site) {
   const st = store.peek(); const cur = (st.settings.geoLastPrimary || {})[key];
@@ -81,9 +86,10 @@ export async function geoMonitorTick(store: Store, now = Date.now()) {
     w.downSince = both ? (w.downSince ?? now) : null;
     w.snoozedUntil = (snoozed.get(key) || 0) > now ? snoozed.get(key)! : null;
     w.actInSec = w.downSince && pol.autoFailover ? Math.max(0, Math.ceil((w.downSince + pol.confirmSec * 1000 - now) / 1000)) : null;
-    w.note = !cands.length ? 'no reachable standby site: nothing to promote' : !consoleBlind ? `${last.name} still answers the console: not a disaster (network between the sites?)` : !best ? `${cands.map(s => s.name).join(', ')} still receives WAL from ${last.name}` : undefined;
+    w.note = both && pol.autoFailover && !pol.consoleOutside ? 'automatic failover waits for a person: the policy does not state that the console runs outside both sites, so a cut between the sites cannot be told from a disaster'
+      : !cands.length ? 'no reachable standby site: nothing to promote' : !consoleBlind ? `${last.name} still answers the console: not a disaster (network between the sites?)` : !best ? `${cands.map(s => s.name).join(', ')} still receives WAL from ${last.name}` : undefined;
     watches.set(key, w);
-    if (!both || !pol.autoFailover || w.snoozedUntil || running(store.peek())) continue;
+    if (!both || !pol.autoFailover || !pol.consoleOutside || w.snoozedUntil || running(store.peek(), g.sites.map(s => s.clusterId))) continue;
     if (now - w.downSince! < pol.confirmSec * 1000) continue;
     const done = (store.peek().settings.geoFailovers || {})[key];
     if (done && done.from === last.clusterId && !done.rejoinedAt && Date.now() - Date.parse(done.at) < 3600_000) continue;   // already failed over away from it
@@ -102,7 +108,8 @@ export function pruneGeoJobs(d: any, keep = 200) {
 /** Starts a DR failover (automatic or asked by an operator). */
 export async function startFailover(store: Store, a: { key: string; from: string; to: string; auto: boolean; actor: string }): Promise<{ code: number; body: any }> {
   const st = store.peek();
-  if (running(st)) return { code: 409, body: { error: 'busy', message: 'A site role change is already running.' } };
+  if (a.from === a.to) return { code: 409, body: { error: 'same_site', message: 'A site cannot take over from itself: say which site was lost.' } };
+  if (running(st, [a.from, a.to])) return { code: 409, body: { error: 'busy', message: 'A site role change is already running.' } };
   const from = st.clusters.find((c: any) => c.id === a.from), to = st.clusters.find((c: any) => c.id === a.to);
   if (!from || !to) return { code: 404, body: { error: 'cluster_not_found' } };
   const id = newId('geo');
@@ -150,8 +157,14 @@ async function runFailover(store: Store, id: string, a: { key: string; from: str
     if (isBack()) throw new Error(`${fromName} is reachable again: failover cancelled, nothing changed`);
     await step(store, id, `4/5 promoting ${toName} through its DCS (permanent slot ${geoSlotFor(fromName)} for when ${fromName} comes back)`);
     const p = await submitTo(store, a.to, 'geo_promote', { confirm: 'PROMOTE', slot_for_peer: geoSlotFor(fromName) }, `geo:${id}:promote`, a.actor);
-    const pr = await waitOp(store, p.id, 240_000);
-    if (pr.status !== 'succeeded') throw new Error(`promotion of ${toName} failed: ${pr.error || pr.status}`);
+    // the promotion reported failed or not finished in time may still have happened (the DCS took the change late): what the site IS decides.
+    // Without the record the old primary would never be fenced nor rejoined when it comes back (independent review)
+    const pr: any = await waitOp(store, p.id, 330_000).catch((e: any) => ({ status: 'unknown', error: e.message }));
+    if (pr.status !== 'succeeded') {
+      await new Promise(r => setTimeout(r, GEO_DR_TIMING.pollMs * 3));
+      if (siteNow(store, a.to)?.role !== 'primary') throw new Error(`promotion of ${toName} failed: ${pr.error || pr.status}`);
+      await step(store, id, `   the promotion operation did not confirm (${pr.error || pr.status}), but ${toName} is now writable: recorded as promoted`);
+    }
     // the new primary keeps seeing the shared archive (restore_command in its DCS): a later promotion of either site never re-uses a timeline number
     submitTo(store, a.to, 'geo_archive_fallback', { enable: true }, `geo:${id}:archive-primary`, a.actor).catch(() => undefined);
     const fork = (pr.result as any)?.timeline ? { timeline: (pr.result as any).timeline } : {};
@@ -195,7 +208,8 @@ async function rejoinIfBack(store: Store, g: GeoGroup, pol: GeoPolicy, now = Dat
     if (!(Number(old.timeline) > Number(neu.timeline))) return;                   // a standby of the right timeline that does not stream right now: not ours to act on
     // a standby AHEAD of the new primary never streams from it by itself: rejoined (rebuilt) below like a site that came back writable
   }
-  if (!pol.autoRejoin || running(st)) return;
+  if (f.from === f.to) return;                                                   // never "rejoin" the only primary under itself
+  if (!pol.autoRejoin || running(st, g.sites.map(s => s.clusterId))) return;
   const ep = st.clusters.find((c: any) => c.id === f.to)?.geoEndpoint || neu.endpoint;
   const id = newId('geo');
   await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinJob = id;
@@ -247,6 +261,15 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     if (!ep) throw new Error(`address of ${neu.name} for the other sites not set: set it in Geo-redundancy, then “Demote ${old.name}”`);
     // the old site may have promoted itself to the SAME timeline number when it came back: then Patroni would not rewind it (see sameTimelineDiverged)
     // (only when it IS primary: a site whose PostgreSQL is not up cannot have promoted itself yet, and a fence must not wait a minute for pg_controldata)
+    // FENCE FIRST: a writable old primary stops taking writes now; the history analysis below takes up to two minutes and every commit accepted
+    // meanwhile would be thrown away by the rewind (independent review). The rebuild, when needed, follows on the already fenced site.
+    let fenced = false;
+    if (old.role === 'primary') {
+      try { const o0 = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', timeout: 120 }, `geo:${id}:fence`, 'pg_arca (automatic rejoin)');
+        const r0: any = await waitOp(store, o0.id, 330_000).catch(() => ({ status: 'unknown' })); fenced = r0.status === 'succeeded';
+        await step(store, id, fenced ? `1a ${old.name} fenced: it no longer accepts writes` : `1a fencing of ${old.name} not confirmed (${r0.error || r0.status}): retried with the rejoin below`); }
+      catch (e: any) { await step(store, id, `1a fencing of ${old.name} could not be requested (${e.message}): retried with the rejoin below`); }
+    }
     const t1 = old.role === 'primary' ? await timelines(store, id, 'pre', f.from, f.to) : { o: null, n: null };
     const force = sameTimelineDiverged(t1.o, t1.n);
     if (force) await step(store, id, `1b ${old.name} promoted itself when it came back, on the SAME timeline ${t1.o.timeline} as ${neu.name} but with a different history: Patroni (and pg_rewind) compare only the number and it would follow ${neu.name} with a hole in the data. It is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`);
@@ -256,9 +279,11 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     // old site's own (the same directory when the archive is shared)
     if (ahead) await retireAbandoned(store, id, f, Number(old.timeline), Number(neu.timeline), old.name);
     // a fenced site is still starting PostgreSQL: give Patroni more time to bring up the standby leader (the DCS write itself is immediate)
-    const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force || ahead ? { force_rewind: true } : {}), ...(ahead ? { timeout: 3600 } : old.role !== 'primary' ? { timeout: 600 } : {}) }, `geo:${id}:demote`, 'pg_arca (automatic rejoin)');
-    const r = await waitOp(store, o.id, ahead ? 3700_000 : 300_000);
-    if (r.status !== 'succeeded') throw new Error(`demotion of ${old.name} failed: ${r.error || r.status}`);
+    if (!fenced || force || ahead) {
+      const o = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', ...(force || ahead ? { force_rewind: true } : {}), ...(force || ahead ? { timeout: 3600 } : old.role !== 'primary' ? { timeout: 600 } : {}) }, `geo:${id}:demote`, 'pg_arca (automatic rejoin)');
+      const r = await waitOp(store, o.id, force || ahead ? 3700_000 : 330_000);
+      if (r.status !== 'succeeded') throw new Error(`demotion of ${old.name} failed: ${r.error || r.status}`);
+    }
     await step(store, id, `2/3 ${old.name} is a standby site of ${neu.name} (${ep.host}:${ep.port}): waiting for it to receive WAL`);
     const streaming = async () => { const t0 = Date.now(); while (Date.now() - t0 < GEO_DR_TIMING.rejoinStreamMs) { if (followsPrimary(siteNow(store, f.from), siteNow(store, f.to))) return true; await new Promise(r2 => setTimeout(r2, GEO_DR_TIMING.rejoinPollMs)); } return false; };
     let ok = await streaming();
