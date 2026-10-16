@@ -62,7 +62,19 @@ class Cluster(object):
             out.append(["docker", "exec", "-u", "postgres", c, exe, "-X", "-Atq", "-h", "/run/pg15", "-p", "5433"])
             if SUPERPW:
                 out.append(["docker", "exec", "-e", "PGPASSWORD=" + SUPERPW, c, exe, "-X", "-Atq", "-h", "localhost", "-U", "postgres"])
+        # a node that is not a container here (Proxmox: hy-rm's hyb1/hyb2): through tools/lab/ui/node.sh, as postgres
+        for exe in ("psql", "/usr/pgsql-16/bin/psql", "/usr/pgsql-15/bin/psql", "/usr/pgsql-17/bin/psql"):
+            out.append(["NODE", c, exe, "-X", "-Atq"])
         return out
+
+    @staticmethod
+    def _run(cand, extra):
+        if cand[0] == "NODE":
+            import shlex
+            inner = " ".join(shlex.quote(x) for x in cand[2:] + extra)
+            return subprocess.run([os.path.join(HERE, "ui", "node.sh"), cand[1], "su postgres -c %s" % shlex.quote("cd /tmp && " + inner)],
+                                  capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        return subprocess.run(cand + extra, capture_output=True, text=True)
 
     @staticmethod
     def container(node):
@@ -78,18 +90,18 @@ class Cluster(object):
 
     def sql(self, db, q, sock=None, port=None):
         c = self.container(self.primary())
-        if not self.psql or self.psql[4] != c:
+        if not self.psql or getattr(self, "psql_for", None) != c:
             for cand in self._candidates(c):
-                r = subprocess.run(cand + ["-d", "postgres", "-c", "select 1"], capture_output=True, text=True)
+                r = self._run(cand, ["-d", "postgres", "-c", "select 1"])
                 if r.returncode == 0 and r.stdout.strip() == "1":
-                    self.psql = cand
+                    self.psql, self.psql_for = cand, c
                     break
             else:
                 raise RuntimeError("no psql access to %s" % c)
         cmd = list(self.psql)
         if sock:
             cmd = [x for x in cmd if x not in ("-h", "/run/pg15", "-p", "5433", "localhost")] + ["-h", sock, "-p", str(port)]
-        r = subprocess.run(cmd + ["-d", db, "-c", q], capture_output=True, text=True)
+        r = self._run(cmd, ["-d", db, "-c", q])
         if r.returncode:
             raise RuntimeError(r.stderr.strip()[:400])
         return r.stdout.strip()
