@@ -373,8 +373,17 @@ export function briefing(st: any, now = Date.now()) {
       const failed = recentOps.filter(o => o.status === 'failed');
       const refusal = (o: any) => isRefusal(String(o.error?.message || o.error || ''), o.type);
       const real = failed.filter(o => !refusal(o));
-      return { operations: recentOps.length, failed: real.length, refused: failed.length - real.length, backups: recentOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').length,
-        failures: real.slice(-5).reverse().map(o => ({ id: o.id, type: o.type, clusterId: o.clusterId, at: o.updatedAt, error: String(o.error?.message || o.error || '').slice(0, 200) })),
+      // the same failure repeated (a scheduled backup hitting one broken destination all day) is ONE line with a count, and a failure followed by a
+      // success of the same operation on the same cluster is resolved: the headline counts what is still broken (the lab read '78 failed operations')
+      const errOf = (o: any) => String(o.error?.message || o.error || '');
+      const okAfter = (o: any) => recentOps.some(x => x.status === 'succeeded' && x.type === o.type && x.clusterId === o.clusterId && String(x.updatedAt) > String(o.updatedAt));
+      const groups = new Map<string, any>();
+      for (const o of real) { const k = `${o.type}|${o.clusterId}|${errOf(o).replace(/[0-9A-F]{24}|\d{8}-\d{6}[FDI]?|\d+/g, '#').slice(0, 120)}`; const g = groups.get(k);
+        if (g) { g.count++; if (String(o.updatedAt) > String(g.at)) { g.at = o.updatedAt; g.id = o.id; g.error = errOf(o).slice(0, 200); } }
+        else groups.set(k, { id: o.id, type: o.type, clusterId: o.clusterId, at: o.updatedAt, first: o.updatedAt, error: errOf(o).slice(0, 200), count: 1 }); }
+      const glist = [...groups.values()].map(g => ({ ...g, resolved: okAfter({ ...g, updatedAt: g.at }) })).sort((a, b) => Number(a.resolved) - Number(b.resolved) || String(b.at).localeCompare(String(a.at)));
+      return { operations: recentOps.length, failed: real.length, unresolved: real.filter(o => !okAfter(o)).length, refused: failed.length - real.length, backups: recentOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').length,
+        failures: glist.slice(0, 8),
         refusals: failed.filter(refusal).slice(-5).reverse().map(o => ({ id: o.id, type: o.type, clusterId: o.clusterId, at: o.updatedAt, error: String(o.error?.message || o.error || '').slice(0, 200) })) };
     })(),
   };

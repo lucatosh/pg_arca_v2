@@ -1,7 +1,7 @@
 import React from 'react';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Skeleton, ago, dday } from '../ui';
-import { revalidate, toast, useQuery } from '../hooks';
+import { Badge, Banner, Button, Card, Skeleton, ago, dday, nof } from '../ui';
+import { revalidate, toast, useQuery, useDraft } from '../hooks';
 import { go } from '../router';
 import { OP_LABEL } from './shared';
 import { itCheck } from '../i18n';
@@ -25,6 +25,8 @@ function PendingApprovals({ me, role }: { me: string; role: string }) {
 
 export function TodayPage({ me, role }: { me: string; role: string }) {
   const q = useHealth(15000); const d = q.data;
+  // information waits behind a switch when there is something to act on: the list starts with what needs doing
+  const [showInfo, setShowInfo] = useDraft('today:info', false); const nInfo = (d?.issues || []).filter((i: any) => i.severity === 'info').length;
   const open = (i: any) => go(i.action?.page === 'geo' ? 'geo' : String(i.clusterId).startsWith('worker:') ? `w/${encodeURIComponent(String(i.clusterId).slice(7))}` : i.action?.page === 'cluster' || !i.action?.page ? `c/${encodeURIComponent(i.clusterId)}` : i.action.page === 'strategy' ? 'strategy' : `c/${encodeURIComponent(i.clusterId)}/${i.action.page}`);
   return <>
     <div className="pagehead"><div className="grow"><h1>Today</h1><p className="sub">What needs attention now, with the likely cause and the next step.{d ? ` Updated ${ago(d.generatedAt)}.` : ''}</p></div></div>
@@ -32,14 +34,15 @@ export function TodayPage({ me, role }: { me: string; role: string }) {
     {!d ? <Card><Skeleton h={80} /></Card> : <>
       <Banner kind={d.status === 'ok' ? 'ok' : d.status === 'critical' ? 'bad' : 'warn'} title={d.status === 'ok' ? 'All good' : d.status === 'critical' ? `${d.counts.critical} ${d.counts.critical === 1 ? 'urgent problem' : 'urgent problems'}` : 'Something needs attention'}>
         {d.status === 'ok' ? 'Recent backups, continuous WAL archive, replicas in sync, disks with free space.' : `${d.counts.critical} urgent, ${d.counts.warning} needing attention, ${d.counts.info} informational.`}
-        {' '}Last 24 hours: {d.last24h.backups} {d.last24h.backups === 1 ? 'successful backup' : 'successful backups'}{d.last24h.failed ? <>, <strong>{d.last24h.failed} failed operations</strong></> : ', no failed operations'}{d.last24h.refused ? <>, {d.last24h.refused} refused by the checks before changing anything</> : ''}.</Banner>
-      {d.issues.length ? <Card title="To do">
-        <div className="stack">{d.issues.map((i: any) => <div key={i.key} className="issue">
+        {' '}Last 24 hours: {d.last24h.backups} {d.last24h.backups === 1 ? 'successful backup' : 'successful backups'}{d.last24h.failed ? (d.last24h.unresolved != null && d.last24h.unresolved < d.last24h.failed ? <>, {d.last24h.failed} failed operations{d.last24h.unresolved ? <> (<strong>{d.last24h.unresolved} not resolved since</strong>)</> : ' (all resolved since)'}</> : <>, <strong>{nof(d.last24h.failed, 'failed operation')}</strong></>) : ', no failed operations'}{d.last24h.refused ? <>, {d.last24h.refused} refused by the checks before changing anything</> : ''}.</Banner>
+      {d.issues.length ? <Card title="To do" actions={nInfo && nInfo < d.issues.length ? <label className="check small"><input type="checkbox" checked={showInfo} onChange={e => setShowInfo(e.target.checked)} />Show {nof(nInfo, 'informational item')}</label> : undefined}>
+        <div className="stack">{d.issues.filter((i: any) => showInfo || i.severity !== 'info' || nInfo === d.issues.length).map((i: any) => <div key={i.key} className="issue">
           <div className="row"><Badge kind={SEV[i.severity].kind}>{SEV[i.severity].label}</Badge><strong>{i.title}</strong><div className="grow" /><span className="small muted">{i.clusterName} · {i.environment}</span></div>
           <p className="small muted" style={{ margin: '4px 0 6px' }}>{i.cause}</p>
           {i.action ? <Button sm onClick={() => open(i)}>{i.action.label}</Button> : null}</div>)}</div></Card> : null}
       {d.last24h.failures.length ? <Card title="Failed operations in the last 24 hours"><div className="tablewrap"><table className="t"><tbody>
-        {d.last24h.failures.map((f: any) => <tr key={f.id}><td>{TYPE[f.type] || OP_LABEL[f.type] || f.type}</td><td className="muted">{f.error ? itCheck(f.error) : '—'}</td><td className="num small muted">{ago(f.at)}</td><td className="num"><Button sm onClick={() => go(`c/${encodeURIComponent(f.clusterId)}/operations`)}>Open</Button></td></tr>)}</tbody></table></div></Card> : null}
+        {d.last24h.failures.map((f: any) => <tr key={f.id} style={f.resolved ? { opacity: .65 } : undefined}><td className="nowrap">{TYPE[f.type] || OP_LABEL[f.type] || f.type}{f.count > 1 ? <Badge>×{f.count}</Badge> : null}<div className="small faint">{(d.clusters.find((c: any) => c.id === f.clusterId) || {}).name || ''}</div></td>
+          <td className="muted small">{f.error ? itCheck(f.error) : '—'}{f.resolved ? <div><Badge kind="ok">Resolved: it succeeded afterwards</Badge></div> : null}</td><td className="num small muted nowrap">{f.count > 1 ? `last ${ago(f.at)}` : ago(f.at)}</td><td className="num"><Button sm onClick={() => go(`c/${encodeURIComponent(f.clusterId)}/operations`)}>Open</Button></td></tr>)}</tbody></table></div></Card> : null}
       {(d.last24h.refusals || []).length ? <details className="card" style={{ padding: '10px 16px' }}><summary className="small" style={{ cursor: 'pointer' }}>{d.last24h.refused} {d.last24h.refused === 1 ? 'operation refused' : 'operations refused'} by the checks (nothing was changed)</summary>
         <div className="tablewrap"><table className="t"><tbody>{d.last24h.refusals.map((f: any) => <tr key={f.id}><td>{TYPE[f.type] || OP_LABEL[f.type] || f.type}</td><td className="muted small">{f.error ? itCheck(f.error) : '—'}</td><td className="num small muted">{ago(f.at)}</td></tr>)}</tbody></table></div></details> : null}
       <Card title="Cluster"><div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>Environment</th><th title="Measured by the last disaster recovery drill">Whole-cluster restore time</th><th>Status</th></tr></thead><tbody>

@@ -219,5 +219,16 @@ import { requiredRole } from '../../server/auth';
   const p2 = await app2.call('PUT', '/api/notifications', { body: { webhooks: [{ name: 'local', url: `http://127.0.0.1:${port}/hook`, format: 'generic', minSeverity: 'info' }] } });
   const t = await app2.call('POST', '/api/notifications/test', { body: { id: p2.body.webhooks[0].id } }); assert.strictEqual(t.status, 200); assert.strictEqual(got[0].event, 'pg_arca.test');
   srv.close();
+  { // the same failure repeated is one line with a count; a later success resolves it and the headline counts only what is still broken
+    const st5 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'h24-'))); const t0 = Date.now(); const at = (m: number) => new Date(t0 - m * 60_000).toISOString();
+    await st5.mutate(d => { d.clusters.push({ id: 'z', name: 'zed', environment: 'prod', source: 'agent' } as any);
+      for (let i = 0; i < 3; i++) d.operations.push({ id: 'f' + i, type: 'backup_run', clusterId: 'z', status: 'failed', error: `PGA-REPO-062: File exists: /r/backup/2026101${i}-01000${i}I`, updatedAt: at(60 - i), createdAt: at(61 - i), history: [] } as any);
+      d.operations.push({ id: 'x', type: 'backup_verify', clusterId: 'z', status: 'failed', error: 'boom', updatedAt: at(5), createdAt: at(6), history: [] } as any);
+      d.operations.push({ id: 's', type: 'backup_run', clusterId: 'z', status: 'succeeded', updatedAt: at(10), createdAt: at(11), history: [] } as any); });
+    const l = briefing(st5.peek(), t0).last24h as any;
+    assert.strictEqual(l.failed, 4); assert.strictEqual(l.unresolved, 1, 'the backups succeeded afterwards; the verification did not');
+    const g = l.failures.find((x: any) => x.type === 'backup_run'); assert.strictEqual(g.count, 3); assert.strictEqual(g.resolved, true);
+    assert.strictEqual(l.failures[0].type, 'backup_verify', 'unresolved first');
+  }
   console.log('health/notify tests OK');
 })().catch(e => { console.error(e); process.exit(1); });
