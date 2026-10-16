@@ -324,15 +324,52 @@ class Ephemeral(object):
         self.cleanup()
         raise EngineError("PGA-PITR-011", "timeout starting the ephemeral instance (%ds)" % wait, "see %s" % logfile)
 
+    _TRANSIENT = ("terminating connection because of crash", "server closed the connection unexpectedly", "the database system is in recovery mode",
+                  "the database system is starting up", "the database system is not yet accepting connections", "Connection refused", "No such file or directory")
+
+    def _reconnect(self, deadline, cancel=None):
+        """A session to the recovering instance, riding out a crash-and-restart of one of its processes: the postmaster reinitializes and resumes
+        recovery from its last restartpoint ("In a moment you should be able to reconnect"); only a dead postmaster or the deadline is fatal
+        (a restore failed on a loaded machine when one backend was killed while the instance was replaying)."""
+        last = None
+        while True:
+            _check_cancel(cancel)
+            if self.proc is not None and self.proc.poll() is not None:
+                raise death_error(os.path.join(self.dir, "pg_arca-ephemeral.log"), "while recovering")
+            try:
+                return PgSession(self.conn("postgres"), read_only=True)
+            except EngineError as e:
+                last = e
+                if not any(t in (e.message or "") for t in self._TRANSIENT) or time.time() > deadline:
+                    raise
+            time.sleep(2)
+
+    def _log_transient(self, e):
+        try:
+            self.ctx.log("warning", "recovery instance: connection lost (%s): reconnecting" % (e.message or "")[:160])
+        except Exception:
+            pass
+
     def wait_target(self, timeout=3600, cancel=None, progress=None):
-        s = PgSession(self.conn("postgres"), read_only=True)
         t0 = time.time()
+        s = self._reconnect(t0 + 120, cancel)
         try:
             while time.time() - t0 < timeout:
                 _check_cancel(cancel)
                 if self.proc is not None and self.proc.poll() is not None:
                     raise death_error(os.path.join(self.dir, "pg_arca-ephemeral.log"), "while recovering")
-                inrec = s.scalar("SELECT pg_is_in_recovery()")
+                try:
+                    inrec = s.scalar("SELECT pg_is_in_recovery()")
+                except EngineError as e:
+                    if not any(t in (e.message or "") for t in self._TRANSIENT):
+                        raise
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                    self._log_transient(e)
+                    s = self._reconnect(time.time() + 120, cancel)
+                    continue
                 lsn = s.scalar("SELECT COALESCE(pg_last_wal_replay_lsn()::text,'-')")
                 try:
                     paused = inrec != "f" and s.scalar(s.profile.replay_paused_sql()) == "1"
