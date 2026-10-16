@@ -322,6 +322,24 @@ Trovato nello stesso giro dalla suite dei guasti (`test_restore_faults_pg`, inte
 ### 7p. Punti di ripristino con nome (16/10)
 Operazione `restore_point` (primario): `pg_create_restore_point(nome)` + `pg_switch_wal()` (il record va subito in archivio). La console li conserva per cluster (`settings.restorePoints`, max 200, `GET /api/clusters/:id/restore-points`) e il wizard li propone come target **LSN** (non `recovery_target_name`: con il nome serve un full come base, con l'LSN vale anche un incrementale). Stato ripristinato = stato al momento del segno (il record non contiene dati). `tests/test_restore_point_pg.py`, `tests/server/restorepoints.test.ts`, e2e.
 
+### 7q. Logica del ripristino: decisioni, invarianti e prove (16/10)
+Ogni ripristino (server, database, tabelle, righe) passa per le stesse decisioni. Per ognuna: la regola, perché, e la prova che la regge.
+
+| # | Decisione | Regola | Prova |
+|---|---|---|---|
+| 1 | Base del recupero | Il set COMPLETO più recente che finisce prima del punto richiesto; per un incrementale serve un margine di 2 s (lo `stop_time` è troncato al secondo); con xid o nome di restore point solo un full (non ordinabili rispetto alla fine di un incrementale), salvo LSN noto dall'analisi del WAL | `test_choose_set`, `test_restore_review::TimeTargetMargin`, `test_engine_targets_pg` |
+| 2 | Catena e timeline | La catena è quella che il recupero rigioca davvero: i set oltre il punto in cui la timeline scelta lascia la loro vengono tolti (il WAL arriva comunque al target); full oltre il fork → rifiuto `PGA-PITR-020` | `test_timeline_branch_pg::test_04b` (riprodotto: prima tornava il futuro abbandonato), `test_engine_failover_pg` |
+| 3 | WAL | Copertura verificata PRIMA di estrarre; un buco prima del target = rifiuto con il primo segmento mancante; a fine archivio = la copia finisce lì e lo dice | `test_restore_faults_pg::test_04`, `test_wal_rescue_pg` |
+| 4 | Pre-flight | Bloccante: chunk presenti, spazio per volume (dati vivi inclusi), permessi, nome libero, destinazione non standby, CREATE TABLESPACE non rigiocabile su un percorso vivo (e se non verificabile: rifiuto) | `test_restorecheck`, `test_engine_pg::test_12b`, `test_tablespace_later_pg` |
+| 5 | Punto nel tempo | Tempo con fuso obbligatorio; oltre la fine dell'archivio (continuo) si recupera fino alla fine e lo si dice, e se nel frattempo l'archivio è andato oltre si rifà con il punto richiesto; LSN e xid esclusivi = «subito prima»; «latest» = fine dell'archivio dopo aver chiuso il segmento corrente; restore point con nome = il suo LSN | `test_engine_pg::test_05b`, `test_wal_flush_pg`, `test_engine_targets_pg`, `test_restore_point_pg` |
+| 6 | Quale database | Nome + oid: un database eliminato si ferma subito prima del DROP (che lo invalida prima del commit); un nome eliminato e ricreato: il punto decide quale dei due | `test_engine_pg::test_05c`, `test_db_swap_pg`, `test_reincarnation_pg` (riprodotto: prima tornava quello vecchio) |
+| 7 | Istanza di recupero | Isolata (solo socket 0700, archiviazione spenta, GUC in quarantena, niente worker di replica logica); sopravvive alla caduta di un processo; la sua morte è spiegata dal suo log | `test_eph_crash_pg`, `test_logical_copy_pg`, `test_restore_faults_pg::test_06` |
+| 8 | Fine del lavoro | Sempre prima una copia (nuovo nome, quarantena, directory accanto); in place solo se scelto e confermato col nome: scambio atomico, originale tenuto, lock al massimo 10 s, verifica per OID, righe orfane rifiutate salvo consenso | `test_db_swap_pg`, `test_orphans_pg`, `test_restore_faults_pg`, `test_restore_fuzz_*` |
+| 9 | Server in place | Solo standalone, senza tablespace esterni, PGDATA non punto di mount, spazio per il WAL non archiviato; stop → rename → start → primario; ogni fallimento rimette l'originale e aspetta che risponda | `test_replace_pg`, `test_replace_unit`, `test_restore_review::Swap` |
+| 10 | Durabilità | Dati, `backup_label`, impostazioni di recupero e `recovery.signal` su disco prima del «pronto»; riscritture di configurazione atomiche | `test_engine_pg`, revisione 7o |
+
+**Varianti di ambiente** (stesse suite, 16/10): repository + WAL cifrati, segmenti WAL da 1, 4 e 64 MB, `pg_wal` fuori da PGDATA. **Versioni**: matrice PostgreSQL 14–18 (`tools/lab/matrix.sh`). **Lab, cluster veri via console** (`tools/lab/scenario-restore-matrix.py`): Patroni PG16, standalone PG15 con layout insolito, PG14, Patroni PG18, coppia Rocky/RHEL, sito primario geo — ogni funzione di ripristino confrontata tabella per tabella con lo stato registrato.
+
 ## 8. Registro delle modifiche
 
 | Data | Modifica | Provato |

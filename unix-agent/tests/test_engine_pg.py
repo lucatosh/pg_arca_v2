@@ -367,8 +367,11 @@ class EngineTests(unittest.TestCase):
         t_ok = q("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
         time.sleep(1.2)
         q("postgres", "DROP DATABASE gone")
-        q("postgres", "SELECT pg_switch_wal()")
-        time.sleep(2)
+        seg = q("postgres", "SELECT pg_walfile_name(pg_switch_wal())")[0][0]
+        for _ in range(120):                         # the DROP must be in the archive (a 64 MB segment takes longer than 2 s to compress and archive)
+            if (q("postgres", "SELECT coalesce(last_archived_wal, '') FROM pg_stat_archiver")[0][0] or "") >= seg:
+                break
+            time.sleep(0.5)
         plan = restore_database(F.ctx, "gone", target_time=t_ok, new_name="gone_back", jobs=2)
         self.assertEqual(int(q("gone_back", "SELECT count(*) FROM t")[0][0]), 3000)
         self.assertTrue(plan.get("stopped_before_drop"), "the engine must say it had to stop before the DROP DATABASE record")

@@ -61,6 +61,10 @@ class Reincarnation(unittest.TestCase):
         # a time before the drop: the earlier one
         restore_database(F.ctx, "inc", target_time=t_first, new_name="inc_t1")
         self.assertEqual(q("inc_t1", "SELECT count(*) FROM t")[0][0], "100")
+        # a TABLE of the later database, as it is now (object restore resolves the database the same way)
+        from pg_arca.engine.granular import restore_object
+        r = restore_object(F.ctx, "inc.public.t", stage_db="pgarca_stage_inc")
+        self.assertEqual(q("pgarca_stage_inc", "SELECT count(*) FROM public.t")[0][0], "150", r)
 
 
 if __name__ == "__main__":
