@@ -21,7 +21,10 @@ from pg_arca.engine.util import EngineError
 TOOLS = ("postgres", "pg_ctl", "psql", "pg_dump", "pg_restore", "pg_waldump", "pg_controldata")
 KEYS = ("placement", "central_node", "scratch_dir", "bin_dir", "port_min", "port_max", "shared_buffers_mb", "keep_on_failure", "install_dir", "install_mode")
 PRIVATE_ROOT = "/var/lib/pgarca/pg"
-SYSTEM_GLOBS = ("/usr/lib/postgresql/*/bin", "/usr/pgsql-*/bin", "/usr/local/pgsql*/bin", "/opt/postgresql*/bin", "/opt/pgsql*/bin", "/opt/edb/as*/bin", "/usr/local/pg*/bin")
+# Debian/Ubuntu, PGDG RPM, source builds, EDB (RHEL /usr/edb, Debian /usr/lib/edb-as), SUSE (/usr/lib/postgresqlNN), Alpine (/usr/libexec/postgresqlNN),
+# and the single-version layouts that put the server in /usr/bin (RHEL AppStream module, Amazon Linux, Arch) or /usr/local/bin (FreeBSD)
+SYSTEM_GLOBS = ("/usr/lib/postgresql/*/bin", "/usr/pgsql-*/bin", "/usr/local/pgsql*/bin", "/opt/postgresql*/bin", "/opt/pgsql*/bin", "/opt/edb/as*/bin", "/usr/local/pg*/bin",
+                "/usr/edb/as*/bin", "/usr/lib/edb-as/*/bin", "/usr/lib/postgresql[0-9]*/bin", "/usr/libexec/postgresql[0-9]*", "/usr/bin", "/usr/local/bin")
 
 
 # ============================================================================================================== settings
@@ -108,7 +111,7 @@ def _version_of(bindir):
         if not os.access(exe, os.X_OK):
             return None, None
     try:
-        out = subprocess.run([exe, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10).stdout
+        out = subprocess.run([exe, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
         return None, None
     m = re.search(r"\(PostgreSQL\)\s*(\d+)(?:\.(\d+))?", out)
@@ -248,7 +251,7 @@ def _available(family, major, run=None):
 
 
 def _run(cmd, cwd=None, timeout=900, env=None):
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, cwd=cwd, timeout=timeout, env=env)
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding="utf-8", errors="replace", cwd=cwd, timeout=timeout, env=env)
     return p.returncode, p.stdout
 
 

@@ -92,7 +92,9 @@ def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=Fal
         if not os.path.exists(path):
             continue
         out = []
-        with open(path, "r", errors="replace") as f:
+        # bytes that are not UTF-8 (a LATIN1 comment) go back exactly as they were (surrogateescape), and the locale's encoding plays no role
+        # (portability review: Python 3.6 in the C locale failed to write an "é", every Python rewrote LATIN1 bytes as U+FFFD)
+        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
             for line in f:
                 s = line.strip()
                 if not s or s.startswith("#"):
@@ -112,7 +114,7 @@ def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=Fal
                     out.append("shared_preload_libraries = '%s'\n" % ",".join(x for x in libs if x not in GUC_BLOCKED_LIBS))
                     continue
                 out.append(line)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
             f.writelines(out)
     forced = {"listen_addresses": "''", "port": str(port), "unix_socket_directories": "'%s'" % sockdir, "unix_socket_permissions": "0700",
               "archive_mode": "off", "hot_standby": "on", "default_transaction_read_only": "on", "fsync": "off", "full_page_writes": "off",
@@ -537,8 +539,12 @@ def reap_stale(ctx, kept_ttl=24 * 3600, grace=60):
         pidf = os.path.join(p, "postmaster.pid")
         if os.path.exists(pidf):
             try:
+                from pg_arca import procs
                 pid = int(read_file(pidf, first_line=True).strip())
-                cmd = read_file("/proc/%d/cmdline" % pid, binary=True).replace(b"\0", b" ").decode("utf-8", "replace")
+                argv = procs.cmdline(pid)
+                cmd = " ".join(argv) if argv else ""
+                if argv is None:
+                    continue                                   # alive but cannot be identified (no /proc, ps refused): never delete under it
                 if "postgres" in cmd and (p in cmd or os.path.realpath(p) in cmd):
                     os.kill(pid, signal.SIGINT)                # fast shutdown, then hard if it does not go
                     for _ in range(20):

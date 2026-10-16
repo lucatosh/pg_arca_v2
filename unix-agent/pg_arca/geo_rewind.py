@@ -82,12 +82,12 @@ def force_rewind(pgdata, bindir, host, port, user, password, state_dir, progress
     rew = os.path.join(bindir, "pg_rewind") if bindir else "pg_rewind"
     if progress:
         progress({"phase": "geo-rewind", "msg": "stopping PostgreSQL of the old primary (Patroni paused)"})
-    r = subprocess.run([ctl, "stop", "-D", pgdata, "-m", "fast", "-w", "-t", "300"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=360)
+    r = subprocess.run([ctl, "stop", "-D", pgdata, "-m", "fast", "-w", "-t", "300"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding="utf-8", errors="replace", timeout=360)
     if r.returncode != 0 and os.path.exists(os.path.join(pgdata, "postmaster.pid")) and "not running" not in (r.stdout or ""):
         raise EngineError("PGA-GEO-022", "pg_ctl stop failed: %s" % (r.stdout or "")[-300:])
     fd, passfile = tempfile.mkstemp(prefix=".pgpass-rewind-", dir=state_dir if state_dir and os.path.isdir(state_dir) else None)
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("%s:%s:*:%s:%s\n" % (host.replace(":", "\\:"), port, user.replace(":", "\\:"), password.replace("\\", "\\\\").replace(":", "\\:")))
         os.chmod(passfile, 0o600)
         if progress:
@@ -95,7 +95,7 @@ def force_rewind(pgdata, bindir, host, port, user, password, state_dir, progress
         env = dict(os.environ, PGPASSFILE=passfile, PGCONNECT_TIMEOUT="15")
         src = "host=%s port=%s user=%s dbname=postgres" % (host, port, user)
         r = subprocess.run([rew, "--target-pgdata=%s" % pgdata, "--source-server=%s" % src, "--progress"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           universal_newlines=True, timeout=6 * 3600, env=env, cwd="/")
+                           universal_newlines=True, encoding="utf-8", errors="replace", timeout=6 * 3600, env=env, cwd="/")
     finally:
         try:
             os.unlink(passfile)
@@ -121,20 +121,20 @@ def rebuild_from(pgdata, bindir, host, port, user, password, state_dir, progress
     real = os.path.realpath(pgdata).rstrip("/")
     _clone_preconditions(real)                                     # refused BEFORE PostgreSQL is stopped
     if os.path.exists(os.path.join(real, "PG_VERSION")):
-        r = subprocess.run([ctl, "stop", "-D", real, "-m", "fast", "-w", "-t", "300"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=360)
+        r = subprocess.run([ctl, "stop", "-D", real, "-m", "fast", "-w", "-t", "300"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding="utf-8", errors="replace", timeout=360)
         if r.returncode != 0 and os.path.exists(os.path.join(real, "postmaster.pid")) and "not running" not in (r.stdout or ""):
             raise EngineError("PGA-GEO-022", "pg_ctl stop failed: %s" % (r.stdout or "")[-300:])
     ts = _t.strftime("%Y%m%d%H%M%S")
     clone = "%s.pgarca-clone-%s" % (real, ts)
     fd, passfile = tempfile.mkstemp(prefix=".pgpass-clone-", dir=state_dir if state_dir and os.path.isdir(state_dir) else None)
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("%s:%s:*:%s:%s\n" % (host.replace(":", "\\:"), port, user.replace(":", "\\:"), password.replace("\\", "\\\\").replace(":", "\\:")))
         os.chmod(passfile, 0o600)
         if progress:
             progress({"phase": "geo-rebuild", "msg": "cloning the site from the new primary (%s:%s) with pg_basebackup" % (host, port)})
         r = subprocess.run([bb, "-D", clone, "-h", host, "-p", str(port), "-U", user, "-X", "stream", "-c", "fast", "--no-password"], stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, universal_newlines=True, timeout=12 * 3600, env=dict(os.environ, PGPASSFILE=passfile, PGCONNECT_TIMEOUT="15"), cwd="/")
+                           stderr=subprocess.STDOUT, universal_newlines=True, encoding="utf-8", errors="replace", timeout=12 * 3600, env=dict(os.environ, PGPASSFILE=passfile, PGCONNECT_TIMEOUT="15"), cwd="/")
     finally:
         try:
             os.unlink(passfile)
@@ -192,7 +192,7 @@ def rebuild_aside(pgdata, bindir, progress=None):
     ctl = os.path.join(bindir, "pg_ctl") if bindir else "pg_ctl"
     if progress:
         progress({"phase": "geo-rebuild", "msg": "stopping PostgreSQL of the old primary (Patroni paused)"})
-    r = subprocess.run([ctl, "stop", "-D", pgdata, "-m", "fast", "-w", "-t", "300"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=360)
+    r = subprocess.run([ctl, "stop", "-D", pgdata, "-m", "fast", "-w", "-t", "300"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding="utf-8", errors="replace", timeout=360)
     pid = os.path.join(pgdata, "postmaster.pid")
     if r.returncode != 0 and os.path.exists(pid) and "not running" not in (r.stdout or "") and "No such file" not in (r.stdout or ""):
         raise EngineError("PGA-GEO-022", "pg_ctl stop failed: %s" % (r.stdout or "")[-300:])

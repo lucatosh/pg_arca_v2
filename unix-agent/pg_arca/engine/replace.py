@@ -30,7 +30,7 @@ def staging_dir(pgdata):
 
 def _run(cmd, timeout=30):
     try:
-        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=timeout)
         return r.returncode, r.stdout or "", r.stderr or ""
     except (OSError, subprocess.SubprocessError) as e:
         return 127, "", str(e)

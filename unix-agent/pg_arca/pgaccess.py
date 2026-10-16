@@ -14,7 +14,8 @@ import pwd
 import re
 import shutil
 
-VENDOR_GLOBS = ("/usr/lib/postgresql/*/bin", "/usr/pgsql-*/bin", "/opt/pgsql*/bin", "/usr/local/pgsql*/bin", "/opt/postgresql*/bin", "/opt/edb/as*/bin", "/usr/local/pg*/bin")
+VENDOR_GLOBS = ("/usr/lib/postgresql/*/bin", "/usr/pgsql-*/bin", "/opt/pgsql*/bin", "/usr/local/pgsql*/bin", "/opt/postgresql*/bin", "/opt/edb/as*/bin", "/usr/local/pg*/bin",
+                "/usr/edb/as*/bin", "/usr/lib/edb-as/*/bin", "/usr/lib/postgresql[0-9]*/bin", "/usr/libexec/postgresql[0-9]*")
 
 
 def _is_exe(p):

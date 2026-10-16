@@ -128,5 +128,32 @@ def main():
     return 0
 
 
+def _init_if_pid1():
+    """Run as PID 1 (a container started without --init / tini): every orphan of the host's process tree becomes OUR child - a postmaster
+    started through pg_ctl by a restore, a restart or a restored copy. Nothing reaped them: a stopped postmaster stayed a zombie whose pid still
+    answered, and PostgreSQL refused to start again on its own lock file (portability review). As PID 1 the agent forks: the parent only
+    reaps and forwards signals, the child is the agent (its own subprocesses stay its own children, untouched)."""
+    if os.getpid() != 1 or os.environ.get("PG_ARCA_NO_INIT"):
+        return
+    child = os.fork()
+    if child == 0:
+        return                                             # the agent
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, lambda s, f: os.kill(child, s))
+    code = 0
+    while True:
+        try:
+            pid, status = os.wait()
+        except ChildProcessError:
+            break
+        except InterruptedError:
+            continue
+        if pid == child:
+            code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + (os.WTERMSIG(status) if os.WIFSIGNALED(status) else 0)
+            break
+    os._exit(code)
+
+
 if __name__ == "__main__":
+    _init_if_pid1()
     sys.exit(main())

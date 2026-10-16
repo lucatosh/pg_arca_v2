@@ -29,7 +29,12 @@ def _local_addresses():
         for m in re.finditer(r"inet6? ([0-9a-fA-F.:]+)/", out):
             addrs.add(m.group(1))
     except Exception:
-        pass
+        try:                                                  # no iproute2 (FreeBSD, slim containers): ifconfig
+            out = subprocess.check_output(["ifconfig", "-a"], stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+            for m in re.finditer(r"\binet6? (?:addr:)?([0-9a-fA-F.:]+)", out):
+                addrs.add(m.group(1))
+        except Exception:
+            pass
     try:
         for fam, _t, _p, _c, sa in socket.getaddrinfo(socket.gethostname(), None):
             addrs.add(sa[0])

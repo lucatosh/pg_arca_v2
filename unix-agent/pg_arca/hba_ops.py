@@ -128,13 +128,13 @@ class _Src(object):
             lines = [rule_from_effective(r) for r in rows]
             self.seed_skipped = sum(1 for x in lines if x is None)
             return "\n".join(x for x in lines if x) + "\n"
-        with open(self.path, "r", encoding="utf-8") as f:
+        with open(self.path, "r", encoding="utf-8", errors="surrogateescape") as f:
             return f.read()
 
     def file_text(self):
         if self.patroni:
             raise self.err("internal: pg_hba.conf is never read on a Patroni node")
-        with open(self.path, "r", encoding="utf-8") as f:
+        with open(self.path, "r", encoding="utf-8", errors="surrogateescape") as f:
             return f.read()
 
 
@@ -306,7 +306,7 @@ def _write_atomic(path, text):
     st = os.stat(path)
     fd, tmp = tempfile.mkstemp(prefix=".pgarca-hba-", dir=os.path.dirname(path))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -557,7 +557,7 @@ def rollback(ex, p, err):
         raise err("no pg_hba backup available")
     cur = src.file_text()
     shutil.copy2(src.path, src.path + ".pgarca-before-rollback")
-    with open(pick, "r", encoding="utf-8") as bf:
+    with open(pick, "r", encoding="utf-8", errors="surrogateescape") as bf:
         _write_atomic(src.path, bf.read())
     bad = _reload_and_check(ex, src.path, err)
     if bad:
@@ -579,7 +579,7 @@ def _rollback_offline(ex, p, err, path, why):
     if not pick:
         raise err("PostgreSQL refuses the agent (%s) and no pg_hba backup is available next to %s" % (getattr(why, "message", None) or why, path))
     shutil.copy2(path, path + ".pgarca-before-rollback")
-    with open(pick, "r", encoding="utf-8") as bf:
+    with open(pick, "r", encoding="utf-8", errors="surrogateescape") as bf:
         _write_atomic(path, bf.read())
     if not _signal_reload(ex):
         raise err("%s put back, but PostgreSQL could not be told to reload: run pg_ctl reload (or systemctl reload) on this server" % os.path.basename(pick))

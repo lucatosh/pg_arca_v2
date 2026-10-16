@@ -35,7 +35,7 @@ def available(ctl_dir=CTL_DIR, runner=subprocess.run):
     if st.st_uid != 0 or not stat.S_ISDIR(st.st_mode) or (st.st_mode & 0o7777) != 0o1733:
         return False                                   # not the directory the installer made: never hand a request to it
     try:
-        r = runner(["systemctl", "is-active", "pg-arca-pgctl.path"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+        r = runner(["systemctl", "is-active", "pg-arca-pgctl.path"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=10)
     except (OSError, subprocess.SubprocessError):
         return False
     return (r.stdout or "").strip() == "active"
@@ -86,7 +86,7 @@ def _allowed_users(path=USERS_FILE):
 
 
 def _known_unit(unit, runner):
-    r = runner(["systemctl", "show", "-p", "LoadState", "--value", unit], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
+    r = runner(["systemctl", "show", "-p", "LoadState", "--value", unit], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=30)
     return (r.stdout or "").strip() == "loaded"
 
 
@@ -154,7 +154,7 @@ def handle(ctl_dir=CTL_DIR, users=None, runner=subprocess.run, getpwuid=None, lo
         else:
             try:
                 r = runner(["systemctl", verb] + (["--no-block"] if verb == "start" else []) + [unit], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           universal_newlines=True, timeout=900)
+                           universal_newlines=True, encoding="utf-8", errors="replace", timeout=900)
                 rc, msg = r.returncode, (r.stdout or "")[-2000:]
             except Exception as e:
                 rc, msg = 1, str(e)

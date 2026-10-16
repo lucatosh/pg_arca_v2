@@ -46,7 +46,7 @@ DML_KEEP = 20                                      # per segment and transaction
 
 def _major_of(exe):
     try:
-        out = subprocess.run([exe, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=15).stdout
+        out = subprocess.run([exe, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=15).stdout
         m = re.search(r"(\d+)(?:\.(\d+))?", out or "")
         return int(m.group(1)) if m else 0
     except (OSError, subprocess.SubprocessError):

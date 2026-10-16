@@ -129,8 +129,18 @@ def decompress(blob):
         return body
     if tag == b"S":
         if _zstd is None:
-            raise EngineError("PGA-REPO-030", "repository chunk is zstd-compressed but python 'zstandard' is not installed on this host",
-                              "pip install zstandard (same major as the host that wrote the repository)")
+            # no python module here (SUSE 15, RHEL 8 without EPEL, Alpine, FreeBSD, another python3): the zstd command decodes the same frames, as
+            # the WAL path already does - a repository written elsewhere stays restorable on a recovery host (portability review)
+            import shutil
+            import subprocess
+            exe = shutil.which("zstd")
+            if exe:
+                r = subprocess.run([exe, "-d", "-c", "-q"], input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+                if r.returncode == 0:
+                    return r.stdout
+                raise EngineError("PGA-VRF-002", "zstd could not decode a repository chunk: %s" % r.stderr.decode("utf-8", "replace").strip()[:200])
+            raise EngineError("PGA-REPO-030", "repository chunk is zstd-compressed but neither python 'zstandard' nor the zstd command is installed on this host",
+                              "install python3-zstandard (or pip install zstandard) or the zstd package")
         return _zstd.ZstdDecompressor().decompress(body)
     raise EngineError("PGA-VRF-002", "unknown chunk encoding tag %r" % tag)
 
@@ -197,7 +207,8 @@ def safe_relpath(rel):
 
 def read_file(path, binary=False, first_line=False, errors=None):
     """Whole content (or the first line) of a file, closed at once: a long-running agent never leaves a file to the garbage collector."""
-    with open(path, "rb" if binary else "r", **({} if binary or not errors else {"errors": errors})) as f:
+    # text: UTF-8 whatever the locale (Python 3.6 in the C locale read ASCII and failed on the first accented comment)
+    with open(path, "rb" if binary else "r", **({} if binary else {"encoding": "utf-8", "errors": errors or "strict"})) as f:
         return f.readline() if first_line else f.read()
 
 

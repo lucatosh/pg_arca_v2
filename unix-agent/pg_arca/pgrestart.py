@@ -55,7 +55,7 @@ def postmaster_pid(data_dir):
 def polkit_running(runner=subprocess.run):
     """True/False when systemd can tell whether the polkit service runs, None when it cannot be asked."""
     try:
-        r = runner(["systemctl", "is-active", "polkit"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+        r = runner(["systemctl", "is-active", "polkit"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
     return (r.stdout or "").strip() == "active"
@@ -65,7 +65,7 @@ def polkit_version(runner=subprocess.run):
     """(major, minor) of the installed polkit, None when unknown. Before 0.106 polkit has no JavaScript rules (Debian <= 11, Ubuntu <= 22.04): the rule
     file the installer writes is silently ignored there, and the installer adds the pg-arca-pgctl bridge instead (pgctl_bridge.py)."""
     try:
-        r = runner(["pkaction", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+        r = runner(["pkaction", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
     m = re.search(r"(\d+)(?:\.(\d+))?", r.stdout or "")
@@ -94,7 +94,7 @@ def systemctl(verb, unit, timeout=180, runner=None, euid=None, bridge=None):
         return rc, ("" if rc else out), (out if rc else "")
     run = runner or subprocess.run
     try:
-        r = run(["systemctl"] + systemctl_args(verb, unit), stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
+        r = run(["systemctl"] + systemctl_args(verb, unit), stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=timeout)
     except (OSError, subprocess.SubprocessError) as e:
         return 127, "", str(e)
     return r.returncode, r.stdout or "", r.stderr or ""
@@ -127,7 +127,9 @@ def systemd_permission(polkit_dir="/etc/polkit-1", rule_file=None, euid=None, ru
 def plan(data_dir, proc="/proc", self_pid=None):
     """How this instance can be restarted: {'method': 'systemd'|'pg_ctl'|'refuse', 'unit', 'why'}."""
     pid = postmaster_pid(data_dir)
-    if not pid or not os.path.exists(os.path.join(proc, str(pid))):
+    from pg_arca import procs
+    alive = bool(pid) and (os.path.exists(os.path.join(proc, str(pid))) if os.path.isdir(proc) else procs.is_postmaster(pid) is not False)   # no /proc (FreeBSD): ps
+    if not alive:
         return {"method": "refuse", "why": "PostgreSQL is not running from %s (no live postmaster.pid): start it the usual way" % data_dir}
     unit = unit_of_pid(pid, proc)
     mine = unit_of_pid(self_pid or os.getpid(), proc)

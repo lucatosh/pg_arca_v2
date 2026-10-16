@@ -678,7 +678,7 @@ def filtered_toc(admin, dumpfile, tmp, drop_fks):
             continue
         keep.append(line)
     path = os.path.join(tmp, "toc.lst")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
         f.write("\n".join(keep) + "\n")
     return path, dropped
 
@@ -697,7 +697,7 @@ def shell_toc(admin, eph_conn, dbname, ancestors, tmp, cancel=None):
     if rc != 0:
         raise EngineError("PGA-GEN-071", "cannot read the dump: %s" % err.strip()[:300])
     path = os.path.join(tmp, "shell.lst")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
         f.write("\n".join(l for l in out.splitlines() if toc_desc(l) in SHELL_KEEP) + "\n")
     return dumpfile, path
 

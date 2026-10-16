@@ -468,7 +468,7 @@ def _recover(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inc
 
 
 def _waldump(exe, tmp, name, *flags):
-    r = subprocess.run([exe, "-p", tmp, ] + list(flags) + [name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    r = subprocess.run([exe, "-p", tmp, ] + list(flags) + [name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace")
     return (r.stdout or "").splitlines()
 
 

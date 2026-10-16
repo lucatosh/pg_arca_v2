@@ -24,15 +24,24 @@ set -euo pipefail
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "run as root (sudo)"
-as_user() { if command -v runuser >/dev/null; then runuser -u "$PGUSER_OS" -- "$@"; else su -s /bin/sh "$PGUSER_OS" -c "$(printf '%q ' "$@")"; fi; }
+# su -s is the shell on Linux but a MAC label on FreeBSD (where -m keeps root's shell): never "/bin/sh" taken as the login name
+as_user() { if command -v runuser >/dev/null; then runuser -u "$PGUSER_OS" -- "$@"; elif [[ "$(uname -s)" == Linux ]]; then su -s /bin/sh "$PGUSER_OS" -c "$(printf '%q ' "$@")"; else su -m "$PGUSER_OS" -c "$(printf '%q ' "$@")"; fi; }
+# owner of a file (the GNU and BSD stat commands take different options): from Python, which the agent needs anyway
+owner_of() { python3 -c 'import os, pwd, sys; st = os.stat(sys.argv[1]); print(pwd.getpwuid(st.st_uid).pw_name)' "$1" 2>/dev/null || echo "?"; }
 conf_get() { [[ -f "$1" ]] && sed -n 's/.*"'"$2"'": *"\([^"]*\)".*/\1/p' "$1" | head -1 || true; }
 
 # The agent must run as the OS user that OWNS the PostgreSQL server (postgres on Debian/RHEL, but also pgsql, enterprisedb, an application account...). Explicit PG_ARCA_USER wins;
 # otherwise the owner of the running postmaster (oldest postgres/postmaster process), then "postgres".
 detect_pg_user() {
   local u=""
-  command -v ps >/dev/null && u="$(ps -eo user:32=,etimes=,comm= 2>/dev/null | awk '$3=="postgres"||$3=="postmaster"{print $2, $1}' | sort -rn | head -1 | awk '{print $2}')"
+  command -v ps >/dev/null && u="$(ps -eo user:32=,etimes=,comm= 2>/dev/null | awk '$3=="postgres"||$3=="postmaster"||$3=="edb-postgres"{print $2, $1}' | sort -rn | head -1 | awk '{print $2}')"
   [[ -n "$u" && "$u" != "root" ]] && id "$u" &>/dev/null && { echo "$u"; return; }
+  # no GNU procps (busybox, BSD ps), or nothing running: the owner of a data directory in the usual places (EDB: enterprisedb, FreeBSD: postgres/pgsql)
+  local d
+  for d in /var/lib/pgsql/*/data /var/lib/pgsql/data /var/lib/postgresql/*/* /var/lib/postgresql/data /var/lib/edb/as*/data /var/lib/edb-as/*/* /var/db/postgres/data* /usr/local/pgsql/data /var/lib/postgres/data; do
+    [[ -f "$d/PG_VERSION" ]] || continue
+    u="$(owner_of "$d")"; [[ -n "$u" && "$u" != "?" && "$u" != "root" ]] && id "$u" &>/dev/null && { echo "$u"; return; }
+  done
   echo postgres
 }
 # Re-run (upgrade, package upgrade, uninstall) on a host where the agent is already set up: the existing service user and role are the defaults,
@@ -46,12 +55,18 @@ ROLE="${PG_ARCA_ROLE:-${EXIST_ROLE:-auto}}"
 [[ "$ROLE" =~ ^(auto|database|worker)$ ]] || die "PG_ARCA_ROLE must be auto, database or worker"
 if [[ -n "${PG_ARCA_USER:-}" ]]; then PGUSER_OS="$PG_ARCA_USER"
 elif [[ -n "$EXIST_USER" ]] && id "$EXIST_USER" &>/dev/null; then PGUSER_OS="$EXIST_USER"; PG_ARCA_USER="$EXIST_USER"
-elif [[ -n "${PG_ARCA_PGDATA:-}" && -d "${PG_ARCA_PGDATA:-}" ]]; then PGUSER_OS="$(stat -c %U "$PG_ARCA_PGDATA")"   # another instance: the owner of ITS data directory
+elif [[ -n "${PG_ARCA_PGDATA:-}" && -d "${PG_ARCA_PGDATA:-}" ]]; then PGUSER_OS="$(owner_of "$PG_ARCA_PGDATA")"   # another instance: the owner of ITS data directory
 else PGUSER_OS="$(detect_pg_user)"; fi
 if [[ "$ROLE" == worker && -z "${PG_ARCA_USER:-}" ]] && ! id "$PGUSER_OS" &>/dev/null; then
   # a backup server / recovery host usually has no postgres account: a dedicated unprivileged system user
   PGUSER_OS=pgarca
-  id pgarca &>/dev/null || useradd --system --create-home --home-dir /var/lib/pgarca --shell /bin/bash pgarca || die "cannot create the system user pgarca (set PG_ARCA_USER=...)"
+  if ! id pgarca &>/dev/null; then
+    if command -v useradd >/dev/null; then useradd --system --create-home --home-dir /var/lib/pgarca --shell /bin/sh pgarca
+    elif command -v pw >/dev/null; then pw useradd pgarca -d /var/lib/pgarca -m -s /bin/sh -c "pg_arca agent"            # FreeBSD
+    elif command -v adduser >/dev/null; then adduser -S -D -h /var/lib/pgarca -s /bin/sh pgarca                          # busybox (Alpine)
+    fi || die "cannot create the system user pgarca (set PG_ARCA_USER=...)"
+    id pgarca &>/dev/null || die "cannot create the system user pgarca (set PG_ARCA_USER=...)"
+  fi
 fi
 [[ -n "${PG_ARCA_USER:-}" ]] || echo "agent OS user: $PGUSER_OS (override with PG_ARCA_USER=...)"
 id "$PGUSER_OS" &>/dev/null || die "OS user '$PGUSER_OS' not found. The agent must run as the PostgreSQL OS user (set PG_ARCA_USER=...)."
@@ -103,7 +118,7 @@ def load(p):
 c, i = load(conf), load(inst)
 pgd = pgd or c.get("pg_data") or i.get("data_directory") or ""
 if not pgd:
-    alive = subprocess.call("ps -eo comm= 2>/dev/null | grep -qx -e postgres -e postmaster", shell=True) == 0
+    alive = subprocess.call("ps -eo comm= 2>/dev/null | grep -qx -e postgres -e postmaster -e edb-postgres", shell=True) == 0
     print("unknown:the data directory of this agent is not known (give PG_ARCA_PGDATA=<data directory>)" if alive else "no")
     sys.exit(0)
 def verdict(mode, cmd):
@@ -171,6 +186,12 @@ if [[ "${PG_ARCA_UNINSTALL:-}" == 1 ]]; then
   fi
   systemctl disable --now "$UNIT.service" >/dev/null 2>&1 || true
   rm -f "/etc/systemd/system/$UNIT.service"; systemctl daemon-reload 2>/dev/null || true
+  if [[ -f "/etc/init.d/$UNIT" ]] && command -v rc-service >/dev/null 2>&1; then rc-service "$UNIT" stop >/dev/null 2>&1 || true; rc-update del "$UNIT" >/dev/null 2>&1 || true; rm -f "/etc/init.d/$UNIT"; fi
+  RCN="pg_arca_agent${INST:+_$(printf '%s' "$INST" | tr -c 'A-Za-z0-9_\n' '_')}"
+  if [[ -f "/usr/local/etc/rc.d/$RCN" ]]; then service "$RCN" stop >/dev/null 2>&1 || true; sysrc -x "${RCN}_enable" >/dev/null 2>&1 || true; rm -f "/usr/local/etc/rc.d/$RCN"; fi
+  # an agent started by hand with the launcher loop (no service manager): stop it too
+  pkill -f "$CONF_DIR/run-agent.sh" 2>/dev/null || true
+  rm -f "$CONF_DIR/run-agent.sh"
   # only this agent's own files: the main agent's directories (/etc/pg-arca, /var/lib/pgarca) are also the parents of the other instances' ones.
   # An encryption key kept in the configuration directory stays (the backups that are kept need it) unless the backups go too (PG_ARCA_PURGE=1).
   KEY="$(conf_get "$CONF_DIR/agent.conf" encryption_key_file)"
@@ -286,7 +307,7 @@ install -d -m 0755 "$INSTALL_DIR"
 # traversable by them (0711), never listable; each file keeps its own restrictive mode.
 own_dir() {   # <dir> <mode> [recursive]
   if [[ -d "$1" ]]; then
-    if [[ "$(stat -c %U "$1")" != "$PGUSER_OS" ]]; then if [[ -n "${3:-}" ]]; then chown -R "$PGUSER_OS" "$1"; else chown "$PGUSER_OS" "$1"; fi; fi
+    if [[ "$(owner_of "$1")" != "$PGUSER_OS" ]]; then if [[ -n "${3:-}" ]]; then chown -R "$PGUSER_OS" "$1"; else chown "$PGUSER_OS" "$1"; fi; fi
     chmod "$2" "$1"
   else install -d -m "$2" -o "$PGUSER_OS" "$1"; fi
 }
@@ -320,7 +341,8 @@ mv "$INSTALL_DIR/pg_arca.new" "$INSTALL_DIR/pg_arca"; rm -rf "$INSTALL_DIR/pg_ar
 install -m 0755 "$BUNDLE/pg-arca-agent.py" "$INSTALL_DIR/pg-arca-agent.py"
 install -m 0755 "$BUNDLE/pg-arca-cli" /usr/local/bin/pg-arca-cli
 install -m 0755 "$BUNDLE/pg-arca-wal" /usr/local/bin/pg-arca-wal
-chown -R root:root "$INSTALL_DIR"
+chown -R 0:0 "$INSTALL_DIR"                      # uid/gid 0 (FreeBSD has no "root" group); and never group/world-writable: root-run code lives here
+chmod -R go-w "$INSTALL_DIR"; chmod 0755 /usr/local/bin/pg-arca-cli /usr/local/bin/pg-arca-wal
 
 # --- CA of the console certificate: copied next to the config, readable by the agent's user. The path given (/root/console.crt, the console's own
 # tls/ directory, ...) is usually readable by root only, and the agent does not run as root (found by the release test: PermissionError at start).
@@ -372,9 +394,69 @@ fi
 # --- service -------------------------------------------------------------------------
 # No systemd (container) or PG_ARCA_NO_SERVICE=1: files are installed, the caller starts the agent:
 #   su postgres -c 'PYTHONPATH=/opt/pg-arca PG_ARCA_CONF_FILE=/etc/pg-arca/agent.conf python3 /opt/pg-arca/pg-arca-agent.py'
+# one launcher per agent (its configuration, its enrollment token), used by every service manager that is not systemd
+LAUNCHER="$CONF_DIR/run-agent.sh"
+cat > "$LAUNCHER.new" <<LAUNCH
+#!/bin/sh
+# pg_arca agent launcher (written by install-agent.sh)
+set -a
+[ -f "$CONF_DIR/enroll.env" ] && . "$CONF_DIR/enroll.env"
+set +a
+PYTHONPATH="$INSTALL_DIR"; PG_ARCA_CONF="$CONF_DIR/agent.conf"; PG_ARCA_CONF_FILE="$CONF_DIR/agent.conf"; LC_ALL="\${LC_ALL:-C.UTF-8}"; PYTHONIOENCODING=utf-8
+export PYTHONPATH PG_ARCA_CONF PG_ARCA_CONF_FILE LC_ALL PYTHONIOENCODING
+exec python3 "$INSTALL_DIR/pg-arca-agent.py"
+LAUNCH
+chown 0:0 "$LAUNCHER.new"; chmod 0755 "$LAUNCHER.new"; mv "$LAUNCHER.new" "$LAUNCHER"
+RCNAME="pg_arca_agent${INST:+_$(printf '%s' "$INST" | tr -c 'A-Za-z0-9_\n' '_')}"
+if [[ -z "${PG_ARCA_NO_SERVICE:-}" && ! -d /run/systemd/system ]] && command -v openrc-run >/dev/null 2>&1 && [[ -d /etc/init.d ]]; then
+  # OpenRC (Alpine, Gentoo): supervised, restarted when it exits, started at boot
+  cat > "/etc/init.d/$UNIT" <<RC
+#!/sbin/openrc-run
+description="pg_arca node agent${INST:+ (instance $INST)}"
+supervisor=supervise-daemon
+command="$LAUNCHER"
+command_user="$PGUSER_OS"
+output_log="$LOG_DIR/agent.out"
+error_log="$LOG_DIR/agent.out"
+respawn_delay=5
+respawn_max=0
+depend() { need net; after postgresql patroni; }
+RC
+  chmod 0755 "/etc/init.d/$UNIT"
+  rc-update add "$UNIT" default >/dev/null 2>&1 || true
+  rc-service "$UNIT" restart >/dev/null 2>&1 || rc-service "$UNIT" start
+  sleep 2
+  rc-service "$UNIT" status >/dev/null 2>&1 && echo "pg_arca agent is running ($UNIT, OpenRC). Logs: $LOG_DIR/agent.out" || { echo "agent failed to start:"; tail -20 "$LOG_DIR/agent.out" 2>/dev/null; exit 1; }
+  exit 0
+fi
+if [[ -z "${PG_ARCA_NO_SERVICE:-}" && "$(uname -s)" == FreeBSD ]]; then
+  # FreeBSD rc.d: daemon(8) restarts the agent when it exits
+  cat > "/usr/local/etc/rc.d/$RCNAME" <<RC
+#!/bin/sh
+# PROVIDE: $RCNAME
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+. /etc/rc.subr
+name=$RCNAME
+rcvar=${RCNAME}_enable
+pidfile=/var/run/${RCNAME}.pid
+command=/usr/sbin/daemon
+command_args="-r -R 5 -P \${pidfile} -u $PGUSER_OS -o $LOG_DIR/agent.out $LAUNCHER"
+load_rc_config \$name
+: \${${RCNAME}_enable:=NO}
+run_rc_command "\$1"
+RC
+  chmod 0755 "/usr/local/etc/rc.d/$RCNAME"
+  sysrc "${RCNAME}_enable=YES" >/dev/null
+  service "$RCNAME" restart >/dev/null 2>&1 || service "$RCNAME" start
+  sleep 2
+  service "$RCNAME" status >/dev/null 2>&1 && echo "pg_arca agent is running ($RCNAME, rc.d). Logs: $LOG_DIR/agent.out" || { echo "agent failed to start:"; tail -20 "$LOG_DIR/agent.out" 2>/dev/null; exit 1; }
+  exit 0
+fi
 if [[ -n "${PG_ARCA_NO_SERVICE:-}" || ! -d /run/systemd/system ]]; then
-  echo "pg_arca agent installed WITHOUT a systemd service (no systemd here, or PG_ARCA_NO_SERVICE set). Start it with (keeps running, restarts if it exits):"
-  echo "  su $PGUSER_OS -c 'set -a; [ -f $CONF_DIR/enroll.env ] && . $CONF_DIR/enroll.env; set +a; export PYTHONPATH=$INSTALL_DIR PG_ARCA_CONF_FILE=$CONF_DIR/agent.conf; nohup sh -c \"while true; do python3 $INSTALL_DIR/pg-arca-agent.py >>$LOG_DIR/agent.out 2>&1; sleep 5; done\" >/dev/null 2>&1 &'"
+  echo "pg_arca agent installed WITHOUT a service (no systemd / OpenRC / rc.d here - a container - or PG_ARCA_NO_SERVICE set). Start it with (keeps running, restarts if it exits):"
+  echo "  su $PGUSER_OS -c 'nohup sh -c \"while true; do $LAUNCHER >>$LOG_DIR/agent.out 2>&1; sleep 5; done\" >/dev/null 2>&1 &'"
+  echo "  (in a container: run $LAUNCHER as the container's command, as user $PGUSER_OS, with an init such as tini or docker run --init)"
   echo "  logs: tail -f $LOG_DIR/agent.out"
   exit 0
 fi
@@ -400,7 +482,7 @@ if [[ "${PG_ARCA_ALLOW_PG_RESTART:-1}" != 0 && "$ROLE" != worker && -z "$IS_PATR
     [ -d /etc/polkit-1 ] && { systemctl enable --now polkit >/dev/null 2>&1 || systemctl start polkit >/dev/null 2>&1 || true; }
   fi
   { [[ -f "$CTL_USERS" ]] && grep -v '^#' "$CTL_USERS"; echo "$PGUSER_OS"; } | sed '/^$/d' | sort -u > "$CTL_USERS.new"
-  install -m 0644 -o root -g root "$CTL_USERS.new" "$CTL_USERS"; rm -f "$CTL_USERS.new"
+  install -m 0644 -o 0 -g 0 "$CTL_USERS.new" "$CTL_USERS"; rm -f "$CTL_USERS.new"
   PKV=$(pkaction --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
   if [[ -d /etc/polkit-1 && -n "$PKV" ]] && ! [[ "$PKV" == 0.* && "${PKV#0.}" -lt 106 ]]; then
     write_polkit_rule; remove_bridge
@@ -408,7 +490,7 @@ if [[ "${PG_ARCA_ALLOW_PG_RESTART:-1}" != 0 && "$ROLE" != worker && -z "$IS_PATR
   else
     rm -f /etc/polkit-1/rules.d/50-pg-arca-restart.rules        # ignored by this polkit anyway
     echo "d /run/pg-arca-ctl 1733 root root -" > /etc/tmpfiles.d/pg-arca-ctl.conf
-    systemd-tmpfiles --create /etc/tmpfiles.d/pg-arca-ctl.conf 2>/dev/null || { install -d -m 1733 -o root -g root /run/pg-arca-ctl; chmod 1733 /run/pg-arca-ctl; }
+    systemd-tmpfiles --create /etc/tmpfiles.d/pg-arca-ctl.conf 2>/dev/null || { install -d -m 1733 -o 0 -g 0 /run/pg-arca-ctl; chmod 1733 /run/pg-arca-ctl; }
     cat > /etc/systemd/system/pg-arca-pgctl.path <<PATHU
 [Unit]
 Description=pg_arca: restart/start requests of the agents for the PostgreSQL units
@@ -446,7 +528,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$PGUSER_OS
-Environment=PYTHONPATH=$INSTALL_DIR PG_ARCA_CONF=$CONF_DIR/agent.conf PG_ARCA_CONF_FILE=$CONF_DIR/agent.conf
+Environment=PYTHONPATH=$INSTALL_DIR PG_ARCA_CONF=$CONF_DIR/agent.conf PG_ARCA_CONF_FILE=$CONF_DIR/agent.conf PYTHONIOENCODING=utf-8 LC_ALL=C.UTF-8
 EnvironmentFile=-$CONF_DIR/enroll.env
 ExecStart=/usr/bin/env python3 $INSTALL_DIR/pg-arca-agent.py
 Restart=always

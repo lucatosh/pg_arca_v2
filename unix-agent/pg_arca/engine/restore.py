@@ -579,7 +579,7 @@ def _last_record_start(ctx, tli, segno, seg):
         exe = _wd(ctx, f)
         if exe is None:
             return None
-        p = subprocess.Popen([exe, f], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        p = subprocess.Popen([exe, f], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace")
         last = None
         for line in p.stdout:
             m = re.search(r"\blsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)", line)

@@ -76,7 +76,7 @@ def _read(path: str, limit: int = 256 * 1024) -> Optional[str]:
 def _run(cmd: List[str], timeout: float = 4.0, env: Optional[Dict[str, str]] = None) -> Tuple[bool, str]:
     try:
         p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True, timeout=timeout, env=env)
+                           universal_newlines=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
         return p.returncode == 0, (p.stdout or "").strip()
     except Exception:
         return False, ""

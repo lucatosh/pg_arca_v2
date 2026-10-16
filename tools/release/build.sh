@@ -57,9 +57,14 @@ node_modules/.bin/esbuild server.ts --bundle --platform=node --target=node20 --f
   --legal-comments=external --log-level=warning
 cp VERSION "$S/"; cp -a dist "$S/dist"
 mkdir -p "$S/unix-agent"; tar cf - -C unix-agent --exclude=__pycache__ --exclude=tests --exclude='*.pyc' . | tar xf - -C "$S/unix-agent"
+# modes come from the checkout (0666/0777 in some): never ship a group/world-writable file - the root-run restart bridge executes this code
+# (independent portability review: a local user could have written into /opt/pg-arca through a package upgrade)
+norm_modes() { find "$1" -type d -exec chmod 0755 {} + ; find "$1" -type f -exec chmod 0644 {} + ; }
+norm_modes "$S/unix-agent"
 chmod 0755 "$S/unix-agent/install-agent.sh" "$S/unix-agent/pg-arca-agent.py" "$S/unix-agent/pg-arca-cli" "$S/unix-agent/pg-arca-wal"
 cp packaging/console/install-console.sh packaging/console/Dockerfile packaging/console/healthcheck.cjs "$S/"
 [[ -f LICENSE ]] && cp LICENSE "$S/"
+chmod -R go-w "$S"
 if [[ $WITH_NODE == 1 ]]; then
   NV="${NODE_VERSION:-$(node -p process.versions.node)}"; C="$HOME/.cache/pg-arca-release"; mkdir -p "$C"
   NT="node-v$NV-linux-x64.tar.xz"
@@ -98,6 +103,7 @@ tar czf "$OUT/$CON.tar.gz" --owner=0 --group=0 -C "$WORK" "$CON"
 AG="pg-arca-agent-$V"; A="$WORK/$AG"; mkdir -p "$A"
 tar cf - -C unix-agent --exclude=__pycache__ --exclude=tests --exclude='*.pyc' . | tar xf - -C "$A"
 cp VERSION "$A/"
+norm_modes "$A"
 chmod 0755 "$A/install-agent.sh" "$A/pg-arca-agent.py" "$A/pg-arca-cli" "$A/pg-arca-wal"      # modes do not survive every checkout: set them, the offline install runs ./install-agent.sh
 tar czf "$OUT/$AG.tar.gz" --owner=0 --group=0 -C "$WORK" "$AG"
 # the agent packages carry exactly the code the console of this release serves (same fingerprint: no "outdated agent" after installing them)
@@ -140,7 +146,7 @@ Summary:        pg_arca agent for PostgreSQL servers
 License:        Proprietary
 BuildArch:      noarch
 Source0:        $AG.tar.gz
-Requires:       python3 >= 3.6, bash, tar, procps-ng
+Requires:       python3 >= 3.6, bash, tar, /usr/bin/ps
 Recommends:     python3-zstandard, zstd, polkit
 %global debug_package %{nil}
 %global __brp_mangle_shebangs %{nil}
@@ -158,6 +164,7 @@ mkdir -p %{buildroot}/usr/share/pg-arca-agent
 cp -a . %{buildroot}/usr/share/pg-arca-agent/
 
 %files
+%defattr(-,root,root,0755)
 /usr/share/pg-arca-agent
 
 %post

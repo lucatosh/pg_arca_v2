@@ -38,7 +38,24 @@ def mounts(path="/proc/self/mountinfo"):
                     p = line.split()
                     out.append((_unescape(p[1]), p[2], _unescape(p[0])))
         except (IOError, OSError):
-            pass
+            out = _mount_command()
+    return out
+
+
+def _mount_command():
+    """No /proc (FreeBSD, macOS): `mount` output - "src on /mnt (nfs, ...)" (BSD) or "src on /mnt type nfs (...)" (busybox / util-linux)."""
+    import subprocess
+    out = []
+    try:
+        txt = subprocess.run(["mount"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace",
+                             timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return out
+    for line in txt.splitlines():
+        m = re.match(r"^(.+?) on (.+?) type (\S+)", line) or re.match(r"^(.+?) on (.+?) \(([^,)]+)", line)
+        if m:
+            fs = m.group(3).strip()
+            out.append((m.group(2), {"nfs4": "nfs4", "smbfs": "smbfs"}.get(fs, fs), m.group(1)))
     return out
 
 
@@ -159,7 +176,21 @@ def _write_probe(directory):
             if f.read() != b"pg_arca probe\n":
                 return {"ok": False, "error": "read back differs from what was written"}
         st = os.stat(fin)
-        return {"ok": True, "ms": round((time.time() - t0) * 1000, 1), "file_uid": st.st_uid, "file_gid": st.st_gid, "file_mode": "%04o" % (st.st_mode & 0o7777)}
+        # the WAL archive publishes each segment with link(2) (never overwrites a copy that is already there): SMB shares without unix
+        # extensions (Azure Files, CIFS) and some FUSE mounts refuse hard links, and archive_command then failed on every segment (portability review)
+        links, link_err = True, ""
+        lnk = fin + ".lnk"
+        try:
+            os.link(fin, lnk)
+        except OSError as e:
+            links, link_err = False, str(e)
+        finally:
+            try:
+                os.unlink(lnk)
+            except OSError:
+                pass
+        return {"ok": True, "ms": round((time.time() - t0) * 1000, 1), "file_uid": st.st_uid, "file_gid": st.st_gid, "file_mode": "%04o" % (st.st_mode & 0o7777),
+                "hardlinks": links, "hardlink_error": link_err}
     except OSError as e:
         return {"ok": False, "error": "%s" % e}
     finally:
@@ -287,6 +318,9 @@ def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None,
         res["fix_commands"] = fix_commands(real, me, network=("nfs" if fs in ("nfs", "nfs4") else "smb" if fs in ("cifs", "smb3", "smbfs") else None))
         if probe["ok"]:
             add("write", "ok", "writable by the agent (%s): exclusive create, fsync and atomic rename work (%s ms)" % (me["user"], probe["ms"]))
+            if kind == "wal" and probe.get("hardlinks") is False:
+                add("hardlink", "bad", "this filesystem refuses hard links (%s): the WAL archive publishes every segment with one, so archiving would fail on every segment"
+                    % probe.get("hardlink_error"), "use an NFS share or a local filesystem for the WAL archive (an SMB share needs unix extensions / hard link support)")
             if probe.get("file_uid") != me["uid"]:
                 fu, fg = _names(probe["file_uid"], probe["file_gid"])
                 add("owner", "bad", "a file written by %s (uid %d) shows up as owned by %s (uid %d): the share maps users (NFS root/all squash, idmap domain, SMB uid= option); "

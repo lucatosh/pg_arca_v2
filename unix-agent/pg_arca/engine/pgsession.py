@@ -65,7 +65,7 @@ class PgConn(object):
 
 def _psql_major(conn):
     try:
-        out = subprocess.run([conn.exe("psql"), "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10).stdout
+        out = subprocess.run([conn.exe("psql"), "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=10).stdout
         import re
         m = re.search(r"\)\s*(\d+)", out)
         return int(m.group(1)) if m else 0

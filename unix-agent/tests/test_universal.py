@@ -274,13 +274,13 @@ class Python36(unittest.TestCase):
 
     def test_no_syntax_or_api_newer_than_3_6(self):
         import ast
-        root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pg_arca")
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        root = os.path.join(here, "pg_arca")
         bad = []
-        for dp, _dn, fs in os.walk(root):
-            for fn in fs:
-                if not fn.endswith(".py"):
-                    continue
-                path = os.path.join(dp, fn)
+        paths = [os.path.join(dp, fn) for dp, _dn, fs in os.walk(root) for fn in fs if fn.endswith(".py")]
+        paths += [os.path.join(here, n) for n in ("pg-arca-cli", "pg-arca-agent.py", "pg-arca-wal") if os.path.exists(os.path.join(here, n))]
+        for path in paths:
+            if True:
                 with open(path, encoding="utf-8") as f:
                     src = f.read()
                 tree = ast.parse(src)
@@ -294,7 +294,9 @@ class Python36(unittest.TestCase):
                         fname = n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
                         if fname in self.CALLS:
                             bad.extend("%s %s(%s=...) (Python >= 3.7)" % (where, fname, k.arg) for k in n.keywords if k.arg in self.BAD_KW)
-                    elif isinstance(n, ast.arguments) and n.posonlyargs:
+                        if fname == "add_subparsers" and any(k.arg == "required" for k in n.keywords):
+                            bad.append(where + " add_subparsers(required=...) (Python >= 3.7)")
+                    elif isinstance(n, ast.arguments) and getattr(n, "posonlyargs", None):
                         bad.append(where + " positional-only parameters")
         self.assertEqual(bad, [])
 

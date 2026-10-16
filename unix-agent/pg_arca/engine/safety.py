@@ -30,6 +30,22 @@ def collect_protected_paths(ctx):
                 paths.add(cwd)
         except (OSError, IOError, IndexError):
             continue
+    if not pids:                                       # no /proc (FreeBSD): the postmasters' command lines from ps
+        import subprocess
+        try:
+            out = subprocess.run(["ps", "-A", "-o", "args="], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                                 encoding="utf-8", errors="replace", timeout=15).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        for line in out.splitlines():
+            cmd = line.split()
+            if not cmd or "postgres" not in os.path.basename(cmd[0]):
+                continue
+            for i, a in enumerate(cmd):
+                if a == "-D" and i + 1 < len(cmd) and os.path.isabs(cmd[i + 1]):
+                    paths.add(os.path.realpath(cmd[i + 1]))
+                elif a.startswith("-D") and len(a) > 2 and os.path.isabs(a[2:]):
+                    paths.add(os.path.realpath(a[2:]))
     for p in list(paths):
         tb = os.path.join(p, "pg_tblspc")
         if os.path.isdir(tb):

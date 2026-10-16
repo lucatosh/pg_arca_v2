@@ -301,16 +301,16 @@ _BLOCK = re.compile(r"\n# ==== pg_arca: restored instance .*?# ==== end pg_arca 
 
 def _write_conf(it):
     path = os.path.join(it["dest"], "postgresql.auto.conf")
-    txt = read_file(path) if os.path.exists(path) else ""
+    txt = read_file(path, errors="surrogateescape") if os.path.exists(path) else ""
     txt = _BLOCK.sub("", txt) + _conf_block(it)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
         f.write(txt)
     hba = os.path.join(it["dest"], "pg_hba.conf")
-    body = read_file(hba) if os.path.exists(hba) else ""
+    body = read_file(hba, errors="surrogateescape") if os.path.exists(hba) else ""
     if "# pg_arca restored instance: agent access" not in body:
         # the agent reaches the copy only through its PRIVATE socket directory (0700, agent user): trust there gives it access whatever the copied rules say.
         # TCP access keeps the copied rules of production.
-        with open(hba, "w") as f:
+        with open(hba, "w", encoding="utf-8", errors="surrogateescape") as f:
             f.write("# pg_arca restored instance: agent access through the private socket directory (0700)\nlocal all all trust\n" + body)
     ident = os.path.join(it["dest"], "pg_ident.conf")
     if not os.path.exists(ident):
@@ -319,14 +319,16 @@ def _write_conf(it):
 
 
 def _alive(it):
+    """pid of the copy's running postmaster, or None. Without /proc (FreeBSD) the process is asked through ps; a process that exists but cannot
+    be identified counts as alive - deleting a running copy's directory is the error to avoid (portability review)."""
+    from pg_arca import procs
     pidf = os.path.join(it["dest"], "postmaster.pid")
     try:
         pid = int(read_file(pidf, first_line=True).strip())
-        os.kill(pid, 0)
-        cmd = read_file("/proc/%d/cmdline" % pid, binary=True).replace(b"\0", b" ").decode("utf-8", "replace")
-        return pid if ("postgres" in cmd or "postmaster" in cmd) else None
     except (OSError, ValueError):
         return None
+    v = procs.is_postmaster(pid)
+    return pid if v or v is None else None
 
 
 def _session(it, db="postgres"):

@@ -578,7 +578,11 @@ class OperationExecutor:
         bindir = self.config.get("pg_bin_dir") or inst.get("bin_dir") or ""
         import getpass
         try:
-            how = pgrestart.run(plan, data, bindir, getpass.getuser(), log_dir=self.config.get("log_dir") or self.config.get("state_dir"))
+            try:
+                me = getpass.getuser()
+            except (KeyError, OSError):                       # an arbitrary uid without a passwd entry (OpenShift-style containers)
+                me = str(os.geteuid())
+            how = pgrestart.run(plan, data, bindir, me, log_dir=self.config.get("log_dir") or self.config.get("state_dir"))
         except RuntimeError as e:
             raise OpError(str(e))
         deadline = time.time() + 180
@@ -591,7 +595,7 @@ class OperationExecutor:
             try:
                 if plan.get("unit"):
                     r = subprocess.run(["systemctl", "status", "--no-pager", "-n", "15", plan["unit"]], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                       universal_newlines=True, timeout=20)
+                                       universal_newlines=True, encoding="utf-8", errors="replace", timeout=20)
                     diag = r.stdout[-1500:]
                 else:
                     lg = os.path.join(self.config.get("log_dir") or self.config.get("state_dir") or "/tmp", "postgresql-restarted-by-pg_arca.log")

@@ -113,7 +113,7 @@ class Profile(object):
     @classmethod
     def from_binary(cls, path):
         """From `<bin> --version` ('postgres (PostgreSQL) 16.15 (Ubuntu ...)', 'pg_waldump (PostgreSQL) 14.9')."""
-        out = subprocess.run([path, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10).stdout
+        out = subprocess.run([path, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace", timeout=10).stdout
         m = re.search(r"\(PostgreSQL\)\s*(\S+)", out) or re.search(r"\s(\d+(?:\.\d+)*)", out)
         if not m:
             raise VersionError("cannot read a version from %r" % out.strip()[:80])

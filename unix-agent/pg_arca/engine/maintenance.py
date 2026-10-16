@@ -460,7 +460,7 @@ def forensics_legacy(ctx, limit=20, since=None, until=None):
                 if code != 0:
                     raise EngineError("PGA-WAL-050", "cannot read archived segment %s: %s" % (n, msg))
             args = [exe, "-p", tmp, "-t", str(int(tli, 16)), names[0], names[-1]]
-            r = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            r = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace")
             for line in (r.stdout or "").splitlines():
                 m_lsn = re.search(r"lsn: ([0-9A-F]+/[0-9A-F]+)", line)
                 m_xid = re.search(r"tx:\s*(\d+)", line)
