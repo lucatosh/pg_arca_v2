@@ -1042,8 +1042,16 @@ class OperationExecutor:
         from pg_arca.engine import granular
         into = p.get("into") if isinstance(p.get("into"), dict) else None      # central recovery host: the plan is checked where the instance will really run
         if scope == "database":
-            return granular.restore_database(ctx, str(p.get("database")), p.get("set"), dry_run=True, new_name=p.get("new_name"), into=into,
+            plan = granular.restore_database(ctx, str(p.get("database")), p.get("set"), dry_run=True, new_name=p.get("new_name"), into=into,
                                              create_missing_roles=bool(p.get("create_missing_roles")), **t)
+            if p.get("replace_original"):
+                try:                                    # what the swap at the end will touch (logical replication, sessions): said in the plan
+                    prev = granular.swap_preview(ctx, str(p.get("database")), into=into)
+                    if prev:
+                        plan["replace"] = prev
+                except Exception as e:
+                    plan["replace"] = {"warnings": ["could not look at the original database before the swap: %s" % (getattr(e, "message", None) or e)]}
+            return plan
         objs = [str(x) for x in p.get("objects")] if isinstance(p.get("objects"), list) and p.get("objects") else None
         return granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), dry_run=True, stage_db=p.get("stage_db"), objects=objs, into=into, **t)
 

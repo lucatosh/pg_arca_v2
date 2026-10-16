@@ -1048,6 +1048,40 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         eph.cleanup()
 
 
+def _replication_ties(s, original, old):
+    """Logical replication bound to the ORIGINAL database's oid: its enabled subscriptions and the logical slots of a publisher. Returns
+    (subscriptions [(name, slot)], slots, warnings) for a swap that keeps the original as `old`."""
+    warnings = []
+    subs = [r for r in s.query("SELECT subname, COALESCE(subslotname::text, '') FROM pg_subscription WHERE subenabled AND subdbid = (SELECT oid FROM pg_database WHERE datname = %s)"
+                               % sql_lit(original)) if r and r[0]]
+    slots = [r[0] for r in s.query("SELECT slot_name FROM pg_replication_slots WHERE slot_type = 'logical' AND database = %s" % sql_lit(original)) if r and r[0]]
+    if subs:
+        warnings.append("%s is a logical replication subscriber (%s): its subscriptions are disabled on the copy kept as %s so that it no longer "
+                        "consumes the publisher's changes; the publisher keeps them in slot(s) %s until the subscription is attached to the restored "
+                        "database (in %s: ALTER SUBSCRIPTION <name> SET (slot_name = '<slot>'); ALTER SUBSCRIPTION <name> ENABLE - the changes since the "
+                        "slot's position are then applied over the restored data) or the slot is dropped"
+                        % (original, ", ".join(r[0] for r in subs), old, ", ".join(r[1] for r in subs if r[1]) or "-", original))
+    if slots:
+        warnings.append("%s is a logical replication publisher: slot(s) %s belong to the copy kept as %s, not to the restored database - subscribers "
+                        "connecting to %s will fail until their slot is recreated there (CREATE PUBLICATION is restored; recreate the slot and "
+                        "resynchronise the subscribers)" % (original, ", ".join(slots), old, original))
+    return subs, slots, warnings
+
+
+def swap_preview(ctx, original, into=None):
+    """What putting a restored database in place of `original` will touch, for the plan (before anything is restored)."""
+    s = PgSession(_dest_conn(ctx, into).with_db("postgres"), read_only=True)
+    try:
+        if s.scalar("SELECT 1 FROM pg_database WHERE datname = %s" % sql_lit(original)) != "1":
+            return {}
+        old = ("%s_before_<date>" % original)
+        subs, slots, warnings = _replication_ties(s, original, old)
+        n = int(s.scalar("SELECT count(*) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid()" % sql_lit(original)) or 0)
+        return {"warnings": warnings, "sessions": n, "replication": {"subscriptions": [r[0] for r in subs], "slots": slots}}
+    finally:
+        s.close()
+
+
 def swap_database(ctx, restored, original, into=None, dry_run=False, wait_sec=15):
     """The restored database takes the place of the original - the end of a database restore, done by the tool and not left as SQL to type.
       original gone (dropped): the restored one is renamed to it.
@@ -1080,21 +1114,7 @@ def swap_database(ctx, restored, original, into=None, dry_run=False, wait_sec=15
                "sessions": [{"database": r[0], "application": r[1], "user": r[2], "client": r[3]} for r in sessions][:50], "dry_run": bool(dry_run)}
         # logical replication follows the database's OID, not its name (independent review): the original's subscriptions would keep applying the
         # publisher's changes into the copy kept aside, and logical slots of a publisher stay with the kept copy too
-        subs, slots, warnings = [], [], []
-        if exists:
-            subs = [r for r in s.query("SELECT subname, COALESCE(subslotname::text, '') FROM pg_subscription WHERE subenabled AND subdbid = (SELECT oid FROM pg_database WHERE datname = %s)"
-                                       % sql_lit(original)) if r and r[0]]
-            slots = [r[0] for r in s.query("SELECT slot_name FROM pg_replication_slots WHERE slot_type = 'logical' AND database = %s" % sql_lit(original)) if r and r[0]]
-            if subs:
-                warnings.append("%s is a logical replication subscriber (%s): its subscriptions are disabled on the copy kept as %s so that it no longer "
-                                "consumes the publisher's changes; the publisher keeps them in slot(s) %s until the subscription is attached to the restored "
-                                "database (in %s: ALTER SUBSCRIPTION <name> SET (slot_name = '<slot>'); ALTER SUBSCRIPTION <name> ENABLE - the changes since the "
-                                "slot's position are then applied over the restored data) or the slot is dropped"
-                                % (original, ", ".join(r[0] for r in subs), old, ", ".join(r[1] for r in subs if r[1]) or "-", original))
-            if slots:
-                warnings.append("%s is a logical replication publisher: slot(s) %s belong to the copy kept as %s, not to the restored database - subscribers "
-                                "connecting to %s will fail until their slot is recreated there (CREATE PUBLICATION is restored; recreate the slot and "
-                                "resynchronise the subscribers)" % (original, ", ".join(slots), old, original))
+        subs, slots, warnings = _replication_ties(s, original, old) if exists else ([], [], [])
         if warnings:
             res["warnings"] = warnings
             res["replication"] = {"subscriptions": [r[0] for r in subs], "slots": slots}

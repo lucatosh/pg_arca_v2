@@ -127,7 +127,10 @@ class LogicalCopy(unittest.TestCase):
     def test_04_swap_of_a_subscriber_stops_the_kept_copy_consuming(self):
         # the swap renames the databases, the subscription follows the OID: left enabled, the kept copy would go on applying the publisher's
         # changes and the restored production would get none, silently (independent review)
-        from pg_arca.engine.granular import restore_database, swap_database
+        from pg_arca.engine.granular import restore_database, swap_database, swap_preview
+        pre = swap_preview(F.ctx, "replica_db")                             # what the restore plan shows before anything is restored
+        self.assertEqual(pre["replication"]["subscriptions"], ["sub_orders"], pre)
+        self.assertTrue(any("subscriber" in w for w in pre["warnings"]), pre)
         restore_database(F.ctx, "replica_db", new_name="replica_new")
         plan = swap_database(F.ctx, "replica_new", "replica_db", dry_run=True)
         self.assertEqual(plan["replication"]["subscriptions"], ["sub_orders"], plan)

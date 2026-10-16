@@ -145,8 +145,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('label.opt.on:has-text("Put back all rows as they were")'); await p.click('label.opt:has-text("Compare and pick the rows myself") input');
   await p.click('button.start-restore'); await p.click('.modal button:has-text("Start")');
   await p.waitForSelector('text=Differences found', { timeout: 15000 });   // the row comparison starts by itself
-  await p.click('label:has-text("[200]") input'); await p.click('label:has-text("[1]") input'); await shot('12a-rows');
-  await p.click('button:has-text("Put back the 2 selected rows")'); await p.click('.modal button:has-text("Put back")'); await p.waitForSelector('text=Rows recovered', { timeout: 10000 });
+  await p.click('label:has-text("[200]") input'); await p.click('label:has-text("[1]") input'); await p.click('label:has-text("[900]") input'); await shot('12a-rows');
+  // deleting row 900 would cascade into another table: refused first, then done on purpose with the other table's rows saved
+  await p.click('button:has-text("Put back the 3 selected rows")'); await p.click('.modal button:has-text("Put back")');
+  await p.waitForSelector('text=Other tables would change too', { timeout: 10000 }); await shot('12a2-rows-cascade');
+  await p.click('button:has-text("Go ahead, saving them first")'); await p.waitForSelector('text=Rows recovered', { timeout: 10000 });
+  await p.waitForSelector('code:has-text("pgarca_rowsafe_20260101_items")');
   // default end for rows: every deleted / changed row back in the same operation
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I deleted or updated rows")');
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
