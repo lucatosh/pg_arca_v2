@@ -54,6 +54,15 @@ class Renamed(unittest.TestCase):
         restore_object(F.ctx, "shop", objects=["shop.public.t"], target_time=S["t1"], stage_db="pgarca_stage_ren")
         self.assertEqual(q("pgarca_stage_ren", "SELECT count(*) FROM public.t")[0][0], "520")
 
+    def test_04_renamed_then_dropped(self):
+        # renamed after the backup, then dropped: recovered up to just before the DROP, under the name it had there (independent review)
+        q("postgres", "DROP DATABASE shop")
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(3)
+        r = restore_database(F.ctx, "shop_v1", new_name="shop_last")
+        self.assertTrue(r.get("stopped_before_drop"), r)
+        self.assertEqual(q("shop_last", "SELECT count(*) FROM t")[0][0], "0", "as it was just before the drop (after the DELETE)")
+
 
 if __name__ == "__main__":
     unittest.main()

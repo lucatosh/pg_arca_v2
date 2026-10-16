@@ -1508,12 +1508,18 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
             created_tmp = []
             _journal_done(journal)
             result["large_objects_restored"] = _promote_lobs(admin, stage_db, live, meta, todo, plan)
+            result["large_objects_changed"] = plan.get("lo_changed") or []     # the stage is kept then (see promote_object)
+            if result["large_objects_changed"]:
+                result["plan"]["warnings"] = list(plan["warnings"])
             return _compat(result)
         if mode == "as_new":
             result.update(plan=_slim(plan), promoted=["%s.%s" % (r["schema"], r["new_name"]) for r in todo], old_kept_as=[], note="the recovered tables sit next to the originals; nothing was re-attached")
             created_tmp = []
             _journal_done(journal)
             result["large_objects_restored"] = _promote_lobs(admin, stage_db, live, meta, todo, plan)
+            result["large_objects_changed"] = plan.get("lo_changed") or []     # the stage is kept then (see promote_object)
+            if result["large_objects_changed"]:
+                result["plan"]["warnings"] = list(plan["warnings"])
             return _compat(result)
         # ---- before the swap: rows that would be left pointing at nothing (the database would keep a foreign key it no longer honours). Nothing live has
         # changed yet, so refusing here costs nothing; the way out is said

@@ -327,26 +327,31 @@ def _create_db(admin, name, entry, props=None):
         elif prov == "b" and props.get("locale") and dmajor >= 17:
             loc += " LOCALE_PROVIDER builtin BUILTIN_LOCALE %s" % sql_lit(props["locale"])
         base = "CREATE DATABASE %s TEMPLATE template0 ENCODING %s" % (quote_ident(name), sql_lit(enc))
-        try:
-            s.query(base + loc + tsx)
-        except EngineError as first:
-            # the original locale is not available here (typical when restoring into another server): the database is still created, and the
-            # difference is SAID - text sorting and unique indexes on text follow this server's default now (independent review: the
-            # fallback used to drop the locale, and the tablespace with it, silently)
+        # the original locale and tablespace first; when that fails, what can be kept is kept and what had to go is SAID (independent review:
+        # the fallback used to drop the locale and the tablespace silently, and later blamed the locale for any failure)
+        tries = [(loc, tsx)] + ([(loc, "")] if tsx else []) + ([("", tsx)] if loc and tsx else []) + ([("", "")] if loc or tsx else [])
+        first = None
+        for l_, t_ in tries:
             try:
-                s.query(base + tsx)
-                lost_ts = False
-            except EngineError:
-                s.query(base)
-                lost_ts = bool(tsx)
-            now = s.query("SELECT datcollate, datctype FROM pg_database WHERE datname = %s" % sql_lit(name))
-            was = "%s/%s" % (entry.get("collate") or "?", entry.get("ctype") or "?")
-            if prov in ("i", "b"):
-                was += ", %s %s" % ("ICU" if prov == "i" else "builtin", props.get("locale"))
-            props.setdefault("_warnings", []).append(
-                "database %s: created with this server's default locale (%s) instead of the original (%s) - %s. Text sorting, LIKE / ORDER BY and unique "
-                "indexes on text may behave differently; install the original locale on this server and restore again for an exact copy%s"
-                % (name, "/".join(now[0]) if now and now[0] else "?", was, first.message[:200], "; the tablespace %s was not used either" % ts if lost_ts else ""))
+                s.query(base + l_ + t_)
+            except EngineError as e:
+                first = first or e
+                if (l_, t_) == tries[-1]:
+                    raise
+                continue
+            if first is not None:
+                if loc and not l_:
+                    now = s.query("SELECT datcollate, datctype FROM pg_database WHERE datname = %s" % sql_lit(name))
+                    was = "%s/%s" % (entry.get("collate") or "?", entry.get("ctype") or "?")
+                    if prov in ("i", "b"):
+                        was += ", %s %s" % ("ICU" if prov == "i" else "builtin", props.get("locale"))
+                    props.setdefault("_warnings", []).append(
+                        "database %s: created with this server's default locale (%s) instead of the original (%s) - %s. Text sorting, LIKE / ORDER BY and unique "
+                        "indexes on text may behave differently; install the original locale on this server and restore again for an exact copy"
+                        % (name, "/".join(now[0]) if now and now[0] else "?", was, first.message[:200]))
+                if tsx and not t_:
+                    props.setdefault("_warnings", []).append("database %s: created in pg_default, not in its original default tablespace %s (%s)" % (name, ts, first.message[:200]))
+            break
     finally:
         s.close()
 
@@ -702,7 +707,8 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
                 eph, info = _recover_db(ctx, chain, known[0], tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
                 info["note"] = ("database '%s' is the database called '%s' in backup %s (renamed after it): recovered from its backed-up files"
                                 % (entry["name"], was, entry.get("base_set") or chain[-1]["id"]))
-                entry.update(oid=known[0]["oid"], late=False, size=known[0].get("size") or 0, note=info["note"])
+                entry.update(oid=known[0]["oid"], late=False, size=known[0].get("size") or 0, note=info["note"],
+                             **dict((k, known[0][k]) for k in ("encoding", "collate", "ctype") if known[0].get(k)))
                 return eph, info
             entry.update(oid=int(row[0][0]), encoding=row[0][1], collate=row[0][2], ctype=row[0][3])
             if _db_usable(eph, entry):
@@ -850,6 +856,7 @@ def _stop_before_drop(ctx, chain, entry, hit, keep_oids, progress, cancel):
         eph, info = _recover(ctx, chain, keep_oids, None, lsn, None, None, False, progress, cancel)
         if _db_usable(eph, entry):
             info["stopped_before_drop"] = {"lsn": lsn, "xid": xid, "message": "the database was dropped right after the requested point: recovered up to just before the DROP DATABASE (%s)" % lsn}
+            _name_at_point(eph, entry, info)               # renamed, then dropped: connect by the name it had there
             return eph, info
         why = getattr(eph, "unusable", "?")
         eph.cleanup()
@@ -1006,6 +1013,8 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
             if gone_ts:
                 extra.append("--no-tablespaces")
                 warns.append("tablespaces missing on this server (%s): every object was created in the database's default tablespace" % ", ".join(gone_ts))
+        if props is None:
+            props = {}                                     # _create_db reports what it could not keep in it (locale, tablespace)
         _create_db(admin, new_name, entry, props)
         created = True
         _mark_db(admin, new_name, "%s since %s (from %s at %s): incomplete until this comment is gone - do not use" % (RESTORING_MARK, now_utc().isoformat(timespec="seconds"), db, plan.get("target")))
@@ -1056,16 +1065,38 @@ def _replication_ties(s, original, old):
                                % sql_lit(original)) if r and r[0]]
     slots = [r[0] for r in s.query("SELECT slot_name FROM pg_replication_slots WHERE slot_type = 'logical' AND database = %s" % sql_lit(original)) if r and r[0]]
     if subs:
-        warnings.append("%s is a logical replication subscriber (%s): its subscriptions are disabled on the copy kept as %s so that it no longer "
-                        "consumes the publisher's changes; the publisher keeps them in slot(s) %s until the subscription is attached to the restored "
-                        "database (in %s: ALTER SUBSCRIPTION <name> SET (slot_name = '<slot>'); ALTER SUBSCRIPTION <name> ENABLE - the changes since the "
-                        "slot's position are then applied over the restored data) or the slot is dropped"
+        warnings.append("%s is a logical replication subscriber (%s): its subscriptions are disabled just before the swap and stay disabled on the copy "
+                        "kept as %s, so no change goes into the wrong database; the publisher keeps the next changes in slot(s) %s. Attaching that slot to the "
+                        "restored database (in %s: ALTER SUBSCRIPTION <name> SET (slot_name = '<slot>'); ... ENABLE) resumes from where the original "
+                        "stopped: what the original received between the restored point and the swap is NOT in the restored database - resynchronise "
+                        "(a new subscription with copy_data) if those tables must match the publisher; otherwise drop the slot on the publisher"
                         % (original, ", ".join(r[0] for r in subs), old, ", ".join(r[1] for r in subs if r[1]) or "-", original))
     if slots:
         warnings.append("%s is a logical replication publisher: slot(s) %s belong to the copy kept as %s, not to the restored database - subscribers "
                         "connecting to %s will fail until their slot is recreated there (CREATE PUBLICATION is restored; recreate the slot and "
                         "resynchronise the subscribers)" % (original, ", ".join(slots), old, original))
     return subs, slots, warnings
+
+
+def _set_subscriptions(admin, db, names, enable):
+    """ALTER SUBSCRIPTION ... ENABLE / DISABLE in database `db` (a subscription is altered from its own database). All or none: one that fails
+    puts the others back. Returns the names changed."""
+    k = PgSession(admin.with_db(db))
+    done = []
+    try:
+        for n in names:
+            k.query("ALTER SUBSCRIPTION %s %s" % (quote_ident(n), "ENABLE" if enable else "DISABLE"))
+            done.append(n)
+        return done
+    except EngineError:
+        for n in done:
+            try:
+                k.query("ALTER SUBSCRIPTION %s %s" % (quote_ident(n), "DISABLE" if enable else "ENABLE"))
+            except EngineError:
+                pass
+        raise
+    finally:
+        k.close()
 
 
 def swap_preview(ctx, original, into=None):
@@ -1122,6 +1153,9 @@ def swap_database(ctx, restored, original, into=None, dry_run=False, wait_sec=15
             return res
         names = [n for n in (original, restored) if n in rows]
         allow = dict((n, rows[n][1] == "true") for n in names)     # as they were
+        # the original's subscriptions stop BEFORE the swap, while it can still be connected to under its own name (independent review: done after,
+        # through the kept copy's new name, it could fail and leave the apply worker filling the kept copy); put back if the swap does not happen
+        disabled = _set_subscriptions(admin, original, [r[0] for r in subs], False) if subs else []
         for n in names:
             s.query("ALTER DATABASE %s ALLOW_CONNECTIONS false" % quote_ident(n))
         renamed = False
@@ -1160,19 +1194,14 @@ def swap_database(ctx, restored, original, into=None, dry_run=False, wait_sec=15
                     s.query("ALTER DATABASE %s ALLOW_CONNECTIONS %s" % (quote_ident(now_names[n]), "true" if was else "false"))
                 except EngineError:
                     pass
+            if disabled and not renamed:
+                try:
+                    _set_subscriptions(admin, original, disabled, True)
+                except EngineError as e:
+                    ctx.log("error", "the swap did not happen and the subscriptions of %s (%s) could not be enabled again: %s - ALTER SUBSCRIPTION ... ENABLE by hand"
+                            % (original, ", ".join(disabled), e.message[:200]))
         if old:
             s.query("COMMENT ON DATABASE %s IS %s" % (quote_ident(old), sql_lit("pg_arca: replaced by a restore on %s; kept as the way back - drop it when no longer needed" % now_utc().isoformat(timespec="seconds"))))
-        if old and subs:
-            k = PgSession(admin.with_db(old))
-            try:
-                for name_, _slot in subs:
-                    try:
-                        k.query("ALTER SUBSCRIPTION %s DISABLE" % quote_ident(name_))
-                    except EngineError as e:
-                        res.setdefault("warnings", []).append("subscription %s on %s could NOT be disabled (%s): it still applies the publisher's changes "
-                                                              "into the kept copy - disable it by hand" % (name_, old, e.message[:160]))
-            finally:
-                k.close()
         res["replaced"] = True
         return res
     finally:
@@ -1278,8 +1307,10 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
 
         sprops = db_props(eph, src_db)
 
+        stage_props = {k: v for k, v in (sprops or {}).items() if k in ("provider", "locale", "rules")}
+
         def make():
-            _create_db(admin, stage, dbentry, {k: v for k, v in (sprops or {}).items() if k in ("provider", "locale", "rules")})
+            _create_db(admin, stage, dbentry, stage_props)
         created = True
         meta = objmod.build_stage(admin, eph, dbentry, sel, label, stage, an, plan, progress, create_db=make, cancel=cancel)
         _check_cancel(cancel)
@@ -1288,7 +1319,7 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
         info["dependencies"] = {"tables": len(meta["tables"]), "foreign_keys": len(meta["fks"]), "views": len(meta["views"]), "types": len(meta["prereq"]["types"]),
                                 "functions": len(meta["prereq"]["functions"]), "sequences": len(meta["owned_sequences"]) + len(meta["sequences"]), "extensions": meta["prereq"]["extensions"],
                                 "roles": meta["roles"], "missing_roles": meta.get("missing_roles_at_stage") or []}
-        info["warnings"] = meta["warnings"]
+        info["warnings"] = list(meta["warnings"]) + list(stage_props.pop("_warnings", []))     # e.g. the original locale missing here
         plan.update(info)
         plan["result_database"] = stage
         plan["tables"] = [("%s.%s" % (t["schema"], t["name"])) for t in meta["tables"]]
@@ -1747,23 +1778,26 @@ def diff_object(ctx, stage_db, spec, into=None, limit=200):
 
 
 APPLY_ROWS_MAX = 200000
-FK_CASCADE_DEPTH = 4
+FK_CASCADE_DEPTH = 30                      # levels of ON DELETE CASCADE followed (a deeper chain is refused, never applied unsaved)
 _FK_DEL = {"c": "deleted with them", "n": "set to NULL", "d": "set to their default", "a": "blocking", "r": "blocking"}
 _FK_UPD = {"c": "updated with them", "n": "set to NULL", "d": "set to their default", "a": "blocking", "r": "blocking"}
 
 
 def _inbound_fks(sess, fq):
-    """Foreign keys of other tables (or of this one) that point AT fq: what deleting or re-keying its rows does to them (top-level constraints:
-    the clones PostgreSQL makes on each partition act through their parent)."""
+    """Foreign keys of other tables (or of this one) that point AT fq - or at a partitioned table fq is a partition of (the key then reaches its rows
+    through the partition): what deleting or re-keying its rows does to them. Top-level constraints only: the clones PostgreSQL makes on each
+    partition act through their parent."""
     out = []
     for r in sess.query("""SELECT c.conname, n.nspname, cl.relname, c.confdeltype, c.confupdtype,
        (SELECT json_agg(a.attname ORDER BY k.o) FROM unnest(c.conkey) WITH ORDINALITY k(n, o) JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.n)::text,
        (SELECT json_agg(a.attname ORDER BY k.o) FROM unnest(c.confkey) WITH ORDINALITY k(n, o) JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.n)::text,
-       c.conrelid = c.confrelid
+       c.conrelid = c.confrelid OR c.conrelid IN (SELECT relid FROM pg_partition_ancestors(%s::regclass)), cl.relkind
 FROM pg_constraint c JOIN pg_class cl ON cl.oid = c.conrelid JOIN pg_namespace n ON n.oid = cl.relnamespace
-WHERE c.contype = 'f' AND c.confrelid = %s::regclass AND NOT EXISTS (SELECT 1 FROM pg_constraint p WHERE p.oid = c.conparentid)
-ORDER BY 2, 3, 1""" % sql_lit(fq)):
-        out.append({"name": r[0], "schema": r[1], "table": r[2], "on_delete": r[3], "on_update": r[4], "cols": json.loads(r[5]), "ref": json.loads(r[6]), "self": r[7] == "t"})
+WHERE c.contype = 'f' AND (c.confrelid = %s::regclass OR c.confrelid IN (SELECT relid FROM pg_partition_ancestors(%s::regclass)))
+  AND NOT EXISTS (SELECT 1 FROM pg_constraint p WHERE p.oid = c.conparentid)
+ORDER BY 2, 3, 1""" % (sql_lit(fq), sql_lit(fq), sql_lit(fq))):
+        out.append({"name": r[0], "schema": r[1], "table": r[2], "on_delete": r[3], "on_update": r[4], "cols": json.loads(r[5]), "ref": json.loads(r[6]), "self": r[7] == "t",
+                    "partitioned": r[8] == "p"})
     return out
 
 
@@ -1776,8 +1810,9 @@ def _fk_effects(sess, fq, pk, del_rows, chg_rows):
 
     def child_rows(fk, parent_sql, parent_fq, parent_pk, exclude_sql):
         child = "%s.%s" % (quote_ident(fk["schema"]), quote_ident(fk["table"]))
-        sel = "SELECT c.* FROM %s c WHERE (%s) IN (SELECT %s FROM (%s) p)" % (
-            child, ",".join("c.%s" % quote_ident(x) for x in fk["cols"]), ",".join("p.%s" % quote_ident(x) for x in fk["ref"]), parent_sql)
+        # ONLY: a key on a table with inheritance children does not constrain the children's rows; a partitioned table is read whole
+        sel = "SELECT c.* FROM %s%s c WHERE (%s) IN (SELECT %s FROM (%s) p)" % (
+            "" if fk.get("partitioned") else "ONLY ", child, ",".join("c.%s" % quote_ident(x) for x in fk["cols"]), ",".join("p.%s" % quote_ident(x) for x in fk["ref"]), parent_sql)
         if fk["self"] and exclude_sql and parent_pk:
             # a table pointing at itself (a tree): the rows already being deleted are not victims of their own cascade
             sel += " AND jsonb_build_array(%s)::text NOT IN (SELECT jsonb_build_array(%s)::text FROM (%s) x)" % (
@@ -1799,7 +1834,7 @@ def _fk_effects(sess, fq, pk, del_rows, chg_rows):
                     deeper[0] = True
                     continue
                 cpk = _table_info(sess, child)
-                walk(sel, child, (cpk or {}).get("pk") or [], depth + 1, "delete", sel if fk["self"] else None)
+                walk(sel, child, (cpk or {}).get("pk") or [], depth + 1, "delete", sel)
 
     if del_rows:
         walk(del_rows, fq, pk, 0, "delete", del_rows)
@@ -1918,16 +1953,21 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
             jnew = dict((k, json.loads(rows[k])) for k in will_update)
             chg = {}
             for fk in fks:
-                moved = [k for k in will_update if any(jcur[k].get(c) != jnew[k].get(c) for c in fk["ref"])]
+                # only the columns this recovery writes can change (a column that exists only in the live table keeps its value)
+                moved = [k for k in will_update if any(jcur[k].get(c) != jnew[k].get(c) for c in fk["ref"] if c in writable)]
                 if moved:
-                    chg[fk["name"]] = put("upd:" + fk["name"], moved)
-            effects, deeper = _fk_effects(tg, fq, li["pk"], del_sql, lambda fk: chg.get(fk["name"]))
+                    gk = "%s.%s.%s" % (fk["schema"], fk["table"], fk["name"])
+                    chg[gk] = put("upd:" + gk, moved)
+            effects, deeper = _fk_effects(tg, fq, li["pk"], del_sql, lambda fk: chg.get("%s.%s.%s" % (fk["schema"], fk["table"], fk["name"])))
         if effects:
             res["foreign_key_effects"] = [dict((k, v) for k, v in e.items() if k != "select") for e in effects]
         if deeper:
             res["foreign_key_effects_deeper"] = True
         if dry_run:
             return res
+        if deeper:
+            raise EngineError("PGA-GEN-094", "nothing applied: the deletion cascades through more than %d levels of foreign keys (%s): those rows could not all be "
+                              "saved first" % (FK_CASCADE_DEPTH, _effects_text(effects)), "remove the deepest rows first, or bring the tables back as a whole (promote)")
         blocking = [e for e in effects if e["blocking"]]
         if blocking:
             raise EngineError("PGA-GEN-094", "nothing applied: rows of other tables still point at the rows to delete or change - " + _effects_text(blocking),
@@ -1958,8 +1998,6 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
                 used.add((e["schema"], nm))
                 tg.query("CREATE TABLE %s.%s AS %s" % (quote_ident(e["schema"]), quote_ident(nm), e["select"]))
                 res.setdefault("cascade_safety_copies", []).append("%s.%s" % (e["schema"], nm))
-            if deeper and cascade:
-                res["note"] = ((res.get("note") or "") + " foreign key cascades deeper than %d levels were not saved" % FK_CASCADE_DEPTH).strip()
             for i in range(0, len(restore_keys), 500):
                 part = restore_keys[i:i + 500]
                 doc = "[" + ",".join(rows[k] for k in part) + "]"      # rows[k] is already JSON text from to_jsonb(): re-encoding via Python floats would round numeric(38,x)

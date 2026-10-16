@@ -39,7 +39,12 @@ def setUpModule():
           "INSERT INTO items SELECT g, g, 'sku' FROM generate_series(1, 10) g;"
           "INSERT INTO cat VALUES (1, NULL, 'root');"
           "INSERT INTO products VALUES (1, 'A'), (2, 'B'); INSERT INTO lines VALUES (1, 'A'), (2, 'A'), (3, 'B');"
-          "CREATE TABLE docs(id int PRIMARY KEY, body json); INSERT INTO docs VALUES (1, '{\"z\": 1,  \"a\": [1, 2], \"a\": 3}')")
+          "CREATE TABLE docs(id int PRIMARY KEY, body json); INSERT INTO docs VALUES (1, '{\"z\": 1,  \"a\": [1, 2], \"a\": 3}');"
+          "CREATE TABLE parts(id int, d date, PRIMARY KEY (id, d)) PARTITION BY RANGE (d);"
+          "CREATE TABLE parts_a PARTITION OF parts FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');"
+          "CREATE TABLE prefs(id int PRIMARY KEY, pid int, pd date, FOREIGN KEY (pid, pd) REFERENCES parts ON DELETE CASCADE);"
+          "CREATE TABLE posts(id int PRIMARY KEY);"
+          "CREATE TABLE comments(id int PRIMARY KEY, post_id int REFERENCES posts ON DELETE CASCADE, parent_id int REFERENCES comments)")
     run_backup(F.ctx, "full")
     time.sleep(1.2)
     S["t0"] = now_txt()
@@ -50,10 +55,14 @@ def setUpModule():
           "INSERT INTO shipments VALUES (1, 11), (2, 1);"
           "INSERT INTO invoices VALUES (1, 13);"
           "INSERT INTO cat VALUES (100, 1, 'a'), (101, 100, 'b'), (102, 101, 'c');"
-          "UPDATE products SET code = 'A2' WHERE id = 1; DELETE FROM docs")
+          "UPDATE products SET code = 'A2' WHERE id = 1; DELETE FROM docs;"
+          "ALTER TABLE products ADD COLUMN sku text UNIQUE; UPDATE products SET sku = 's' || id;"           # a column added after the point...
+          "CREATE TABLE stock(id int PRIMARY KEY, sku text REFERENCES products(sku)); INSERT INTO stock VALUES (1, 's1');"   # ...referenced since
+          "INSERT INTO parts VALUES (100, '2026-02-01'); INSERT INTO prefs VALUES (1, 100, '2026-02-01');"
+          "INSERT INTO posts VALUES (7); INSERT INTO comments VALUES (1, 7, NULL), (2, 7, 1), (3, 7, 2)")
     q("postgres", "SELECT pg_switch_wal()")
     time.sleep(3)
-    restore_object(F.ctx, DB, objects=["%s.public.%s" % (DB, t) for t in ("orders", "items", "item_notes", "shipments", "invoices", "cat", "products", "lines", "docs")],
+    restore_object(F.ctx, DB, objects=["%s.public.%s" % (DB, t) for t in ("orders", "items", "item_notes", "shipments", "invoices", "cat", "products", "lines", "docs", "parts", "posts", "comments")],
                    target_time=S["t0"], stage_db=STAGE)
 
 
@@ -121,6 +130,18 @@ class RowsFk(unittest.TestCase):
         # json (not jsonb) keeps its text: key order, duplicate keys, spaces - a signed payload must be the same bytes (independent review)
         apply_rows(F.ctx, STAGE, "%s.public.docs" % DB, restore_all=["missing"])
         self.assertEqual(q(DB, "SELECT body::text FROM docs WHERE id = 1")[0][0], '{"z": 1,  "a": [1, 2], "a": 3}')
+
+    def test_07_a_leaf_partition_referenced_through_its_parent(self):
+        # the key points at the partitioned parent: on the leaf it exists only as PostgreSQL's per-partition clone (independent review)
+        r = apply_rows(F.ctx, STAGE, "%s.public.parts_a" % DB, delete_all_added=True, dry_run=True)
+        self.assertEqual(fx(r), [("public.prefs", "deleted with them", 1, 1)])
+
+    def test_08_cascade_into_a_self_referencing_table(self):
+        # comments go with their post (CASCADE), and point at each other (NO ACTION): the replies being deleted do not block (independent review)
+        r = apply_rows(F.ctx, STAGE, "%s.public.posts" % DB, delete_all_added=True, allow_cascade=True)
+        self.assertEqual(r["deleted"], 1, r)
+        self.assertEqual(q(DB, "SELECT count(*) FROM comments")[0][0], "0")
+        self.assertEqual(q(DB, "SELECT count(*) FROM %s" % r["cascade_safety_copies"][0])[0][0], "3")
 
 
 if __name__ == "__main__":
