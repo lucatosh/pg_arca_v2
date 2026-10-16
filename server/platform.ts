@@ -1,4 +1,5 @@
 /** Audit trail + fleet discovery API, backed by real data (store.audit, node.discovery). */
+import { scrubSecrets } from './scrub';
 import type { Request, Response } from 'express';
 import { Store } from './store';
 import * as ops from './ops';
@@ -34,7 +35,7 @@ export function mountPlatformRoutes(app: any, store: Store) {
     const st = store.peek();
     const cname = (id?: string) => st.clusters.find((c: any) => c.id === id)?.name;
     const nodes = Object.values(st.nodes).map(n => ({
-      nodeId: n.id, nodeName: n.name, clusterId: n.clusterId, clusterName: cname(n.clusterId), lastSeen: n.lastSeen, discovery: n.discovery || null,
+      nodeId: n.id, nodeName: n.name, clusterId: n.clusterId, clusterName: cname(n.clusterId), lastSeen: n.lastSeen, discovery: n.discovery ? scrubSecrets(n.discovery) : null,
       findings: (n.discovery as any)?.findings || [],
     }));
     const sum = (k: string) => nodes.reduce((a, n) => a + Number(n.discovery?.summary?.[k] || 0), 0);

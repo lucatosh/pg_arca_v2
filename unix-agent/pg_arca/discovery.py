@@ -116,6 +116,17 @@ def _http_json(url: str, timeout: float = 1.5, headers: Optional[Dict[str, str]]
         return 0, None
 
 
+_SECRET_RES = (re.compile(r"\b(password|passwd|pwd|sslpassword)\s*=\s*('(?:[^'\\]|\\.)*'|\"[^\"]*\"|\S+)", re.I),
+                re.compile(r"\b(PGPASSWORD|[A-Z0-9_]*(?:SECRET|PASSWORD|TOKEN|ACCESS_KEY)[A-Z0-9_]*)=(\S+)"))
+
+
+def _scrub(v: str) -> str:
+    """A setting's value without the secret part of credentials written into it."""
+    for r in _SECRET_RES:
+        v = r.sub(lambda m: m.group(1) + "=***", v)
+    return v
+
+
 def parse_conf(text: str) -> Dict[str, str]:
     """Parse postgresql.conf style 'key = value  # comment' lines (last one wins, like PG)."""
     out = {}  # type: Dict[str, str]
@@ -835,7 +846,8 @@ class ClusterDiscoveryEngine:
         auto = parse_conf(_read(os.path.join(pgdata, "postgresql.auto.conf")) or "")
         conf.update(auto)
         info["config_file"] = conf_file
-        info["settings"] = {k: conf[k] for k in PG_INTERESTING_PARAMS if k in conf}
+        # the report goes to the console: no credential leaves the host (primary_conninfo password=, PGPASSWORD= in a command) - security review
+        info["settings"] = {k: _scrub(conf[k]) for k in PG_INTERESTING_PARAMS if k in conf}
 
         if port is None and "port" in conf and conf["port"].isdigit():
             port = int(conf["port"])

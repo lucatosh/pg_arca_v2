@@ -25,6 +25,8 @@ const ipWindow = new Map<string, { n: number; since: number }>();
 /** ...and a cap per user name whatever the source address: a guesser behind a proxy that forwards a different X-Forwarded-For on every request
  *  (or many addresses) still gets at most USER_MAX_FAILS attempts on one account per window. */
 const userWindow = new Map<string, { n: number; since: number }>();
+/** addresses each account has signed in from successfully (in memory, last 20 per account) */
+const goodFrom = new Map<string, Set<string>>();
 const IP_MAX_FAILS = 30, IP_WINDOW_MS = 10 * 60_000, USER_MAX_FAILS = 50;
 function pruneFailures(now: number) {
   if (failures.size + ipWindow.size + userWindow.size < 5000) return;
@@ -162,13 +164,29 @@ export function requireAdmin(store: Store) {
     if (!role) return res.status(401).json({ error: 'unauthenticated' });          // user removed or disabled while logged in
     (req as any).actor = u; (req as any).role = role;
     if (!can(role, req.method, p)) return res.status(403).json({ error: 'forbidden', message: `Role “${role}” cannot perform this action.`, requiredRole: requiredRole(req.method, p) });
-    // CSRF defence in depth on top of SameSite=Strict: state-changing calls must be JSON or have no body
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers['content-length'] && req.headers['content-length'] !== '0' &&
-        !String(req.headers['content-type'] || '').includes('application/json')) {
-      return res.status(415).json({ error: 'json_required' });
+    // CSRF defence in depth on top of SameSite=Strict: state-changing calls must be JSON or have no body, and a browser call must come from this
+    // console's own origin - also a bodiless POST (approve / reject / cancel), which the JSON rule alone let through (independent security review)
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      if (req.headers['content-length'] && req.headers['content-length'] !== '0' && !String(req.headers['content-type'] || '').includes('application/json')) {
+        return res.status(415).json({ error: 'json_required' });
+      }
+      if (!sameOrigin(req)) return res.status(403).json({ error: 'cross_origin', message: 'Request from another site refused.' });
     }
     next();
   };
+}
+
+/** Origin (or, without it, Referer) of a browser request is this console. Requests without either (curl, scripts with an API token, agents) pass:
+ *  browsers always send Origin on cross-site POSTs. The console's host is the Host header (or X-Forwarded-Host behind a proxy that sets it). */
+export function sameOrigin(req: Request): boolean {
+  const src = String(req.headers.origin || '') || String(req.headers.referer || '');
+  if (!src) return true;
+  if (src === 'null') return false;                                    // sandboxed frame / opaque origin: never the console's own page
+  let host: string;
+  try { host = new URL(src).host.toLowerCase(); } catch { return false; }
+  const fwd = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim().toLowerCase();
+  const own = String(req.headers.host || '').toLowerCase();
+  return host === own || (!!fwd && host === fwd);
 }
 
 // ---------------------------------------------------------------------------------------------------------- API tokens (automation)
@@ -182,7 +200,11 @@ export function apiTokenOf(store: Store, req: Request): ApiTokenRec | null | 'ba
   const k = sha256(raw);
   const t = Object.values((store.peek().settings.apiTokens || {}) as Record<string, ApiTokenRec>).find(x => x.hash === k);
   if (!t || t.revokedAt || (t.expiresAt && Date.parse(t.expiresAt) < Date.now())) return 'bad';
-  return t;
+  // a token never outlives or outranks the account that created it: creator deleted or disabled = token dead, creator demoted = token capped
+  // (independent security review: an admin token kept creating admins after its creator was removed)
+  const creator = roleOf(store, t.createdBy);
+  if (!creator) return 'bad';
+  return RANK[creator] < RANK[t.role] ? { ...t, role: creator } : t;
 }
 const lastTouch = new Map<string, number>();
 /** lastUsedAt, written at most every 5 minutes per token (a scraper every 10 s must not rewrite the state each time). */
@@ -273,7 +295,10 @@ export function mountAuthRoutes(app: any, store: Store) {
     const fk = ip + '\u0000' + uname.toLowerCase();
     const f = failures.get(fk); const w = ipWindow.get(ip); const uw = userWindow.get(uname.toLowerCase());
     const ipBlocked = !!w && now - w.since < IP_WINDOW_MS && w.n >= IP_MAX_FAILS;
-    const userBlocked = !!uw && now - uw.since < IP_WINDOW_MS && uw.n >= USER_MAX_FAILS;
+    // the account-wide cap does not lock the account's owner out: an address this account signed in from before still gets its own per-address
+    // back-off only (independent security review: 50 failures from rotating addresses kept a chosen admin out indefinitely)
+    const trusted = !!goodFrom.get(uname.toLowerCase())?.has(ip);
+    const userBlocked = !trusted && !!uw && now - uw.since < IP_WINDOW_MS && uw.n >= USER_MAX_FAILS;
     if ((f && f.until > now) || ipBlocked || userBlocked) {
       const until = ipBlocked ? w!.since + IP_WINDOW_MS : userBlocked ? uw!.since + IP_WINDOW_MS : f!.until;
       return res.status(429).json({ error: 'too_many_attempts', retryAfterSeconds: Math.ceil((until - now) / 1000) });
@@ -309,6 +334,8 @@ export function mountAuthRoutes(app: any, store: Store) {
       return res.status(401).json({ error: 'invalid_credentials' });
     }
     failures.delete(fk);
+    { const k = uname.toLowerCase(); const g = goodFrom.get(k) || new Set<string>(); g.add(ip); while (g.size > 20) g.delete(g.values().next().value as string); goodFrom.set(k, g);
+      if (goodFrom.size > 5000) goodFrom.delete(goodFrom.keys().next().value as string); }
     let account: string = username;
     if (viaLdap) {                                                                     // the directory's answer of today is the user's role of today
       const v = viaLdap;
@@ -425,6 +452,8 @@ export function mountAuthRoutes(app: any, store: Store) {
       if (!u) return 'missing' as const;
       if (u.role === 'admin' && !u.disabled && admins(d.settings) <= 1) return 'last_admin' as const;
       delete d.settings.users[name];
+      // its API tokens die with it (a user re-created later with the same name must not inherit them)
+      for (const t of Object.values((d.settings.apiTokens || {}) as Record<string, ApiTokenRec>)) if (t.createdBy === name && !t.revokedAt) t.revokedAt = nowIso();
       audit(d, { actor: (req as any).actor, action: 'user.delete', status: 'OK', details: { username: name } });
       return 'ok' as const;
     });

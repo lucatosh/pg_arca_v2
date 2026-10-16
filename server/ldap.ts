@@ -195,6 +195,8 @@ export async function authenticateLdap(cfg: LdapConfig, username: string, passwo
     let dn: string;
     let entry: { dn: string; attrs: Record<string, string[]> } | null = null;
     if (cfg.userDnTemplate && !cfg.userFilter) {
+      // a user principal name (user@domain): the name goes in as it is, so it must be a plain one - no DN or filter characters (independent security review)
+      if (cfg.userDnTemplate.includes('@') && !/^[A-Za-z0-9._%+-]{1,64}$/.test(username)) return { ok: false, error: 'invalid_credentials' };
       dn = cfg.userDnTemplate.replace(/\{user\}/g, cfg.userDnTemplate.includes('@') ? username : escDn(username));
     } else {
       if (cfg.bindDN) { const b = await c.bind(cfg.bindDN, cfg.bindPassword || ''); if (b.code !== 0) return { ok: false, error: 'directory_unavailable', detail: `service account bind failed (code ${b.code}): ${b.message}` }; }

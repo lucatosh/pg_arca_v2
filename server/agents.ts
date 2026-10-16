@@ -6,6 +6,7 @@
  *   agent --HTTPS POST--> /api/agent/ops/:id/report
  * Identity: one-time enrollment token -> per-node secret (only its sha256 is stored).
  */
+import { scrubSecrets } from './scrub';
 import { logModeFor } from './logring';
 import { validatePolicy, DEFAULT_POLICY, resolvePolicy } from './policies';
 import crypto from 'crypto';
@@ -170,17 +171,23 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
         if (existing?.firstHeartbeatAt && !reuse) return { err: 'node_exists' as const };
         const id = existing?.id || newId('node');
         d.nodes[id] = { ...(existing || {}), id, name: nodeName, kind: 'worker', tokenHash: sha256(secret), enrolledAt: existing?.enrolledAt || nowIso(), clusterId: undefined,
-          agentVersion: String(b.agent_version || ''), remoteIp: req.socket.remoteAddress || '', discovery: b.discovery || {}, lastSeen: nowIso(), label: t.label || existing?.label } as NodeRecord;
+          agentVersion: String(b.agent_version || ''), remoteIp: req.socket.remoteAddress || '', discovery: scrubSecrets(b.discovery || {}), lastSeen: nowIso(), label: t.label || existing?.label } as NodeRecord;
         spend();
         ops.audit(d, { actor: `agent:${nodeName}`, action: 'agent.enroll', status: 'OK', details: { nodeId: id, kind: 'worker' } });
         return { ok: true as const, nodeId: id, clusterId: null, kind: 'worker' };
       }
-      const disc = b.discovery || {};
+      const disc = scrubSecrets(b.discovery || {});
       const inst = (disc.postgres_instances || [])[0] || {};
       const clusterKey: string | undefined = inst.cluster_key;
       let cluster = t.clusterId ? d.clusters.find((c: any) => c.id === t.clusterId) : undefined;
       if (t.clusterId && !cluster) return { err: 'cluster_not_found' as const };
-      if (!cluster && clusterKey) cluster = d.clusters.find((c: any) => c.clusterKey === clusterKey);
+      if (!cluster && clusterKey) {
+        // the system identifier is no secret (any viewer sees it): an enrollment token of one environment never joins a cluster of another one
+        // (independent security review: a dev token reporting prod's identifier landed in prod and became a target of prod operations)
+        const same = d.clusters.find((c: any) => c.clusterKey === clusterKey);
+        if (same && t.environment && same.environment && same.environment !== t.environment) return { err: 'environment_mismatch' as const };
+        cluster = same;
+      }
       if (!cluster) {
         cluster = {
           id: newId('cl'), name: inst.patroni?.scope || (disc.patroni_clusters || [])[0]?.scope || `pg-${nodeName}`,
@@ -202,7 +209,8 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       refreshCluster(d, cluster.id);
       return { ok: true as const, nodeId: id, clusterId: cluster.id, kind: 'db' };
     });
-    if ('err' in result) return res.status(result.err === 'invalid_token' ? 401 : result.err === 'node_exists' ? 409 : 403).json({ error: result.err, ...(result.err === 'node_exists' ? { message: `A node named ${nodeName} already reports to the console: revoke it on the Nodes page before enrolling a replacement with the same name.` } : {}) });
+    if ('err' in result) return res.status(result.err === 'invalid_token' ? 401 : result.err === 'node_exists' ? 409 : 403).json({ error: result.err, ...(result.err === 'node_exists' ? { message: `A node named ${nodeName} already reports to the console: revoke it on the Nodes page before enrolling a replacement with the same name.` }
+      : result.err === 'environment_mismatch' ? { message: 'This PostgreSQL cluster is already known in another environment than the enrollment token\'s: use a token of that environment (or one bound to the cluster).' } : {}) });
     res.status(201).json({ node_id: result.nodeId, cluster_id: result.clusterId, node_kind: result.kind, agent_token: secret, heartbeat_interval: 10 });
   });
 
@@ -249,7 +257,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
           n.prevXact = { total, at: nowMs };
         }
       }
-      if (b.discovery && typeof b.discovery === 'object' && JSON.stringify(b.discovery).length <= DISCOVERY_MAX) n.discovery = b.discovery;    // bounded: it is persisted on every heartbeat
+      if (b.discovery && typeof b.discovery === 'object' && JSON.stringify(b.discovery).length <= DISCOVERY_MAX) n.discovery = scrubSecrets(b.discovery);    // bounded: it is persisted on every heartbeat
       if (n.kind === 'worker') return;                     // operational machine: no cluster to derive
       reconcileCluster(d, node.id);
       if (n.clusterId) refreshCluster(d, n.clusterId);
@@ -307,7 +315,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
     }
     if (r.ok && status === 'succeeded' && r.op?.type === 'restore_point' && result && typeof result === 'object') await recordRestorePoint(store, { ...r.op, result });
     if (r.ok && status === 'succeeded' && r.op?.type === 'discovery_scan' && result && typeof result === 'object') {
-      await store.mutate(d => { if (d.nodes[node.id]) { d.nodes[node.id].discovery = result; refreshCluster(d, d.nodes[node.id].clusterId || ''); } });
+      await store.mutate(d => { if (d.nodes[node.id]) { d.nodes[node.id].discovery = scrubSecrets(result); refreshCluster(d, d.nodes[node.id].clusterId || ''); } });
     }
     res.status(r.ok ? 200 : 409).json({ ok: r.ok, reason: r.reason, status: r.op?.status, cancel: !!r.cancel });
   });

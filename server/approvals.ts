@@ -11,16 +11,18 @@ export const APPROVABLE_ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 
 /** What counts as risky: it changes live access, live parameters, the HA topology or overwrites/deletes live data. */
 export function isRisky(type: string, params: any = {}): boolean {
+  params = params || {};
+  const dry = params.dry_run === true;                                        // only the boolean true is a dry run (fail safe: anything else is the real thing)
   if ((type === 'hba_apply' || type === 'hba_cluster_apply' || type === 'hba_restore') && hbaOpenRule(params.rules)) return true;   // trust / clear-text password towards the network: four-eyes
-  if (type === 'pg_restart' && params.dry_run) return false;                 // only says HOW it would restart
-  if (type === 'restore_db_swap' && params.dry_run) return false;
+  if (type === 'pg_restart' && dry) return false;                 // only says HOW it would restart
+  if (type === 'restore_db_swap' && dry) return false;
   if (type === 'restore_database' && params.replace_original) return true;
-  if (type === 'restore_instance' && params.replace_production && !params.dry_run) return true;   // production is stopped and its data directory replaced
+  if (type === 'restore_instance' && params.replace_production && !dry) return true;   // production is stopped and its data directory replaced
   if (type === 'restore_kept_drop') return true;      // the restored database takes the original's place
   if (type === 'restore_object' && params.finish === 'promote' && params.promote_mode === 'replace') return true;
   if (type === 'restore_object' && params.finish === 'rows_all') return true;
   if (['hba_cluster_apply', 'hba_apply', 'hba_rollback', 'hba_restore', 'pg_set_param', 'patroni_switchover', 'patroni_failover', 'patroni_restart', 'pg_restart', 'patroni_reinit', 'archive_enable', 'patroni_config_patch', 'patroni_pause', 'ephemeral_install', 'geo_promote', 'geo_demote', 'geo_switchover', 'restore_db_swap', 'destination_apply', 'destination_drop_old'].includes(type)) return true;
-  if (type === 'wal_retire_branch') return !params.dry_run;                 // stored WAL of a timeline is set aside in the archive
+  if (type === 'wal_retire_branch') return !dry;                 // stored WAL of a timeline is set aside in the archive
   if (type === 'restore_promote') return params.mode === 'replace';
   if (type === 'restore_instance') return !!params.keep_archiving;               // a copy that will write into production's WAL archive
   if (type === 'restore_apply_rows') return (params.delete_keys || []).length > 0 || (params.restore_keys || []).length > 0 || (params.restore_all || []).length > 0 || !!params.delete_all_added;

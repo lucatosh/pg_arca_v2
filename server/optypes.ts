@@ -151,15 +151,18 @@ function targetErr(p: Record<string, any>): string | null {
   return null;
 }
 const hbaRulesErr = (p: Record<string, any>): string | null => (!Array.isArray(p.rules) || p.rules.length > 200 || p.rules.some((r: any) => !r || typeof r !== 'object')) ? 'rules must be a list of at most 200 objects' : null;
-/** A rule that opens the server to the network without a password (trust) or with a clear-text one (password), outside the host itself: an
+/** A rule that opens the server to the network without a password (trust, ident) or with a clear-text one (password, ldap, radius, pam), outside the host itself: an
  *  administrator's decision, never an operator's. Returns the offending rule's text, or null. */
 export function hbaOpenRule(rules: any): string | null {
   if (!Array.isArray(rules)) return null;
   const localAddr = (a: string) => /^(127\.\d+\.\d+\.\d+(\/\d+)?|::1(\/\d+)?|localhost|samehost)$/i.test(a);
   for (const r of rules) {
     if (!r || typeof r !== 'object') continue;
-    const m = String(r.method || '').toLowerCase(), t = String(r.type || '').toLowerCase(), a = String(r.address || '').trim();
-    if ((m === 'trust' || m === 'password') && t !== 'local' && !localAddr(a)) return `${t || 'host'} ${r.database ?? 'all'} ${r.user ?? 'all'} ${a || '(no address)'} ${m}`;
+    // the method as the agent applies it (trimmed, first word); anything but a challenge/certificate method towards the network is an opening:
+    // trust and password, but also ident (the client says who it is), ldap/radius/pam (clear text on the wire) - independent security review
+    const m = String(r.method || '').trim().split(/\s+/)[0].toLowerCase(), t = String(r.type || '').trim().toLowerCase(), a = String(r.address || '').trim();
+    const safe = ['scram-sha-256', 'md5', 'cert', 'reject', 'gss', 'sspi'];
+    if (!safe.includes(m) && t !== 'local' && !localAddr(a)) return `${t || 'host'} ${r.database ?? 'all'} ${r.user ?? 'all'} ${a || '(no address)'} ${m || '(no method)'}`;
   }
   return null;
 }
@@ -275,11 +278,17 @@ export const laneOf = (type: string): string => (Object.prototype.hasOwnProperty
 /** Parameters the console itself resolves when it hands an operation to the agent (withEphemeral): a client must not be able to pre-fill them,
  *  because they carry a directory the agent will run binaries from. */
 const RESERVED_PARAMS = ['ephemeral'];
+const BOOL_PARAMS = ['dry_run', 'replace_production', 'replace_original', 'keep_archiving', 'force', 'force_rewind', 'delete_all_added', 'allow_cascade',
+  'delta', 'start_fast', 'include_retained', 'background'];
+
 export function validateOp(type: string, params: Record<string, any>): string | null {
   const spec = Object.prototype.hasOwnProperty.call(OP_SPECS, type) ? OP_SPECS[type] : undefined;     // 'constructor', 'toString': not operations
   if (!spec || typeof spec.validate !== 'function') return `unsupported operation '${type}'`;
   const p = params || {};
   if (typeof p === 'object' && !Array.isArray(p)) for (const k of RESERVED_PARAMS) if (k in p) return `${k} is set by the console, not by the client`;
+  // switches are true/false and nothing else: JavaScript and Python disagree on what [] / {} / "0" mean (independent security review: dry_run: []
+  // was "a dry run" for the four-eyes check here and a REAL run for the agent, which bypassed the approval of production restores and restarts)
+  if (typeof p === 'object' && p) for (const k of BOOL_PARAMS) if (p[k] !== undefined && p[k] !== null && typeof p[k] !== 'boolean') return `${k} must be true or false`;
   return spec.validate(p);
 }
 
