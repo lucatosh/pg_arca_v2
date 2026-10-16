@@ -88,12 +88,12 @@ export function writeDraft(key: string, v: any, session = true) { if (frozen) re
 const draftResets = new Set<(prefix: string) => void>();
 /** Logout, or another user signing in on this browser: nothing typed by the previous user may be shown. */
 export function clearAllDrafts(leaving = false) {
-  if (leaving) frozen = true;
+  if (leaving) { frozen = true; cache.clear(); toasts = []; tsubs.forEach(f => f()); }   // signing out: cached answers (users, settings…) and toasts go too
   drafts.clear();
   try { for (let i = sessionStorage.length - 1; i >= 0; i--) { const k = sessionStorage.key(i) || ''; if (k.startsWith(SS)) sessionStorage.removeItem(k); } } catch { /* ignore */ }
 }
-/** The login screen is showing: whatever the old pages wrote while leaving is dropped, and drafts stay off until someone signs in. */
-export function draftsSignedOut() { clearAllDrafts(true); }
+/** The login screen is showing: drafts stay off until someone signs in. */
+export function draftsSignedOut() { frozen = true; }   // nothing is cleared here: an expired session or a console restart must not lose a half-filled form; a different person signing in clears (draftsOwner)
 export function draftsOwner(user: string) {
   frozen = false;
   let prev: string | null = null; try { prev = sessionStorage.getItem('pgarca.draft-owner'); } catch { /* ignore */ }

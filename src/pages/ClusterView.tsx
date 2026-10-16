@@ -231,7 +231,7 @@ function Operations({ c }: { c: any }) {
   // the checks and reads pages run by themselves (offsite settings, restore plans…) are hidden unless asked: the list is about what changed things
   const [checks, setChecks] = useDraft(`ops:${c.id}:checks`, false);
   const all = q.data?.operations || []; const isRead = (o: Op) => OP_SPECS[o.type] ? !OP_SPECS[o.type].mutating : false;
-  const ops = checks ? all : all.filter(o => !isRead(o)); const hidden = all.length - ops.length;
+  const ops = checks ? all : all.filter(o => !isRead(o) || o.status === 'failed' || o.status === 'expired'); const hidden = all.length - ops.length;   // a failed check is never hidden
   const cancel = async (id: string) => { try { await api('POST', `/api/operations/${id}/cancel`); q.refresh(); } catch (e: any) { toast(e.message, 'bad'); } };
   return <Card title="Operations on this cluster" pad={false} actions={hidden || checks ? <label className="check small"><input type="checkbox" checked={checks} onChange={e => setChecks(e.target.checked)} />Show checks and reads{!checks && hidden ? ` (${hidden})` : ''}</label> : undefined}>
     {!ops.length ? <Empty icon="list" title="No operations">Backups, restores and other actions appear here with outcome and duration.</Empty> :

@@ -58,7 +58,10 @@ export async function notifyTick(store: Store, now = Date.now(), send: Sender = 
     const opened = cur.filter(i => !known[i.key]);
     const reminders = cur.filter(i => known[i.key] && now - known[i.key].sentAt >= (cfg.reminderHours || 24) * 3600_000);
     const curKeys = new Set(cur.map(i => i.key));
-    const resolved = Object.entries(known).filter(([k]) => !curKeys.has(k)).map(([k, v]: any) => ({ key: k, title: v.title, clusterName: v.clusterName }));
+    // a finding still open at a LOWER severity (below this webhook's threshold) is not resolved: no "🟢 Resolved" for a cluster that is still dark
+    // (independent review); it is simply no longer repeated here, and announced as resolved once it is really gone
+    const stillOpen = new Set(issues.map(i => i.key));
+    const resolved = Object.entries(known).filter(([k]) => !curKeys.has(k) && !stillOpen.has(k)).map(([k, v]: any) => ({ key: k, title: v.title, clusterName: v.clusterName }));
     if (!opened.length && !reminders.length && !resolved.length) continue;
     const r = await send(openUrl(store.dir, w.url), payload(w, { opened, reminders, resolved }));
     await store.mutate(d => {

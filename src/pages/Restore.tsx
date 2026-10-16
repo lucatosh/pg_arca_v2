@@ -25,9 +25,11 @@ const KIND_LABEL: Record<string, string> = { DROP: 'Table dropped (or rewritten)
 const tzName = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return 'locale'; } };
 /** A restore time typed the one unambiguous way: "2026-10-15 21:32:41", 24 h, local time (the browser's date-time field showed "10/15/2026, 07:54 PM"
  *  on an English browser - a restore point read as October or as the 10th is a day of data). What it understood is said right under it. */
-function WhenInput({ ms, onChange }: { ms: number; onChange: (ms: number) => void }) {
+function WhenInput({ ms, onChange, onBad }: { ms: number; onChange: (ms: number) => void; onBad?: (bad: boolean) => void }) {
   const fmt = (v: number) => localInput(v).replace('T', ' ');
-  const [txt, setTxt] = useState(fmt(ms)); const [bad, setBad] = useState(false);
+  const [txt, setTxt] = useState(fmt(ms)); const [bad, setBad0] = useState(false);
+  const setBad = (b: boolean) => { setBad0(b); onBad?.(b); };
+  useEffect(() => { onBad?.(false); return () => onBad?.(false); /* eslint-disable-next-line */ }, []);
   useEffect(() => { setTxt(fmt(ms)); setBad(false); }, [ms]);
   const parse = (t: string) => { const m = /^\s*(\d{4})-(\d{1,2})-(\d{1,2})[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/.exec(t); if (!m) return NaN;
     const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)); return d.getMonth() === +m[2] - 1 && d.getDate() === +m[3] ? d.getTime() : NaN; };
@@ -36,7 +38,7 @@ function WhenInput({ ms, onChange }: { ms: number; onChange: (ms: number) => voi
     <input className="input mono" style={{ maxWidth: 230 }} value={txt} placeholder="YYYY-MM-DD HH:MM:SS" aria-label="Date and time, year-month-day hours:minutes:seconds" aria-invalid={bad}
       onChange={e => { setTxt(e.target.value); setBad(!Number.isFinite(parse(e.target.value))); }} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); }} />
     {[[-60, '−1 min'], [-1, '−1 s'], [1, '+1 s'], [60, '+1 min']].map(([d, t]) => <Button key={t as string} sm kind="ghost" onClick={() => onChange(ms + (d as number) * 1000)}>{t}</Button>)}</div>
-    <span className="small" style={{ color: bad ? 'var(--bad)' : 'var(--ink-3)' }}>{bad ? 'Write it as year-month-day hours:minutes:seconds, 24 h (for example 2026-10-15 21:30:00).' : `= ${dt(ms)}`}</span></div>;
+    <span className="small" style={{ color: bad ? 'var(--bad)' : 'var(--ink-3)' }}>{bad ? `Not understood: write it as year-month-day hours:minutes:seconds, 24 h (for example 2026-10-15 21:30:00). Still set: ${dt(ms)}.` : `= ${dt(ms)}`}</span></div>;
 }
 const localInput = (ms: number) => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 19); };
 const ago2 = (ms: number) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
@@ -163,7 +165,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   // the end of the job overwrites something that exists now: typed confirmation
   const overwrites = () => fixServer() || (fin === 'fix' && ((scope === 'database' && dbExists()) || (scope === 'object' && intent !== 'rows' && finMode() === 'replace')));
   const okWhere = fixServer() ? true : scope === 'instance' ? destNow().startsWith('/') : scope === 'database' ? (fin === 'fix' || okName) : true;
-  const okWhen = !!tgt && (tgt.mode !== 'time' || (tgt.ms >= from && tgt.ms <= to + 60000));
+  const [whenBad, setWhenBad] = useState(false);   // a time typed but not understood: never restore to the previous one silently
+  const okWhen = !!tgt && (tgt.mode !== 'time' || (!whenBad && tgt.ms >= from && tgt.ms <= to + 60000));
   const lastPlan = useRef<any>(null); if (plan.op?.status === 'succeeded') lastPlan.current = plan.op.result; else if (!plan.op && !plan.busy) lastPlan.current = null;
   const pres = plan.op?.status === 'succeeded' ? plan.op.result : plan.busy ? lastPlan.current : null;
   const blocked = plan.op?.status === 'succeeded' && (!!plan.op.result?.missing_wal?.length || plan.op.result?.preflight?.ok === false);
@@ -247,8 +250,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
           <div><strong>A specific point in time</strong></div>
           {tgt?.mode === 'time' ? <div className="stack-s" style={{ marginTop: 6 }} onClick={e => e.preventDefault()}>
             <div className="row wrap gap-s">{[[15, '15 minutes ago'], [60, '1 hour ago'], [240, '4 hours ago'], [1440, 'this time yesterday']].map(([m, t]) => <Button key={m} sm onClick={() => setTgt({ mode: 'time', ms: Math.max(from, Date.now() - (m as number) * 60000) })}>{t}</Button>)}</div>
-            <Field label={`Date and time (${tzName()})`} error={!okWhen ? 'Outside the recoverable window: from ' + fmtWhen(from) + ' to now.' : null}>
-              <WhenInput ms={tgt.ms} onChange={ms => setTgt({ mode: 'time', ms })} /></Field>
+            <Field label={`Date and time (${tzName()})`} error={!okWhen && !whenBad ? 'Outside the recoverable window: from ' + fmtWhen(from) + ' to now.' : null}>
+              <WhenInput ms={tgt.ms} onChange={ms => setTgt({ mode: 'time', ms })} onBad={setWhenBad} /></Field>
           </div> : <div className="small muted">Pick a date and time: you can go back to any point from {fmtWhen(from)} to now.</div>}</div></label>
       </div>
       {selDb && !selDb.late && selDb.first_stop && tgt?.mode === 'time' && tgt.ms < Date.parse(selDb.first_stop) ? <Banner kind="warn" title={`${db} appears in the backups only since ${fmtWhen(Date.parse(selDb.first_stop))}`}>It may not exist yet at this point in time: in that case the restore stops and says so.</Banner> : null}

@@ -12,7 +12,7 @@ import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { Store, NodeRecord, sha256, newSecret, newId, nowIso } from './store';
 import * as ops from './ops';
-import { OP_SPECS, validateOp, hbaOpenRule } from './optypes';
+import { OP_SPECS, validateOp, hbaOpenRule, workKey } from './optypes';
 import { requiresApproval, requestApproval } from './approvals';
 import { applyDestination } from './destinations';
 import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
@@ -586,7 +586,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       const keep = list.filter(o => !isTerminalStatus(o.status) || Date.parse(o.updatedAt || o.createdAt) >= since);
       return res.json({ operations: keep.slice(-200).reverse().map((o: any) => ({
         id: o.id, type: o.type, status: o.status, clusterId: o.clusterId, nodeId: o.nodeId, createdAt: o.createdAt, updatedAt: o.updatedAt, createdBy: o.createdBy,
-        cancelRequested: !!o.cancelRequested, progress: o.progress || null, subtype: o.params && typeof o.params.type === 'string' ? o.params.type : undefined, background: o.params && o.params.background === true ? true : undefined, readonly: OP_SPECS[o.type] && !OP_SPECS[o.type].mutating ? true : undefined,
+        cancelRequested: !!o.cancelRequested, progress: o.progress || null, subtype: o.params && typeof o.params.type === 'string' ? o.params.type : undefined, background: o.params && o.params.background === true && OP_SPECS[o.type] && !OP_SPECS[o.type].mutating ? true : undefined, readonly: OP_SPECS[o.type] && !OP_SPECS[o.type].mutating ? true : undefined, work: workKey(o.params),
         error: o.error ? String(o.error).slice(0, 400) : undefined })) });
     }
     res.json({ operations: list.slice(-200).reverse().map(ops.redactOp) });

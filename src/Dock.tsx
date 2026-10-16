@@ -14,7 +14,9 @@ const KEY = 'arca.dock'; const SEEN = 'arca.dock.seen'; const WIN = 'arca.dock.w
 const read = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const write = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
 
-type SlimOp = Op & { subtype?: string; background?: boolean; readonly?: boolean };
+type SlimOp = Op & { subtype?: string; background?: boolean; readonly?: boolean; work?: string };
+// the same work again (server/optypes sameWork): same type, cluster and meaningful parameters, same node except for backups
+const same = (a: SlimOp, b: SlimOp) => a.type === b.type && a.clusterId === b.clusterId && (a.work ?? '') === (b.work ?? '') && (a.type === 'backup_run' || a.type === 'backup_expire' || (a.nodeId || '') === (b.nodeId || ''));
 const label = (o: SlimOp) => `${OP_LABEL[o.type] || o.type}${o.subtype ? ` (${o.subtype})` : ''}`;
 const elapsed = (from: string, now: number) => { const s = Math.max(0, Math.round((now - Date.parse(from)) / 1000)); return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`; };
 
@@ -49,7 +51,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
   const failedAll = finished.filter(o => o.status === 'failed' || o.status === 'expired');
   const recent = finished.filter(o => filt === 'all' || (filt === 'failed' ? o.status === 'failed' || o.status === 'expired' : o.status === 'succeeded')).slice(0, 40);
   // a failure followed by a success of the same operation on the same cluster is history, not an alarm on every page
-  const superseded = (o: SlimOp) => all.some(x => x.status === 'succeeded' && x.type === o.type && x.clusterId === o.clusterId && Date.parse(x.updatedAt) > Date.parse(o.updatedAt));
+  const superseded = (o: SlimOp) => all.some(x => x.status === 'succeeded' && same(x, o) && Date.parse(x.updatedAt) > Date.parse(o.updatedAt));
   const failedNew = all.filter(o => o.status === 'failed' && !gset.has(o.id) && Date.parse(o.updatedAt) > seenAt && Date.now() - Date.parse(o.updatedAt) < 10 * 60_000 && !superseded(o));
   useEffect(() => { setFast(running.length > 0); }, [running.length]);
 
@@ -65,7 +67,7 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
     if (prev.current) for (const o of q.data.operations) {
       const was = prev.current[o.id];
       if (!was || isTerminal(was) || !isTerminal(o.status)) continue;
-      const tag = `${o.clusterId || ''}:${o.type}`;
+      const tag = `${o.clusterId || ''}:${o.type}:${o.type === 'backup_run' ? '' : o.nodeId || ''}:${o.work || ''}`;
       if (o.status === 'succeeded') dismissToastsTagged(tag);                 // a retry that worked: the earlier failure toast is stale
       if (o.createdBy !== me || QUIET.includes(o.type) || o.background || o.readonly || (o.params?.dry_run && o.status === 'succeeded')) continue;
       if (isOnScreen(o.id)) continue;                                          // the page that started it shows the outcome itself

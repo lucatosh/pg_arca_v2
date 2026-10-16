@@ -224,10 +224,10 @@ class OperationExecutor:
                                     "(chown %s: %s) or choose another path" % (where, me, "write" if e.errno != _errno.EROFS else "write (read-only file system)", me, me, where))
             if getattr(e, "errno", None) == _errno.ENOSPC:
                 return self._finish(op_id, op_type, "failed", None, "PGA-SYS-014: no space left on device%s" % (" (%s)" % e.filename if getattr(e, "filename", None) else ""))
-            return self._finish(op_id, op_type, "failed", None, "internal error: %s" % e)
+            return self._finish(op_id, op_type, "failed", None, "internal error: %s" % (str(e) or repr(e) or type(e).__name__))
         except Exception as e:  # unexpected: still a clean failure, with detail in the log
             logger.exception("operation %s crashed", op_id)
-            return self._finish(op_id, op_type, "failed", None, "internal error: %s" % e)
+            return self._finish(op_id, op_type, "failed", None, "internal error: %s" % (str(e) or repr(e) or type(e).__name__))
         finally:
             self._live.pop(op_id, None)
             self._cancel.discard(op_id)
@@ -817,7 +817,8 @@ class OperationExecutor:
             # judge against the wrong history and could file away a real divergence)
             if not self._is_primary():
                 raise OpError("filing away the failover leftovers is decided by the primary (this node is in recovery or PostgreSQL is not reachable): run it there")
-            files = [c["file"] for c in wm.classify_conflicts(tl, local_wal_dir=lw) if c.get("kind") == "off_history"]
+            mine = [c["file"] for c in wm.classify_conflicts(tl, local_wal_dir=lw) if c.get("kind") == "off_history"]
+            files = [f for f in mine if f in files] if files is not None else mine          # what the person saw AND what this agent judges leftovers
         moved = wm.conflicts_reviewed(files) if p.get("reviewed") and (files is None or files) else []
         return {"conflicts": wm.classify_conflicts(tl, local_wal_dir=lw), "current_timeline": tl, "reviewed": moved, "wal_dir": wal_dir}
 

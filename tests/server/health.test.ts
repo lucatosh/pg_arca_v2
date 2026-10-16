@@ -230,5 +230,17 @@ import { requiredRole } from '../../server/auth';
     const g = l.failures.find((x: any) => x.type === 'backup_run'); assert.strictEqual(g.count, 3); assert.strictEqual(g.resolved, true);
     assert.strictEqual(l.failures[0].type, 'backup_verify', 'unresolved first');
   }
+  { // a failed verification is a finding until THE SAME verification succeeds (a success on another set does not resolve it)
+    const st6 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'hv-'))); const t0 = Date.now(); const at = (m: number) => new Date(t0 - m * 60_000).toISOString();
+    await st6.mutate(d => { d.clusters.push({ id: 'v', name: 'vee', environment: 'prod', source: 'agent' } as any);
+      d.nodes.v1 = { id: 'v1', name: 'v1', clusterId: 'v', lastSeen: at(0), snapshot: { postgres: { is_in_recovery: false, settings: {} } } } as any;
+      d.operations.push({ id: 'a', type: 'backup_verify', clusterId: 'v', nodeId: 'v1', params: { set: 'A', deep: true }, status: 'failed', error: 'chunk mismatch', updatedAt: at(30), createdAt: at(31), history: [] } as any);
+      d.operations.push({ id: 'b', type: 'backup_verify', clusterId: 'v', nodeId: 'v1', params: { set: 'B', deep: true }, status: 'succeeded', updatedAt: at(20), createdAt: at(21), history: [] } as any); });
+    const vf = () => evaluate(st6.peek(), t0).filter(i => i.clusterId === 'v' && i.code === 'verify_failed');
+    assert.strictEqual(vf().length, 1, 'set B verified does not resolve set A'); assert.strictEqual(vf()[0].severity, 'critical');
+    assert.strictEqual((briefing(st6.peek(), t0).last24h as any).unresolved, 1);
+    await st6.mutate(d => { d.operations.push({ id: 'c', type: 'backup_verify', clusterId: 'v', nodeId: 'v1', params: { set: 'A', deep: true, confirm: 'x' }, status: 'succeeded', updatedAt: at(10), createdAt: at(11), history: [] } as any); });
+    assert.strictEqual(vf().length, 0, 'the same verification succeeded'); assert.strictEqual((briefing(st6.peek(), t0).last24h as any).unresolved, 0);
+  }
   console.log('health/notify tests OK');
 })().catch(e => { console.error(e); process.exit(1); });

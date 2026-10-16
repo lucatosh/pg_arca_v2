@@ -4,6 +4,7 @@
  * No I/O here: the same function feeds the "Oggi" page, the notification dispatcher and the tests.
  */
 import { resolvePolicy } from './policies';
+import { sameWork, workKey } from './optypes';
 import { lsnToBig } from './view';
 import { classify } from './pgcompat';
 import { geoIssues } from './geo';
@@ -60,7 +61,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     const enrolled = Math.max(0, ...nodes.map(n => ts(n.enrolledAt)).filter(Number.isFinite));
     if (!primary && !standbySite && !lastNews && nodes.length && enrolled && now - enrolled < 15 * 60_000) add({ severity: 'info', code: 'no_primary', title: 'Waiting for the agent’s first report',
       cause: 'The server was added a moment ago: its status, backups and findings appear after the agent’s first report (usually within a minute).', action: { label: 'Open the cluster', page: 'cluster' } });
-    else if (!primary && !standbySite) add(silentFor > 3 * 86400_000
+    else if (!primary && !standbySite) add(silentFor > 3 * 86400_000 && !isProd
       ? { severity: 'warning', code: 'no_primary', title: `No news from this cluster for ${hrs(silentFor / 3600_000)}`, cause: `No agent has reported since ${new Date(lastNews).toISOString().slice(0, 16).replace('T', ' ')} UTC. If the servers were switched off or decommissioned, detach the cluster (its backups stay in the repository); otherwise start pg-arca-agent on its nodes.`, action: { label: 'Open the cluster', page: 'cluster' } }
       : { severity: 'critical', code: 'no_primary', title: 'No reachable primary', cause: online.length ? 'The agents respond but no node reports the primary role.' : lastNews ? `No agent of the cluster has responded since ${new Date(lastNews).toISOString().slice(0, 16).replace('T', ' ')} UTC (${hrs(silentFor / 3600_000)}).` : 'The agent was installed but has never reported: check on the server that the pg-arca-agent service runs and can reach the console address (journalctl -u pg-arca-agent).', action: { label: 'Open the cluster', page: 'cluster' } });
     for (const n of nodes.filter(x => !on(x))) {
@@ -121,10 +122,14 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     // backups exist but nothing schedules them: protection depends on someone remembering. Said where everyone looks (the badge, the list,
     // Today), not only inside the Backup tab (an independent review found a production cluster "Healthy" in that state)
     if (sets.length && !standbySite && !pol?.enabled) add({ severity: isProd ? 'warning' : 'info', code: 'no_schedule', title: 'Backups are not scheduled',
-      cause: `Only manual backups run (the last one ${hrs((now - lastMs) / 3600_000)} ago): assign a backup policy so protection does not depend on someone remembering.`, action: { label: 'Schedule backups', page: 'backup' } });
+      cause: `Only manual backups run${Number.isFinite(lastMs) ? ` (the last one ${hrs((now - lastMs) / 3600_000)} ago)` : ''}: assign a backup policy so protection does not depend on someone remembering.`, action: { label: 'Schedule backups', page: 'backup' } });
     const failedSince = (bk?.last_failure && (!last || ts(bk.last_failure.start_time) > lastMs)) ? bk.last_failure : null;
     if (failedSince) add({ severity: 'warning', code: 'backup_failed', title: 'The last backup attempt failed', cause: String(failedSince.reason || 'Reason not reported.').slice(0, 300), action: { label: 'See the backups', page: 'backup' } });
     const lastVerify = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'backup_verify' && o.status === 'succeeded').map(o => ts(o.updatedAt)).sort().pop();
+    // a verification that FAILED is a backup that may not restore: said where everyone looks, until the same verification succeeds
+    const vFail = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'backup_verify' && o.status === 'failed' && now - ts(o.updatedAt) < 7 * 86400_000)
+      .filter(o => !(st.operations as any[]).some(x => x.status === 'succeeded' && sameWork(x, o) && ts(x.updatedAt) > ts(o.updatedAt))).sort((a, b) => ts(b.updatedAt) - ts(a.updatedAt))[0];
+    if (vFail) add({ severity: isProd ? 'critical' : 'warning', code: 'verify_failed', title: 'A backup verification failed', cause: `${String(vFail.error?.message || vFail.error || 'No reason reported.').slice(0, 300)} (${hrs((now - ts(vFail.updatedAt)) / 3600_000)} ago). Until the same verification succeeds, that backup may not restore.`, action: { label: 'See the backups', page: 'backup' } });
     if (pol?.enabled && pol.verifyEveryHours && sets.length) {
       const base = Number.isFinite(lastVerify as number) ? (lastVerify as number) : lastMs;
       if (now - base > pol.verifyEveryHours * 3600_000 * 2) add({ severity: 'info', code: 'verify_stale', title: 'Backup verification overdue', cause: lastVerify ? `Last successful verification ${hrs((now - lastVerify) / 3600_000)} ago.` : 'No successful verification so far: an unverified backup is only a hope.', action: { label: 'See the backups', page: 'backup' } });
@@ -341,7 +346,7 @@ export function protectionOf(st: any, clusterId: string, issues: Issue[], now = 
   const offs = nodes.map(n => n.snapshot?.offsite).filter((o: any) => o?.configured && o.enabled);
   const offLast = Math.max(0, ...offs.map((o: any) => Number(o.last_ok) || 0));
   const mine = issues.filter(i => i.clusterId === clusterId);
-  const KEY = new Set(['no_backup', 'no_schedule', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
+  const KEY = new Set(['no_backup', 'no_schedule', 'verify_failed', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
   const relevant = mine.filter(i => KEY.has(i.code));
   const standbySite = !sets.length && nodes.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader');
   const state = standbySite ? 'none' as const
@@ -376,12 +381,12 @@ export function briefing(st: any, now = Date.now()) {
       // the same failure repeated (a scheduled backup hitting one broken destination all day) is ONE line with a count, and a failure followed by a
       // success of the same operation on the same cluster is resolved: the headline counts what is still broken (the lab read '78 failed operations')
       const errOf = (o: any) => String(o.error?.message || o.error || '');
-      const okAfter = (o: any) => recentOps.some(x => x.status === 'succeeded' && x.type === o.type && x.clusterId === o.clusterId && String(x.updatedAt) > String(o.updatedAt));
+      const okAfter = (o: any) => recentOps.some(x => x.status === 'succeeded' && sameWork(x, o) && String(x.updatedAt) > String(o.updatedAt));
       const groups = new Map<string, any>();
-      for (const o of real) { const k = `${o.type}|${o.clusterId}|${errOf(o).replace(/[0-9A-F]{24}|\d{8}-\d{6}[FDI]?|\d+/g, '#').slice(0, 120)}`; const g = groups.get(k);
+      for (const o of real) { const k = `${o.type}|${o.clusterId}|${o.type === 'backup_run' ? '' : o.nodeId}|${workKey(o.params)}|${errOf(o).replace(/[0-9A-F]{24}|\d{8}-\d{6}[FDI]?|\d+/g, '#').slice(0, 120)}`; const g = groups.get(k);
         if (g) { g.count++; if (String(o.updatedAt) > String(g.at)) { g.at = o.updatedAt; g.id = o.id; g.error = errOf(o).slice(0, 200); } }
-        else groups.set(k, { id: o.id, type: o.type, clusterId: o.clusterId, at: o.updatedAt, first: o.updatedAt, error: errOf(o).slice(0, 200), count: 1 }); }
-      const glist = [...groups.values()].map(g => ({ ...g, resolved: okAfter({ ...g, updatedAt: g.at }) })).sort((a, b) => Number(a.resolved) - Number(b.resolved) || String(b.at).localeCompare(String(a.at)));
+        else groups.set(k, { id: o.id, type: o.type, clusterId: o.clusterId, nodeId: o.nodeId, params: o.params, at: o.updatedAt, first: o.updatedAt, error: errOf(o).slice(0, 200), count: 1 }); }
+      const glist = [...groups.values()].map(({ params, nodeId, ...g }) => ({ ...g, resolved: okAfter({ ...g, params, nodeId, updatedAt: g.at }) })).sort((a, b) => Number(a.resolved) - Number(b.resolved) || String(b.at).localeCompare(String(a.at)));
       return { operations: recentOps.length, failed: real.length, unresolved: real.filter(o => !okAfter(o)).length, refused: failed.length - real.length, backups: recentOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').length,
         failures: glist.slice(0, 8),
         refusals: failed.filter(refusal).slice(-5).reverse().map(o => ({ id: o.id, type: o.type, clusterId: o.clusterId, at: o.updatedAt, error: String(o.error?.message || o.error || '').slice(0, 200) })) };

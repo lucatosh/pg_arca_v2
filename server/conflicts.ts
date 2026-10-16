@@ -67,6 +67,6 @@ export function conflictFor(operations: Operation[], clusterId: string, type: st
 /** What is running or waiting on a cluster, for the "who is doing what" strip of the cluster page. */
 export function activityOf(operations: Operation[], clusterId: string) {
   // what changes nothing (reading settings, listing, planning) is not "running on this cluster" for the DBAs who look at the strip
-  return operations.filter(o => o.clusterId === clusterId && ACTIVE.has(o.status) && !(o.params as any)?.background && OP_SPECS[o.type]?.mutating !== false)
+  return operations.filter(o => o.clusterId === clusterId && ACTIVE.has(o.status) && OP_SPECS[o.type]?.mutating !== false)   // the client's 'background' flag never hides a mutating operation (only read-only ones, already excluded)
     .map(o => ({ id: o.id, type: o.type, what: it(o.type), status: o.status, createdBy: o.createdBy, createdAt: o.createdAt, progress: o.progress?.phase || null, nodeId: o.nodeId }));
 }

@@ -277,3 +277,17 @@ export function validateOp(type: string, params: Record<string, any>): string | 
   if (typeof p === 'object' && !Array.isArray(p)) for (const k of RESERVED_PARAMS) if (k in p) return `${k} is set by the console, not by the client`;
   return spec.validate(p);
 }
+
+/** "The same operation again": what a later success must match to resolve an earlier failure (independent review: a verification of set B used
+ *  to mark the failed verification of set A resolved, a restore of table B the failed restore of table A). Same type, same meaningful parameters
+ *  (not the confirmation word, the background flag or the read limit), and the same node except for backups, which may run on any member. */
+const VOLATILE = new Set(['confirm', 'background', 'read_limit_mb_s', 'reason']);
+export function sameWork(a: { type: string; clusterId?: string; nodeId?: string; params?: any }, b: { type: string; clusterId?: string; nodeId?: string; params?: any }): boolean {
+  if (a.type !== b.type || a.clusterId !== b.clusterId) return false;
+  if (a.type !== 'backup_run' && a.type !== 'backup_expire' && (a.nodeId || '') !== (b.nodeId || '')) return false;
+  return workKey(a.params) === workKey(b.params);
+}
+export function workKey(params: any): string {
+  if (!params || typeof params !== 'object') return '';
+  return JSON.stringify(Object.keys(params).filter(k => !VOLATILE.has(k)).sort().map(k => [k, params[k]]));
+}
