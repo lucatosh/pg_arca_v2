@@ -1,7 +1,7 @@
 import { RecoveryPlacement } from './Placement';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { takePendingIntent } from '../tasks';
-import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago, nof, setName, dday } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, CopyBlock, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago, nof, setName, dday } from '../ui';
 import { Op, useDraft, useOpRunner, useQuery } from '../hooks';
 import { useHealth } from './Today';
 import { OpPanel, Result, hintFor } from './shared';
@@ -42,6 +42,7 @@ function WhenInput({ ms, onChange, onBad }: { ms: number; onChange: (ms: number)
     <span className="small" style={{ color: bad ? 'var(--bad)' : 'var(--ink-3)' }}>{bad ? `Not understood: write it as year-month-day hours:minutes:seconds, 24 h (for example 2026-10-15 21:30:00). Still set: ${dt(ms)}.` : `= ${dt(ms)}`}</span></div>;
 }
 const localInput = (ms: number) => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 19); };
+const span2 = (d: number) => { const m = Math.max(1, Math.round(d / 60000)); return m < 90 ? `${m} min` : m < 2880 ? `about ${Math.round(m / 60)} hours` : `about ${Math.round(m / 1440)} days`; };
 const ago2 = (ms: number) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
 const shortName = (id: string) => { const p = splitId(id); return p.slice(1).join('.') || id; };
 
@@ -169,6 +170,9 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   // named restore points ("Before release 4.2") inside the recoverable window: offered as they are, the operator knows what they mean
   const rpq = useRestorePoints(c.id);
   const rpoints = (rpq.data?.points || []).filter(p => Date.parse(p.at) >= from).slice(0, 5);
+  // when the chosen point is, as a time (a WAL event or a restore point carries one): what an in-place restore throws away is said in minutes
+  const tgtAt: number | null = !tgt || tgt.mode === 'latest' ? null : tgt.mode === 'time' ? tgt.ms
+    : (suggestions.find(x => x.key === (tgt.mode === 'lsn' ? 'lsn:' + tgt.lsn : 'xid:' + tgt.xid))?.at ?? (tgt.mode === 'lsn' ? Date.parse(rpoints.find(p => p.lsn === tgt.lsn)?.at || '') : NaN)) || null;
   const tgtKey = (t: Target | null) => !t ? '' : t.mode === 'lsn' ? 'lsn:' + t.lsn : t.mode === 'xid' ? 'xid:' + t.xid : t.mode;
   // entering "when": the most recent thing that went wrong is the natural choice; a whole database or server defaults to the latest point
   useEffect(() => { if (step !== 2 || tgt) return; if (suggestions.length) setTgt(suggestions[0].tgt); else if ((intent === 'database' && selDropped) || intent === 'cluster') setTgt({ mode: 'latest' }); }, [step, suggestions.length]);
@@ -223,6 +227,23 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
   const whatTxt = scope === 'instance' ? 'the whole server' : scope === 'database' ? <>database <strong>{db}</strong></> : objs.length === 1 ? <>{splitId(obj).length === 2 ? 'schema' : 'table'} <strong>{shortName(obj)}</strong> in {splitId(obj)[0]}</> : <><strong>{objs.length}</strong> objects in {db}</>;
   const whenTxt = !tgt ? '—' : tgt.mode === 'latest' ? (selDropped ? 'just before it was dropped' : 'to the latest saved point') : tgt.mode === 'time' ? <>as it was on <strong>{dt(tgt.ms)}</strong></> : tgt.label?.startsWith('restore point') ? <>at the <strong>{tgt.label}</strong></> : <>just before: <strong>{tgt.label}</strong></>;
+  // what happened, in a form to paste into the incident / change ticket: who, what, to which point, how it ended, what was kept to go back
+  const incident = (): string => {
+    const o = exec.op!; const r = o.result || {}; const t0 = Date.parse(o.createdAt), t1 = Date.parse(o.updatedAt || o.createdAt);
+    const what = scope === 'instance' ? 'the whole server' : scope === 'database' ? `database ${db}` : objs.map(shortName).join(', ') + ` (database ${db})`;
+    const point = !tgt ? '—' : tgt.mode === 'latest' ? (selDropped ? 'just before the DROP DATABASE' : 'the latest archived transaction') : tgt.mode === 'time' ? dt(tgt.ms) : tgt.label;
+    const kept: string[] = [r.replace?.old_kept_as, r.swap?.old_kept_as, ...(r.finish?.old_kept || []), r.finish?.safety_copy].filter(Boolean);
+    return [
+      `Restore on ${c.name} (${c.environment}) — ${o.status === 'succeeded' ? 'completed' : 'FAILED'}`,
+      `Situation: ${INTENTS.find(x => x.id === intent)?.title || '—'}`,
+      `What: ${what}`, `Back to: ${point}`,
+      `How it ended: ${fixServer() ? 'production server restored in place' : r.result_database && r.result_database !== db ? `copy in ${r.result_database}` : r.finished === 'promote' ? 'put back in place' : r.finished === 'rows_all' ? 'rows put back' : r.instance ? `server copy ${r.instance.state || ''}`.trim() : fin === 'copy' ? 'copy to check' : 'in place'}`,
+      ...(kept.length ? [`Kept to go back: ${kept.join(', ')}`] : []),
+      `Requested by: ${o.createdBy || '—'}`, `Started: ${dt(t0)}`, `Finished: ${dt(t1)} (${Math.max(1, Math.round((t1 - t0) / 60000))} min)`,
+      ...(o.status !== 'succeeded' && o.error ? [`Error: ${String(o.error).split('\n')[0].slice(0, 300)}`] : []),
+      `Operation: ${o.id}`,
+    ].join('\n');
+  };
   const reachable = (i: number) => i < step && !running && !exec.op && (i !== 1 || intent !== 'cluster');
 
   return <div className="stack-l">
@@ -299,6 +320,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         {scope !== 'instance' ? <EndChoice fin={fin} setFin={setFin} kind={scope === 'database' ? 'database' : intent === 'rows' ? 'rows' : 'objects'} db={db} exists={dbExists()} newName={newName}
           mode={finMode()} setMode={m => setPmode(m)} gone={goneNow} what={objs.length === 1 ? shortName(obj) : `${objs.length} objects`} /> : null}
         {scope === 'database' && fin === 'copy' ? <Field label="New database name" hint="Never overwrites an existing database." error={newName && !okName ? 'Letters, digits and _ only (max 63 characters), no spaces.' : null}><div className="row gap-s"><input className="input" value={newName} onChange={e => setNewName(e.target.value)} onBlur={check} /><Button sm icon="refresh" busy={plan.busy} onClick={check}>Check again</Button></div></Field> : null}
+        {overwrites() && tgtAt != null ? <div className="hba-warn small"><span><strong>What is lost:</strong> every change made to {fixServer() ? 'the server' : scope === 'database' ? <>{db}</> : objs.length === 1 ? shortName(obj) : 'these tables'} after {fmtWhen(tgtAt)} — {span2(Date.now() - tgtAt)} of work.
+          {' '}{fixServer() ? 'The current data directory is kept, so it can still be read afterwards.' : 'The current version is kept under another name, so those changes can still be copied from it.'}</span></div> : null}
         {fixServer() && pres?.replace ? <ReplaceFacts r={pres.replace} /> : null}
         {scope === 'instance' && !fixServer() ? <>
           <Field label="Where to put the copy">{pres?.destinations ? <DestPicker where={pres.destinations} value={destNow()} onPick={pickDest} busy={plan.busy} /> : plan.busy || !plan.op ? <p className="small muted">Looking for disks with enough free space on the server…</p> : null}</Field>
@@ -342,6 +365,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       {scope === 'instance' && exec.op && (exec.op.params?.replace_production) && (doneOk || exec.op.status === 'failed') ? <KeptDirs clusterId={c.id} nodeId={exec.op.nodeId} initial={exec.op.result?.replace?.kept} /> : null}
       {doneOk && scope === 'instance' && exec.op!.result.instance ? <RestoredCard clusterId={c.id} r={{ ...exec.op!.result.instance, ...((d.restored || []).find((x: any) => x.id === exec.op!.result.instance.id) || { nodeId: exec.op!.nodeId, nodeName: '', online: true }) }} /> : null}
       {doneOk ? <Notices r={exec.op!.result} /> : null}
+      {exec.op && (doneOk || exec.op.status === 'failed') ? <Details k={`${K}:report`} summary="Summary for the incident ticket"><div style={{ marginTop: 8 }}><CopyBlock text={incident()} /></div></Details> : null}
       {doneOk && scope === 'database' && exec.op!.result.result_database && exec.op!.result.result_database !== db ? <SwapDb clusterId={c.id} restored={exec.op!.result.result_database} original={db} exists={!!live?.has(db)} onDone={() => setSwappedFor(exec.op!.id)} /> : null}
       {doneOk && scope === 'object' && exec.op!.result.result_database && !exec.op!.result.finished ? (intent === 'rows' && objs.length === 1 && splitId(obj).length === 3 ? <>
         <RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} auto />

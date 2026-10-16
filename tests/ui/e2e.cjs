@@ -92,6 +92,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   assert(await p.locator('label:has-text("Create the missing roles (gone_owner)") input').isChecked(), 'placeholder roles on by default'); await p.waitForSelector('text=a dropped account never becomes active again');
   await p.click('button.start-restore'); await p.click('.modal button:has-text("Start")');
   await p.waitForSelector('text=Restore completed', { timeout: 15000 }); await p.waitForSelector('text=roles created as NOLOGIN placeholders'); await shot('12-restore-done');
+  await p.click('summary:has-text("Summary for the incident ticket")'); await p.waitForSelector('pre.out:has-text("Restore on prodpg")'); assert(/Back to: .*\nHow it ended: copy in /.test(await p.locator('pre.out:has-text("Restore on prodpg")').innerText()), 'incident summary');
   // the checked copy takes the place of appdb with one click (no SQL to type): typed confirmation, the original kept as appdb_before_...
   await p.click('button:has-text("in place of appdb")'); if (!(await p.locator('.modal button:has-text("Replace")').isDisabled())) throw new Error('swap needs the typed confirmation');
   assert.equal(await typeName(), 'appdb'); await p.click('.modal button:has-text("Replace")'); await p.waitForSelector('text=appdb replaced', { timeout: 10000 }); await p.waitForSelector('code:has-text("appdb_before_")'); await shot('12f-db-swapped');

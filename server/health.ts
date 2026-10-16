@@ -20,7 +20,8 @@ export const SEV_RANK: Record<Severity, number> = { critical: 0, warning: 1, inf
 
 const ONLINE_MS = 45_000;
 const GB = 1024 ** 3;
-const hrs = (h: number) => (h >= 48 ? `${Math.round(h / 24)} days` : `${Math.round(h)} hours`);
+// never '0 hours' or '1 hours': minutes under two hours, then hours, then days
+const hrs = (h: number) => (h >= 48 ? `${Math.round(h / 24)} days` : h >= 2 ? `${Math.round(h)} hours` : `${Math.max(1, Math.round(h * 60))} ${Math.max(1, Math.round(h * 60)) === 1 ? 'minute' : 'minutes'}`);
 const bytesH = (b: number) => (b >= GB ? `${(b / GB).toFixed(1)} GB` : `${Math.round(b / 1048576)} MB`);
 const ts = (s?: string) => (s ? Date.parse(s) : NaN);
 /** Where PostgreSQL writes compared with the last archived segment: completed segments still waiting for the archiver (backlog) and the
