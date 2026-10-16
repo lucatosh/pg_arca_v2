@@ -423,6 +423,32 @@ def _catalog_names(ctx, sets=4):
     return rel, dbs
 
 
+def _partition_roots(ctx, sets=4):
+    """(dboid, relfilenode) of a partition -> 'db.schema.name' of the TOP partitioned table it belongs to, from the backup catalogs (newest wins).
+    A DELETE on a partitioned table is written in the WAL per partition: the DBA knows the table, not its leaves."""
+    roots = {}
+    try:
+        for st in reversed(ctx.repo.complete_sets()[-sets:]):
+            try:
+                cat = ctx.repo.load_catalog(st)
+            except EngineError:
+                continue
+            for dbname, d in cat["databases"].items():
+                by_oid = dict((r.get("oid"), r) for r in d["relations"] if r.get("oid"))
+                for r in d["relations"]:
+                    if not r.get("parent") or not r.get("relfilenode"):
+                        continue
+                    top, seen = r, set()
+                    while top.get("parent") and top["parent"] in by_oid and top["oid"] not in seen:
+                        seen.add(top["oid"])
+                        top = by_oid[top["parent"]]
+                    if top is not r:
+                        roots.setdefault((str(d["oid"]), str(r["relfilenode"])), spec_path(dbname, top["schema"], top["name"]))
+    except EngineError:
+        pass
+    return roots
+
+
 def _live_names(ctx, pairs, rel, dbs):
     """Names the backup catalogs do not know (relations created after the last backup, and the NEW files a TRUNCATE gave a table) from the running
     cluster itself: pg_relation_filenode() in each database concerned. Read-only, bounded; any failure just leaves the numbers."""
@@ -678,9 +704,31 @@ def _dml_result(ctx, exe, events, times, segs, allsegs, scanned, cached_n, parti
             a["lsn"], a["first_seg"] = e["lsn"], e["seg"]
         if e["seg"] > a["last_seg"]:
             a["last_seg"] = e["seg"]
+    rel_names, _ = _catalog_names(ctx)
+    # partitions of one partitioned table, in one transaction: ONE change of that table (the threshold applies to the sum - a DELETE spread
+    # over twelve monthly partitions was missed, or reported as a change of one partition the DBA does not think about)
+    roots = _partition_roots(ctx)
+    if roots:
+        merged = {}
+        for k, a in list(tot.items()):
+            root = roots.get((str(a["rels"][0][0]), str(a["rels"][0][1])))
+            if not root:
+                continue
+            mk = (a["tli"], a["xid"], "root", root)
+            m = merged.get(mk)
+            if m is None:
+                m = merged[mk] = dict(a, rels=[], root=root, leaves=[], **{"del": 0, "upd": 0})
+            m["del"] += a["del"]
+            m["upd"] += a["upd"]
+            m["rels"] += a["rels"]
+            m["leaves"].append(rel_names.get((str(a["rels"][0][0]), str(a["rels"][0][1])), ("?", "?"))[0])
+            if lsn_to_int(a["lsn"]) < lsn_to_int(m["lsn"]):
+                m["lsn"], m["first_seg"] = a["lsn"], a["first_seg"]
+            m["last_seg"] = max(m["last_seg"], a["last_seg"])
+            del tot[k]
+        tot.update(merged)
     big = sorted((a for a in tot.values() if a["del"] + a["upd"] >= max(1, int(min_rows or 1000))), key=lambda a: lsn_to_int(a["lsn"]))
     big = big[-max(1, int(limit or 20)) * 2:]
-    rel_names, _ = _catalog_names(ctx)
     report("looking up the outcome of the transactions found")
     out = []
     for a in big:
@@ -691,9 +739,13 @@ def _dml_result(ctx, exe, events, times, segs, allsegs, scanned, cached_n, parti
             continue                                      # rolled back: nothing was lost
         db, rel = a["rels"][0]
         nm, kind = rel_names.get((str(db), str(rel)), ("%s/%s" % (db, rel), "?"))
+        if a.get("root"):
+            nm = a["root"]
         ev = {"kind": "DELETE" if a["upd"] == 0 else ("UPDATE" if a["del"] == 0 else "DELETE+UPDATE"), "xid": a["xid"], "lsn": a["lsn"], "tli": a["tli"],
-              "rows": a["del"] + a["upd"], "deleted": a["del"], "updated": a["upd"], "names": [nm], "tables": [nm], "rels": a["rels"], "seg": a["first_seg"],
-              "committed": end == "commit"}
+              "rows": a["del"] + a["upd"], "deleted": a["del"], "updated": a["upd"], "names": [nm] + sorted(set(a.get("leaves") or [])), "tables": [nm], "rels": a["rels"],
+              "seg": a["first_seg"], "committed": end == "commit"}
+        if a.get("root"):
+            ev["partitions"] = sorted(set(a["leaves"]))
         if ts:
             ev["time"], ev["time_exact"] = ts, True
         else:
