@@ -222,6 +222,12 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     else if (wal && wal.conflicts_off_history > 0 && !standbySite) add({ severity: 'info', code: 'wal_leftovers', title: `${wal.conflicts_off_history} WAL ${wal.conflicts_off_history === 1 ? 'copy' : 'copies'} left behind by a failover`,
       cause: 'Kept in the archive’s quarantine. Recovery along the current timeline does not read them (the old primary’s tail of a timeline it left, whose successor copy is archived, or partial segments); only a restore that deliberately follows the old timeline would. File them away from the Backup tab once seen.',
       action: { label: 'Review', page: 'backup' } });
+    // PostgreSQL 15+: an archive module AND a command - the archiver dies in a loop and pg_stat_archiver shows no failure (version review)
+    const sset = pg.settings || {};
+    if (String(sset.archive_library || '').trim() && String(sset.archive_command || '').trim() && String(sset.archive_command).trim() !== '(disabled)')
+      add({ severity: 'critical', code: 'archive_both_set', title: 'WAL archiving is stopped: archive_library and archive_command are both set',
+        cause: `PostgreSQL refuses to archive with both (archive_library = ${String(sset.archive_library).slice(0, 60)}): its archiver restarts in a loop and nothing reaches the archive, while pg_stat_archiver shows no failure. Keep one of them (Backup tab: enable archiving through pg_arca replaces the module when confirmed).`,
+        action: { label: 'See the backups', page: 'backup' } });
     const arch = pg.archiver;
     if (arch?.last_failed_time && (!arch.last_archived_time || ts(arch.last_failed_time) > ts(arch.last_archived_time)) && now - ts(arch.last_failed_time) < 3600_000 * 6)
       if (/\.history$/.test(String(arch.last_failed_wal || '')) && /PGA-WAL-03[13]/.test(String(pg.archive_error?.error || '')))
@@ -297,6 +303,12 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       }
       for (const s of (n.snapshot?.postgres?.slots || []) as any[]) {
         const kept = Number(s.retained_bytes) || 0;
+        if (s.wal_status === 'lost' || s.invalidation_reason || s.conflicting === 'true') {
+          add({ severity: 'critical', code: 'slot_invalidated', detail: String(s.name), nodeId: n.id, nodeName: n.name, title: `Replication slot “${s.name}” is invalidated`,
+            cause: `PostgreSQL dropped the WAL this slot needed${s.invalidation_reason ? ` (${s.invalidation_reason})` : ''}: the replica or consumer behind it cannot continue and must be rebuilt (Patroni: reinitialize the member). Then drop or recreate the slot.`,
+            action: { label: 'Open the cluster', page: 'cluster' } });
+          continue;
+        }
         if (!s.active && kept > GB) add({ severity: kept > 10 * GB ? 'critical' : 'warning', code: 'slot_stale', detail: String(s.name), nodeId: n.id, nodeName: n.name, title: `Inactive slot “${s.name}” retains ${bytesH(kept)} of WAL`, cause: 'Nothing is consuming this slot: PostgreSQL keeps all WAL and the disk fills up. If the replica is no longer needed, drop the slot.', action: { label: 'Open the cluster', page: 'cluster' } });
       }
       const conn = n.snapshot?.postgres?.connections;
@@ -401,7 +413,7 @@ export function protectionOf(st: any, clusterId: string, issues: Issue[], now = 
   const offLast = Math.max(0, ...offs.map((o: any) => Number(o.last_ok) || 0));
   const mine = issues.filter(i => i.clusterId === clusterId);
   // no_primary: nobody can say the archive is current (critical: none reachable; warning: silent for days); clock_ahead: the backup ages cannot be trusted
-  const KEY = new Set(['no_primary', 'clock_ahead', 'gc_postponed', 'no_backup', 'no_schedule', 'verify_failed', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
+  const KEY = new Set(['no_primary', 'clock_ahead', 'gc_postponed', 'no_backup', 'no_schedule', 'verify_failed', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_both_set', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
   const relevant = mine.filter(i => KEY.has(i.code));
   const standbySite = !sets.length && nodes.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader');
   const state = standbySite ? 'none' as const

@@ -112,5 +112,14 @@ const codes = (st: any) => evaluate(st, now).filter(i => i.clusterId === 'c').ma
     assert.strictEqual(v.haState.nodes.find((n: any) => n.name === 'pg2').replicationLagBytes, null);
     assert.strictEqual(v.haState.nodes.find((n: any) => n.name === 'pg3').replicationLagBytes, null);
   }
+  { // version review: an archive module next to archive_command, an invalidated slot
+    const st: any = base();
+    st.nodes = { p: { id: 'p', name: 'pg1', clusterId: 'c', lastSeen: iso(now), snapshot: snapP() } };
+    st.nodes.p.snapshot.postgres.settings = { ...st.nodes.p.snapshot.postgres.settings, archive_library: 'basic_archive', archive_command: '/usr/local/bin/pg-arca-wal archive %p %f' };
+    st.nodes.p.snapshot.postgres.slots = [{ name: 'pg2', type: 'physical', active: false, retained_bytes: null, wal_status: 'lost' }];
+    const c = codes(st);
+    assert.ok(c.includes('archive_both_set'), c.join(','));
+    assert.ok(c.includes('slot_invalidated'), c.join(','));
+  }
   console.log('review health/scheduler OK');
 })().catch(e => { console.error(e); process.exit(1); });

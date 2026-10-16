@@ -34,7 +34,9 @@ export function advise(sys: { cpu: number; mem: number }, settings: Record<strin
   return out.map(([name, rec, why, restart]) => {
     const raw = settings[name];
     const cur = raw === undefined ? '—' : ['shared_buffers', 'effective_cache_size', 'work_mem', 'maintenance_work_mem', 'max_wal_size'].includes(name) ? fmtCur(name, raw) : String(raw);
-    const same = raw !== undefined && (name in UNIT ? rawToNum(name, raw) === parse(rec, name) : String(raw) === rec);
+    // wal_compression is an enum from PostgreSQL 15 ('on' reads back as pglz): any method counts as "on" - lz4/zstd are never downgraded
+    const same = raw !== undefined && (name in UNIT ? rawToNum(name, raw) === parse(rec, name)
+      : name === 'wal_compression' ? ['on', 'pglz', 'lz4', 'zstd'].includes(String(raw).toLowerCase()) : String(raw) === rec);
     return { name, current: cur, recommended: rec, why, restart, differs: !same };
   });
 }

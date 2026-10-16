@@ -18,3 +18,6 @@ const c = advise({ cpu: 4, mem: 1 * GB }, { max_connections: '500' }, 'oltp'); a
 const o = advise({ cpu: 8, mem: 32 * GB }, { max_connections: '100' }, 'olap'), t = advise({ cpu: 8, mem: 32 * GB }, { max_connections: '100' }, 'oltp');
 assert(parseInt(o.find(x => x.name === 'work_mem')!.recommended) > parseInt(t.find(x => x.name === 'work_mem')!.recommended));
 console.log('tuning ok');
+// wal_compression is an enum from PostgreSQL 15: 'on' reads back as pglz, and lz4 / zstd are never "downgraded" (version review)
+for (const v of ['pglz', 'lz4', 'zstd', 'on']) assert.equal(advise({ cpu: 2, mem: 4 * GB }, { wal_compression: v }, 'oltp').find(x => x.name === 'wal_compression')!.differs, false, v);
+assert.equal(advise({ cpu: 2, mem: 4 * GB }, { wal_compression: 'off' }, 'oltp').find(x => x.name === 'wal_compression')!.differs, true);
