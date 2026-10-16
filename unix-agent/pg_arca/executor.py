@@ -32,7 +32,8 @@ PATRONI_LOCAL_PARAMS = {"listen_addresses", "port"}
 DENY_PARAMS = {"data_directory", "config_file", "hba_file", "ident_file", "external_pid_file", "include", "include_dir", "include_if_exists",
                "archive_command", "archive_cleanup_command", "restore_command", "recovery_end_command", "ssl_passphrase_command",
                "shared_preload_libraries", "local_preload_libraries", "session_preload_libraries", "dynamic_library_path", "unix_socket_directories",
-               "log_directory", "krb_server_keyfile", "ssl_cert_file", "ssl_key_file", "ssl_ca_file", "ssl_crl_file", "stats_temp_directory"}
+               "log_directory", "krb_server_keyfile", "ssl_cert_file", "ssl_key_file", "ssl_ca_file", "ssl_crl_file", "stats_temp_directory",
+               "archive_library", "ssl_crl_dir", "event_source"}
 # Patroni configuration sections / keys an operation may never patch (same list as the console's): the DCS value runs commands on every member
 PATRONI_DENY_SECTIONS = {"restapi", "etcd", "etcd3", "consul", "zookeeper", "kubernetes", "ctl", "scope", "name", "namespace", "watchdog", "bootstrap", "standby_cluster"}
 PATRONI_DENY_PG_KEYS = {"authentication", "pg_hba", "pg_ident", "bin_dir", "data_dir", "config_dir", "listen", "connect_address", "custom_conf", "pgpass", "callbacks",
@@ -362,6 +363,16 @@ class OperationExecutor:
         name, value = str(p.get("name", "")), p.get("value")
         if name in DENY_PARAMS or not re.match(r"^[a-z_][a-z0-9_.]{0,62}$", name):
             raise OpError("parameter '%s' cannot be changed from the console" % name)
+        if name == "ssl" and str(value).lower() in ("on", "true", "1", "yes") and self.db:
+            # without the server's certificate the reload only logs an error and the NEXT start fails (independent review)
+            try:
+                cur, _ = self.db.query_json("SELECT json_build_object('d', current_setting('data_directory'), 'c', current_setting('ssl_cert_file'), 'k', current_setting('ssl_key_file'))")
+                missing = [f for f in ((cur or {}).get("c"), (cur or {}).get("k")) if f and not os.path.isfile(f if os.path.isabs(f) else os.path.join(cur["d"], f))]
+            except Exception:
+                missing = []
+            if missing:
+                raise OpError("ssl=on needs the server certificate and key, missing here: %s - PostgreSQL would not start again. Install them first "
+                              "(ssl_cert_file / ssl_key_file)" % ", ".join(missing))
         if self._patroni_managed():
             # Under Patroni the DCS owns parameters: ALTER SYSTEM would silently diverge / be reverted.
             if name in PATRONI_LOCAL_PARAMS:
@@ -406,6 +417,40 @@ class OperationExecutor:
         r["via"] = "alter_system"
         return r
 
+    def _start_blockers(self, data):
+        """What in the configuration PostgreSQL loads AT START would stop it from starting, while the running server only logged it (independent
+        review: ssl=on without a certificate, wal_level=minimal with WAL senders or archiving, a broken pg_hba.conf - restart = outage, and the agent
+        cannot repair a setting once the server is down). '' when nothing is found."""
+        try:
+            rows, _ = self.db.query_json(
+                "SELECT COALESCE(json_object_agg(name, setting), '{}'::json) FROM (SELECT DISTINCT ON (name) name, setting FROM pg_file_settings "
+                "WHERE error IS NULL ORDER BY name, seqno DESC) f")
+            cur, _ = self.db.query_json("SELECT json_object_agg(name, setting) FROM pg_settings WHERE name IN "
+                                        "('ssl','ssl_cert_file','ssl_key_file','wal_level','max_wal_senders','archive_mode')")
+        except Exception:
+            return ""
+        at = dict(cur or {})
+        at.update(dict((k, v) for k, v in (rows or {}).items() if k in at or k in ("ssl", "ssl_cert_file", "ssl_key_file", "wal_level", "max_wal_senders", "archive_mode")))
+        out = []
+        if str(at.get("ssl", "off")).lower() in ("on", "true", "1", "yes"):
+            for k, default in (("ssl_cert_file", "server.crt"), ("ssl_key_file", "server.key")):
+                f = at.get(k) or default
+                f = f if os.path.isabs(f) else os.path.join(data, f)
+                if not os.path.isfile(f):
+                    out.append("ssl is on but %s (%s) does not exist" % (k, f))
+        if str(at.get("wal_level")) == "minimal":
+            if str(at.get("max_wal_senders", "0")) not in ("0", ""):
+                out.append("wal_level=minimal needs max_wal_senders=0 (it is %s)" % at.get("max_wal_senders"))
+            if str(at.get("archive_mode", "off")) != "off":
+                out.append("wal_level=minimal needs archive_mode=off")
+        try:
+            hb, _ = self.db.query_json("SELECT COALESCE(json_agg(line_number || ': ' || error), '[]'::json) FROM pg_hba_file_rules WHERE error IS NOT NULL")
+            if hb:
+                out.append("pg_hba.conf has errors (line %s)" % "; ".join(str(x) for x in hb[:3]))
+        except Exception:
+            pass
+        return "; ".join(out)
+
     def _wal_tool(self):
         """Absolute path of pg-arca-wal as PostgreSQL's archiver must call it (it runs with the server's PATH, not the agent's). First that exists and is executable: the configured
         wal_bin / PG_ARCA_WAL_BIN, the PATH, next to the installed package, /usr/local/bin. Raises when none exists: an archive_command that points nowhere fails on every segment."""
@@ -416,6 +461,11 @@ class OperationExecutor:
             if c and os.path.isfile(c) and os.access(c, os.X_OK):
                 return os.path.abspath(c)
         raise OpError("pg-arca-wal not found (looked in: %s): install the agent completely or set wal_bin; archive_command would fail on every segment" % ", ".join(c for c in cands if c))
+
+    def _restore_cmd(self):
+        """restore_command reading the shared archive with THIS agent's settings: the same tool and environment as archive_command (independent
+        review: the geo operations wrote a bare 'pg-arca-wal get' that read the default configuration on multi-instance installs)."""
+        return "%s%s get %%f %%p" % (self._archive_env(), shlex.quote(self._wal_tool()))
 
     def _archive_env(self):
         """`env PG_ARCA_CONF=... PG_ARCA_HOME=... ` when the agent does not use the default config file / install directory, so archive_command (run by PostgreSQL, with its own
@@ -471,9 +521,22 @@ class OperationExecutor:
                     raise OpError("%s: %s" % (k, e))
                 restart = restart or bool(r.get("restart_required"))
             via = "alter_system"
-        return {"changed": todo, "via": via, "restart_required": restart,
-                "next": ("Restart each member (Patroni: replicas first, then the leader) for archive_mode/wal_level to take effect." if via == "patroni" and restart else
-                         "Restart PostgreSQL (systemctl restart <service>, or pg_ctl restart) for archive_mode/wal_level to take effect." if restart else "Applied with a reload; archiving is active.")}
+        out = {"changed": todo, "via": via, "restart_required": restart,
+               "next": ("Restart each member (Patroni: replicas first, then the leader) for archive_mode/wal_level to take effect." if via == "patroni" and restart else
+                        "Restart PostgreSQL (systemctl restart <service>, or pg_ctl restart) for archive_mode/wal_level to take effect." if restart else "Applied with a reload; archiving is active.")}
+        if not restart and self.config.get("wal_archive_dir"):
+            # 'active' is proven, not assumed: one segment must reach the archive (SELinux denying the server's writes, a local archive_command
+            # in patroni.yml winning over the DCS... - independent review: success was reported while pg_wal filled up)
+            chk = self._verify_new_wal_dir(self.config.get("wal_archive_dir"), wait=90)
+            out["wal_check"] = chk
+            if chk and not chk.get("archived"):
+                raise OpError("archive_command is set, but the test segment %s did not reach %s within %ss%s: PostgreSQL cannot archive yet (on RHEL/Rocky "
+                              "check SELinux: the server's user must be allowed to write there; under Patroni check that patroni.yml of this node does not "
+                              "set its own archive_command)" % (chk.get("segment"), self.config.get("wal_archive_dir"), chk.get("seconds"),
+                                                                 ("; last error: " + chk["error"]) if chk.get("error") else ""))
+            if chk and chk.get("archived"):
+                out["next"] = "Applied with a reload; a test segment was archived in %ss: archiving works." % chk.get("seconds")
+        return out
 
     def h_pg_restart(self, p):
         """Restart a STANDALONE PostgreSQL (Patroni members: patroni_restart). How depends on how the server is managed: see pgrestart.py."""
@@ -497,6 +560,10 @@ class OperationExecutor:
             plan = dict(plan, method="refuse", config_errors=bad,
                         why="the configuration has errors PostgreSQL would refuse at start: %s" % "; ".join(
                             "%s line %s%s: %s" % (b.get("file"), b.get("line"), (" (%s)" % b["name"]) if b.get("name") else "", b.get("error")) for b in bad[:5]))
+        else:
+            why = self._start_blockers(data)
+            if why:
+                plan = dict(plan, method="refuse", why="PostgreSQL would not start again: %s. Nothing was restarted" % why)
         if p.get("dry_run"):
             return {"dry_run": True, "plan": plan}
         if plan["method"] == "refuse":
@@ -674,7 +741,8 @@ class OperationExecutor:
                     raise OpError("postgresql.%s cannot be patched from the console" % sorted(bad)[0])
                 params = v.get("parameters")
                 if isinstance(params, dict):
-                    bad = set(params) & DENY_PARAMS
+                    # GUC names are case-insensitive for PostgreSQL and Patroni: 'Archive_Command' is archive_command (independent review)
+                    bad = set(str(k).strip().lower() for k in params) & DENY_PARAMS
                     if bad:
                         raise OpError("%s cannot be changed from the console (it runs commands or relocates files)" % sorted(bad)[0])
         st, d = self.patroni.patch_config(patch)
@@ -726,13 +794,10 @@ class OperationExecutor:
             # a PRIMARY site: restore_command in postgresql.recovery_conf (Patroni writes it whenever a member starts as a follower, also a former leader
             # restarting after a crash). With it, a promotion sees the timeline history files in the shared archive and never re-uses a timeline number
             # the other site already took (two different timelines with one number: rewind impossible, the archiver blocked on the history file).
-            exe = shutil.which("pg-arca-wal") or "/usr/local/bin/pg-arca-wal"
-            cmd = "%s get %%f %%p" % exe
             rc = ((cfg.get("postgresql") or {}).get("recovery_conf") or {})
             if p.get("enable"):
-                if not os.path.exists(exe):
-                    raise OpError("pg-arca-wal is not installed on this node: install the agent with the WAL helper first")
-                if rc.get("restore_command") and rc.get("restore_command") != cmd and not p.get("replace_foreign"):
+                cmd = self._restore_cmd()                      # raises when pg-arca-wal is not installed on this node
+                if rc.get("restore_command") and rc.get("restore_command") != cmd and "pg-arca-wal get" not in str(rc.get("restore_command")) and not p.get("replace_foreign"):
                     raise OpError("postgresql.recovery_conf already has a different restore_command (%s): not replaced" % str(rc.get("restore_command"))[:120])
                 new_rc = dict(rc, restore_command=cmd)
             else:
@@ -746,11 +811,8 @@ class OperationExecutor:
                 raise OpError("verification failed: postgresql.recovery_conf.restore_command is %r in the DCS" % got)
             return {"restore_command": got, "where": "postgresql.recovery_conf", "note": "used by every member that starts as a follower (a former leader too): a promotion then picks a timeline number free in the shared archive"}
         if p.get("enable"):
-            exe = shutil.which("pg-arca-wal") or "/usr/local/bin/pg-arca-wal"
-            if not os.path.exists(exe):
-                raise OpError("pg-arca-wal is not installed on this node: install the agent with the WAL helper first")
-            cmd = "%s get %%f %%p" % exe
-            if sc.get("restore_command") and sc.get("restore_command") != cmd and not p.get("replace_foreign"):
+            cmd = self._restore_cmd()
+            if sc.get("restore_command") and sc.get("restore_command") != cmd and "pg-arca-wal get" not in str(sc.get("restore_command")) and not p.get("replace_foreign"):
                 raise OpError("standby_cluster already has a different restore_command (%s): not replaced" % sc.get("restore_command")[:120])
             new = dict(sc, restore_command=cmd)
         else:
@@ -773,9 +835,11 @@ class OperationExecutor:
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$", host):
             raise OpError("invalid host of the other site")
         sc = {"host": host, "port": port, "create_replica_methods": ["basebackup"]}
-        exe = shutil.which("pg-arca-wal") or "/usr/local/bin/pg-arca-wal"
-        if os.path.exists(exe) and p.get("archive_fallback", True):
-            sc["restore_command"] = "%s get %%f %%p" % exe            # catches up from the shared archive too, and sees every timeline history there
+        if p.get("archive_fallback", True):
+            try:
+                sc["restore_command"] = self._restore_cmd()         # catches up from the shared archive too, and sees every timeline history there
+            except OpError:
+                pass
         if p.get("primary_slot_name"):
             if not re.match(r"^[a-z0-9_]{1,63}$", str(p["primary_slot_name"])):
                 raise OpError("invalid slot name")
@@ -1574,15 +1638,24 @@ class OperationExecutor:
             chk = self._verify_new_wal_dir(self.config["wal_archive_dir"])
             out["wal_check"] = chk
             if chk and not chk.get("archived"):
-                overrides.save(self.config, {"wal_archive_dir": old_wal, "wal_previous": old_prev or None})
+                new_dir = ch["wal_archive_dir"]
+                # segments archived to the new directory meanwhile are recycled from pg_wal already: the new directory stays READABLE (a previous
+                # location) so recovery finds them (independent review: the revert dropped it from every list and left a hole in the archive)
+                try:
+                    landed = [n for n in os.listdir(new_dir) if re.match(r"^[0-9A-F]{24}", n)]
+                except OSError:
+                    landed = []
+                prev = list(old_prev) + ([new_dir] if landed and new_dir not in old_prev else [])
+                overrides.save(self.config, {"wal_archive_dir": old_wal, "wal_previous": prev or None})
                 self.config["wal_archive_dir"] = old_wal
-                if old_prev:
-                    self.config["wal_previous"] = old_prev
+                if prev:
+                    self.config["wal_previous"] = prev
                 else:
                     self.config.pop("wal_previous", None)
-                raise OpError("the WAL archive did not work in %s (segment %s not archived within %ss%s): the agent went back to %s, nothing was lost. "
+                raise OpError("the WAL archive did not work in %s (segment %s not archived within %ss%s): the agent went back to %s%s. "
                               "Check the destination from the console (permissions of the PostgreSQL server user) and try again"
-                              % (ch["wal_archive_dir"], chk.get("segment"), chk.get("seconds"), ("; last error: " + chk["error"]) if chk.get("error") else "", old_wal))
+                              % (new_dir, chk.get("segment"), chk.get("seconds"), ("; last error: " + chk["error"]) if chk.get("error") else "", old_wal,
+                                 ("; the %d segment(s) archived there meanwhile stay readable (previous location)" % len(landed)) if landed else ", nothing was archived there"))
         if self.runtime:
             self.runtime.refresh()
         out["settings"] = overrides.describe(self.config, self.runtime)
@@ -1605,9 +1678,19 @@ class OperationExecutor:
         from pg_arca.wal_manager import WalManager
         wm = WalManager(wal_dir)
         t0 = time.time()
-        while time.time() - t0 < wait:
+        deadline, seen = t0 + wait, None
+        while time.time() < deadline:
             if wm.has_segment(name, anywhere=False):
                 return {"segment": name, "archived": True, "seconds": round(time.time() - t0, 1)}
+            # an archiver with a backlog (or a slow new volume) still MOVING gets more time, up to 10 minutes: only an archiver that is stuck sends
+            # the destination back (independent review: a fixed 60 s reverted a working destination)
+            try:
+                ok2, cur, _ = self.db.run_psql("SELECT coalesce(last_archived_wal, '') || '|' || archived_count FROM pg_stat_archiver")
+                if ok2 and cur.strip() != seen and seen is not None and time.time() - t0 < 600:
+                    deadline = max(deadline, time.time() + 30)
+                seen = cur.strip() if ok2 else seen
+            except Exception:
+                pass
             time.sleep(1)
         ae = None
         try:

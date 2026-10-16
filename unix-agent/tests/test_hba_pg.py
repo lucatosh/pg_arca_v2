@@ -147,3 +147,39 @@ class HbaPg(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(SKIP, SKIP or "")
+class HbaLockout(HbaPg):
+    """pg_hba changes that lock the agent itself out, and repeated rollbacks (independent review, 16/10)."""
+    def test_1_read_sees_real_file(self): pass
+    def test_2_apply_verify_idempotent_rollback(self): pass
+    def test_3_invalid_and_lockout_refused(self): pass
+    def test_4_patroni_mode_edits_dcs_list(self): pass
+    def test_5_adopt_existing_rules_and_temporary_rules(self): pass
+
+    def test_6_forced_lockout_puts_the_previous_file_back(self):
+        ex = self.ex()
+        with open(self.hba) as f:
+            before = f.read()
+        with self.assertRaises(OpError) as c:
+            ex.h_hba_apply({"rules": [R(type="local", address="", database="all", user="all", method="reject")], "force": True})
+        self.assertIn("refused the agent", str(c.exception))
+        with open(self.hba) as f:
+            self.assertEqual(f.read(), before, "the previous pg_hba is back")
+        import time as _t
+        for _ in range(20):
+            ok, out, _e = self.db.run_psql("SELECT 1")
+            if ok:
+                break
+            _t.sleep(0.2)
+        self.assertTrue(ok, "and reloaded: the agent gets in again")
+
+    def test_7_every_rollback_goes_back_one_change(self):
+        import time as _t
+        ex = self.ex()
+        ex.h_hba_apply({"rules": [R(comment="A")]}); _t.sleep(1.1)
+        ex.h_hba_rollback({}); _t.sleep(1.1)                             # leaves .pgarca-before-rollback (state A)
+        ex.h_hba_apply({"rules": [R(comment="B", address="10.0.99.0/24")]}); _t.sleep(1.1)
+        ex.h_hba_rollback({})
+        self.assertFalse(ex.h_hba_read({})["managed"]["present"], "the state before B (no managed block), not the stale copy of A")

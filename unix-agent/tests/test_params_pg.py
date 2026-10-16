@@ -71,6 +71,30 @@ class Params(unittest.TestCase):
         self.ok("log_min_duration_statement", "-1")
         self.ok("work_mem", None)                                          # RESET
 
+    def test_list_settings_keep_their_elements(self):
+        # '"$user", public, app' is three schemas, not one schema of that name (independent review: an application outage after the reload)
+        name = "alter_system"
+        getattr(self.db, name)("search_path", '"$user", public, app')
+        out, _ = self.db.query_json("SELECT json_build_object('v', setting) FROM pg_settings WHERE name = 'search_path'")
+        self.assertEqual(out["v"], '"$user", public, app')
+        getattr(self.db, name)("search_path", None)
+
+    def test_settings_that_would_stop_the_next_start_are_found(self):
+        from pg_arca.executor import OperationExecutor, OpError
+
+        class NoPatroni(object):
+            configured = False
+        ex = OperationExecutor({"pg_data": self.data, "state_dir": self.b + "/st"}, self.db, NoPatroni(), None, None)
+        with self.assertRaises(OpError) as c:
+            ex.h_set_param({"name": "ssl", "value": "on"})
+        self.assertIn("certificate", str(c.exception))
+        self.db.run_psql("ALTER SYSTEM SET ssl = 'on'; SELECT pg_reload_conf();")          # set behind the agent's back
+        try:
+            self.assertIn("server.crt", ex._start_blockers(self.data))
+        finally:
+            self.db.run_psql("ALTER SYSTEM RESET ssl; SELECT pg_reload_conf();")
+        self.assertEqual(ex._start_blockers(self.data), "")
+
     def test_refusals_have_a_reason(self):
         self.bad("shared_bufers", "1GB", "unknown parameter")
         self.bad("autovacuum", "maybe", "not a boolean")

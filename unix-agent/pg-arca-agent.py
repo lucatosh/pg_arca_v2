@@ -70,8 +70,8 @@ def main():
     if rt.patroni.configured:
         logger.info("Patroni REST: %s", rt.patroni.patroni_url)
 
-    wal = WalManager(config["wal_archive_dir"], config.get("compression", "zstd"), config.get("compression_level", 3),
-                     ((inst or {}).get("control") or {}).get("wal_segment_size") or 16 * 1024 * 1024)
+    from pg_arca.wal_manager import LiveWal
+    wal = LiveWal(config, lambda: ((rt.instance or {}).get("control") or {}).get("wal_segment_size") or 16 * 1024 * 1024)
     class _Summary(object):                 # rebuilt lazily (PostgreSQL binding may change); cached 20s so heartbeats stay cheap
         _at, _val = 0.0, None
 

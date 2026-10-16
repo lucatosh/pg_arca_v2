@@ -122,6 +122,22 @@ class CryptoTests(unittest.TestCase):
         self.assertEqual(WalManager(wal, crypto=self.c).database_names(), {"16384": "secret_db"})
         self.assertEqual(other.database_names(), {})
 
+    def test_the_agents_own_wal_manager_follows_the_settings(self):
+        """Asynchronous archiving and the WAL rescue go through the agent's long-lived manager: it must use the key (they stored plaintext that
+        restores refused) and the current destination (independent review)."""
+        from pg_arca.wal_manager import LiveWal
+        cfg = {"wal_archive_dir": os.path.join(self.t, "walA"), "encryption_key_file": self.key, "compression": "zlib"}
+        live = LiveWal(cfg, lambda: MB)
+        src = os.path.join(self.t, "segL")
+        open(src, "wb").write((b"SECRETWAL" * 200000)[:MB])
+        ok, dest, _, _ = live.archive_segment(src, "000000010000000000000007")
+        self.assertTrue(ok)
+        self.assertNotIn(b"SECRETWAL", open(dest, "rb").read(), "encrypted like archive_command does")
+        self.assertEqual(WalManager(cfg["wal_archive_dir"], compression="zlib", segment_size=MB, crypto=self.c).retrieve_segment("000000010000000000000007", src + ".out")[0], 0)
+        cfg["wal_archive_dir"] = os.path.join(self.t, "walB")                  # destination changed by the console
+        ok, dest, _, _ = live.archive_segment(src, "000000010000000000000008")
+        self.assertTrue(dest.startswith(cfg["wal_archive_dir"]), dest)
+
     def test_encrypted_wal_without_meta_is_recovered_not_split_brain(self):
         """The writer died between publishing the encrypted object and writing its meta (independent review): the retry must recognise the same
         content (and write the missing meta), and a restore must decrypt it - not 'divergent' / 'not encrypted' forever."""

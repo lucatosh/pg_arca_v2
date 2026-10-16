@@ -104,12 +104,41 @@ class Permission(unittest.TestCase):
         from pg_arca import pgrestart
         d = tempfile.mkdtemp()
         self.assertIsNone(pgrestart.systemd_permission(euid=0))
-        self.assertIn("polkit is not installed", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "none"), euid=1000))
+        self.assertIn("polkit is not installed", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "none"), euid=1000, polkit=(0, 120)))
         os.makedirs(os.path.join(d, "polkit-1"))
-        self.assertIn("rule", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000))
+        self.assertIn("rule", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000, polkit=(0, 120)))
         open(os.path.join(d, "r.rules"), "w").write("x")
-        self.assertIsNone(pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000, running=True))
-        self.assertIn("not running", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000, running=False))
+        self.assertIsNone(pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000, running=True, polkit=(0, 120)))
+        self.assertIn("not running", pgrestart.systemd_permission(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000, running=False, polkit=(0, 120)))
+
+
+class LegacyPolkit(unittest.TestCase):
+    """polkit 0.105 (Debian <= 11, Ubuntu <= 22.04) ignores JavaScript rules: the rule file being there must not be read as 'allowed'."""
+
+    def test_version_parsing(self):
+        self.assertEqual(pgrestart.polkit_version(lambda a, **k: R(0, "pkaction version 0.105\n")), (0, 105))
+        self.assertEqual(pgrestart.polkit_version(lambda a, **k: R(0, "pkaction version 124\n")), (124, 0))
+        self.assertTrue(pgrestart.legacy_polkit((0, 105)))
+        self.assertFalse(pgrestart.legacy_polkit((124, 0)))
+        self.assertFalse(pgrestart.legacy_polkit(None))
+
+    def test_rule_file_is_not_enough_on_0105(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "polkit-1"))
+        open(os.path.join(d, "r.rules"), "w").write("x")
+        kw = dict(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000, running=True, polkit=(0, 105))
+        why = pgrestart.systemd_permission(unit="postgresql@14-main.service", sudo=False, **kw)
+        self.assertIn("0.105", why)
+        self.assertIn(pgrestart.SUDOERS_FILE, why)
+        self.assertIsNone(pgrestart.systemd_permission(unit="postgresql@14-main.service", sudo=True, **kw))
+
+    def test_argv_uses_sudo_only_on_legacy_with_the_rule(self):
+        u = "postgresql@14-main.service"
+        self.assertEqual(pgrestart.systemctl_argv("restart", u, euid=1000, polkit=(124, 0), sudo=True), ["systemctl", "restart", u])
+        self.assertEqual(pgrestart.systemctl_argv("restart", u, euid=1000, polkit=(0, 105), sudo=False), ["systemctl", "restart", u])
+        self.assertEqual(pgrestart.systemctl_argv("start", u, euid=1000, polkit=(0, 105), sudo=True)[:2], ["sudo", "-n"])
+        self.assertEqual(pgrestart.systemctl_argv("start", u, euid=1000, polkit=(0, 105), sudo=True)[3:], ["start", "--no-block", u])
+        self.assertEqual(pgrestart.systemctl_argv("restart", u, euid=0, polkit=(0, 105), sudo=True), ["systemctl", "restart", u])
 
 
 if __name__ == "__main__":

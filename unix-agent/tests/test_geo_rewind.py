@@ -56,5 +56,46 @@ class GeoRewind(unittest.TestCase):
         self.assertEqual(y["postgresql"]["list"], ["a", "b,c", {"x": 1}])
 
 
+class ClonePreconditions(unittest.TestCase):
+    """force_rebuild clones NEXT to the data directory and renames it into place: refused up front (before PostgreSQL is stopped) when that cannot work."""
+
+    def _pgdata(self):
+        d = os.path.join(tempfile.mkdtemp(), "data")
+        os.makedirs(os.path.join(d, "pg_tblspc"))
+        open(os.path.join(d, "PG_VERSION"), "w").write("16\n")
+        return d
+
+    def test_plain_directory_passes(self):
+        g._clone_preconditions(self._pgdata())
+
+    def test_mount_point_refused(self):
+        from pg_arca.engine.util import EngineError
+        with self.assertRaises(EngineError) as e:
+            g._clone_preconditions("/")
+        self.assertEqual(e.exception.code, "PGA-GEO-025")
+
+    def test_tablespaces_refused(self):
+        from pg_arca.engine.util import EngineError
+        d = self._pgdata()
+        os.symlink("/tmp", os.path.join(d, "pg_tblspc", "16384"))
+        with self.assertRaises(EngineError) as e:
+            g._clone_preconditions(d)
+        self.assertEqual(e.exception.code, "PGA-GEO-026")
+
+    def test_space_refused(self):
+        from pg_arca.engine.util import EngineError
+        d = self._pgdata()
+        real = os.statvfs
+        class S(object):
+            f_bavail, f_frsize = 10, 4096
+        g.os.statvfs = lambda p: S()
+        try:
+            with self.assertRaises(EngineError) as e:
+                g._clone_preconditions(d)
+        finally:
+            g.os.statvfs = real
+        self.assertEqual(e.exception.code, "PGA-GEO-027")
+
+
 if __name__ == "__main__":
     unittest.main()

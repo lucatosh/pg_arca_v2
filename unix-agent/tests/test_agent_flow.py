@@ -110,6 +110,8 @@ class AgentFlow(unittest.TestCase):
         self.assertEqual(st, "failed"); self.assertEqual(FakePatroni.posts, [])
         # the agent refuses the same things the console refuses (a tampered console or a daemon-token holder gets no command execution through the DCS)
         for i, patch in enumerate(({"postgresql": {"parameters": {"archive_command": "sh -c evil"}}}, {"postgresql": {"callbacks": {"on_start": "/tmp/x"}}},
+                                   {"postgresql": {"parameters": {"Archive_Command": "sh -c evil"}}}, {"postgresql": {"parameters": {"SHARED_PRELOAD_LIBRARIES": "evil"}}},
+                                   {"postgresql": {"parameters": {"archive_library": "/tmp/evil.so"}}},
                                    {"postgresql": {"create_replica_methods": ["x"], "x": {"command": "/tmp/x"}}}, {"standby_cluster": {"restore_command": "x"}},
                                    {"bootstrap": {"post_init": "/tmp/x"}}, {"watchdog": {"mode": "off"}}, {"postgresql": {"recovery_conf": {"restore_command": "x"}}}, "not-a-dict")):
             st, _, err = self.ex.execute({"id": "op-0000000000%02x" % (0x20 + i), "type": "patroni_config_patch", "params": {"patch": patch}})

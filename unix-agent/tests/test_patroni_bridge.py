@@ -66,3 +66,17 @@ class Bridge(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestAuthFromPatroniYml(unittest.TestCase):
+    def test_credentials_and_ca_come_from_patroni_yml(self):
+        """restapi.authentication protects Patroni's changes: the agent uses the credentials of patroni.yml (independent review: 401 on every
+        change while the reads worked)."""
+        import tempfile
+        from pg_arca.runtime import _patroni_rest_auth
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "patroni.yml")
+        with open(p, "w") as f:
+            f.write("scope: x\nrestapi:\n  listen: 0.0.0.0:8008\n  cafile: /etc/patroni/ca.pem\n  authentication:\n    username: patroni\n    password: 's3cret'\n")
+        self.assertEqual(_patroni_rest_auth(p), ("patroni", "s3cret", "/etc/patroni/ca.pem"))
+        self.assertEqual(_patroni_rest_auth(os.path.join(d, "missing.yml")), ("", "", ""))

@@ -321,6 +321,12 @@ def decide(rules, probe):
                 continue
             if rt == "hostnossl" and probe.get("ssl"):
                 continue
+            # GSSAPI-encrypted connections are explicit (gssencmode); the clients we simulate (the agent, replication) do not use them: a
+            # hostgssenc rule does not admit them, a hostnogssenc rule does (independent review: hostgssenc was taken as matching them)
+            if rt == "hostgssenc" and not probe.get("gssenc"):
+                continue
+            if rt == "hostnogssenc" and probe.get("gssenc"):
+                continue
             ok = _in_net(probe["address"], r["address"])
             if ok is False:
                 continue

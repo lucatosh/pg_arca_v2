@@ -59,10 +59,66 @@ def polkit_running(runner=subprocess.run):
     return (r.stdout or "").strip() == "active"
 
 
-def systemd_permission(polkit_dir="/etc/polkit-1", rule_file=None, euid=None, running=None):
-    """None when the agent may restart a PostgreSQL unit (root, or the polkit rule the installer writes is there); otherwise why not and what to do."""
+SUDOERS_FILE = "/etc/sudoers.d/pg-arca-restart"
+
+
+def polkit_version(runner=subprocess.run):
+    """(major, minor) of the installed polkit, None when unknown. Before 0.106 polkit has no JavaScript rules (Debian <= 11, Ubuntu <= 22.04): the rule
+    file the installer writes is silently ignored there."""
+    try:
+        r = runner(["pkaction", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)(?:\.(\d+))?", r.stdout or "")
+    return (int(m.group(1)), int(m.group(2) or 0)) if m else None
+
+
+def legacy_polkit(version):
+    return version is not None and version < (0, 106)
+
+
+def systemctl_path():
+    for p in ("/usr/bin/systemctl", "/bin/systemctl"):
+        if os.path.exists(p):
+            return os.path.realpath(p)
+    return "systemctl"
+
+
+def systemctl_args(verb, unit):
+    """The exact command line (the sudoers fallback allows these exact lines and nothing else)."""
+    return [verb] + (["--no-block"] if verb == "start" else []) + [unit]
+
+
+def sudo_allowed(verb, unit, runner=subprocess.run):
+    """True when `sudo -n systemctl <verb> <unit>` is allowed without a password (the installer's fallback for polkit < 0.106)."""
+    try:
+        r = runner(["sudo", "-n", "-l", systemctl_path()] + systemctl_args(verb, unit), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   universal_newlines=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def systemctl_argv(verb, unit, euid=None, polkit=None, sudo=None):
+    """How the agent runs `systemctl <verb> <unit>`: directly (root, or polkit with JavaScript rules) or through the sudoers fallback."""
+    if (os.geteuid() if euid is None else euid) != 0 and legacy_polkit(polkit_version() if polkit is None else polkit) \
+            and (sudo_allowed(verb, unit) if sudo is None else sudo):
+        return ["sudo", "-n", systemctl_path()] + systemctl_args(verb, unit)
+    return ["systemctl"] + systemctl_args(verb, unit)
+
+
+def systemd_permission(polkit_dir="/etc/polkit-1", rule_file=None, euid=None, running=None, unit=None, verb="restart", polkit=None, sudo=None):
+    """None when the agent may restart a PostgreSQL unit (root, the polkit rule the installer writes, or - polkit < 0.106 - its sudoers fallback);
+    otherwise why not and what to do."""
     if (os.geteuid() if euid is None else euid) == 0:
         return None
+    ver = polkit_version() if polkit is None else polkit
+    if legacy_polkit(ver):
+        if unit and (sudo_allowed(verb, unit) if sudo is None else sudo):
+            return None
+        return ("polkit %d.%d on this server ignores the rule file the installer writes (JavaScript rules need polkit 0.106 or later), and no sudo rule "
+                "allows '%s %s' to the agent's user: run the pg_arca installer again as root (it then adds %s for the PostgreSQL units it finds), "
+                "or restart PostgreSQL yourself" % (ver[0], ver[1], verb, unit or "<postgresql unit>", SUDOERS_FILE))
     if not os.path.isdir(polkit_dir):
         return ("polkit is not installed on this server, so the agent's user cannot restart system services: install it (apt-get install polkitd / "
                 "dnf install polkit) and run the pg_arca installer again - or restart PostgreSQL yourself")
@@ -84,7 +140,7 @@ def plan(data_dir, proc="/proc", self_pid=None):
     mine = unit_of_pid(self_pid or os.getpid(), proc)
     if unit and PG_UNIT_RE.match(unit):
         out = {"method": "systemd", "unit": unit, "pid": pid}
-        perm = systemd_permission()
+        perm = systemd_permission(unit=unit)
         if perm:
             # said in the dry run, not only when the real restart fails: the agent's user may not restart system units
             out["allowed"] = False
@@ -106,7 +162,8 @@ def plan(data_dir, proc="/proc", self_pid=None):
 def run(p, data_dir, bindir, user, timeout=180, runner=subprocess.run, log_dir=None):
     """Execute the plan. Returns a short description; raises RuntimeError with the cause and the way out."""
     if p["method"] == "systemd":
-        r = runner(["systemctl", "restart", p["unit"]], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
+        argv = systemctl_argv("restart", p["unit"]) if runner is subprocess.run else ["systemctl", "restart", p["unit"]]
+        r = runner(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
         if r.returncode != 0:
             err = (r.stderr or r.stdout or "").strip()
             if re.search(r"(?i)interactive authentication|access denied|not authorized|authentication is required", err):

@@ -78,7 +78,7 @@ if [[ "${PG_ARCA_UNINSTALL:-}" == 1 ]]; then
   if [[ -z "$INST" ]]; then            # the shared parts go only with the main agent (other instances may still use them)
     ls /etc/systemd/system/pg-arca-agent-*.service >/dev/null 2>&1 && echo "NOTE: other pg_arca agents on this server (pg-arca-agent-*) are left in place, and so is the shared code"
     if ! ls /etc/systemd/system/pg-arca-agent-*.service >/dev/null 2>&1; then
-      rm -rf "$INSTALL_DIR" /usr/local/bin/pg-arca-cli /usr/local/bin/pg-arca-wal /etc/polkit-1/rules.d/50-pg-arca-restart.rules
+      rm -rf "$INSTALL_DIR" /usr/local/bin/pg-arca-cli /usr/local/bin/pg-arca-wal /etc/polkit-1/rules.d/50-pg-arca-restart.rules /etc/sudoers.d/pg-arca-restart
     fi
   fi
   if [[ "${PG_ARCA_PURGE:-}" == 1 ]]; then rm -rf "$STATE_ROOT"; echo "pg_arca removed, backups and WAL archive in $STATE_ROOT DELETED."
@@ -205,9 +205,27 @@ polkit.addRule(function(action, subject) {
 });
 RULE
   chmod 0644 /etc/polkit-1/rules.d/50-pg-arca-restart.rules
+  # polkit before 0.106 (Debian <= 11, Ubuntu <= 22.04) has no JavaScript rules and ignores the file above. Its .pkla files cannot name a unit (they would
+  # let the agent stop ANY service), so there the fallback is a sudoers file listing the exact command lines for the PostgreSQL units present now.
+  PKV=$(pkaction --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)
+  if [[ "$PKV" == 0.* && "${PKV#0.}" -lt 106 ]]; then
+    SYSCTL=$(readlink -f "$(command -v systemctl)")
+    UNITS=$( { systemctl list-units --all --plain --no-legend --type=service 'postgresql*' 2>/dev/null; systemctl list-unit-files --plain --no-legend --type=service 'postgresql*' 2>/dev/null; } \
+             | awk '{print $1}' | grep -E '^postgresql([@-][A-Za-z0-9_.@-]+)?\.service$' | grep -v '@\.service$' | sort -u)
+    if command -v sudo >/dev/null && command -v visudo >/dev/null && [ -d /etc/sudoers.d ] && [ -n "$UNITS" ]; then
+      TMPS=$(mktemp); { echo "# pg_arca: polkit $PKV ignores JavaScript rules - the agent ($PGUSER_OS) may restart/start these PostgreSQL units, nothing else"
+        for u in $UNITS; do echo "$PGUSER_OS ALL=(root) NOPASSWD: $SYSCTL restart $u, $SYSCTL start --no-block $u"; done; } > "$TMPS"
+      if visudo -cf "$TMPS" >/dev/null 2>&1; then install -m 0440 "$TMPS" /etc/sudoers.d/pg-arca-restart; echo "polkit $PKV: restart allowed through /etc/sudoers.d/pg-arca-restart for: $(echo $UNITS)"
+      else echo "WARNING: polkit $PKV ignores the rule and the sudoers fallback did not validate: restart PostgreSQL by hand"; fi; rm -f "$TMPS"
+    else
+      echo "NOTE: polkit $PKV ignores JavaScript rules and sudo (or a PostgreSQL unit) is missing: restarting PostgreSQL from the console will not be possible."
+    fi
+  else
+    rm -f /etc/sudoers.d/pg-arca-restart
+  fi
   echo "restart from the console: allowed for the PostgreSQL units only (/etc/polkit-1/rules.d/50-pg-arca-restart.rules; PG_ARCA_ALLOW_PG_RESTART=0 to disable)"
 elif [[ "${PG_ARCA_ALLOW_PG_RESTART:-1}" == 0 ]]; then
-  rm -f /etc/polkit-1/rules.d/50-pg-arca-restart.rules
+  rm -f /etc/polkit-1/rules.d/50-pg-arca-restart.rules /etc/sudoers.d/pg-arca-restart
 elif [[ "$ROLE" != worker ]] && ! pgrep -f "bin/patroni" >/dev/null 2>&1 && ! systemctl is-active --quiet patroni 2>/dev/null; then   # Patroni nodes restart through Patroni: no polkit needed
   echo "NOTE: polkit is not installed: restarting PostgreSQL from the console will not be possible (the console shows the command to run by hand)."
   echo "      To allow it: install polkit (apt-get install polkitd / dnf install polkit) and run this installer again."

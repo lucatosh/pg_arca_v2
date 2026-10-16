@@ -234,6 +234,24 @@ class PostgresClient:
         if value is None:
             sql = "ALTER SYSTEM RESET :\"pname\"; SELECT pg_reload_conf();"
             variables = {"pname": name}
+        elif name in ("search_path", "temp_tablespaces"):
+            # list settings: each element its own literal ('"$user", public' as ONE literal became one schema named "$user", public - every
+            # session lost its tables; independent review). The elements are split as PostgreSQL does (commas outside double quotes)
+            items, cur, q = [], "", False
+            for ch in str(value):
+                if ch == '"':
+                    q = not q
+                    continue
+                if ch == "," and not q:
+                    items.append(cur.strip())
+                    cur = ""
+                    continue
+                cur += ch
+            if cur.strip() or not items:
+                items.append(cur.strip())
+            variables = dict(("v%d" % i, x) for i, x in enumerate(items))
+            variables["pname"] = name
+            sql = "ALTER SYSTEM SET :\"pname\" = %s; SELECT pg_reload_conf();" % ", ".join(":'v%d'" % i for i in range(len(items)))
         else:
             sql = "ALTER SYSTEM SET :\"pname\" = :'pval'; SELECT pg_reload_conf();"
             variables = {"pname": name, "pval": str(value)}

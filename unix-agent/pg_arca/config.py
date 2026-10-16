@@ -50,8 +50,9 @@ DEFAULT_CONFIG = {
     "pg_data": "",             # "" = auto (discovery). Explicit override only: env PG_ARCA_PGDATA or agent.conf
     "pg_data_hint": "",        # from the generic PGDATA env var: only a fallback, because many images/profiles set PGDATA to a parent dir (e.g. the postgres docker image + Patroni)
     "patroni_url": "",         # "" = auto (discovery)
-    "patroni_user": "",
+    "patroni_user": "",        # "" = Patroni's own restapi.authentication from patroni.yml (found by discovery)
     "patroni_password": "",
+    "patroni_ca_file": "",     # "" = Patroni's restapi.cafile from patroni.yml, else the system CA store (never the console's CA)
 
     # storage
     "repo_path": "/var/lib/pgarca/repo",

@@ -99,7 +99,14 @@ class Runtime(object):
         if not url and pinfo:
             url = pinfo.get("restapi_url") or "http://127.0.0.1:%d" % pinfo["restapi_port"]
         user, pw = c.get("patroni_user", ""), c.get("patroni_password", "")
-        self.patroni = PatroniBridge(url or "", user, pw, c.get("tls_ca_file", ""), c.get("tls_insecure_skip_verify", False))
+        ca = c.get("patroni_ca_file", "")
+        if not user and pinfo and pinfo.get("config_path"):
+            # Patroni's own REST credentials (restapi.authentication in patroni.yml): discovery used them for its reads, every change (PATCH /config,
+            # switchover, restart) was then refused with 401 (independent review). Read here, never sent to the console.
+            ruser, rpw, rca = _patroni_rest_auth(pinfo["config_path"])
+            user, pw, ca = ruser or user, rpw if ruser else pw, ca or rca
+        # the console's CA (tls_ca_file) says nothing about Patroni's certificate: Patroni's own cafile, or the system store
+        self.patroni = PatroniBridge(url or "", user, pw, ca, c.get("tls_insecure_skip_verify", False))
         return rep
 
     # ------------------------------------------------------------------ telemetry
@@ -479,3 +486,18 @@ class LogShipper(object):
             out.append(self.pending.popleft())
         return out
         return out
+
+
+def _patroni_rest_auth(path):
+    """(user, password, cafile) of Patroni's REST API from its configuration file ('' when not set or unreadable)."""
+    try:
+        from pg_arca.discovery import parse_simple_yaml
+        with open(path, "r", errors="replace") as f:
+            cfg = parse_simple_yaml(f.read())
+        rest = cfg.get("restapi") or {}
+        a = rest.get("authentication") or {}
+        if not isinstance(a, dict):
+            a = {}
+        return str(a.get("username") or ""), str(a.get("password") or ""), str(rest.get("cafile") or "")
+    except Exception:
+        return "", "", ""

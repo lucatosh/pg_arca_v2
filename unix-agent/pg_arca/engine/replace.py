@@ -101,14 +101,14 @@ def how_managed(pgdata, unit_hint=None, runner=_run):
             # the agent stops the server with a signal (it may only START units): systemd would bring it back at once, on the wrong directory
             raise EngineError("PGA-RST-079", "the unit %s has Restart=always: stopped by the agent it would be restarted by systemd in the middle of the swap" % out["unit"],
                               "run the replacement with the agent as root, or set Restart=on-failure for the unit")
-        perm = pgrestart.systemd_permission()
+        perm = pgrestart.systemd_permission(unit=out["unit"], verb="start")
         if perm:
             raise EngineError("PGA-RST-071", "the agent cannot start %s: %s" % (out["unit"], perm), "run the pg_arca installer again (polkit rule), then retry")
     return out
 
 
 def _sysctl(verb, unit, timeout=120):
-    rc, out, err = _run(["systemctl", verb] + (["--no-block"] if verb == "start" else []) + [unit], timeout=timeout)
+    rc, out, err = _run(pgrestart.systemctl_argv(verb, unit), timeout=timeout)
     if rc != 0:
         err = (err or out or "").strip()
         if re.search(r"(?i)interactive authentication|access denied|not authorized|authentication is required", err):

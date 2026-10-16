@@ -943,3 +943,33 @@ class WalManager:
                 "timelines": sorted(timelines), "histories": sorted(histories), "first_segment": names[0], "last_segment": names[-1],
                 **self._conflict_counts(current_timeline, local_wal_dir), "below_retention_floor": below,
                 "status": "continuous" if not gaps else "%d gap(s) detected" % len(gaps)}
+
+
+class LiveWal(object):
+    """The agent's long-lived view of the WAL archive, rebuilt whenever the settings it depends on change (destination, encryption key,
+    compression, previous locations). Built once at start, the agent's own manager missed the key (asynchronous archiving and the WAL rescue
+    stored PLAINTEXT segments that restores then refused, PGA-ENC-006) and kept writing to the old directory after a destination change
+    (independent review, 16/10)."""
+
+    def __init__(self, config, seg_size=lambda: 16 * 1024 * 1024):
+        self._config, self._seg = config, seg_size
+        self._key, self._obj = None, None
+        self._lock = threading.Lock()
+
+    def current(self):
+        c = self._config
+        kf = c.get("encryption_key_file") or os.environ.get("PG_ARCA_KEY_FILE") or None
+        key = (c.get("wal_archive_dir"), kf, c.get("compression", "zstd"), int(c.get("compression_level", 3)), int(self._seg() or 16 * 1024 * 1024),
+               tuple(c.get("wal_previous") or []))
+        with self._lock:
+            if key != self._key:
+                crypto = None
+                if kf:
+                    from pg_arca.engine.crypt import from_settings
+                    crypto = from_settings(kf)               # a key that cannot be read must stop archiving, never fall back to plaintext
+                self._obj = WalManager(key[0], key[2], key[3], key[4], crypto=crypto, previous=list(key[5]) or None)
+                self._key = key
+            return self._obj
+
+    def __getattr__(self, name):
+        return getattr(self.current(), name)

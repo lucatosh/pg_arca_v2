@@ -147,7 +147,18 @@ def _json(ex, sql, err, default):
 
 def _live_probes(ex, err):
     me = getattr(ex.db, "user", None) or "postgres"                        # the role the agent really connects with (not always "postgres")
-    probes = [{"label": "local: user %s (peer)" % me, "type": "local", "database": "postgres", "user": me, "ssl": False, "critical": True}]
+    host = getattr(ex.db, "host", "") or ""
+    if host and not host.startswith("/") and not getattr(ex.db, "socket_dir", None):
+        # the agent connects over TCP (pg_host = 127.0.0.1 or a name, typical in containers): THAT is the rule that must keep matching (independent
+        # review: it was modelled as a local peer connection and removing the 127.0.0.1 line was not flagged)
+        import socket as _socket
+        try:
+            addr = _socket.gethostbyname(host)
+        except Exception:
+            addr = "127.0.0.1" if host in ("localhost",) else host
+        probes = [{"label": "the agent: host %s user %s" % (addr, me), "type": "host", "database": "postgres", "user": me, "ssl": False, "address": addr, "critical": True}]
+    else:
+        probes = [{"label": "local: user %s (peer)" % me, "type": "local", "database": "postgres", "user": me, "ssl": False, "critical": True}]
     if getattr(ex.patroni, "configured", False):
         users, _ = ex.db.query_json(SQL_REPL_USERS)
         probes += _patroni_local_probes([u for u in (users or []) if isinstance(u, str) and u])
@@ -318,6 +329,42 @@ def _write_atomic(path, text):
         os.close(dfd)
 
 
+def _remember(ex, path):
+    """Where pg_hba.conf and the data directory are, saved while PostgreSQL still answers: a rollback must work when it no longer lets the agent in."""
+    try:
+        ok, dd, _ = ex.db.run_psql("SHOW data_directory;")
+        d = os.path.join((getattr(ex, "config", None) or {}).get("state_dir") or "/var/lib/pgarca/state", "hba-location.json")
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        with open(d + ".tmp", "w") as f:
+            json.dump({"path": path, "pgdata": dd.strip() if ok else None}, f)
+        os.rename(d + ".tmp", d)
+    except Exception:
+        pass
+
+
+def _remembered(ex):
+    try:
+        with open(os.path.join((getattr(ex, "config", None) or {}).get("state_dir") or "/var/lib/pgarca/state", "hba-location.json")) as f:
+            return json.load(f)
+    except (IOError, OSError, ValueError):
+        return {}
+
+
+def _signal_reload(ex):
+    """Reload the configuration WITHOUT a SQL session (the session may be what the new pg_hba refuses): SIGHUP to the postmaster."""
+    import signal
+    pgdata = _remembered(ex).get("pgdata")
+    if not pgdata:
+        return False
+    try:
+        with open(os.path.join(pgdata, "postmaster.pid")) as f:
+            pid = int(f.readline().strip())
+        os.kill(pid, signal.SIGHUP)
+        return True
+    except (IOError, OSError, ValueError):
+        return False
+
+
 def _reload_and_check(ex, path, err):
     ok, out, e = ex.db.run_psql("SELECT pg_reload_conf();")
     if not ok:
@@ -354,8 +401,17 @@ def apply(ex, p, err):
             os.unlink(old_b)
         except OSError:
             pass
+    _remember(ex, src.path)
     _write_atomic(src.path, new)
-    bad = _reload_and_check(ex, src.path, err)
+    try:
+        bad = _reload_and_check(ex, src.path, err)
+    except Exception as e:
+        # the new rules refuse the agent itself (force, or a client the simulation could not foresee): the previous file comes back at once and
+        # is reloaded without SQL - before, the new file stayed and nothing could repair it from the console (independent review)
+        shutil.copy2(bak, src.path)
+        reloaded = _signal_reload(ex)
+        raise err("the new pg_hba refused the agent's own connection (%s): the previous pg_hba was put back%s" % (
+            getattr(e, "message", None) or e, " and reloaded" if reloaded else " - RELOAD PostgreSQL now (pg_ctl reload / systemctl reload) to make it effective"))
     ok_block = hba.extract_block(src.file_text()) == (clean or None)
     if bad or not ok_block:
         shutil.copy2(bak, src.path)
@@ -482,12 +538,21 @@ def expire(ex, p, err):
 
 
 def rollback(ex, p, err):
-    src = _Src(ex, err)
+    try:
+        src = _Src(ex, err)
+    except Exception as e:
+        # PostgreSQL does not let the agent in any more (a pg_hba of the last change?): the remembered location is enough to put a backup back
+        loc = _remembered(ex)
+        if ex.patroni.configured or not loc.get("path"):
+            raise
+        return _rollback_offline(ex, p, err, loc["path"], e)
     if src.patroni:
         raise err("this cluster is managed by Patroni: previous lists are kept by the console (HBA tab, 'Versioni precedenti'), never as files on the node")
-    baks = sorted(glob.glob(src.path + ".pgarca-*"))
+    # only the dated copies made before each change, newest first by date: '.pgarca-before-rollback' (the state before an earlier rollback)
+    # sorts after every date and was restored by every later rollback (independent review)
+    baks = _dated_backups(src.path)
     name = p.get("backup")
-    pick = next((b for b in baks if os.path.basename(b) == name), None) if name else (baks[-1] if baks else None)
+    pick = next((b for b in glob.glob(src.path + ".pgarca-*") if os.path.basename(b) == name), None) if name else (baks[-1] if baks else None)
     if not pick:
         raise err("no pg_hba backup available")
     cur = src.file_text()
@@ -500,3 +565,22 @@ def rollback(ex, p, err):
         _reload_and_check(ex, src.path, err)
         raise err("the backup has errors, nothing changed")
     return {"restored": os.path.basename(pick)}
+
+
+def _dated_backups(path):
+    import re as _re
+    return sorted(b for b in glob.glob(path + ".pgarca-*") if _re.search(r"\.pgarca-\d{8}T\d{6}Z$", b))
+
+
+def _rollback_offline(ex, p, err, path, why):
+    baks = _dated_backups(path)
+    name = p.get("backup")
+    pick = next((b for b in glob.glob(path + ".pgarca-*") if os.path.basename(b) == name), None) if name else (baks[-1] if baks else None)
+    if not pick:
+        raise err("PostgreSQL refuses the agent (%s) and no pg_hba backup is available next to %s" % (getattr(why, "message", None) or why, path))
+    shutil.copy2(path, path + ".pgarca-before-rollback")
+    with open(pick, "r", encoding="utf-8") as bf:
+        _write_atomic(path, bf.read())
+    if not _signal_reload(ex):
+        raise err("%s put back, but PostgreSQL could not be told to reload: run pg_ctl reload (or systemctl reload) on this server" % os.path.basename(pick))
+    return {"restored": os.path.basename(pick), "offline": True, "note": "PostgreSQL did not let the agent in: the backup was put back from the remembered location and reloaded by signal"}

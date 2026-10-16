@@ -119,6 +119,7 @@ def rebuild_from(pgdata, bindir, host, port, user, password, state_dir, progress
     if progress:
         progress({"phase": "geo-rebuild", "msg": "stopping PostgreSQL of the old primary (Patroni paused)"})
     real = os.path.realpath(pgdata).rstrip("/")
+    _clone_preconditions(real)                                     # refused BEFORE PostgreSQL is stopped
     if os.path.exists(os.path.join(real, "PG_VERSION")):
         r = subprocess.run([ctl, "stop", "-D", real, "-m", "fast", "-w", "-t", "300"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=360)
         if r.returncode != 0 and os.path.exists(os.path.join(real, "postmaster.pid")) and "not running" not in (r.stdout or ""):
@@ -154,6 +155,34 @@ def rebuild_from(pgdata, bindir, host, port, user, password, state_dir, progress
     os.rename(clone, real)
     os.chmod(real, 0o700)
     return kept
+
+
+def _clone_preconditions(real):
+    """The clone is made NEXT to the data directory and then renamed into place: impossible when the data directory is a mount point (rename across
+    filesystems), wrong with tablespaces (pg_basebackup would write into the live tablespace directories), and it needs the space of a whole copy on
+    that filesystem (independent review: the failure surfaced after the stop, Patroni then restarted the diverged copy, a full clone was left behind)."""
+    if os.path.ismount(real):
+        raise EngineError("PGA-GEO-025", "the data directory %s is a mount point: the site cannot be rebuilt next to it" % real,
+                          "rebuild this member with Patroni (patronictl reinit <cluster> <member>), which clones into the data directory itself")
+    tbl = os.path.join(real, "pg_tblspc")
+    if os.path.isdir(tbl) and os.listdir(tbl):
+        raise EngineError("PGA-GEO-026", "this member has tablespaces (%s): a clone next to the data directory would write into the live tablespace directories" % ", ".join(sorted(os.listdir(tbl))[:5]),
+                          "rebuild this member with Patroni (patronictl reinit <cluster> <member>)")
+    try:
+        used = 0
+        for dp, _dn, fns in os.walk(real):
+            for f in fns:
+                try:
+                    used += os.lstat(os.path.join(dp, f)).st_size
+                except OSError:
+                    pass
+        st = os.statvfs(os.path.dirname(real))
+        free = st.f_bavail * st.f_frsize
+        if free < used * 1.1 + (1 << 30):
+            raise EngineError("PGA-GEO-027", "not enough space next to %s for a full copy (%d GiB free, about %d GiB needed)" % (real, free >> 30, int(used * 1.1) >> 30),
+                              "free space on that filesystem, or rebuild this member with Patroni (patronictl reinit)")
+    except OSError:
+        pass
 
 
 def rebuild_aside(pgdata, bindir, progress=None):
