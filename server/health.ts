@@ -143,8 +143,14 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
 
     const drills = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'restore_drill' && o.status === 'succeeded');
     const lastDrill = drills.length ? drills[drills.length - 1] : null;
-    if (isProd && sets.length && !standbySite && (!lastDrill || now - Date.parse(lastDrill.updatedAt) > 90 * 86400_000))
-      add({ severity: 'info', code: 'drill_stale', title: lastDrill ? 'Disaster recovery drill older than 90 days' : 'Full restore never tested', cause: lastDrill ? 'A periodic drill confirms that restore still works and how long it takes.' : 'You do not know yet how long restoring the whole cluster would take: a drill measures it without touching production.', action: { label: 'See the backups', page: 'backup' } });
+    // a drill the policy schedules that FAILED (and nothing succeeded since): restorability is in doubt - said, with the error
+    const dFail = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'restore_drill' && o.status === 'failed' && (!lastDrill || o.updatedAt > lastDrill.updatedAt)).pop();
+    if (dFail && sets.length && !standbySite) add({ severity: isProd ? 'warning' : 'info', code: 'drill_failed', title: 'The last disaster recovery drill failed',
+      cause: `${String(dFail.error?.message || dFail.error || 'No reason reported.').split('\n')[0].slice(0, 240)} — until a drill succeeds, a full restore of this cluster is not proven to work.`, action: { label: 'See the backups', page: 'backup' } });
+    const drillDays = pol?.enabled && pol.drillEveryDays ? pol.drillEveryDays : 0;
+    const staleAfter = drillDays ? 2 * drillDays : 90;
+    if (isProd && sets.length && !standbySite && !dFail && (!lastDrill || now - Date.parse(lastDrill.updatedAt) > staleAfter * 86400_000))
+      add({ severity: drillDays && lastDrill ? 'warning' : 'info', code: 'drill_stale', title: lastDrill ? `Disaster recovery drill older than ${staleAfter} days` : 'Full restore never tested', cause: lastDrill ? 'A periodic drill confirms that restore still works and how long it takes.' : 'You do not know yet how long restoring the whole cluster would take: a drill measures it without touching production.', action: { label: 'See the backups', page: 'backup' } });
 
     // ---- PostgreSQL version: supported / legacy / end-of-life, and binaries of another major (the agent knows which binaries it uses)
     const seenVer = new Set<string>();

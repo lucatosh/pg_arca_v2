@@ -102,6 +102,16 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
       const bucket = Math.floor(now / (pol.verifyEveryHours * h));
       if (sets.length && await submit('backup_verify', { deep: pol.verifyDeep, restore_test: true }, `sched:${c.id}:verify:${bucket}`)) continue;
     }
+    // periodic disaster recovery drill: due when the last SUCCESSFUL one is older than the period (kept as evidence beyond the history's
+    // retention); one attempt per period bucket - a failed drill is a finding to act on, not something to repeat all night
+    if (pol.drillEveryDays && inWindow(pol, now) && sets.length) {
+      const period = pol.drillEveryDays * 24 * h;
+      const lastDrill = newest(myOps.filter(o => o.type === 'restore_drill' && o.status === 'succeeded').map(o => ts(o.updatedAt)));
+      if (!Number.isFinite(lastDrill) || now - lastDrill >= period) {
+        const bucket = Math.floor(now / period);
+        if (await submit('restore_drill', { note: 'scheduled' }, `sched:${c.id}:drill:${bucket}`)) continue;
+      }
+    }
   }
   return submitted;
 }

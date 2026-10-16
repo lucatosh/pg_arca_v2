@@ -182,6 +182,23 @@ def start(m, pgdata, bindir, log_dir):
     return "pg_ctl start"
 
 
+def _wait_accepting(conn, seconds):
+    """Wait until the server accepts connections (pg_ctl -W returns at once; right after a start it answers 'the database system is starting up').
+    True when it answers; False after `seconds` (the caller reports what it knows, it does not fail the rollback on it)."""
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            s = PgSession(conn.with_db("postgres"), read_only=True)
+            try:
+                s.scalar("SELECT 1")
+                return True
+            finally:
+                s.close()
+        except Exception:
+            time.sleep(1)
+    return False
+
+
 def _state(conn, pgdata):
     """'in production', 'in archive recovery', 'shut down', ... (pg_controldata, labels forced to English)."""
     try:
@@ -324,6 +341,7 @@ def swap_in(ctx, staged, m, bindir, log_dir, progress=None, cancel=None, latest=
         # nothing moved: production back up as it was
         if m.get("alive"):
             start(dict(m, alive=False), pgdata, bindir, log_dir)
+            _wait_accepting(ctx.conn, 120)
         raise EngineError("PGA-RST-091", "the data directory could not be moved aside (%s): production was started again on it, nothing changed" % e,
                           "check the directory's permissions and that nothing else (a mount, an open shell) holds it")
     try:
@@ -332,6 +350,7 @@ def swap_in(ctx, staged, m, bindir, log_dir, progress=None, cancel=None, latest=
         os.rename(old, pgdata)
         if m.get("alive"):
             start(dict(m, alive=False), pgdata, bindir, log_dir)
+            _wait_accepting(ctx.conn, 120)
         raise EngineError("PGA-RST-091", "the rebuilt data directory could not be put in place (%s): production was started again on its own data, nothing changed" % e)
     steps.append("data directory replaced (previous one kept as %s)" % old)
     try:
@@ -372,6 +391,7 @@ def swap_in(ctx, staged, m, bindir, log_dir, progress=None, cancel=None, latest=
             os.rename(old, pgdata)
             if m.get("alive"):
                 start(dict(m, alive=False), pgdata, bindir, log_dir)
+                _wait_accepting(ctx.conn, 120)            # "back in place and started" is said once it really answers
         except Exception as e2:
             raise EngineError("PGA-RST-077", "replacement failed (%s) AND putting the original back failed (%s): the original data directory is %s"
                               % (getattr(e, "message", str(e))[:300], e2, old if os.path.exists(old) else pgdata), "start PostgreSQL by hand on the original data directory")

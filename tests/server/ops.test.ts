@@ -60,6 +60,16 @@ import * as ops from '../../server/ops';
     await s2.mutate((d: any) => { d.settings.activity = { retentionDays: 1 }; ops.pruneOps(d, t); });
     assert.deepStrictEqual(s2.peek().operations.map((o: any) => o.id).sort(), ['new', 'old-running']);
     for (const bad of [0, 91, 'x', null, 1.5]) { const x: any = { activity: { retentionDays: bad } }; assert.strictEqual(ops.retentionDays(x), bad === 1.5 ? 1 : 7); }
+    // evidence outlives the retention: the latest successful drill / verification per cluster stays, an older one goes
+    await s2.mutate((d: any) => {
+      const mk = (id: string, type: string, cl: string, ageDays: number, status = 'succeeded') => ({ id, type, clusterId: cl, params: {}, status, createdAt: new Date(t - ageDays * DAY).toISOString(), updatedAt: new Date(t - ageDays * DAY).toISOString(), createdBy: 'x', attempts: 1, ttlSeconds: 1, history: [] });
+      d.operations.unshift(mk('drill-old', 'restore_drill', 'c', 60), mk('drill-last', 'restore_drill', 'c', 30), mk('drill-failed', 'restore_drill', 'c', 20, 'failed'), mk('verify-c2', 'backup_verify', 'c2', 40));
+    });
+    assert(ops.prunable(s2.peek(), t));
+    await s2.mutate((d: any) => { ops.pruneOps(d, t); });
+    const ids = s2.peek().operations.map((o: any) => o.id);
+    assert(ids.includes('drill-last') && ids.includes('verify-c2'), JSON.stringify(ids)); assert(!ids.includes('drill-old') && !ids.includes('drill-failed'), JSON.stringify(ids));
+    assert(!ops.prunable(s2.peek(), t), 'only evidence left: nothing to prune');
   }
   // analysis lane: a WAL analysis never waits behind a backup (and a backup never behind an analysis); two analyses on one cluster do queue
   {

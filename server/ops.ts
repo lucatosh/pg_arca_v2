@@ -33,10 +33,16 @@ export function retentionDays(settings: any): number {
   return Number.isFinite(n) && n >= 1 && n <= MAX_RETENTION_DAYS ? Math.floor(n) : DEFAULT_RETENTION_DAYS;
 }
 /** Drop finished operations past the retention (and beyond the hard cap). Never touches queued/leased/running ones. Returns how many were removed. */
+const EVIDENCE = ['restore_drill', 'backup_verify'];
 export function pruneOps(draft: AppState, now = Date.now()): number {
   const cut = now - retentionDays(draft.settings) * 86_400_000;
   const before = draft.operations.length;
-  let kept = draft.operations.filter(o => !isTerminal(o.status) || Date.parse(o.updatedAt || o.createdAt) >= cut);
+  // evidence outlives the history: the latest successful drill (the measured restore time, "restore tested") and verification of each
+  // cluster stay whatever their age - pruned after 7 days, every production cluster read "Full restore never tested" a week after its drill
+  const evidence = new Set<string>(); const seen = new Set<string>();
+  for (let i = draft.operations.length - 1; i >= 0; i--) { const o = draft.operations[i];
+    if (o.status === 'succeeded' && EVIDENCE.includes(o.type) && !seen.has(o.clusterId + ':' + o.type)) { seen.add(o.clusterId + ':' + o.type); evidence.add(o.id); } }
+  let kept = draft.operations.filter(o => !isTerminal(o.status) || evidence.has(o.id) || Date.parse(o.updatedAt || o.createdAt) >= cut);
   const terms = kept.filter(o => isTerminal(o.status));
   if (terms.length > HARD_CAP_TERMINAL) {
     const drop = new Set(terms.slice(0, terms.length - HARD_CAP_TERMINAL).map(o => o.id));
@@ -47,7 +53,10 @@ export function pruneOps(draft: AppState, now = Date.now()): number {
 }
 export const prunable = (st: AppState, now = Date.now()) => {
   const cut = now - retentionDays(st.settings) * 86_400_000;
-  return st.operations.some(o => isTerminal(o.status) && Date.parse(o.updatedAt || o.createdAt) < cut);
+  const old = st.operations.filter(o => isTerminal(o.status) && Date.parse(o.updatedAt || o.createdAt) < cut);
+  if (!old.length) return false;
+  // only evidence left among the old ones: nothing to prune (otherwise every tick would rewrite the state for nothing)
+  return old.some(o => !(o.status === 'succeeded' && EVIDENCE.includes(o.type)) || st.operations.some(x => x !== o && x.clusterId === o.clusterId && x.type === o.type && x.status === 'succeeded' && (x.updatedAt || '') > (o.updatedAt || '')));
 };
 
 export interface SubmitInput {

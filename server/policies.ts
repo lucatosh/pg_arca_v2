@@ -18,6 +18,9 @@ export interface BackupPolicy {
   retentionDays?: number;
   verifyEveryHours: number;    // 0 = off
   verifyDeep: boolean;
+  /** Disaster recovery drill every N days (0 = off): the whole cluster restored into a scratch directory, started, checked, timed. It keeps the
+   *  measured restore time (RTO) current and proves restorability, instead of a drill someone remembers once. Only inside the heavy-work hours. */
+  drillEveryDays?: number;
   /** Take scheduled backups on a healthy streaming standby (the primary carries no load). Honoured only when the cluster's backup destination is shared (NFS/SMB): a standby cannot see a local-per-node archive. */
   preferStandby?: boolean;
   /** Read rate limit for scheduled backups, MB/s of the data directory (0 = none): keeps a backup from saturating production storage. */
@@ -45,6 +48,7 @@ export function validatePolicy(p: any): { ok: true; policy: BackupPolicy } | { o
       retentionDays: n(p.retentionDays ?? 0, 0, 3650, 'retentionDays'),
       verifyEveryHours: n(p.verifyEveryHours ?? DEFAULT_POLICY.verifyEveryHours, 0, 720, 'verifyEveryHours'),
       verifyDeep: !!p.verifyDeep,
+      drillEveryDays: n(p.drillEveryDays ?? 0, 0, 365, 'drillEveryDays'),
       preferStandby: !!p.preferStandby,
       readLimitMBs: n(p.readLimitMBs ?? 0, 0, 100000, 'readLimitMBs'),
       windowStart: n(p.windowStart ?? 0, 0, 23, 'windowStart'),
@@ -65,7 +69,7 @@ export interface Template { id: string; name: string; description: string; built
 const P = (o: Partial<BackupPolicy>): BackupPolicy => ({ ...DEFAULT_POLICY, enabled: true, ...o });
 export const BUILTIN_TEMPLATES: Template[] = [
   { id: 'prod-critical', name: 'Critical production', builtin: true, description: 'Weekly full, incremental every 4 hours, 4 chains kept, daily verification with a test restore. Objectives: 15 minutes of data at most, back in 4 hours.',
-    policy: P({ fullEveryHours: 168, incrEveryHours: 4, retentionFull: 4, verifyEveryHours: 24, verifyDeep: false, retryAfterMinutes: 15, rpoTargetMinutes: 15, rtoTargetMinutes: 240 }) },
+    policy: P({ fullEveryHours: 168, incrEveryHours: 4, retentionFull: 4, verifyEveryHours: 24, verifyDeep: false, retryAfterMinutes: 15, rpoTargetMinutes: 15, rtoTargetMinutes: 240, drillEveryDays: 30 }) },
   { id: 'prod-standard', name: 'Standard production', builtin: true, description: 'Weekly full, daily incremental, 2 chains, weekly verification. Objectives: one hour of data at most, back in 8 hours.',
     policy: P({ fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168, rpoTargetMinutes: 60, rtoTargetMinutes: 480 }) },
   { id: 'preprod', name: 'Pre-production / integration', builtin: true, description: 'Weekly full, incremental every 24 hours, 2 chains, verification every two weeks.',
