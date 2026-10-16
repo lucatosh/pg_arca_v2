@@ -85,6 +85,9 @@ class TimelineBranch(unittest.TestCase):
         q("tl", "INSERT INTO notes (tag) SELECT 'C' FROM generate_series(1, 25)")          # the future that will be abandoned
         time.sleep(1.2); X.t_after_c = now_utc(); time.sleep(1.2)
         wait_archived()
+        X.incr_c = run_backup(F.ctx, "incr")                                             # taken on the future that will be abandoned: past the fork
+        self.assertEqual(X.incr_c["timeline"], 1)
+        wait_archived()
         # the rewound copy becomes production: same port and socket, archiving to the same archive (keep_archiving)
         X.new = os.path.join(F.base, "rewound")
         restore_instance(F.ctx, dest=X.new, target_time=X.t_branch, action="promote", keep_archiving=True)
@@ -115,6 +118,12 @@ class TimelineBranch(unittest.TestCase):
 
     def test_04_an_instant_after_the_branch_on_the_new_timeline(self):
         self.assertEqual(rows_after_restore(X.ctx2, target_time=X.t_after_c), {"A": 100, "B": 50})
+
+    def test_04b_an_incremental_past_the_fork_is_not_used(self):
+        """Independent review (16/10): the newest backup before the target is the incremental taken on timeline 1 AFTER the branch point; its
+        files hold the abandoned future (C). Recovering along timeline 2 from it gave a diverged cluster that PostgreSQL believed consistent.
+        The chain now stops before it and the WAL does the rest."""
+        self.assertEqual(rows_after_restore(X.ctx2, target_time=X.t_before_d), {"A": 100, "B": 50})
 
     def test_05_the_same_instant_on_the_abandoned_timeline(self):
         self.assertEqual(rows_after_restore(X.ctx2, set_spec=X.full1["id"], target_time=X.t_after_c, timeline="1"), {"A": 100, "B": 50, "C": 25})
