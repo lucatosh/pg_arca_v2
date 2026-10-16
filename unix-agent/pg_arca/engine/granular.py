@@ -647,7 +647,17 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
             if _db_usable(eph, entry):
                 info["created_after_backup"] = True
                 return eph, info
-        eph.cleanup()
+            # created after the backup AND dropped right after the target: its pg_database row is there but marked invalid (the DROP is replayed
+            # before its commit) - the same way out as for a backed-up database: stop just before the DROP (found by the matrix with 1 MB segments)
+            reached = info.get("reached_lsn")
+            eph.cleanup()
+            hit = find_drop_database_lsn(ctx, chain, entry["oid"], reached) if reached else None
+            if hit:
+                eph, info = _stop_before_drop(ctx, chain, entry, hit, keep | {entry["oid"]}, progress, cancel)
+                info["created_after_backup"] = True
+                return eph, info
+        else:
+            eph.cleanup()
         raise EngineError("PGA-PITR-016", "database '%s' did not exist yet at the requested point: it is not in backup %s and the WAL up to the target does not create it"
                           % (entry["name"], entry.get("base_set") or "?"), "choose a later time")
     eph, info = _recover(ctx, chain, {entry["oid"]}, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
@@ -660,12 +670,18 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
         raise EngineError("PGA-PITR-015", "database '%s' does not exist at the requested point (it is damaged or gone at %s and no DROP DATABASE was found in the WAL)" % (entry["name"], reached or "?"),
                           "choose an earlier time (the WAL scan in the console shows when it was dropped); after a failover, check that the new "
                           "timeline's history file is in the archive")
+    return _stop_before_drop(ctx, chain, entry, hit, {entry["oid"]}, progress, cancel)
+
+
+def _stop_before_drop(ctx, chain, entry, hit, keep_oids, progress, cancel):
+    """Recover up to just before the DROP DATABASE of `entry` (candidates from find_drop_database_lsn, most likely first)."""
     cands, drop_lsn, xid = hit
+    why = "?"
     for n, lsn in enumerate(cands):
         ctx.log("warning", "database '%s' was dropped right after the target: stopping just before the DROP DATABASE (xid %s) at %s" % (entry["name"], xid, lsn))
         if progress:
             progress({"phase": "recovery", "note": "database dropped right after the target: stopping before the DROP"})
-        eph, info = _recover(ctx, chain, {entry["oid"]}, None, lsn, None, None, False, progress, cancel)
+        eph, info = _recover(ctx, chain, keep_oids, None, lsn, None, None, False, progress, cancel)
         if _db_usable(eph, entry):
             info["stopped_before_drop"] = {"lsn": lsn, "xid": xid, "message": "the database was dropped right after the requested point: recovered up to just before the DROP DATABASE (%s)" % lsn}
             return eph, info

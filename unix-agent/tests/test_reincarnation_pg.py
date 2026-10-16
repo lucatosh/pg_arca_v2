@@ -37,6 +37,19 @@ def archived():
 
 
 class Reincarnation(unittest.TestCase):
+    def test_created_after_the_last_backup_then_dropped(self):
+        """A database that no backup holds (created after the last one) and was dropped right after the chosen point: rebuilt from the WAL,
+        stopping just before its DROP (it failed with 'did not exist yet' - the DROP is replayed before its commit)."""
+        run_backup(F.ctx, "full")
+        q("postgres", "CREATE DATABASE brief")
+        q("brief", "CREATE TABLE t(x int); INSERT INTO t SELECT generate_series(1, 77)")
+        time.sleep(1.2); t_ok = now(); time.sleep(1.2)
+        q("postgres", "DROP DATABASE brief")
+        archived()
+        r = restore_database(F.ctx, "brief", target_time=t_ok, new_name="brief_back")
+        self.assertEqual(q("brief_back", "SELECT count(*) FROM t")[0][0], "77", r)
+        self.assertTrue(r.get("stopped_before_drop") or r.get("created_after_backup"), r)
+
     def test_the_point_decides_which_database_of_that_name(self):
         q("postgres", "CREATE DATABASE inc")
         q("inc", "CREATE TABLE t(x int); INSERT INTO t SELECT generate_series(1, 100)")

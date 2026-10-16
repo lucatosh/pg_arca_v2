@@ -652,7 +652,8 @@ class EngineTests(unittest.TestCase):
         ts = datetime.strptime(d[0]["time"][:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=__import__("datetime").timezone.utc).timestamp()
         self.assertTrue(abs(ts - t_before) < 120, (ts, t_before))
         r2 = walscan.scan(F.ctx, mode="databases", since_backup=True, cache_dir=os.path.join(F.scratch, "fx"))   # second run: everything from the cache
-        self.assertEqual(r2["segments_cached"], r2["window"]["segments"])
+        # every segment the first run read comes from the cache (with 1 MB segments and archive_timeout, a few NEW ones may have arrived meanwhile)
+        self.assertGreaterEqual(r2["segments_cached"], r["window"]["segments"])
         self.assertEqual([x["name"] for x in r2["dropped"]], [x["name"] for x in r["dropped"]])
         ev = walscan.scan(F.ctx, mode="events", hours=1, cache_dir=os.path.join(F.scratch, "fx"))
         self.assertIn("DROP DATABASE", [e["kind"] for e in ev["events"]])
