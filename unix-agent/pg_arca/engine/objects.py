@@ -1124,14 +1124,23 @@ WHERE a.attnum > 0 AND NOT a.attisdropped AND a.atttypid IN %s AND c.relkind IN 
 def _add_fk(live, f, validate_later):
     d = f["def"]
     partitioned = live.scalar("SELECT relkind = 'p' FROM pg_class WHERE oid = %s::regclass" % sql_lit(qi(f["schema"], f["table"]))) == "t"
-    if partitioned and int(live.scalar("SHOW server_version_num") or 0) < 180000:
-        # before PostgreSQL 18 a foreign key on a partitioned table cannot be NOT VALID: it is validated right away. If that fails the swap is
-        # undone as a whole (independent review: it used to commit WITHOUT the key, an integrity rule silently gone)
+    if partitioned:
+        # a foreign key on a partitioned table: NOT VALID only from PostgreSQL 18 (tried there, inside its own savepoint); otherwise it is validated
+        # right away, and if that fails the swap is undone as a whole (independent review: it used to commit WITHOUT the key)
+        if int(live.scalar("SHOW server_version_num") or 0) >= 180000:
+            live.query("SAVEPOINT pgarca_pfk")
+            try:
+                live.query("ALTER TABLE %s ADD CONSTRAINT %s %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"]), d if "NOT VALID" in d else d + " NOT VALID"))
+                live.query("RELEASE SAVEPOINT pgarca_pfk")
+                validate_later.append(f)
+                return
+            except EngineError:
+                live.query("ROLLBACK TO SAVEPOINT pgarca_pfk")
         try:
             live.query("ALTER TABLE %s ADD CONSTRAINT %s %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"]), d.replace(" NOT VALID", "")))
         except EngineError as e:
             raise EngineError("PGA-GEN-106", "foreign key %s on the partitioned table %s.%s cannot be re-attached (%s)" % (f["name"], f["schema"], f["table"], e.message[:200]),
-                              "rows that break it appeared (or were accepted as orphans): before PostgreSQL 18 such a key cannot be left NOT VALID - restore "
+                              "rows that break it appeared (or were accepted as orphans) and this PostgreSQL cannot leave such a key NOT VALID - restore "
                               "the related tables together, or put the recovered tables next to the originals and recover rows")
         return
     if "NOT VALID" not in d:
