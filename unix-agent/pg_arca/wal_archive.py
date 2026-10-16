@@ -9,6 +9,10 @@ import os
 import sys
 
 
+class ConfError(Exception):
+    pass
+
+
 def _conf():
     """The agent's effective settings as the archiver sees them: agent.conf, then the console-managed agent.local.json next to it (same precedence as the agent itself:
     file < overrides < environment). Without the second step a WAL directory changed from the console would be used by the agent but NOT by archive_command."""
@@ -17,7 +21,11 @@ def _conf():
     try:
         with open(path, "r", encoding="utf-8") as f:
             c = json.load(f)
-    except Exception:
+    except Exception as e:
+        if os.environ.get("PG_ARCA_CONF") and not os.environ.get("WAL_ARCHIVE_DIR"):
+            # an instance agent's configuration named explicitly (archive_command = env PG_ARCA_CONF=/etc/pg-arca/<inst>/agent.conf ...) is gone or
+            # unreadable: the defaults would put this cluster's WAL into ANOTHER cluster's archive (independent review). Fail: PostgreSQL retries.
+            raise ConfError("cannot read %s (%s)" % (path, e))
         c = {}
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(path)), "agent.local.json"), "r", encoding="utf-8") as f:
@@ -126,7 +134,11 @@ def main(argv):
             walprefetch.kick(spool, argv[2])
             return 0
     from pg_arca.wal_manager import WalManager, WalArchiveError
-    d, comp, lvl, seg = _settings()
+    try:
+        d, comp, lvl, seg = _settings()
+    except ConfError as e:
+        sys.stderr.write("pg_arca %s FAILED: %s\n" % (argv[1], e))
+        return 1 if argv[1] == "archive" else 126
     crypto = None
     kf = os.environ.get("PG_ARCA_KEY_FILE")
     if not kf:

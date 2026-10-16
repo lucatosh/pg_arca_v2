@@ -29,6 +29,13 @@ logger = logging.getLogger("pg_arca.console")
 
 _STARTED = int(time.time())      # identifies this agent process: the console hands back what a previous process had taken and never finished
 
+def _instance_of(conf_path):
+    """The installer's instance name (PG_ARCA_INSTANCE) of this agent, from its config path /etc/pg-arca/<instance>/agent.conf: the console's upgrade
+    command must name it, otherwise it would install a second, main agent on the host (independent review)."""
+    m = re.match(r"^/etc/pg-arca/([a-z0-9][a-z0-9_-]{0,30})/agent\.conf$", str(conf_path or ""))
+    return m.group(1) if m else None
+
+
 class ConsoleError(Exception):
     def __init__(self, status, body):
         super(ConsoleError, self).__init__("console returned %s: %s" % (status, body))
@@ -297,7 +304,7 @@ class ConsoleClient(threading.Thread):
 
         free_slots = max(0, WORKERS - len(self.inflight))
         wait = 0 if self.inflight or not free_slots else min(8, int(self.config.get("heartbeat_interval_seconds", 10)))
-        resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "agent_build": AGENT_BUILD, "console_url": self.base, "tls_ca_file": self.config.get("tls_ca_file") or None, "tls_insecure": bool(self.config.get("tls_insecure_skip_verify")) or not self.base.startswith("https://"), "max_ops": free_slots, "agent_started": _STARTED,
+        resp = self._post("/api/agent/heartbeat", {"snapshot": snapshot, "agent_version": AGENT_VERSION, "agent_build": AGENT_BUILD, "console_url": self.base, "tls_ca_file": self.config.get("tls_ca_file") or None, "agent_instance": _instance_of(self.config.get("_conf_path")), "tls_insecure": bool(self.config.get("tls_insecure_skip_verify")) or not self.base.startswith("https://"), "max_ops": free_slots, "agent_started": _STARTED,
                                                    "discovery": full_discovery, "wait_seconds": wait}, timeout=wait + 15)
         if self.logs:
             self.logs.set_mode(resp.get("log_mode"))

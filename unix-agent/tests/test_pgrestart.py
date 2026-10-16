@@ -127,19 +127,26 @@ class LegacyPolkit(unittest.TestCase):
         os.makedirs(os.path.join(d, "polkit-1"))
         open(os.path.join(d, "r.rules"), "w").write("x")
         kw = dict(polkit_dir=os.path.join(d, "polkit-1"), rule_file=os.path.join(d, "r.rules"), euid=1000, running=True, polkit=(0, 105))
-        why = pgrestart.systemd_permission(unit="postgresql@14-main.service", sudo=False, **kw)
+        why = pgrestart.systemd_permission(unit="postgresql@14-main.service", bridge=False, **kw)
         self.assertIn("0.105", why)
-        self.assertIn(pgrestart.SUDOERS_FILE, why)
-        self.assertIsNone(pgrestart.systemd_permission(unit="postgresql@14-main.service", sudo=True, **kw))
+        self.assertIn("pg-arca-pgctl", why)
+        self.assertIsNone(pgrestart.systemd_permission(unit="postgresql@14-main.service", bridge=True, **kw))
 
-    def test_argv_uses_sudo_only_on_legacy_with_the_rule(self):
+    def test_systemctl_direct_or_bridge(self):
         u = "postgresql@14-main.service"
-        self.assertEqual(pgrestart.systemctl_argv("restart", u, euid=1000, polkit=(124, 0), sudo=True), ["systemctl", "restart", u])
-        self.assertEqual(pgrestart.systemctl_argv("restart", u, euid=1000, polkit=(0, 105), sudo=False), ["systemctl", "restart", u])
-        self.assertEqual(pgrestart.systemctl_argv("start", u, euid=1000, polkit=(0, 105), sudo=True)[:2], ["sudo", "-n"])
-        self.assertEqual(pgrestart.systemctl_argv("start", u, euid=1000, polkit=(0, 105), sudo=True)[3:], ["start", "--no-block", u])
-        self.assertEqual(pgrestart.systemctl_argv("restart", u, euid=0, polkit=(0, 105), sudo=True), ["systemctl", "restart", u])
-
+        calls = []
+        rc, out, err = pgrestart.systemctl("restart", u, runner=lambda a, **k: (calls.append(a), R(0, "ok"))[1])
+        self.assertEqual((rc, calls[0]), (0, ["systemctl", "restart", u]))
+        real = pgrestart.pgctl_bridge.request
+        pgrestart.pgctl_bridge.request = lambda verb, unit, timeout=0: (calls.append(("bridge", verb, unit)), (1, "Job failed"))[1]
+        try:
+            rc, out, err = pgrestart.systemctl("start", u, euid=1000, bridge=True)
+            self.assertEqual((rc, err), (1, "Job failed"))
+            self.assertEqual(calls[-1], ("bridge", "start", u))
+            pgrestart.systemctl("start", u, euid=0, bridge=True, runner=lambda a, **k: (calls.append(a), R(0))[1])
+            self.assertEqual(calls[-1], ["systemctl", "start", "--no-block", u])
+        finally:
+            pgrestart.pgctl_bridge.request = real
 
 if __name__ == "__main__":
     unittest.main()

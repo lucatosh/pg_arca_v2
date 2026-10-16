@@ -164,7 +164,7 @@ cp -a . %{buildroot}/usr/share/pg-arca-agent/
 SPEC
   cat packaging/agent/postinst.sh | sed '1d' >> "$R/SPECS/pg-arca-agent.spec"
   printf '\n%%preun\n[ "$1" = 0 ] || exit 0\n' >> "$R/SPECS/pg-arca-agent.spec"
-  sed '1d' packaging/agent/prerm.sh | sed 's/^\[ "\$1" = remove \] || exit 0$//' >> "$R/SPECS/pg-arca-agent.spec"
+  sed '1d' packaging/agent/prerm.sh >> "$R/SPECS/pg-arca-agent.spec"          # its first test accepts rpm's "0" as well as dpkg's "remove"
   RPMF="pg-arca-agent-$RPM_V-1.noarch.rpm"
   if command -v rpmbuild >/dev/null; then
     rpmbuild --define "_topdir $R" -bb "$R/SPECS/pg-arca-agent.spec" >"$WORK/rpm.log" 2>&1 || { tail -30 "$WORK/rpm.log"; die "rpmbuild failed"; }

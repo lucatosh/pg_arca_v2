@@ -80,6 +80,9 @@ def load_config(conf_path=None):
             with open(target, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             config.update({k: v for k, v in loaded.items() if not k.startswith("_")})
+        except PermissionError as e:
+            raise SystemExit("FATAL: cannot read %s (%s): it must be readable by the agent's user (run the pg_arca installer again as root, "
+                             "it gives the agent's files to the user its service runs as)" % (target, e))
         except Exception as e:  # a broken config must be loud, not silently ignored
             raise SystemExit("FATAL: cannot parse %s: %s" % (target, e))
     elif conf_path:
@@ -133,6 +136,10 @@ def load_credentials(config):
             c = json.load(f)
         if c.get("node_id") and c.get("agent_token"):
             return c
+    except PermissionError as e:
+        # NOT "no credentials": the agent would announce itself again as a new, unapproved server and lose its enrollment (independent review)
+        raise SystemExit("FATAL: cannot read %s (%s): it must be readable by the agent's user (run the pg_arca installer again as root)"
+                         % (config["credentials_file"], e))
     except Exception:
         pass
     return None

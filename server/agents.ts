@@ -225,6 +225,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       if (typeof b.console_url === 'string' && /^https?:\/\/[^\s'"`$;|&<>]{1,200}$/.test(b.console_url)) n.consoleUrl = b.console_url.replace(/\/+$/, '');
       if (typeof b.tls_insecure === 'boolean') n.tlsInsecure = b.tls_insecure;
       // the CA file the agent trusts the console with (a private / self-signed certificate): the upgrade command must use the same one
+      if (typeof b.agent_instance === 'string' && /^[a-z0-9][a-z0-9_-]{0,30}$/.test(b.agent_instance)) n.agentInstance = b.agent_instance; else if (b.agent_instance === null) delete n.agentInstance;
       if (typeof b.tls_ca_file === 'string' && /^\/[^\s'"`$;|&<>]{1,200}$/.test(b.tls_ca_file)) n.tlsCaFile = b.tls_ca_file; else if (b.tls_ca_file === null) delete n.tlsCaFile;
       const started = Number(b.agent_started);
       // only a NEWER start time is a restart: two processes with the same credentials (a manual run next to the service, a cloned VM) would
@@ -356,7 +357,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       id: rec.id, token, expiresAt: rec.expiresAt, consoleUrl: base, consoleUrlConfigured: cb.configured, addressWarning: cb.warning,
       installCommand: `curl -fsSL ${base}/agent/install.sh | sudo PG_ARCA_URL=${base} PG_ARCA_ENROLL_TOKEN=${token}${kind === 'worker' ? ' PG_ARCA_ROLE=worker' : ''} bash`,
       // a console with a private / self-signed certificate: the node fetches the console's certificate once (trust on first use, as the operator decided) and pins it for curl and for the agent
-      installCommandPrivateCa: base.startsWith('https://') ? `curl -fsSLk ${base}/agent/ca.pem -o /etc/pg-arca-console-ca.pem && curl -fsSL --cacert /etc/pg-arca-console-ca.pem ${base}/agent/install.sh | sudo PG_ARCA_URL=${base} PG_ARCA_TLS_CA=/etc/pg-arca-console-ca.pem PG_ARCA_ENROLL_TOKEN=${token}${kind === 'worker' ? ' PG_ARCA_ROLE=worker' : ''} bash` : undefined,
+      installCommandPrivateCa: base.startsWith('https://') ? `sudo curl -fsSLk ${base}/agent/ca.pem -o /etc/pg-arca-console-ca.pem && curl -fsSL --cacert /etc/pg-arca-console-ca.pem ${base}/agent/install.sh | sudo PG_ARCA_URL=${base} PG_ARCA_TLS_CA=/etc/pg-arca-console-ca.pem PG_ARCA_ENROLL_TOKEN=${token}${kind === 'worker' ? ' PG_ARCA_ROLE=worker' : ''} bash` : undefined,
       maxUses: uses,
       note: uses > 1 ? `The token is shown once and can enroll up to ${uses} servers.` : 'The token is shown once and can enroll exactly one node.',
     });
@@ -379,7 +380,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     res.json({ consoleBuild: consoleAgentBuild(), nodes: Object.values(st.nodes).map(n => ({
       id: n.id, name: n.name, clusterId: n.clusterId, agentVersion: n.agentVersion, lastSeen: n.lastSeen, remoteIp: n.remoteIp, agentBuild: n.agentBuild || null, agentOutdated: agentOutdated(n),
       // re-running the installer is the upgrade (config and credentials kept), from the address THIS node already uses to reach the console
-      upgradeCommand: agentOutdated(n) ? `curl -fsSL${n.tlsCaFile ? ` --cacert ${n.tlsCaFile}` : ''} ${n.consoleUrl || cb.base}/agent/install.sh | sudo PG_ARCA_URL=${n.consoleUrl || cb.base}${n.tlsCaFile ? ` PG_ARCA_TLS_CA=${n.tlsCaFile}` : ''} bash` : undefined,
+      upgradeCommand: agentOutdated(n) ? `curl -fsSL${n.tlsCaFile ? ` --cacert ${n.tlsCaFile}` : ''} ${n.consoleUrl || cb.base}/agent/install.sh | sudo PG_ARCA_URL=${n.consoleUrl || cb.base}${n.tlsCaFile ? ` PG_ARCA_TLS_CA=${n.tlsCaFile}` : ''}${n.agentInstance ? ` PG_ARCA_INSTANCE=${n.agentInstance}` : ''} bash` : undefined,
       online: !!n.lastSeen && now - Date.parse(n.lastSeen) < 45000, tps: n.tps,
       role: n.snapshot?.postgres?.role, pgVersion: n.snapshot?.postgres?.version,
     })) });

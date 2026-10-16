@@ -5,7 +5,8 @@
 # Run it from the extracted release package (pg-arca-console-<version>-linux-x64/):
 #   sudo ./install-console.sh                         first install, or upgrade in place (same command)
 #   sudo ./install-console.sh --port 8443 --tls-cert /path/console.crt --tls-key /path/console.key
-#   sudo ./install-console.sh --tls-self-signed       trial: generates a self-signed certificate
+#   sudo ./install-console.sh --tls-self-signed       trial: generates a self-signed certificate (kept on re-runs: the agents pin it)
+#   sudo ./install-console.sh --tls-regenerate        a NEW self-signed certificate: every agent must then get the new one (PG_ARCA_TLS_CA)
 #   sudo ./install-console.sh --status
 #   sudo ./install-console.sh --backup-state [DIR]    copy of the console state (users, clusters, policies, history, secret key)
 #   sudo ./install-console.sh --restore-state FILE --yes   load a state backup (same or another host: install the console first, then restore)
@@ -35,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     --tls-cert) OPT_CERT="${2:?--tls-cert needs a file}"; shift ;;
     --tls-key) OPT_KEY="${2:?--tls-key needs a file}"; shift ;;
     --tls-self-signed) SELF_SIGNED=1 ;;
+    --tls-regenerate) SELF_SIGNED=1; REGEN=1 ;;
     --no-start) NO_START=1 ;;
     --status) ACTION=status ;;
     --backup-state) ACTION=backup; if [[ -n "${2:-}" && "${2:0:2}" != -- ]]; then BACKUP_DEST="$2"; shift; fi ;;
@@ -196,7 +198,12 @@ install -d -m 0750 -o root -g "$SVC_USER" "$CONF_DIR"
 install -d -m 0700 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR" "$DATA_DIR/backups"
 
 # --- TLS material (copied under /etc: the hardened unit cannot read /home, and renewal = replace the files + systemctl reload) --------
-if [[ $SELF_SIGNED == 1 ]]; then
+if [[ $SELF_SIGNED == 1 && -z "${REGEN:-}" && -s "$CONF_DIR/tls/console.crt" && -s "$CONF_DIR/tls/console.key" ]]; then
+  # a re-run (the upgrade is "the same command as the first install"): the agents pinned THIS certificate (console-ca.pem); a new one would cut them all off
+  OPT_CERT="$CONF_DIR/tls/console.crt"; OPT_KEY="$CONF_DIR/tls/console.key"
+  note "self-signed certificate kept ($CONF_DIR/tls/console.crt, valid until $(openssl x509 -enddate -noout -in "$OPT_CERT" 2>/dev/null | cut -d= -f2)); --tls-regenerate makes a new one"
+elif [[ $SELF_SIGNED == 1 ]]; then
+  [[ -n "${REGEN:-}" && -s "$CONF_DIR/tls/console.crt" ]] && note "NEW certificate: every agent must get it (reinstall with PG_ARCA_TLS_CA=<copy of the new console.crt>), they cannot connect until then"
   command -v openssl >/dev/null || die "--tls-self-signed needs openssl"
   install -d -m 0750 -o root -g "$SVC_USER" "$CONF_DIR/tls"
   h="$(hostname -f 2>/dev/null || hostname)"
@@ -255,9 +262,11 @@ fi
 # --- code: a new release directory, switched in with one symlink ------------------------------------------------
 REL="$PREFIX/releases/$NEW"; STAGE="$PREFIX/releases/.$NEW.new"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
-cp -a "$PKG/VERSION" "$PKG/server.mjs" "$PKG/dist" "$PKG/unix-agent" "$STAGE/"
-for f in node install-console.sh LICENSE THIRD-PARTY-NOTICES.txt server.mjs.LEGAL.txt; do [[ -e "$PKG/$f" ]] && cp -a "$PKG/$f" "$STAGE/"; done
+# not cp -a: it would keep the SELinux label of where the package was unpacked (admin_home_t under /root), and systemd could not execute node
+cp -r --preserve=mode,timestamps "$PKG/VERSION" "$PKG/server.mjs" "$PKG/dist" "$PKG/unix-agent" "$STAGE/"
+for f in node install-console.sh LICENSE THIRD-PARTY-NOTICES.txt server.mjs.LEGAL.txt; do [[ -e "$PKG/$f" ]] && cp -r --preserve=mode,timestamps "$PKG/$f" "$STAGE/"; done
 chown -R root:root "$STAGE"; chmod -R go-w "$STAGE"
+command -v restorecon >/dev/null && restorecon -R "$STAGE" 2>/dev/null || true
 NB="$(node_bin "$STAGE")" || die "no usable Node.js runtime"
 NB="${NB/$STAGE/$REL}"
 

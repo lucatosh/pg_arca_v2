@@ -38,6 +38,28 @@ def _local_addresses():
     return addrs
 
 
+def _note_instance(state_dir, pick):
+    """state/instance.json: which data directory / port / socket this agent serves. Read by the installer when it is asked to uninstall (is THIS instance
+    still archiving through pg_arca?), also while PostgreSQL is down. Written only when it changes."""
+    if not state_dir or not pick or not os.path.isdir(state_dir):
+        return
+    d = {"data_directory": pick.get("data_directory"), "port": pick.get("port"), "socket_directory": pick.get("socket_directory")}
+    p = os.path.join(state_dir, "instance.json")
+    try:
+        with open(p, "r") as f:
+            if json.load(f) == d:
+                return
+    except (OSError, ValueError):
+        pass
+    try:
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(d, f)
+        os.rename(tmp, p)
+    except OSError:
+        pass
+
+
 class Runtime(object):
     def __init__(self, config):
         self.config = config
@@ -80,6 +102,7 @@ class Runtime(object):
         if pick is None:
             pick = next((i for i in insts if i.get("running") and i.get("port_listening")), None) or next((i for i in insts if i.get("running")), None) or (insts[0] if insts else None)
         self.instance = pick
+        _note_instance(c.get("state_dir"), pick)
         if pick:
             sock = pick.get("socket_directory")
             self.db = PostgresClient(user=getattr(self.db, "user", None) or c.get("pg_user") or "postgres", port=c.get("pg_port") or pick.get("port") or 5432,

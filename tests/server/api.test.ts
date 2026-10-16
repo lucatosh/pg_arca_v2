@@ -72,6 +72,14 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
     assert(/--cacert \/etc\/pg-arca-console-ca.pem/.test(me.upgradeCommand) && /PG_ARCA_TLS_CA=\/etc\/pg-arca-console-ca.pem/.test(me.upgradeCommand), me.upgradeCommand);
     assert.strictEqual((await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 0, tls_ca_file: '../evil' }, A())).status, 200);
     assert.strictEqual(store.peek().nodes[en.body.node_id].tlsCaFile, '/etc/pg-arca-console-ca.pem', 'a relative path is ignored');
+    // an instance agent (PG_ARCA_INSTANCE=b): its upgrade command names the instance, otherwise the installer would set up a second, main agent
+    await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 0, agent_instance: 'b', agent_build: 'stale000000' }, A());
+    const me2 = (await call('GET', '/api/nodes', undefined, H())).body.nodes.find((n: any) => n.id === en.body.node_id);
+    assert(/ PG_ARCA_INSTANCE=b bash$/.test(me2.upgradeCommand), me2.upgradeCommand);
+    await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 0, agent_instance: 'B; rm -rf /', agent_build: 'stale000000' }, A());
+    assert.strictEqual(store.peek().nodes[en.body.node_id].agentInstance, 'b', 'an invalid instance name is ignored');
+    await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 0, agent_instance: null, agent_build: 'stale000000' }, A());
+    assert.strictEqual(store.peek().nodes[en.body.node_id].agentInstance, undefined);
   }
   const hb1 = await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 1 }, A());
   assert.strictEqual(hb1.status, 200); assert.deepStrictEqual(hb1.body.ops, []);

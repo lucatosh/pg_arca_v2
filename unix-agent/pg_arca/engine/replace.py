@@ -108,12 +108,12 @@ def how_managed(pgdata, unit_hint=None, runner=_run):
 
 
 def _sysctl(verb, unit, timeout=120):
-    rc, out, err = _run(pgrestart.systemctl_argv(verb, unit), timeout=timeout)
+    rc, out, err = pgrestart.systemctl(verb, unit, timeout=timeout) if verb in ("restart", "start") else _run(["systemctl", verb, unit], timeout=timeout)
     if rc != 0:
         err = (err or out or "").strip()
         if re.search(r"(?i)interactive authentication|access denied|not authorized|authentication is required", err):
             raise EngineError("PGA-RST-071", "systemd refused '%s %s' to the agent's user (%s)" % (verb, unit, err.splitlines()[-1][:160]),
-                              "upgrade the agent (run its installer again: the polkit rule then allows start of PostgreSQL units), or run: sudo systemctl %s %s" % (verb, unit))
+                              "run the pg_arca installer again as root (polkit rule, or the pg-arca-pgctl bridge where polkit is older than 0.106), or run: sudo systemctl %s %s" % (verb, unit))
         raise EngineError("PGA-RST-072", "systemctl %s %s failed: %s" % (verb, unit, err[:300]))
 
 

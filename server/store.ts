@@ -51,6 +51,7 @@ export interface NodeRecord {
   clusterId?: string;
   clusterKey?: string;        // "patroni:<scope>" | "sysid:<id>" computed by agent discovery
   agentVersion?: string;
+  agentInstance?: string;        // PG_ARCA_INSTANCE of this agent (one agent per PostgreSQL instance on a host): named in its upgrade command
   tlsCaFile?: string;            // the CA file the agent trusts the console with (private certificate): reused by its upgrade command
   agentBuild?: string;        // fingerprint of the agent code it runs (pg_arca/build.py); differs from the console's -> outdated
   consoleUrl?: string;        // the console address this agent uses (upgrade command)

@@ -10,6 +10,8 @@ import os
 import re
 import subprocess
 
+from pg_arca import pgctl_bridge
+
 UNIT_RE = re.compile(r"/([^/\s]+\.service)(?:/[^/\s]*)?\s*$")
 PG_UNIT_RE = re.compile(r"^postgresql(?:[@-][A-Za-z0-9_.@-]+)?\.service$")
 POLKIT_FILE = "/etc/polkit-1/rules.d/50-pg-arca-restart.rules"
@@ -59,12 +61,9 @@ def polkit_running(runner=subprocess.run):
     return (r.stdout or "").strip() == "active"
 
 
-SUDOERS_FILE = "/etc/sudoers.d/pg-arca-restart"
-
-
 def polkit_version(runner=subprocess.run):
     """(major, minor) of the installed polkit, None when unknown. Before 0.106 polkit has no JavaScript rules (Debian <= 11, Ubuntu <= 22.04): the rule
-    file the installer writes is silently ignored there."""
+    file the installer writes is silently ignored there, and the installer adds the pg-arca-pgctl bridge instead (pgctl_bridge.py)."""
     try:
         r = runner(["pkaction", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
@@ -77,48 +76,42 @@ def legacy_polkit(version):
     return version is not None and version < (0, 106)
 
 
-def systemctl_path():
-    for p in ("/usr/bin/systemctl", "/bin/systemctl"):
-        if os.path.exists(p):
-            return os.path.realpath(p)
-    return "systemctl"
-
-
 def systemctl_args(verb, unit):
-    """The exact command line (the sudoers fallback allows these exact lines and nothing else)."""
     return [verb] + (["--no-block"] if verb == "start" else []) + [unit]
 
 
-def sudo_allowed(verb, unit, runner=subprocess.run):
-    """True when `sudo -n systemctl <verb> <unit>` is allowed without a password (the installer's fallback for polkit < 0.106)."""
-    try:
-        r = runner(["sudo", "-n", "-l", systemctl_path()] + systemctl_args(verb, unit), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                   universal_newlines=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return r.returncode == 0
-
-
-def systemctl_argv(verb, unit, euid=None, polkit=None, sudo=None):
-    """How the agent runs `systemctl <verb> <unit>`: directly (root, or polkit with JavaScript rules) or through the sudoers fallback."""
-    if (os.geteuid() if euid is None else euid) != 0 and legacy_polkit(polkit_version() if polkit is None else polkit) \
-            and (sudo_allowed(verb, unit) if sudo is None else sudo):
-        return ["sudo", "-n", systemctl_path()] + systemctl_args(verb, unit)
-    return ["systemctl"] + systemctl_args(verb, unit)
-
-
-def systemd_permission(polkit_dir="/etc/polkit-1", rule_file=None, euid=None, running=None, unit=None, verb="restart", polkit=None, sudo=None):
-    """None when the agent may restart a PostgreSQL unit (root, the polkit rule the installer writes, or - polkit < 0.106 - its sudoers fallback);
-    otherwise why not and what to do."""
+def use_bridge(euid=None, bridge=None):
+    """True when systemctl restart/start of a PostgreSQL unit goes through the root-side pg-arca-pgctl bridge (installed where polkit cannot do it)."""
     if (os.geteuid() if euid is None else euid) == 0:
+        return False
+    return pgctl_bridge.available() if bridge is None else bridge
+
+
+def systemctl(verb, unit, timeout=180, runner=None, euid=None, bridge=None):
+    """Run `systemctl <verb> <unit>` the way this host allows it; returns (rc, stdout, stderr)."""
+    if runner is None and use_bridge(euid, bridge):
+        rc, out = pgctl_bridge.request(verb, unit, timeout=timeout)
+        return rc, ("" if rc else out), (out if rc else "")
+    run = runner or subprocess.run
+    try:
+        r = run(["systemctl"] + systemctl_args(verb, unit), stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return 127, "", str(e)
+    return r.returncode, r.stdout or "", r.stderr or ""
+
+
+def systemd_permission(polkit_dir="/etc/polkit-1", rule_file=None, euid=None, running=None, unit=None, verb="restart", polkit=None, bridge=None):
+    """None when the agent may restart a PostgreSQL unit (root, the pg-arca-pgctl bridge, or the polkit rule the installer writes); otherwise why not and
+    what to do."""
+    if (os.geteuid() if euid is None else euid) == 0:
+        return None
+    if use_bridge(euid, bridge):
         return None
     ver = polkit_version() if polkit is None else polkit
     if legacy_polkit(ver):
-        if unit and (sudo_allowed(verb, unit) if sudo is None else sudo):
-            return None
-        return ("polkit %d.%d on this server ignores the rule file the installer writes (JavaScript rules need polkit 0.106 or later), and no sudo rule "
-                "allows '%s %s' to the agent's user: run the pg_arca installer again as root (it then adds %s for the PostgreSQL units it finds), "
-                "or restart PostgreSQL yourself" % (ver[0], ver[1], verb, unit or "<postgresql unit>", SUDOERS_FILE))
+        return ("polkit %d.%d on this server ignores the rule file the installer writes (JavaScript rules need polkit 0.106 or later) and the "
+                "pg-arca-pgctl bridge is not active (systemctl status pg-arca-pgctl.path): run the pg_arca installer again as root, "
+                "or restart PostgreSQL yourself" % ver)
     if not os.path.isdir(polkit_dir):
         return ("polkit is not installed on this server, so the agent's user cannot restart system services: install it (apt-get install polkitd / "
                 "dnf install polkit) and run the pg_arca installer again - or restart PostgreSQL yourself")
@@ -162,10 +155,9 @@ def plan(data_dir, proc="/proc", self_pid=None):
 def run(p, data_dir, bindir, user, timeout=180, runner=subprocess.run, log_dir=None):
     """Execute the plan. Returns a short description; raises RuntimeError with the cause and the way out."""
     if p["method"] == "systemd":
-        argv = systemctl_argv("restart", p["unit"]) if runner is subprocess.run else ["systemctl", "restart", p["unit"]]
-        r = runner(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
-        if r.returncode != 0:
-            err = (r.stderr or r.stdout or "").strip()
+        rc, sout, serr = systemctl("restart", p["unit"], timeout=timeout, runner=None if runner is subprocess.run else runner)
+        if rc != 0:
+            err = (serr or sout or "").strip() or "exit %s" % rc
             if re.search(r"(?i)interactive authentication|access denied|not authorized|authentication is required", err):
                 polkit = os.path.isdir("/etc/polkit-1")
                 raise RuntimeError("systemd refused the restart of %s for user %s (%s). Nothing was restarted. %s"

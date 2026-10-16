@@ -107,6 +107,25 @@ class WalArchiveSettings(unittest.TestCase):
         finally:
             os.environ.pop("PG_ARCA_CONF", None)
 
+    def test_named_config_missing_fails_instead_of_defaults(self):
+        """an instance agent's archive_command names its config: gone (uninstalled, unreadable) -> the archive fails (PostgreSQL retries), never the
+        defaults, which are ANOTHER cluster's archive (independent review)"""
+        old = os.environ.get("PG_ARCA_CONF"), os.environ.pop("WAL_ARCHIVE_DIR", None)
+        os.environ["PG_ARCA_CONF"] = "/nonexistent/b/agent.conf"
+        try:
+            with self.assertRaises(wal_archive.ConfError):
+                wal_archive._settings()
+            self.assertEqual(wal_archive.main(["x", "archive", "/nonexistent/p", "000000010000000000000001"]), 1)
+            self.assertEqual(wal_archive.main(["x", "get", "000000010000000000000001", "/nonexistent/p"]), 126)
+            os.environ["WAL_ARCHIVE_DIR"] = "/w"                                 # explicit directory (the restore copies' restore_command): fine
+            self.assertEqual(wal_archive._settings()[0], "/w")
+        finally:
+            os.environ.pop("WAL_ARCHIVE_DIR", None)
+            if old[0] is None:
+                os.environ.pop("PG_ARCA_CONF", None)
+            else:
+                os.environ["PG_ARCA_CONF"] = old[0]
+
 
 class ArchiveCommand(unittest.TestCase):
     def _ex(self, conf_path):

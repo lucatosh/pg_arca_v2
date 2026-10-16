@@ -21,7 +21,11 @@ Firewall: open the console port from the administrators' networks and from every
 
 **Console host**: Linux x86_64 with systemd (RHEL/Rocky/Alma 8-10, Debian 11-13, Ubuntu 20.04-24.04 have been the targets; the lab runs Debian 12), 2 CPU, 2 GB RAM, 10 GB for the state (operation history and results grow with use). The release package carries its own Node.js runtime; `tar` and, for `--tls-self-signed`, `openssl`.
 
-**Database servers**: Linux with PostgreSQL 14-18 (see [COMPAT.md](COMPAT.md) for what is verified), Python 3.6 or newer, systemd (without it the agent runs, but you start it yourself). Recommended: `python3-zstandard` and `zstd` (backups are 5-10x slower without them), `polkit` (restart of a standalone PostgreSQL from the console). Disk for the repository and the WAL archive, local or on a mounted network share.
+**Database servers**: Linux with PostgreSQL 14-18 (see [COMPAT.md](COMPAT.md) for what is verified), Python 3.6 or newer, `bash`, systemd (without it the agent runs, but you start it yourself and it does not survive a reboot). Recommended: `python3-zstandard` and `zstd` (backups are 5-10x slower without them). Disk for the repository and the WAL archive, local or on a mounted network share (an existing directory is used as it is: it must be writable by the agent's user, the installer does not chown it).
+
+Platforms: the installer targets RHEL/Rocky/Alma 8-10, Debian 11-13 and Ubuntu 20.04-24.04 (apt/dnf/yum). The agent's own tests also run on Alpine (musl, busybox) and Rocky 8/9 (see COMPAT.md), but the installer has no apk/zypper/OpenRC support: on Alpine and SLES install the dependencies yourself, and on Alpine start the agent with your own service (OpenRC) using the command the installer prints.
+
+Restart of a standalone PostgreSQL from the console (after enabling archiving, a restart-only parameter, the START of the unit at the end of a whole-server restore in place): the agent may restart/start only the `postgresql*` units. With polkit 0.106 or later through a polkit rule (the installer adds polkit when missing); with an older polkit (Debian ≤ 11, Ubuntu ≤ 22.04, which ignore JavaScript rules) or none, through the `pg-arca-pgctl` bridge: a root oneshot started by a path unit, accepting only `restart`/`start` of PostgreSQL units known to systemd, from the agent users listed in `/etc/pg-arca-pgctl.users`. `PG_ARCA_ALLOW_PG_RESTART=0` disables both.
 
 ## 3. Install the console
 
@@ -36,7 +40,7 @@ The installer creates the system user `pgarca-console`, puts the release in `/op
 
 TLS choices:
 - your certificate: `--tls-cert`/`--tls-key` (PEM; copied to `/etc/pg-arca-console/tls/`). Renewal: replace the two files there, then `systemctl reload pg-arca-console`.
-- trial: `--tls-self-signed` (agents then need `PG_ARCA_TLS_CA=<copy of console.crt>`).
+- trial: `--tls-self-signed` (agents then need `PG_ARCA_TLS_CA=<copy of console.crt>`). Re-running the installer keeps that certificate (the agents pinned it); `--tls-regenerate` makes a new one, after which every agent needs the new file.
 - a reverse proxy that terminates TLS: install without TLS, listen on loopback (`--listen 127.0.0.1`), and set `PG_ARCA_TRUST_PROXY=1` and `PG_ARCA_COOKIE_SECURE=1` in `console.env`. The proxy must pass websockets on `/ws/logs`.
 
 Plain http is accepted, and the installer says so: use it only on a lab network.
@@ -85,9 +89,11 @@ sudo PG_ARCA_URL=https://console.example:8443 PG_ARCA_ENROLL_TOKEN=<token> ./ins
 sudo PG_ARCA_URL=https://console.example:8443 PG_ARCA_ENROLL_TOKEN=<token> /usr/share/pg-arca-agent/install-agent.sh
 ```
 
-Later package upgrades (`apt upgrade`, `dnf upgrade`) upgrade the agent in service by themselves, keeping configuration and credentials. Removing the package removes the agent but keeps backups and the WAL archive, and is **refused while PostgreSQL archives WAL through pg_arca** (switch archiving off first, otherwise every archive attempt would fail and pg_wal would fill the disk).
+Later package upgrades (`apt upgrade`, `dnf upgrade`) upgrade the agent in service by themselves, keeping configuration and credentials. Removing the package removes every agent of the host but keeps backups and the WAL archives, and is **refused while a PostgreSQL instance archives WAL through pg_arca, or when the installer cannot tell** (switch archiving off first, otherwise every archive attempt would fail and pg_wal would fill the disk; `PG_ARCA_FORCE=1` overrides). The check reads the instance's own data directory: the running server through its own socket and port, or its configuration files when it is down.
 
-Installer options (environment variables): `PG_ARCA_TLS_CA` (CA of the console certificate), `PG_ARCA_NODE_NAME`, `PG_ARCA_REPO`, `PG_ARCA_WAL`, `PG_ARCA_SCRATCH`, `PG_ARCA_USER` (OS user owning PostgreSQL, detected by default), `PG_ARCA_ROLE=worker` (worker host), `PG_ARCA_INSTANCE` + `PG_ARCA_PGDATA` (a second PostgreSQL instance on the same host), `PG_ARCA_ALLOW_PG_RESTART=0`. The full list is at the top of `install-agent.sh`.
+Installer options (environment variables): `PG_ARCA_TLS_CA` (CA of the console certificate), `PG_ARCA_NODE_NAME`, `PG_ARCA_REPO`, `PG_ARCA_WAL`, `PG_ARCA_SCRATCH`, `PG_ARCA_USER` (OS user owning PostgreSQL, detected by default), `PG_ARCA_ROLE=worker` (worker host), `PG_ARCA_INSTANCE` + `PG_ARCA_PGDATA` (a second PostgreSQL instance on the same host: its own configuration `/etc/pg-arca/<name>`, state `/var/lib/pgarca/<name>`, service `pg-arca-agent-<name>`; it runs as the owner of that data directory unless `PG_ARCA_USER` says otherwise), `PG_ARCA_ALLOW_PG_RESTART=0`, `PG_ARCA_FORCE=1`. The full list is at the top of `install-agent.sh`.
+
+**SELinux (enforcing, RHEL family)**: `archive_command` runs inside PostgreSQL's confined domain and writes into the WAL archive. The installer labels the WAL archive (and the asynchronous spool) as PostgreSQL data with `semanage fcontext` + `restorecon` (package `policycoreutils-python-utils`); on a network share that cannot carry labels use the mount option `context="system_u:object_r:postgresql_db_t:s0"`. Not verified yet on an enforcing host: if archiving fails with "Permission denied", check `ausearch -m avc -ts recent`.
 
 After registration: enable WAL archiving from the cluster's Backup tab, take the first full backup, then assign a backup policy.
 
@@ -97,7 +103,7 @@ After registration: enable WAL archiving from the cluster's Backup tab, take the
 
 **Rollback** after a successful upgrade: `sudo /opt/pg-arca-console/current/install-console.sh --rollback --yes`. It restores the state saved before the upgrade: changes made in the console since then (users, policies, operation history) are lost; backups on the servers are not affected.
 
-**Agents**: the command shown by the console for outdated agents, the package manager, or the offline tarball's `install-agent.sh` again. Upgrade the console first: a newer console works with older agents (it says what they lack), not the other way round.
+**Agents**: the command shown by the console for outdated agents (it names the instance for a further instance's agent), the package manager, or the offline tarball's `install-agent.sh` again. One run upgrades the code shared by every agent of the host and restarts them all; it is **refused while an agent is running an operation** (a backup, a restore), so that nothing is cut off midway: run it again later, or `PG_ARCA_FORCE=1`. Upgrade the console first: a newer console works with older agents (it says what they lack), not the other way round.
 
 ## 6. Back up the console
 
@@ -130,11 +136,11 @@ It stops the service, keeps a copy of the current state in `/var/lib/pg-arca-con
 | Sign-in with the company directory | Users → *Directory sign-in (LDAP / Active Directory)*: server (`ldaps://` or `ldap://` + StartTLS; CA file for a private PKI), service account for the user search, base DN and filter (`(sAMAccountName={user})` on AD, `(uid={user})` on OpenLDAP) or a DN template, groups → roles; the *Test* button says what a given user would get. Local accounts keep working. |
 | API access from scripts, CI, monitoring | Users → *API tokens*: create a token with a role and an expiry; send `Authorization: Bearer arca_api_…` on any `/api/...` call. The token is shown once; actions are audited as `token:<label>`; revoke it from the same page |
 | Uninstall the console | `install-console.sh --uninstall` (keeps the state); `--uninstall --purge --yes` deletes it |
-| Uninstall an agent | `sudo PG_ARCA_UNINSTALL=1 /usr/share/pg-arca-agent/install-agent.sh` (or the console's `install.sh`); keeps backups unless `PG_ARCA_PURGE=1` |
+| Uninstall an agent | `sudo PG_ARCA_UNINSTALL=1 /usr/share/pg-arca-agent/install-agent.sh` (add `PG_ARCA_INSTANCE=<name>` for a further instance); removes only that agent's files, keeps its backups, WAL archive and encryption key unless `PG_ARCA_PURGE=1`; the shared code and the restart permission go with the last agent of the host |
 
 ## 8. Security notes
 
 - The console unit runs as `pgarca-console` with `ProtectSystem=strict`, no capabilities (except to bind a port below 1024), private `/tmp`, no access to `/home`, writable only in its state directory.
-- The agent runs as the PostgreSQL OS user, never as root; its unit forbids privilege escalation and keeps `/usr`, `/boot` and `/etc` read-only except the PostgreSQL configuration directories. The optional polkit rule lets it start/restart only the PostgreSQL units.
+- The agent runs as the PostgreSQL OS user, never as root; its unit forbids privilege escalation and keeps `/usr`, `/boot` and `/etc` read-only except the PostgreSQL configuration directories. The optional restart permission (polkit rule, or the `pg-arca-pgctl` bridge on older polkit) lets it start/restart only the PostgreSQL units; the agent never gets sudo or a setuid helper.
 - Agents authenticate with a per-node credential obtained at enrollment (single-use tokens that expire in one hour, or administrator approval). Operations on nodes go through typed operations; destructive ones need a typed confirmation and are recorded in the audit log.
 - Roles: administrator, operator, read-only. Every API route is checked against the role.
