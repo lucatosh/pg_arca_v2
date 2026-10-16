@@ -64,8 +64,9 @@ if [[ -n "$INST" ]]; then
   : "${PG_ARCA_NODE_NAME:=$(hostname -s)-$INST}"; export PG_ARCA_NODE_NAME
 fi
 # an existing configuration keeps its paths (re-run = upgrade); instances get their own scratch and log directories (they may run as other OS users)
-REPO_DIR="${PG_ARCA_REPO:-$(conf_get "$CONF_DIR/agent.conf" repo_path)}"; REPO_DIR="${REPO_DIR:-$STATE_ROOT/repo}"
-WAL_DIR="${PG_ARCA_WAL:-$(conf_get "$CONF_DIR/agent.conf" wal_archive_dir)}"; WAL_DIR="${WAL_DIR:-$STATE_ROOT/wal}"
+# a destination changed from the console lives in agent.local.json (it wins over agent.conf, as in the agent)
+REPO_DIR="${PG_ARCA_REPO:-$(conf_get "$CONF_DIR/agent.local.json" repo_path)}"; REPO_DIR="${REPO_DIR:-$(conf_get "$CONF_DIR/agent.conf" repo_path)}"; REPO_DIR="${REPO_DIR:-$STATE_ROOT/repo}"
+WAL_DIR="${PG_ARCA_WAL:-$(conf_get "$CONF_DIR/agent.local.json" wal_archive_dir)}"; WAL_DIR="${WAL_DIR:-$(conf_get "$CONF_DIR/agent.conf" wal_archive_dir)}"; WAL_DIR="${WAL_DIR:-$STATE_ROOT/wal}"
 SCRATCH="${PG_ARCA_SCRATCH:-$(conf_get "$CONF_DIR/agent.conf" scratch_dir)}"; SCRATCH="${SCRATCH:-/var/tmp/pg_arca_scratch${INST:+-$INST}}"
 LOG_DIR=/var/log/pgarca${INST:+-$INST}
 CTL_USERS=/etc/pg-arca-pgctl.users
@@ -156,7 +157,10 @@ PY
 # archive ($STATE_ROOT) unless PG_ARCA_PURGE=1. Refused while PostgreSQL still archives through pg-arca-wal: removing the command would make every
 # archive attempt fail and pg_wal would grow until the disk is full. Switch archiving off (or to another tool) first, or PG_ARCA_FORCE=1.
 if [[ "${PG_ARCA_UNINSTALL:-}" == 1 ]]; then
-  if [[ "${PG_ARCA_FORCE:-}" != 1 ]]; then
+  # an operational machine (backup server, recovery host) archives nothing of its own: its postgres processes are restored copies
+  NODE_ROLE="$(conf_get "$CONF_DIR/agent.local.json" node_role)"; NODE_ROLE="${NODE_ROLE:-$(conf_get "$CONF_DIR/agent.conf" node_role)}"
+  [[ -z "$NODE_ROLE" && "$(conf_get "$CONF_DIR/credentials.json" node_kind)" == worker ]] && NODE_ROLE=worker      # converted in the console
+  if [[ "${PG_ARCA_FORCE:-}" != 1 && "$ROLE" != worker && "$NODE_ROLE" != worker ]]; then
     SP="$STATE_ROOT/state/walspool"
     if [[ -d "$SP" ]] && ls -A "$SP" 2>/dev/null | grep -qv '^\.'; then
       die "the asynchronous WAL spool ($SP) still holds segments that are not in the archive: let the agent push them (or switch asynchronous archiving off and wait), or PG_ARCA_FORCE=1 (they would be lost)"
@@ -173,10 +177,16 @@ if [[ "${PG_ARCA_UNINSTALL:-}" == 1 ]]; then
   rm -f "$CONF_DIR/agent.conf" "$CONF_DIR/credentials.json" "$CONF_DIR/enroll.env" "$CONF_DIR/agent.local.json" "$CONF_DIR/console-ca.pem" "$CONF_DIR"/*.tmp
   if [[ "${PG_ARCA_PURGE:-}" == 1 ]]; then
     [[ -n "$KEY" && "$(dirname "$KEY")" == "$CONF_DIR" ]] && rm -f "$KEY"
-    rm -rf "$REPO_DIR" "$WAL_DIR" "$STATE_ROOT/state" "$SCRATCH"
+    # only what lies inside this agent's own directory: a repository or WAL archive elsewhere (a share) may hold other clusters' backups,
+    # or the other site's WAL (independent review) - named, never deleted here
+    for d in "$REPO_DIR" "$WAL_DIR"; do
+      if [[ "$(readlink -f "$d" 2>/dev/null || echo "$d")" == "$(readlink -f "$STATE_ROOT")"/* ]]; then rm -rf "$d"
+      else echo "NOT deleted (outside $STATE_ROOT, possibly shared with other clusters or sites): $d - delete it yourself if nothing else uses it"; fi
+    done
+    rm -rf "$STATE_ROOT/state" "$SCRATCH"
     [[ -n "$INST" ]] && rm -rf "$STATE_ROOT"
     rmdir "$STATE_ROOT" 2>/dev/null || true
-    echo "pg_arca agent $UNIT removed; its backups ($REPO_DIR) and WAL archive ($WAL_DIR) DELETED."
+    echo "pg_arca agent $UNIT removed; what it kept in $STATE_ROOT is DELETED."
   else
     echo "pg_arca agent $UNIT removed. Backups ($REPO_DIR) and WAL archive ($WAL_DIR) are kept (PG_ARCA_PURGE=1 to delete them too). Remove the node from the console as well."
     [[ -n "$KEY" && -f "$KEY" ]] && echo "The encryption key of those backups is kept too: $KEY"
@@ -412,6 +422,8 @@ PATHU
     cat > /etc/systemd/system/pg-arca-pgctl.service <<SVCU
 [Unit]
 Description=pg_arca: restart/start of a PostgreSQL unit asked by an agent (users in $CTL_USERS, postgresql units only)
+# many requests (or junk dropped into the directory by a local user) must never trip the start limit and lock the bridge
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

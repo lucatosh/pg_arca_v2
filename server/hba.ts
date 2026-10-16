@@ -130,9 +130,11 @@ export async function hbaFanout(store: Store, c: any, body: any, key: string, ac
   // Patroni: one DCS, one revision - whichever node read it (independent review: keyed by the reader, the leader's id found none and the
   // stale-view protection was off)
   const checked = Object.keys(baseRevs);
-  if (!patroni && checked.length) {
+  // revisions given (the console's check-then-apply) but not for every online node: those were never reviewed. "Apply anyway" (force) overrides,
+  // as for lock-outs. A client that sends no revisions at all (a script, the API) applies without the stale-view protection, as documented
+  if (!patroni && !force && checked.length) {
     const unseen = online.filter(n => !checked.includes(n.id));
-    if (unseen.length) return { code: 409, body: { error: 'not_checked', message: `Not checked on ${unseen.map(n => n.name).join(', ')} (no answer when the rules were read): check again before applying.` } };
+    if (unseen.length) return { code: 409, body: { error: 'not_checked', message: `Not checked on ${unseen.map(n => n.name).join(', ')} (no answer when the rules were read): check again before applying, or apply anyway.` } };
   }
   const dcsRev = patroni ? (baseRevs[t!.id] || Object.values(baseRevs).find(v => !!v)) : undefined;
   const targets = patroni ? [t!] : online;

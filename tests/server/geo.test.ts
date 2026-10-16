@@ -240,8 +240,7 @@ import { deriveCluster } from '../../server/view';
     const answerTl = async (cid: string, result: any) => { for (let i = 0; i < 200; i++) { const o = st4.peek().operations.find(x => x.type === 'pg_timeline' && x.clusterId === cid && x.status === 'queued');
       if (o) { await st4.mutate(d => { const x = d.operations.find(y => y.id === o.id)!; x.status = 'succeeded'; x.result = result; }); return o; } await new Promise(r => setTimeout(r, 50)); } throw new Error('no pg_timeline on ' + cid); };
     const histNew = '1\t0/5000000\tno recovery target specified\n2\t0/7000100\tno recovery target specified\n', histOld = '1\t0/5000000\tno recovery target specified\n2\t0/7400000\tno recovery target specified\n';
-    // fenced FIRST (no more writes on the old primary while its history is analysed), rebuilt after
-    const fence0 = await answer4('geo_demote'); assert(!fence0.params.force_rewind, 'the fence is a plain demotion'); assert(fence0.idempotencyKey.endsWith(':fence'));
+    // SAME timeline number: no plain fence (Patroni would stream the new primary's WAL onto the other history); the rebuild fences it, paused first
     await answerTl('m', { timeline: 3, history: histOld, lsn: '0/7400100' }); await answerTl('r', { timeline: 3, history: histNew, lsn: '0/7100000' });
     const dm = await answer4('geo_demote', d => { d.nodes.m1.snapshot = { ...snapS('0/7000100', 'streaming', 1), patroni: { ...snapS('0').patroni, scope: 'hy-mi', standby_cluster: { host: '192.168.1.232', port: 5000, primary_slot_name: 'geo_hy_mi' } } }; });
     assert.strictEqual(dm.nodeId, 'm1'); assert.deepStrictEqual([dm.params.host, dm.params.port, dm.params.primary_slot_name], ['192.168.1.232', 5000, 'geo_hy_mi']);
@@ -285,7 +284,7 @@ import { deriveCluster } from '../../server/view';
     await st4.mutate(d => { d.settings.geoJobs = {}; for (const o of d.operations) if (o.status === 'queued') o.status = 'cancelled';
       d.settings.geoFailovers = { [key]: { from: 'm', to: 'r', fromName: 'hy-mi', toName: 'hy-rm', at: now(), forkLsn: '0/9000000', lossBytes: 0, auto: true, timeline: 3 } };
       d.nodes.r1.snapshot = snapP('0/9200000'); d.nodes.r1.snapshot.patroni.scope = 'hy-rm';
-      d.nodes.m1.snapshot = { ...snapP('0/9300000'), patroni: { accessible: true, scope: 'hy-mi', local_node: { role: 'leader', state: 'running' }, standby_cluster: null } }; });
+      d.nodes.m1.snapshot = { ...snapP('0/9300000'), patroni: { accessible: true, scope: 'hy-mi', local_node: { role: 'leader', state: 'running' }, standby_cluster: null } }; d.nodes.m1.snapshot.postgres.timeline = 4; });
     await tick(500_000);
     const hist3 = '1\t0/5000000\tno recovery target specified\n2\t0/9000000\tno recovery target specified\n';
     // fenced first (plain demotion), but the site stays a standby leader that does NOT stream (waiting)

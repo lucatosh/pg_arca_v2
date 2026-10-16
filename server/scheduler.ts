@@ -39,7 +39,9 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
       // the standby that normally takes them is away for a moment (heartbeat late, not streaming): an incremental sent to the primary would be taken
       // as a full there (a chain stays on one side), and another full when the standby is back - two unplanned fulls in business hours that push the
       // planned history out (independent review). Incrementals wait for it (up to 3 periods); fulls go where the policy can take them.
-      else standbyAway = shared && Object.values(st.nodes).some((n: any) => n.clusterId === c.id && n.snapshot?.postgres?.is_in_recovery === true);
+      // "away for a moment" = it was a STREAMING standby a short while ago (a decommissioned replica, or one fed only from the archive, is not)
+      else standbyAway = shared && Object.values(st.nodes).some((n: any) => n.clusterId === c.id && n.snapshot?.postgres?.is_in_recovery === true
+        && n.snapshot?.postgres?.wal_receiver?.status === 'streaming' && !!n.lastSeen && now - Date.parse(n.lastSeen) < 3 * Math.max(1, pol.incrEveryHours || 1) * 3600_000);
     }
     if (!target) continue;
     const myOps = st.operations.filter(o => o.clusterId === c.id);

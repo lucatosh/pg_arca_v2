@@ -29,11 +29,12 @@ export function isRisky(type: string, params: any = {}): boolean {
 export const advanced = (st: any) => ({ approvals: {} as Record<string, boolean>, ...(st.settings.advanced || {}) });
 export const requiresApproval = (st: any, cluster: any, type: string, params: any) => !!advanced(st).approvals[cluster.environment] && isRisky(type, params);
 
-/** params without what changes between two submissions of the same request (confirmation text, force flag), keys sorted */
+/** params without the confirmation text (it changes between two submissions of the same request), keys sorted. `force` stays: a forced
+ *  resubmission is another request (deduped into the non-forced one it would run without force) */
 function stableParams(p: any): any {
   if (Array.isArray(p)) return p.map(stableParams);
   if (!p || typeof p !== 'object') return p;
-  const o: any = {}; for (const k of Object.keys(p).sort()) if (k !== 'confirm' && k !== 'force') o[k] = stableParams(p[k]);
+  const o: any = {}; for (const k of Object.keys(p).sort()) if (k !== 'confirm') o[k] = stableParams(p[k]);
   return o;
 }
 

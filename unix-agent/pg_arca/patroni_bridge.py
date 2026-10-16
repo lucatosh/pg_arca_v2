@@ -8,6 +8,7 @@ import base64
 import json
 import socket
 import logging
+import os
 import ssl
 import time
 import urllib.error
@@ -39,7 +40,13 @@ class PatroniBridge:
         self._ca, self._insecure = ca_file, insecure
         self.ctx = None
         if self.patroni_url.startswith("https://"):
-            self.ctx = ssl.create_default_context(cafile=ca_file or None)
+            # the system store PLUS every CA given (Patroni's own, then the console's): any of them may have signed the REST API's certificate
+            self.ctx = ssl.create_default_context()
+            for ca in [x for x in str(ca_file or "").split(os.pathsep) if x]:
+                try:
+                    self.ctx.load_verify_locations(cafile=ca)
+                except (OSError, ssl.SSLError) as e:
+                    logger.warning("CA file %s for the Patroni API not loaded: %s", ca, e)
             if insecure:
                 self.ctx.check_hostname = False
                 self.ctx.verify_mode = ssl.CERT_NONE

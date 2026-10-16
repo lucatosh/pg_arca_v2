@@ -125,3 +125,12 @@ class RestAuthFromPatroniYml(unittest.TestCase):
             f.write("scope: x\nrestapi:\n  listen: 0.0.0.0:8008\n  cafile: /etc/patroni/ca.pem\n  authentication:\n    username: patroni\n    password: 's3cret'\n")
         self.assertEqual(_patroni_rest_auth(p), ("patroni", "s3cret", "/etc/patroni/ca.pem"))
         self.assertEqual(_patroni_rest_auth(os.path.join(d, "missing.yml")), ("", "", ""))
+        with open(p, "w") as f:
+            f.write("scope: x\nrestapi:\n  cafile: /etc/patroni/client-ca.pem\nctl:\n  cacert: /etc/patroni/server-ca.pem\n")
+        self.assertEqual(_patroni_rest_auth(p)[2], "/etc/patroni/server-ca.pem" + os.pathsep + "/etc/patroni/client-ca.pem", "ctl.cacert first")
+
+    def test_several_cas_are_all_trusted(self):
+        import ssl, tempfile
+        b = PatroniBridge("https://x:8008", ca_file=os.pathsep.join(["/nonexistent/a.pem", ""]))
+        self.assertIsInstance(b.ctx, ssl.SSLContext)
+        self.assertEqual(b.ctx.verify_mode, ssl.CERT_REQUIRED)

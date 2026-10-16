@@ -22,6 +22,7 @@ import { hbaExpiryTick } from '../../server/scheduler';
   const k = { 'idempotency-key': 'h1' };
   const nc = await call('POST', '/api/clusters/k1/hba/apply', { rules, baseRevs: { a: '0123456789abcdef' } }, { 'idempotency-key': 'h0' });
   assert.strictEqual(nc.status, 409, 'a node whose rules were not read is not changed blindly'); assert.strictEqual(nc.body.error, 'not_checked');
+  { const fo = await call('POST', '/api/clusters/k1/hba/apply', { rules, baseRevs: { a: '0123456789abcdef' }, force: true }, { 'idempotency-key': 'h0f' }); assert.strictEqual(fo.status, 202, '"apply anyway" overrides'); await finish(); }
   const r1 = await call('POST', '/api/clusters/k1/hba/apply', { rules, baseRevs: { a: '0123456789abcdef', b: 'fedcba9876543210' } }, k); assert.strictEqual(r1.status, 202);
   assert.strictEqual(r1.body.operations.length, 2, 'non-Patroni: every online node'); assert.strictEqual(r1.body.mode, 'per-node');
   assert.strictEqual(r1.body.operations.find((o: any) => o.nodeId === 'a').operation.params.base_rev, '0123456789abcdef');

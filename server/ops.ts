@@ -20,7 +20,10 @@ import path from 'path';
 import { laneOf, OP_SPECS } from './optypes';
 /** How long a queued operation may wait for its agent. A restore waits in the data lane behind a backup that can take hours, and the console tells the
  *  operator it "starts as soon as the current one ends": 12 hours, not the 15 minutes of everything else (independent review). */
-export const defaultTtl = (type: string): number => (type.startsWith('restore_') && OP_SPECS[type]?.lane === 'data' ? 12 * 3600 : 900);
+// ...except a restore that OVERWRITES live data (production put back in place, a database replaced, tables / rows put back): fired hours later it would
+// throw away every write made since the request (independent review). Those keep the 15 minutes: the operator asks again when the lane is free.
+export const overwritesLive = (type: string, p: any = {}): boolean => (type === 'restore_instance' && !!p?.replace_production) || (type === 'restore_database' && !!p?.replace_original) || (type === 'restore_object' && !!p?.finish);
+export const defaultTtl = (type: string, params: any = {}): number => (type.startsWith('restore_') && OP_SPECS[type]?.lane === 'data' && !overwritesLive(type, params) ? 12 * 3600 : 900);
 import { Store, Operation, OpStatus, AppState, newId, nowIso, loadSecretKey, encrypt, decrypt } from './store';
 
 export const MAX_ATTEMPTS = 5;
@@ -188,7 +191,7 @@ export function submit(store: Store, input: SubmitInput): Promise<{ op: Operatio
     const op: Operation = {
       id: newId('op'), idempotencyKey: key, type: input.type, clusterId: input.clusterId, nodeId: input.nodeId,
       params: sealParams(store.dir, input.params || {}), status: 'queued', createdAt: ts, updatedAt: ts,
-      createdBy: input.createdBy || 'admin', attempts: 0, ttlSeconds: input.ttlSeconds ?? defaultTtl(input.type),
+      createdBy: input.createdBy || 'admin', attempts: 0, ttlSeconds: input.ttlSeconds ?? defaultTtl(input.type, input.params),
       history: [{ at: ts, status: 'queued' }],
     };
     draft.operations.push(op);

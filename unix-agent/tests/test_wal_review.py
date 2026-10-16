@@ -52,6 +52,16 @@ class RestoreCommand(unittest.TestCase):
             self.assertEqual(wal_archive.main(["x", "get", "000000010000000000000003", os.path.join(d, "p")]), 126)
         self.assertFalse(os.path.exists(os.path.join(d, "not-mounted")), "restore_command never creates an archive")
 
+    def test_a_standby_is_never_aborted_by_an_archive_error(self):
+        d = tempfile.mkdtemp(); pgdata = tempfile.mkdtemp()
+        open(os.path.join(pgdata, "standby.signal"), "w").close()
+        cwd = os.getcwd(); os.chdir(pgdata)
+        try:
+            with Env(WAL_ARCHIVE_DIR=os.path.join(d, "not-mounted"), PG_ARCA_CONF="/nonexistent", PG_ARCA_SPOOL=None):
+                self.assertEqual(wal_archive.main(["x", "get", "000000010000000000000003", os.path.join(d, "p")]), 1, "streaming goes on")
+        finally:
+            os.chdir(cwd)
+
     def test_existing_archive_without_the_segment_is_end_of_archive(self):
         d = tempfile.mkdtemp()
         with Env(WAL_ARCHIVE_DIR=d, PG_ARCA_CONF="/nonexistent", PG_ARCA_SPOOL=None):

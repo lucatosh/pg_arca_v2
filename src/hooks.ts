@@ -137,35 +137,40 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
   const keyRef = useRef<{ sig: string; key: string } | null>(null);
   const timer = useRef<any>(null);
   const alive = useRef(true);
+  const gen = useRef(0);                                     // bumped when the runner is reused for another key: answers of an older poll are dropped
   useEffect(() => { alive.current = true; return () => { alive.current = false; clearTimeout(timer.current); }; }, []);
   useEffect(() => { const id = op?.id; if (!id) return; onScreen.set(id, (onScreen.get(id) || 0) + 1); return () => { const n = (onScreen.get(id) || 1) - 1; if (n > 0) onScreen.set(id, n); else onScreen.delete(id); }; }, [op?.id]);
 
-  const poll = useCallback(async (id: string) => {
+  const poll = useCallback(async (id: string, g: number = gen.current) => {
+    if (g !== gen.current) return;
     try {
       const r = await get<{ operation: Op }>(`/api/operations/${id}`);
-      if (!alive.current) return;
+      if (!alive.current || g !== gen.current) return;
       setOp(r.operation); setError(null);
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; revalidateOps(clusterId); onDone?.(r.operation); return; }
     } catch (e: any) { if (!alive.current) return; setError(e.body?.error === 'console_unreachable' ? 'Cannot refresh the status: the console is not responding. The operation keeps running on the server; the status updates as soon as the console is reachable again.' : e.message); }
-    timer.current = setTimeout(() => poll(id), 1000);
+    if (g !== gen.current) return;
+    timer.current = setTimeout(() => poll(id, g), 1000);
   }, [onDone, setOp]);
 
-  const pollApproval = useCallback(async (id: string) => {
+  const pollApproval = useCallback(async (id: string, g: number = gen.current) => {
+    if (g !== gen.current) return;
     try {
       const r = await get<{ approvals: any[] }>('/api/approvals');
-      if (!alive.current) return;
+      if (!alive.current || g !== gen.current) return;
       const a = (r.approvals || []).find(x => x.id === id);
       if (a && a.status === 'approved' && a.operationId) { setApproval(null); setBusy(true); poll(a.operationId); return; }
       if (!a || ['rejected', 'cancelled', 'expired'].includes(a.status) || (a.status === 'approved' && !a.operationId)) { setApproval(a ? { ...a, final: true } : { id, status: 'gone', final: true }); return; }
       setApproval(a);
     } catch { /* console briefly unreachable: try again */ }
-    timer.current = setTimeout(() => pollApproval(id), 4000);
+    if (g !== gen.current) return;
+    timer.current = setTimeout(() => pollApproval(id, g), 4000);
   }, [poll, setApproval]);
   // the same component reused for ANOTHER key (another cluster): that key's own operation, never the previous one's (independent review)
   const pkSeen = useRef<string | null>(pk);
   useEffect(() => {
     if (pkSeen.current !== pk) {
-      pkSeen.current = pk; clearTimeout(timer.current); keyRef.current = null; setError(null); setConflict(null);
+      pkSeen.current = pk; gen.current++; clearTimeout(timer.current); keyRef.current = null; setError(null); setConflict(null);
       const o = pk ? readDraft<Op>(pk) ?? null : null; setOp0(o); setBusy(!!(o && !isTerminal(o.status)));
       setApproval0(ak ? readDraft<any>(ak) ?? null : null);
     }

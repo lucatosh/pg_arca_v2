@@ -128,7 +128,22 @@ def probe(directory, token):
     return 0
 
 
+def _standby():
+    """restore_command runs with PGDATA as working directory: a STANDBY (standby.signal) keeps streaming when the archive is unreachable, so an
+    archive error there must not be fatal - exit codes above 125 make PostgreSQL's startup process abort and the standby crash-loops exactly when
+    it may be needed (independent review). Archive recovery (recovery.signal: a restore) keeps aborting on errors."""
+    return os.path.exists("standby.signal") and not os.path.exists("recovery.signal")
+
+
 def main(argv):
+    rc = _main(argv)
+    if len(argv) > 1 and argv[1] == "get" and rc > 125 and _standby():
+        sys.stderr.write("pg_arca get: this is a standby: answered 'not found' instead of aborting (it keeps streaming); fix the archive access\n")
+        return 1
+    return rc
+
+
+def _main(argv):
     if len(argv) == 4 and argv[1] == "probe":
         return probe(argv[2], argv[3])
     if len(argv) != 4 or argv[1] not in ("archive", "get", "prefetch"):

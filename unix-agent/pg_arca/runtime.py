@@ -123,12 +123,16 @@ class Runtime(object):
             url = pinfo.get("restapi_url") or "http://127.0.0.1:%d" % pinfo["restapi_port"]
         user, pw = c.get("patroni_user", ""), c.get("patroni_password", "")
         ca = c.get("patroni_ca_file", "")
-        if not user and pinfo and pinfo.get("config_path"):
+        if pinfo and pinfo.get("config_path"):
             # Patroni's own REST credentials (restapi.authentication in patroni.yml): discovery used them for its reads, every change (PATCH /config,
             # switchover, restart) was then refused with 401 (independent review). Read here, never sent to the console.
             ruser, rpw, rca = _patroni_rest_auth(pinfo["config_path"])
-            user, pw, ca = ruser or user, rpw if ruser else pw, ca or rca
-        # the console's CA (tls_ca_file) says nothing about Patroni's certificate: Patroni's own cafile, or the system store
+            if not user:
+                user, pw = ruser or user, rpw if ruser else pw
+            ca = os.pathsep.join(x for x in (ca, rca) if x)
+        # trusted for Patroni's certificate: the configured CA, Patroni's own (ctl.cacert / restapi.cafile), the console's CA (an internal PKI often
+        # signs both) and the system store
+        ca = os.pathsep.join(x for x in (ca, c.get("tls_ca_file") or "") if x)
         self.patroni = PatroniBridge(url or "", user, pw, ca, c.get("tls_insecure_skip_verify", False))
         return rep
 
@@ -521,6 +525,9 @@ def _patroni_rest_auth(path):
         a = rest.get("authentication") or {}
         if not isinstance(a, dict):
             a = {}
-        return str(a.get("username") or ""), str(a.get("password") or ""), str(rest.get("cafile") or "")
+        # the CA that signed the REST API's own certificate is what patronictl uses (ctl.cacert); restapi.cafile is for client certificates
+        ctl = cfg.get("ctl") or {}
+        cas = [str(x) for x in ((ctl.get("cacert") if isinstance(ctl, dict) else None), rest.get("cafile")) if x]
+        return str(a.get("username") or ""), str(a.get("password") or ""), os.pathsep.join(cas)
     except Exception:
         return "", "", ""

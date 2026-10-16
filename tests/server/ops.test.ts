@@ -127,4 +127,7 @@ import * as ops from '../../server/ops';
   // a restore queued behind a long backup does not expire after 15 minutes; everything else keeps the short default
   assert.strictEqual(ops.defaultTtl('restore_database'), 12 * 3600); assert.strictEqual(ops.defaultTtl('restore_instance'), 12 * 3600);
   assert.strictEqual(ops.defaultTtl('backup_run'), 900); assert.strictEqual(ops.defaultTtl('pg_set_param'), 900);
+  // a restore that overwrites live data never fires hours after it was asked
+  assert.strictEqual(ops.defaultTtl('restore_instance', { replace_production: true }), 900); assert.strictEqual(ops.defaultTtl('restore_database', { replace_original: true }), 900);
+  assert.strictEqual(ops.defaultTtl('restore_object', { finish: 'rows_all' }), 900);
 })().catch(e=>{console.error(e);process.exit(1)});

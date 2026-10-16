@@ -642,23 +642,25 @@ def fit_chain_to_timeline(ctx, chain, timeline="latest"):
 
 
 def _commit_after(ctx, name, want_ts):
-    """True when archived segment `name` holds a COMMIT/ABORT later than want_ts (epoch); False otherwise or when it cannot be told."""
+    """True when archived segment `name` holds a COMMIT/ABORT later than want_ts (epoch), False when it holds none, None when it cannot be told."""
     import subprocess
     import tempfile
     from pg_arca.engine.walscan import TS_RE, _ENV, _parse_iso
     exe = ctx.conn.exe("pg_waldump")
     if os.path.sep in exe and not os.path.exists(exe):
-        return False
+        return None
     tmp = tempfile.mkdtemp(prefix="pgarca-hole-", dir=ctx.scratch_dir if os.path.isdir(ctx.scratch_dir) else None)
     try:
         f = os.path.join(tmp, name)
         if ctx.wal.retrieve_segment(name, f)[0] != 0:
-            return False
+            return None
         with tempfile.TemporaryFile() as errf:
             p = subprocess.Popen([exe, f], stdout=subprocess.PIPE, stderr=errf, env=_ENV)
             out = p.stdout.read()
             p.stdout.close()
             p.wait()
+        if not re.search(rb"\blsn: ", out):
+            return None                                       # pg_waldump could not read it
         for line in out.splitlines():
             if b"rmgr: Transaction" in line and b"desc: " in line:
                 d = line.split(b"desc: ", 1)[1]
@@ -669,7 +671,7 @@ def _commit_after(ctx, name, want_ts):
                         return True
         return False
     except Exception:
-        return False
+        return None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -882,8 +884,20 @@ def check_wal_for_chain(ctx, chain, target_lsn=None, target_time=None, to_end=Fa
                 # the segment before the hole was archived at `t`: a target later than that needs what comes after it
                 # the target lies before the hole only when a transaction of the segment before it ends AFTER the target (PostgreSQL stops there).
                 # The file's time said when it was ARCHIVED: late archiving, a rescue or an offsite download made a hole look harmless (independent review)
-                pn = next((wal_name(t, prev, seg) for t in tls if ctx.wal.has_segment(wal_name(t, prev, seg))), None)
-                if pn and _commit_after(ctx, pn, want_dt.timestamp()):
+                # a few segments back: the next commit after the target may sit in an earlier one. Unknown (no pg_waldump, another major) is a
+                # warning, not a refusal - the recovery itself still stops at the hole and says so
+                verdicts = []
+                for back in range(prev, max(hi, prev - 4), -1):
+                    pn = next((wal_name(t, back, seg) for t in tls if ctx.wal.has_segment(wal_name(t, back, seg))), None)
+                    if pn:
+                        v = _commit_after(ctx, pn, want_dt.timestamp())
+                        verdicts.append(v)
+                        if v:
+                            break
+                if any(verdicts):
+                    break
+                if None in verdicts:
+                    ctx.log("warning", "WAL hole after %s: whether the target lies before it could not be told (pg_waldump); the recovery stops at the hole if it does not" % wal_name(tli, prev, seg))
                     break
             missing.append(wal_name(tli, n, seg))
             break

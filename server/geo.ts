@@ -331,6 +331,9 @@ export function geoIssues(st: any, now = Date.now()) {
     if (w?.downSince && pc) out.push({ key: `${pc.id}:geo_primary_lost`, clusterId: pc.id, clusterName: pc.name, environment: pc.environment, severity: 'critical', code: 'geo_primary_lost',
       title: `Primary site ${pc.name} unreachable${pol.autoFailover ? ' — automatic failover being prepared' : ' — a decision is needed'}`,
       cause: `The console cannot hear its nodes and ${w.witnesses.standbyName || 'the standby site'} no longer receives WAL. ${pol.autoFailover ? `Unless something changes, ${w.candidateName} is promoted in ${w.actInSec ?? 0} s.` : `If ${pc.name} is lost, promote ${w.candidateName}.`}`, action: { label: 'Open geo-redundancy', page: 'geo' } });
+    // automatic failover switched on before the console's location had to be declared: it does NOT act any more - said, not discovered in a disaster
+    if (pol.autoFailover && !pol.consoleOutside && pc) out.push({ key: `${pc.id}:geo_auto_inactive`, clusterId: pc.id, clusterName: pc.name, environment: pc.environment, severity: 'warning', code: 'geo_auto_inactive',
+      title: 'Automatic failover between sites is not active', cause: 'It acts only when the console runs in a third location (neither site): otherwise a network cut between the sites looks exactly like a disaster. Confirm the console location in the disaster recovery policy, or switch automatic failover off.', action: { label: 'Open geo-redundancy', page: 'geo' } });
     if (f && !f.rejoinedAt) { const fc = st.clusters.find((c: any) => c.id === f.from);
       if (fc) out.push({ key: `${fc.id}:geo_failed_over`, clusterId: fc.id, clusterName: fc.name, environment: fc.environment, severity: 'warning', code: 'geo_failed_over',
         title: `${f.toName} is primary after a disaster recovery: ${f.fromName} is not its standby yet`, cause: f.rejoinError ? `Rejoin failed: ${f.rejoinError}` : `The pair is not protected until ${f.fromName} comes back as a standby site.`, action: { label: 'Open geo-redundancy', page: 'geo' } }); }
@@ -470,7 +473,7 @@ export function mountGeoRoutes(app: any, store: Store) {
     if (b.autoFailover !== undefined) p.autoFailover = !!b.autoFailover;
     if (b.autoRejoin !== undefined) p.autoRejoin = !!b.autoRejoin;
     if (b.consoleOutside !== undefined) p.consoleOutside = !!b.consoleOutside;
-    if (p.autoFailover && !p.consoleOutside) return res.status(409).json({ error: 'witness_not_independent', message: 'Automatic failover needs the console in a third location (neither site): only then is "the console hears nothing from the primary site" independent of "the standby site receives no WAL". State it, or keep failover manual.' });
+    if (b.autoFailover === true && !p.consoleOutside) return res.status(409).json({ error: 'witness_not_independent', message: 'Automatic failover needs the console in a third location (neither site): only then is "the console hears nothing from the primary site" independent of "the standby site receives no WAL". State it, or keep failover manual.' });
     if (b.confirmSec !== undefined) { const v = Number(b.confirmSec); if (!(Number.isInteger(v) && v >= 10 && v <= 3600)) return res.status(400).json({ error: 'invalid', message: 'Confirmation wait between 10 seconds and 1 hour.' }); p.confirmSec = v; }
     if (b.maxLossMB !== undefined) { const v = Number(b.maxLossMB); if (!(v >= 0 && v <= 1_000_000)) return res.status(400).json({ error: 'invalid', message: 'Maximum loss: a number of MB (0 = no loss accepted).' }); p.maxLossMB = v; }
     await store.mutate(d => { (d.settings.geoPolicy ||= {})[key] = p; ops.audit(d, { actor: actor(req), action: 'geo.policy', status: 'OK', details: { key, ...p } } as any); });

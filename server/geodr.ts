@@ -264,14 +264,17 @@ async function runRejoin(store: Store, g: GeoGroup, id: string, f: any, old: Sit
     // FENCE FIRST: a writable old primary stops taking writes now; the history analysis below takes up to two minutes and every commit accepted
     // meanwhile would be thrown away by the rewind (independent review). The rebuild, when needed, follows on the already fenced site.
     let fenced = false;
-    if (old.role === 'primary') {
+    // SAME timeline number as the new primary: it promoted itself while away and its history differs; a plain fence would make Patroni stream the
+    // new primary's WAL onto the other history at once (a silent hole). Then it is fenced by the rebuild itself (paused first), below
+    const sameTli = Number(old.timeline) > 0 && Number(old.timeline) === Number(neu.timeline);
+    if (old.role === 'primary' && !sameTli) {
       try { const o0 = await submitTo(store, f.from, 'geo_demote', { host: ep.host, port: ep.port, primary_slot_name: geoSlotFor(old.name), confirm: 'DEMOTE', timeout: 120 }, `geo:${id}:fence`, 'pg_arca (automatic rejoin)');
         const r0: any = await waitOp(store, o0.id, 330_000).catch(() => ({ status: 'unknown' })); fenced = r0.status === 'succeeded';
         await step(store, id, fenced ? `1a ${old.name} fenced: it no longer accepts writes` : `1a fencing of ${old.name} not confirmed (${r0.error || r0.status}): retried with the rejoin below`); }
       catch (e: any) { await step(store, id, `1a fencing of ${old.name} could not be requested (${e.message}): retried with the rejoin below`); }
     }
     const t1 = old.role === 'primary' ? await timelines(store, id, 'pre', f.from, f.to) : { o: null, n: null };
-    const force = sameTimelineDiverged(t1.o, t1.n);
+    const force = sameTimelineDiverged(t1.o, t1.n) || (old.role === 'primary' && sameTli && !fenced);
     if (force) await step(store, id, `1b ${old.name} promoted itself when it came back, on the SAME timeline ${t1.o.timeline} as ${neu.name} but with a different history: Patroni (and pg_rewind) compare only the number and it would follow ${neu.name} with a hole in the data. It is rebuilt from ${neu.name}: Patroni in maintenance mode, its data directory is set aside (.pgarca-diverged-…), then it is cloned again`);
     // a site AHEAD of the new primary left its timelines' history files in the WAL archive: a member rebuilt from the primary would then
     // try to follow them at its first start ('requested timeline N is not a child of this server's history', a restart loop; seen on

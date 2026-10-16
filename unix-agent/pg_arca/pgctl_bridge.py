@@ -90,6 +90,13 @@ def _known_unit(unit, runner):
     return (r.stdout or "").strip() == "loaded"
 
 
+def _known_unit_safe(unit, runner):
+    try:
+        return _known_unit(unit, runner)
+    except Exception:
+        return False
+
+
 def _answer(ctl_dir, rid, uid, ans):
     tmp = os.path.join(ctl_dir, ".%s.%s.ans" % (rid, uuid.uuid4().hex))
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -133,6 +140,8 @@ def handle(ctl_dir=CTL_DIR, users=None, runner=subprocess.run, getpwuid=None, lo
             user = getpwuid(st.st_uid)
         except KeyError:
             user = str(st.st_uid)
+        if not isinstance(body, dict):                      # [] / 1 / null: refused, never a crash that leaves the other requests waiting
+            body = {}
         verb, unit = str(body.get("verb") or ""), str(body.get("unit") or "")
         if user not in users:
             rc, msg = 77, "user %s is not allowed (not in %s)" % (user, USERS_FILE)
@@ -140,14 +149,14 @@ def handle(ctl_dir=CTL_DIR, users=None, runner=subprocess.run, getpwuid=None, lo
             rc, msg = 77, "verb %r not allowed (only restart, start)" % verb
         elif not UNIT_RE.match(unit) or "@." in unit:
             rc, msg = 77, "%r is not a PostgreSQL unit" % unit
-        elif not _known_unit(unit, runner):
+        elif not _known_unit_safe(unit, runner):
             rc, msg = 77, "unit %s is not known to systemd" % unit
         else:
             try:
                 r = runner(["systemctl", verb] + (["--no-block"] if verb == "start" else []) + [unit], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            universal_newlines=True, timeout=900)
                 rc, msg = r.returncode, (r.stdout or "")[-2000:]
-            except (OSError, subprocess.SubprocessError) as e:
+            except Exception as e:
                 rc, msg = 1, str(e)
         log("pg-arca-pgctl: %s %s %s by %s -> %s" % (rid, verb, unit, user, rc))
         try:

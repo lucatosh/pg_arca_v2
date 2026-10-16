@@ -75,6 +75,14 @@ class Bridge(unittest.TestCase):
             self.assertIn(why, ans["out"])
             self.assertFalse(any(c[1] in ("restart", "start", "stop") for c in calls), calls)
 
+    def test_a_request_that_is_not_an_object_does_not_stop_the_others(self):
+        calls = []
+        self._req("[]", rid="c" * 32)
+        rid = self._req({"verb": "restart", "unit": "postgresql@14-main.service"}, rid="d" * 32)
+        b.handle(self.d, self.users, runner_for(calls), self.pw, log=lambda m: None)
+        self.assertEqual(self._ans("c" * 32)["rc"], 77)
+        self.assertEqual(self._ans(rid)["rc"], 0)
+
     def test_user_not_listed(self):
         calls = []
         rid = self._req({"verb": "restart", "unit": "postgresql@14-main.service"})
