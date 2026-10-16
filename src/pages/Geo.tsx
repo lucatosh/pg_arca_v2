@@ -44,7 +44,7 @@ function SiteCard({ s, onOpen }: { s: Site; onOpen: () => void }) {
     <div className="row"><Dot kind={s.online ? s.health : 'bad'} /><button className="linkbtn" onClick={onOpen}><strong>{s.name}</strong></button><div className="grow" />{s.link === 'manual' ? <Badge title="Relationship declared by an operator (Organize… in the cluster list)">set by hand</Badge> : null}<Badge kind={s.role === 'primary' ? 'accent' : undefined}>{ROLE_LABEL[s.role]}</Badge></div>
     <dl className="kv small">
       <dt>Leader</dt><dd>{s.leader || <span style={{ color: 'var(--bad)' }}>none reachable</span>}{s.timeline ? <span className="faint"> · timeline {s.timeline}</span> : null}</dd>
-      <dt>WAL position</dt><dd className="mono">{s.lsn || '—'}</dd>
+      <dt className="xp">WAL position</dt><dd className="mono xp">{s.lsn || '—'}</dd>
       {s.role === 'standby' ? <>
         <dt>Receives from</dt><dd>{s.upstream ? <span className="mono">{s.upstream.host}:{s.upstream.port}</span> : '—'}{s.upstream?.slot ? <span className="faint"> · slot {s.upstream.slot}</span> : null}</dd>
         <dt>WAL receiver</dt><dd>{s.receiver?.status === 'streaming' ? <Badge kind="ok">streaming</Badge> : <Badge kind="bad">{s.receiver?.status || 'absent'}</Badge>}{s.receiver?.silentSec != null ? <span className="faint"> · last message {Math.round(s.receiver.silentSec)} s ago</span> : null}</dd>

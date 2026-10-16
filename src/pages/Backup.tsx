@@ -167,7 +167,7 @@ function SetsCard({ sets, d }: { sets: SetRow[]; d: any }) {
   if (!sets.length) return <Card title="Backup"><Empty icon="shield" title="No backups yet">The first full backup creates the starting point for every restore.</Empty></Card>;
   return <Card title="Backups in the repository" pad={false}><div className="tablewrap"><table className="t sets"><thead><tr><th>Backup</th><th>Type</th><th>Status</th><th>Started</th><th className="num">Duration</th><th className="num">Data</th><th className="num">Written</th></tr></thead><tbody>
     {rows.map(({ row: s, depth }) => <tr key={s.id} className={depth ? 'd1' : 'chainrow'}>
-      <td title={s.id}><span className="nowrap">{dt(s.start_time)}</span><div className="mono faint" style={{ fontSize: 11 }}>{s.id}</div></td><td>{TYPE_LABEL[s.type]}</td>
+      <td title={s.id}><span className="nowrap">{dt(s.start_time)}</span><div className="mono faint xp" style={{ fontSize: 11 }}>{s.id}</div></td><td>{TYPE_LABEL[s.type]}</td>
       <td>{s.status === 'COMPLETE' ? <Badge kind="ok">Valid</Badge> : s.status === 'FAILED' || s.status === 'UNRECOVERABLE' ? <Badge kind="bad" title={s.reason}>{s.status === 'FAILED' ? 'Failed' : 'Unrecoverable'}</Badge> : <Badge kind="info">{s.status === 'PENDING_WAL' ? 'Waiting for WAL' : s.status === 'EXPIRING' ? 'Being deleted' : 'Running'}</Badge>}</td>
       <td>{ago(s.start_time)}</td><td className="num">{dur(s.duration_sec)}</td><td className="num">{bytes(s.bytes_logical)}</td><td className="num">{bytes(s.bytes_written)}</td></tr>)}
   </tbody></table></div></Card>;

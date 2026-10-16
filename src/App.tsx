@@ -73,6 +73,9 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
     let n = 0; const step = () => { if (el.scrollHeight - el.clientHeight >= want || n++ > 40) { el.scrollTo({ top: want }); return; } requestAnimationFrame(step); }; step();
   }, [route.page, route.id, route.tab]);
   const prevPage = useRef('');
+  // basic / expert detail (independent review, big idea 5): LSNs, timelines, set ids and other internals are shown only to who asks, per browser
+  const [xp, setXp] = useState<boolean>(() => { try { return localStorage.getItem('pgarca.detail') === 'expert'; } catch { return false; } });
+  useEffect(() => { document.documentElement.setAttribute('data-detail', xp ? 'expert' : 'basic'); try { localStorage.setItem('pgarca.detail', xp ? 'expert' : 'basic'); } catch { /* private mode */ } }, [xp]);
   const cycle = () => { const n = th === 'auto' ? 'dark' : th === 'dark' ? 'light' : 'auto'; applyTheme(n); setTh(n); };
   const toggleRail = () => { const n = !rail; setRail(n); wr('arca.rail', n ? '1' : '0'); };
   const nav = (page: string, to: string, icon: string, text: string, extra?: React.ReactNode) =>
@@ -121,6 +124,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
       <div className="foot">
         <span className="trunc who" title={user}><Icon n="user" s={14} /> {user}{role !== 'admin' ? <span className="faint"> · {role === 'viewer' ? 'read-only' : 'operator'}</span> : null}</span>
         <span className="row gap-s">
+          <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={() => setXp(!xp)} aria-pressed={xp} title={xp ? 'Technical details shown (LSN, timelines, backup ids): click for the simple view' : 'Simple view: click to also show technical details (LSN, timelines, backup ids)'} aria-label="Technical details"><Icon n={xp ? 'zap' : 'layers'} /></button>
           <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={cycle} title={`Theme: ${th === 'auto' ? 'automatic' : th === 'dark' ? 'dark' : 'light'}`} aria-label="Change theme"><Icon n={th === 'dark' ? 'moon' : th === 'light' ? 'sun' : 'settings'} /></button>
           <button className="btn ghost sm icon" style={{ color: 'inherit' }} onClick={logout} title="Sign out" aria-label="Sign out"><Icon n="logout" /></button>
         </span>

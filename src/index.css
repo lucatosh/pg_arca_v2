@@ -503,3 +503,4 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 @media (max-width: 720px) { .banner .bacts { flex-basis: 100%; padding-left: 30px; } .banner .bacts .btn { white-space: normal; text-align: left; } }
 @media (max-width: 720px) { .activitystrip > button, .activitystrip > .btn, .activitystrip > .linkbtn { flex-basis: 100%; text-align: left; } .activitystrip .faint { display: none; } }
 @media (max-width: 720px) { .fleettable .midonly { display: none; } .fleettable td.protcell { min-width: 160px; } }
+:root:not([data-detail="expert"]) .xp { display: none !important; }   /* technical internals: shown in the expert view only */

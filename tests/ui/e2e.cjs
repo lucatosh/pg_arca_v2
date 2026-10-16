@@ -21,6 +21,10 @@ const base = process.env.BASE || 'http://localhost:5188';
   assert(await p.locator('text=Demo cluster').count() >= 1, 'demo present');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Data protection'); await shot('03-overview');
   // "What do you need?": one click lands in the restore wizard with the situation chosen; back to the situations for the flows below
+  // simple view by default: internals (backup ids, LSN) appear with the "technical details" switch, and go again
+  assert.equal(await p.evaluate(() => document.documentElement.getAttribute('data-detail')), 'basic');
+  await p.click('button[aria-label="Technical details"]'); assert.equal(await p.evaluate(() => document.documentElement.getAttribute('data-detail')), 'expert');
+  await p.click('button[aria-label="Technical details"]');
   await p.click('.task:has-text("Put back a dropped or emptied table")'); await p.waitForSelector('.rsum:has-text("I dropped or truncated a table")'); await shot('03a-task-restore');
   await p.click('button:has-text("Situation")'); await p.waitForSelector('text=What happened?');
   // backup tab
