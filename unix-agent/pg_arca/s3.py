@@ -118,7 +118,9 @@ class S3Client(object):
     # ---- operations
     def put(self, name, data, content_type="application/octet-stream"):
         """Upload bytes or a file path. Returns the ETag."""
-        if isinstance(data, str) and os.path.isfile(data):
+        if isinstance(data, str):
+            # a path: opened here, so a file removed since the inventory (GC, retention) is a FileNotFoundError the caller handles - not the
+            # path string uploaded as the object, nor a TypeError that ended the whole cycle (independent offsite review)
             with open(data, "rb") as f:
                 data = f.read()
         st, hd, _ = self._req("PUT", self.key(name), data=data, headers={"content-type": content_type})
@@ -132,18 +134,28 @@ class S3Client(object):
         st, hd, body = self._req("GET", self.key(name), headers=h)
         return body
 
-    def get_to_file(self, name, path):
+    def get_to_file(self, name, path, expect_size=None):
+        """Download into `path` (via path.part). A connection closed early reads as a clean end of data in http.client: the byte count is
+        checked against Content-Length and the size the listing gave, or the download fails (independent offsite review: a truncated pack
+        was renamed into place, then uploaded over the good object)."""
         resp = self._req("GET", self.key(name), stream=True)
         tmp = path + ".part"
         try:
+            want = resp.getheader("content-length") if hasattr(resp, "getheader") else None
+            want = int(want) if want and str(want).isdigit() else None
+            got = 0
             with open(tmp, "wb") as f:
                 while True:
                     buf = resp.read(1048576)
                     if not buf:
                         break
                     f.write(buf)
+                    got += len(buf)
                 f.flush()
                 os.fsync(f.fileno())
+            for w in (want, expect_size):
+                if w is not None and got != int(w):
+                    raise S3Error(0, "IncompleteRead", "downloaded %d bytes of %d" % (got, int(w)), self.key(name))
             os.rename(tmp, path)
         finally:
             resp.close()

@@ -1579,7 +1579,7 @@ class OperationExecutor:
         from pg_arca import overrides
         ctx = self._ctx_ro()
         src_repo, src_wal = p.get("source_repo"), p.get("source_wal")
-        if src_repo and src_repo not in (ctx.repo.previous or []):
+        if src_repo and src_repo not in (ctx.repo.previous or []) and src_repo not in (getattr(ctx.repo, "unreadable_previous", None) or {}):
             raise OpError("%s is not a previous backup location of this cluster" % src_repo)
         if src_wal and src_wal not in (ctx.wal.previous or []):
             raise OpError("%s is not a previous WAL archive location of this cluster" % src_wal)
@@ -1617,8 +1617,13 @@ class OperationExecutor:
             raise OpError("%s is not a previous backup location of this cluster" % src_repo)
         if src_wal and src_wal not in (ctx.wal.previous or []):
             raise OpError("%s is not a previous WAL archive location of this cluster" % src_wal)
-        if not ctx.repo.own_complete_sets():
-            raise OpError("the current location has no complete backup yet: keep the previous one until a full backup exists here")
+        try:                                                       # sets copied here by a migration are not a backup TAKEN here (independent review)
+            from pg_arca.engine.util import read_json
+            migrated = set(read_json(os.path.join(ctx.repo.path, migrate.STATE)).get("sets_done") or [])
+        except (IOError, OSError, ValueError, AttributeError):
+            migrated = set()
+        if not [s for s in ctx.repo.own_complete_sets() if s["id"] not in migrated]:
+            raise OpError("the current location has no complete backup taken there yet (migrated sets do not count): keep the previous one until a full backup exists here")
         res = migrate.drop_previous(ctx, src_repo, src_wal, abandon=bool(p.get("abandon")))
         ch = {}
         for key, val in (("repo_previous", src_repo), ("wal_previous", src_wal)):

@@ -275,10 +275,15 @@ class ConsoleClient(threading.Thread):
         # PostgreSQL not visible yet (replica still being cloned, Patroni bootstrapping, instance stopped): look again soon, not after 10 minutes
         # also while the instance does not answer: after a restart on another port / socket directory the old binding never connects again
         blind = not self.rt.worker and (not self.rt.instance or not self.rt.instance.get("running") or getattr(self.rt, "db_alive", None) is False)
-        wait_s = min(self.config.get("discovery_interval_seconds", 600), 15 if not self.rt.instance else 30) if blind else self.config.get("discovery_interval_seconds", 600)
+        # soon at first, then less and less often (a database that refuses the agent for good must not cost a full scan every 30 s forever)
+        n = getattr(self, "_blind_n", 0) if blind else 0
+        self._blind_n = n
+        wait_s = min(self.config.get("discovery_interval_seconds", 600), (15 if not self.rt.instance else 30) * (2 ** min(n, 6))) if blind else self.config.get("discovery_interval_seconds", 600)
         if now - self.last_discovery > wait_s:
             full_discovery = self.rt.refresh()
             self.last_discovery = now
+            if blind:
+                self._blind_n = n + 1
         # results and lease keep-alives FIRST, before the telemetry (which can take a minute while PostgreSQL is slow or restarting: the leases
         # lapsed meanwhile and the console handed running operations back)
         for op_id, (status, result, error) in list(self.unreported.items()):

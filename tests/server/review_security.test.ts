@@ -115,6 +115,30 @@ import { scrubSecrets } from '../../server/scrub';
     const y = await app.call('POST', `/api/approvals/${id}/approve`, { headers: { cookie: A, origin: 'https://console.corp.example', host: 'console.corp.example' } });
     assert.strictEqual(y.status, 200, JSON.stringify(y.body));
   }
+  { // 8. regression review: behind a reverse proxy that does not pass Host the console's own page still works (X-Pg-Arca), ports are normalised,
+    // PG_ARCA_ALLOWED_ORIGINS counts; LDAP over TLS is not "open"; a token created by a token belongs to the account behind it
+    const { app, call, A, O } = await setup();
+    await call('PUT', '/api/advanced', { approvals: { prod: true } }, A);
+    const mk = async (k: string) => (await call('POST', '/api/clusters/prod1/operations', { type: 'pg_set_param', params: { name: 'work_mem', value: '1GB' } }, O, k)).body.approval.id;
+    const id1 = await mk('p1');
+    const viaProxy = { cookie: A, origin: 'https://pgarca.example.com', host: '127.0.0.1:3000' };
+    assert.strictEqual((await app.call('POST', `/api/approvals/${id1}/approve`, { headers: viaProxy })).status, 403);
+    assert.strictEqual((await app.call('POST', `/api/approvals/${id1}/approve`, { headers: { ...viaProxy, 'x-pg-arca': '1' } })).status, 200);
+    const id2 = await mk('p2');
+    assert.strictEqual((await app.call('POST', `/api/approvals/${id2}/approve`, { headers: { cookie: A, origin: 'https://pgarca.example.com', host: 'pgarca.example.com:443' } })).status, 200, 'default port');
+    const id3 = await mk('p3');
+    process.env.PG_ARCA_ALLOWED_ORIGINS = 'https://pgarca.example.com';
+    assert.strictEqual((await app.call('POST', `/api/approvals/${id3}/approve`, { headers: viaProxy })).status, 200, 'allowed origin');
+    delete process.env.PG_ARCA_ALLOWED_ORIGINS;
+    assert.strictEqual(hbaOpenRule([{ type: 'hostssl', address: '10.0.0.0/8', method: 'ldap' }]), null);
+    assert.ok(hbaOpenRule([{ type: 'host', address: '10.0.0.0/8', method: 'ldap' }]));
+    assert.ok(hbaOpenRule([{ type: 'hostssl', address: '10.0.0.0/8', method: 'trust' }]));
+    assert.strictEqual(hbaOpenRule([{ type: 'host', address: '10.0.0.0/8', method: 'oauth' }]), null);
+    const t1 = (await call('POST', '/api/api-tokens', { label: 'ci', role: 'admin' }, A)).body.token;
+    const t2 = (await app.call('POST', '/api/api-tokens', { body: { label: 'ci2', role: 'operator' }, headers: { authorization: 'Bearer ' + t1, 'content-type': 'application/json' } })).body.token;
+    assert.ok(t2);
+    assert.strictEqual((await app.call('GET', '/api/clusters', { headers: { authorization: 'Bearer ' + t2 } })).status, 200, 'a token made by a token works');
+  }
   console.log('review security OK');
   process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

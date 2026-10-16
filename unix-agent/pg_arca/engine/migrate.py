@@ -237,6 +237,15 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
     if not p["ok"]:
         raise EngineError("PGA-MIG-004", "migration not started: %s" % "; ".join(c["text"] for c in p["checks"] if c["level"] == "bad"))
     src_repo, src_wal = p["source"]["repo"], p["source"]["wal"]
+    if src_repo:
+        # the destination is a repository before anything lands in it: repo.json with this node's chunking and key (without it the offsite mirror saw an
+        # empty repository and a later backup with another key wrote a fresh, mixed one - independent review); the source must be readable with this key
+        from pg_arca.engine.repo import _crypto_mismatch
+        why = _crypto_mismatch(src_repo, ctx.crypto)
+        if why:
+            raise EngineError("PGA-MIG-005", "the previous location %s is %s: its sets cannot be copied with this node's setting" % (src_repo, why),
+                              "configure the key it was written with, or drop that location once its history is no longer needed")
+        ctx.repo.init()
     st_path = os.path.join(ctx.repo.path, STATE)
     state = {}
     try:

@@ -32,7 +32,7 @@ const unreachable = (why: string) => new ApiError(0, { error: UNREACHABLE, messa
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function once(method: string, path: string, body: any, opts: { key?: string; signal?: AbortSignal; timeoutMs?: number }): Promise<Response> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { 'x-pg-arca': '1' };       // the console's own page (CSRF check behind proxies that rewrite Host)
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (opts.key) headers['idempotency-key'] = opts.key;
   const ctl = new AbortController(); let timedOut = false;

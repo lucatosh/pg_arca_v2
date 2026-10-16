@@ -408,7 +408,7 @@ exec python3 "$INSTALL_DIR/pg-arca-agent.py"
 LAUNCH
 chown 0:0 "$LAUNCHER.new"; chmod 0755 "$LAUNCHER.new"; mv "$LAUNCHER.new" "$LAUNCHER"
 RCNAME="pg_arca_agent${INST:+_$(printf '%s' "$INST" | tr -c 'A-Za-z0-9_\n' '_')}"
-if [[ -z "${PG_ARCA_NO_SERVICE:-}" && ! -d /run/systemd/system ]] && command -v openrc-run >/dev/null 2>&1 && [[ -d /etc/init.d ]]; then
+if [[ -z "${PG_ARCA_NO_SERVICE:-}" && ! -d /run/systemd/system ]] && command -v openrc-run >/dev/null 2>&1 && [[ -d /etc/init.d && -d /run/openrc ]]; then   # OpenRC really running (not merely installed in a container)
   # OpenRC (Alpine, Gentoo): supervised, restarted when it exits, started at boot
   cat > "/etc/init.d/$UNIT" <<RC
 #!/sbin/openrc-run

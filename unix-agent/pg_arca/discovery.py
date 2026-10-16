@@ -357,7 +357,7 @@ def parse_simple_yaml(text: str) -> Dict[str, Any]:
             lst = list_of(container)
             if lst is None:
                 continue
-            item = s[1:].strip()
+            item = _strip_comment(s[1:].strip())               # "- host all all 0/0 scram  # comment: x" is a string, not a map
             kv = _yaml_key(item) if item and item[0] not in "[{" else None
             if kv is not None and not item.startswith(("'", '"')) or (kv is not None and kv[1] != ""):
                 d = {}  # type: Dict[str, Any]
@@ -461,7 +461,9 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 class ClusterDiscoveryEngine:
     def __init__(self, search_paths: Optional[List[str]] = None, custom_variables: Optional[Dict[str, str]] = None,
-                 pg_user: str = "postgres"):
+                 pg_user: str = "postgres", patroni_cafiles: Optional[List[str]] = None, tls_insecure: bool = False):
+        self.patroni_cafiles = [x for x in (patroni_cafiles or []) if x]      # the agent's own trust for Patroni (patroni_ca_file, tls_ca_file)
+        self.tls_insecure = bool(tls_insecure)
         self.extra_paths = list(search_paths or [])
         self.variables = dict(custom_variables or {})
         self.pg_user = pg_user
@@ -833,7 +835,8 @@ class ClusterDiscoveryEngine:
                 conf_candidates.insert(0, m.group(1))
         for cand in glob.glob("/etc/postgresql/*/*/postgresql.conf"):
             txt = _read(cand) or ""
-            if parse_conf(txt).get("data_directory", "").rstrip("/") == pgdata.rstrip("/"):
+            dd = parse_conf(txt).get("data_directory", "")
+            if dd and os.path.realpath(dd) == os.path.realpath(pgdata):          # pgdata is a real path now; the conf may name it through a symlink
                 conf_candidates.insert(0, cand)
         conf = {}  # type: Dict[str, str]
         conf_file = None
@@ -1014,8 +1017,12 @@ class ClusterDiscoveryEngine:
             tls = None
             if scheme == "https":
                 ctl = cfg.get("ctl") if isinstance(cfg.get("ctl"), dict) else {}
-                tls = _tls_context([str(x).strip() for x in (ctl.get("cacert"), rest.get("cafile"), self._patroni_env(running, "PATRONI_RESTAPI_CAFILE")) if x],
+                tls = _tls_context([str(x).strip() for x in (ctl.get("cacert"), rest.get("cafile"), self._patroni_env(running, "PATRONI_RESTAPI_CAFILE")) if x] + self.patroni_cafiles,
                                    str(ctl.get("certfile") or "").strip() or None, str(ctl.get("keyfile") or "").strip() or None)
+                if self.tls_insecure:                       # the agent was told to skip verification (tls_insecure_skip_verify): the same for discovery
+                    import ssl
+                    tls.check_hostname = False
+                    tls.verify_mode = ssl.CERT_NONE
             # where to reach it: over https the certificate names connect_address (what the other members use), rarely 127.0.0.1 - try it first then;
             # over http the listen address (a wildcard: loopback) first. The first one that answers like Patroni is the URL the agent keeps.
             hosts = [self._rest_host(listen)]

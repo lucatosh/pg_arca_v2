@@ -247,6 +247,9 @@ def binary_profile(path):
     """Cached Profile of a binary (None when it cannot be run or parsed)."""
     if not path:
         return None
+    if os.sep not in path:                   # a bare name ("postgres"): the one the PATH gives
+        import shutil
+        path = shutil.which(path) or path
     try:                                     # keyed by the file itself: a package upgrade replaces the binary in place (same path, new version) while the agent runs
         st = os.stat(path)
         key = (path, st.st_ino, st.st_mtime, st.st_size)

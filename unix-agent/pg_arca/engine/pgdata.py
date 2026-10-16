@@ -146,5 +146,9 @@ def walk_pgdata(pgdata):
         if not any(n.startswith("PG_") for n in names):
             raise EngineError("PGA-GEN-045", "tablespace %s (%s) holds no PostgreSQL directory (PG_<version>_...): is its filesystem mounted?" % (oid, target),
                               "mount the tablespace's filesystem and run the backup again")
-        for item in _walk_tree(target, "pg_tblspc/%s/" % oid, exclude_top=False):
-            yield item
+        # only PostgreSQL's own version directories, as pg_basebackup does: a tablespace at a mount point also holds root's lost+found (0700),
+        # which the agent cannot read and which is not PostgreSQL's (regression review: every backup failed with PGA-GEN-044)
+        for n in sorted(names):
+            if n.startswith("PG_") and os.path.isdir(os.path.join(target, n)) and not os.path.islink(os.path.join(target, n)):
+                for item in _walk_tree(os.path.join(target, n), "pg_tblspc/%s/%s/" % (oid, n), exclude_top=False):
+                    yield item

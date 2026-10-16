@@ -158,6 +158,7 @@ export function requireAdmin(store: Store) {
       // automation (CI, Ansible, scripts): a bearer API token created by an administrator, with its own role and expiry; actor = "token:<label>"
       const t = apiTokenOf(store, req);
       if (t === 'bad') return res.status(401).json({ error: 'unauthenticated', message: 'API token unknown, revoked or expired.' });
+      // a token created by another token belongs to that token's owner: the account behind it (rotation by automation keeps working)
       if (t) { u = `token:${t.label}`; role = t.role; (req as any).tokenOwner = t.createdBy; touchApiToken(store, t.id); }
     }
     if (!u) return res.status(401).json({ error: 'unauthenticated' });
@@ -165,28 +166,39 @@ export function requireAdmin(store: Store) {
     (req as any).actor = u; (req as any).role = role;
     if (!can(role, req.method, p)) return res.status(403).json({ error: 'forbidden', message: `Role “${role}” cannot perform this action.`, requiredRole: requiredRole(req.method, p) });
     // CSRF defence in depth on top of SameSite=Strict: state-changing calls must be JSON or have no body, and a browser call must come from this
-    // console's own origin - also a bodiless POST (approve / reject / cancel), which the JSON rule alone let through (independent security review)
+    // console's own origin - also a bodiless POST (approve / reject / cancel), which the JSON rule alone let through (independent security review).
+    // Behind a reverse proxy that does not pass Host / X-Forwarded-Host the origin cannot be compared: the console's own pages also send
+    // X-Pg-Arca: 1, a header another site's page cannot add without a CORS preflight, which this server never grants.
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
       if (req.headers['content-length'] && req.headers['content-length'] !== '0' && !String(req.headers['content-type'] || '').includes('application/json')) {
         return res.status(415).json({ error: 'json_required' });
       }
-      if (!sameOrigin(req)) return res.status(403).json({ error: 'cross_origin', message: 'Request from another site refused.' });
+      if (!sameOrigin(req) && req.headers['x-pg-arca'] !== '1') return res.status(403).json({ error: 'cross_origin', message: 'Request from another site refused.' });
     }
     next();
   };
 }
 
-/** Origin (or, without it, Referer) of a browser request is this console. Requests without either (curl, scripts with an API token, agents) pass:
- *  browsers always send Origin on cross-site POSTs. The console's host is the Host header (or X-Forwarded-Host behind a proxy that sets it). */
-export function sameOrigin(req: Request): boolean {
-  const src = String(req.headers.origin || '') || String(req.headers.referer || '');
+/** host[:port] with the scheme's default port removed, lower case ("Console.example:443" with https -> "console.example"). */
+function normHost(h: string, scheme = ''): string {
+  let x = String(h || '').trim().toLowerCase().replace(/\/+$/, '');
+  const m = /^(https?):\/\//.exec(x); if (m) { scheme = m[1]; x = x.slice(m[0].length); }
+  x = x.split('/')[0];
+  if ((scheme === 'https' || !scheme) && x.endsWith(':443')) x = x.slice(0, -4);
+  if ((scheme === 'http' || !scheme) && x.endsWith(':80')) x = x.slice(0, -3);
+  return x;
+}
+/** The request's Origin (or, without it, Referer) is this console: its Host, any X-Forwarded-Host value, or an origin listed in
+ *  PG_ARCA_ALLOWED_ORIGINS (the same rule the log WebSocket uses). No Origin/Referer (curl, scripts, agents) = not a cross-site browser request. */
+export function sameOrigin(req: any): boolean {
+  const src = String(req.headers?.origin || '') || String(req.headers?.referer || '');
   if (!src) return true;
   if (src === 'null') return false;                                    // sandboxed frame / opaque origin: never the console's own page
-  let host: string;
-  try { host = new URL(src).host.toLowerCase(); } catch { return false; }
-  const fwd = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim().toLowerCase();
-  const own = String(req.headers.host || '').toLowerCase();
-  return host === own || (!!fwd && host === fwd);
+  const scheme = (/^(https?):/.exec(src.toLowerCase()) || [])[1] || '';
+  const o = normHost(src, scheme);
+  const hosts = [req.headers?.host, req.headers?.['x-forwarded-host']].filter(Boolean).flatMap((h: string) => String(h).split(',')).map(h => normHost(h, scheme));
+  const extra = String(process.env.PG_ARCA_ALLOWED_ORIGINS || '').split(',').map(x => x.trim()).filter(Boolean).map(x => normHost(x));
+  return hosts.includes(o) || extra.includes(o);
 }
 
 // ---------------------------------------------------------------------------------------------------------- API tokens (automation)
@@ -222,7 +234,7 @@ export function mountApiTokenRoutes(app: any, store: Store) {
     const days = ttlDays === undefined || ttlDays === null || ttlDays === '' ? null : Number(ttlDays);
     if (days !== null && !(Number.isInteger(days) && days >= 1 && days <= 3650)) return res.status(400).json({ error: 'invalid_ttl', message: 'ttlDays: 1-3650, or empty for no expiry.' });
     const token = API_TOKEN_PREFIX + crypto.randomBytes(30).toString('base64url');
-    const rec: ApiTokenRec = { id: 'tk' + crypto.randomBytes(6).toString('hex'), label, hash: sha256(token), role, createdBy: (req as any).actor, createdAt: nowIso(), expiresAt: days ? new Date(Date.now() + days * 86400_000).toISOString() : null };
+    const rec: ApiTokenRec = { id: 'tk' + crypto.randomBytes(6).toString('hex'), label, hash: sha256(token), role, createdBy: (req as any).tokenOwner || (req as any).actor, createdAt: nowIso(), expiresAt: days ? new Date(Date.now() + days * 86400_000).toISOString() : null };
     await store.mutate(d => { (d.settings.apiTokens ||= {})[rec.id] = rec; audit(d, { actor: (req as any).actor, action: 'apitoken.create', status: 'OK', details: { id: rec.id, label, role, expiresAt: rec.expiresAt } }); });
     res.status(201).json({ token, ...view(rec), note: 'The token is shown once. Send it as: Authorization: Bearer <token>' });
   });

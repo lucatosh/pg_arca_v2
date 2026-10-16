@@ -71,6 +71,29 @@ def _local_repo_files(repo_path):
     if not os.path.isfile(rj):
         return out
     out["repo.json"] = os.path.getsize(rj)
+    # sets FIRST, packs after: a backup that seals its packs and becomes COMPLETE between the two listings is then seen with all its packs
+    # (listed the other way round, a set could go offsite without its pack while the cycle said ok - independent offsite review)
+    sroot = os.path.join(repo_path, "stanza")
+    if os.path.isdir(sroot):
+        for st in os.listdir(sroot):
+            sj = os.path.join(sroot, st, "stanza.json")
+            if os.path.isfile(sj):
+                out["stanza/%s/stanza.json" % st] = os.path.getsize(sj)
+            bd = os.path.join(sroot, st, "backup")
+            if not os.path.isdir(bd):
+                continue
+            for sid in os.listdir(bd):
+                mp = os.path.join(bd, sid, "meta.json")
+                try:
+                    with open(mp, "r", encoding="utf-8") as f:
+                        if json.load(f).get("status") != "COMPLETE":
+                            continue
+                except (IOError, OSError, ValueError):
+                    continue
+                for fn in SET_FILES:
+                    p = os.path.join(bd, sid, fn)
+                    if os.path.isfile(p):
+                        out["stanza/%s/backup/%s/%s" % (st, sid, fn)] = os.path.getsize(p)
     pd = os.path.join(repo_path, "cas", "packs")
     if os.path.isdir(pd):
         for n in os.listdir(pd):
@@ -96,27 +119,6 @@ def _local_repo_files(repo_path):
                         out[os.path.relpath(fp, repo_path).replace(os.sep, "/")] = os.path.getsize(fp)
                     except OSError:
                         pass
-    sroot = os.path.join(repo_path, "stanza")
-    if os.path.isdir(sroot):
-        for st in os.listdir(sroot):
-            sj = os.path.join(sroot, st, "stanza.json")
-            if os.path.isfile(sj):
-                out["stanza/%s/stanza.json" % st] = os.path.getsize(sj)
-            bd = os.path.join(sroot, st, "backup")
-            if not os.path.isdir(bd):
-                continue
-            for sid in os.listdir(bd):
-                mp = os.path.join(bd, sid, "meta.json")
-                try:
-                    with open(mp, "r", encoding="utf-8") as f:
-                        if json.load(f).get("status") != "COMPLETE":
-                            continue
-                except (IOError, OSError, ValueError):
-                    continue
-                for fn in SET_FILES:
-                    p = os.path.join(bd, sid, fn)
-                    if os.path.isfile(p):
-                        out["stanza/%s/backup/%s/%s" % (st, sid, fn)] = os.path.getsize(p)
     return out
 
 
@@ -129,7 +131,7 @@ def _local_wal_files(wal_dir):
     for n in os.listdir(wal_dir):
         if n.startswith(".") and n not in (".retention_floor.json", ".pgarca-database-names"):
             continue
-        if n.endswith((".tmp", ".part")) or ".tmp." in n or n == "conflicts":
+        if n.endswith((".tmp", ".part")) or ".tmp." in n or ".mig." in n or ".arca." in n or n == "conflicts":
             continue
         p = os.path.join(wal_dir, n)
         if os.path.isfile(p):
@@ -156,9 +158,24 @@ def _order(key):
     return 4
 
 
+def immutable(key):
+    """Objects written once and never changed: packs, indexes, chunk files, a set's manifest/catalog/label, WAL segments and history files.
+    A local copy of another size is damage (truncated download, fsck) - never uploaded over the good remote copy."""
+    if key.startswith("repo/cas/"):
+        return True
+    parts = key.split("/")
+    if len(parts) == 6 and parts[0] == "repo" and parts[1] == "stanza" and parts[3] == "backup":
+        return parts[5] != "meta.json"
+    if key.startswith("wal/"):
+        n = key[4:]
+        return not n.startswith(".") and n not in ("ARCHIVE_OWNER.json", "ARCHIVE_KEY.json")
+    return False
+
+
 def plan(local, remote):
-    """local/remote: {key: size}. Returns (to_upload, to_delete) in a safe order."""
-    up = sorted((k for k, sz in local.items() if remote.get(k) != sz), key=lambda k: (_order(k), k))
+    """local/remote: {key: size}. Returns (to_upload, to_delete) in a safe order. An immutable object already in the bucket with another size
+    is not uploaded (see conflicts())."""
+    up = sorted((k for k, sz in local.items() if remote.get(k) != sz and not (k in remote and immutable(k))), key=lambda k: (_order(k), k))
     down = sorted((k for k in remote if k not in local), key=lambda k: (-_order(k), k))
     return up, down
 
@@ -236,6 +253,16 @@ class Mirror(object):
             return {"enabled": False}
         t0 = time.time()
         st = {"enabled": True, "started": t0, "endpoint": cfg["endpoint"], "bucket": cfg["bucket"], "prefix": cfg.get("prefix") or ""}
+        lock = self._lock(block=False)
+        if lock is None:                                         # a rehydrate is writing the repository: no mirror cycle meanwhile
+            return dict(self.status() or {}, skipped=True, busy="rehydrate")
+        try:
+            return self._sync(cfg, st, t0, cancel, progress, dry_run, force)
+        finally:
+            self._unlock(lock)
+
+    def _sync(self, cfg, st, t0, cancel, progress, dry_run, force):
+        dsig = None
         try:
             prev = self.status() or {}
             dsig = self.dir_signature()
@@ -250,7 +277,13 @@ class Mirror(object):
                 return dict(prev, skipped=True)
             c = client_for(cfg)
             remote = c.list("")
+            self._check_bucket_owner(c, remote)
             up, down = plan(local, remote)
+            conflicts = [k for k in local if k in remote and remote[k] != local[k] and immutable(k)]
+            if conflicts:
+                st["conflicts"] = len(conflicts)
+                st["conflicts_sample"] = conflicts[:5]
+                self.log("warn", "offsite: %d object(s) differ from the bucket's copy and are never uploaded over it (local damage?), e.g. %s" % (len(conflicts), conflicts[0]))
             # deletions: only what has been gone locally for a while, and never when the local side looks empty (share not mounted?)
             try:
                 with open(self.gone_path, "r", encoding="utf-8") as f:
@@ -307,6 +340,7 @@ class Mirror(object):
                 deleted += 1
                 gone.pop(k, None)
             self._write(self.gone_path, gone)
+            st["local_sig"] = sig                       # what was inventoried BEFORE the upload: a change during the cycle is seen by the next one
             st.update(ok=failed == 0, uploaded=uploaded, uploaded_bytes=done_b, deleted=deleted, failed=failed, seconds=round(time.time() - t0, 1), finished=time.time(),
                       last_error=("%d upload(s) failed, first: %s" % (failed, first_err)) if failed else None)
             if uploaded or deleted or failed:
@@ -317,15 +351,56 @@ class Mirror(object):
         except (IOError, OSError) as e:
             st.update(ok=False, last_error="local storage: %s" % e, finished=time.time())
             self.log("warn", "offsite sync skipped: %s" % e)
+        except Exception as e:                                  # whatever happens, the status says it (it used to keep the previous "ok")
+            st.update(ok=False, last_error="%s: %s" % (type(e).__name__, e), finished=time.time())
+            self.log("warn", "offsite sync failed: %s" % e)
         prev = self.status() or {}
         if st.get("ok"):
             st["last_ok"] = st["finished"]
-            st["local_sig"] = _sig(self.local_inventory())
-            self._last_dsig = self.dir_signature()
+            self._last_dsig = dsig
         else:
             st["last_ok"] = prev.get("last_ok")
         self._write(self.status_path, st)
         return st
+
+    def _lock(self, block):
+        """The mirror and a rehydrate never run at the same time: a half-downloaded repository is not mirrored (independent review: the
+        mirror uploaded a truncated pack over the good copy while a rehydrate ran)."""
+        import fcntl
+        d = os.path.join(self.state_dir, "offsite")
+        os.makedirs(d, exist_ok=True)
+        f = open(os.path.join(d, ".lock"), "a")
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | (0 if block else fcntl.LOCK_NB))
+            return f
+        except OSError:
+            f.close()
+            return None
+
+    @staticmethod
+    def _unlock(f):
+        try:
+            f.close()
+        except Exception:
+            pass
+
+    def _check_bucket_owner(self, c, remote):
+        """One database per bucket prefix: two clusters sharing it overwrote each other's wal/<segment> and deleted each other's WAL below their
+        own floors. The archive's owner file in the bucket must be this archive's."""
+        if "wal/ARCHIVE_OWNER.json" not in remote:
+            return
+        try:
+            with open(os.path.join(self.config.get("wal_archive_dir") or "", "ARCHIVE_OWNER.json"), "r", encoding="utf-8") as f:
+                mine = str(json.load(f).get("system_identifier") or "")
+        except (IOError, OSError, ValueError):
+            return
+        try:
+            theirs = str(json.loads(c.get("wal/ARCHIVE_OWNER.json").decode("utf-8")).get("system_identifier") or "")
+        except (S3Error, ValueError, AttributeError):
+            return
+        if mine and theirs and mine != theirs:
+            raise S3Error(0, "PrefixInUse", "the bucket prefix holds the WAL of another database (system identifier %s; this one is %s): "
+                          "give each cluster its own prefix" % (theirs, mine))
 
     def _local_path(self, key):
         """Where an object key lands locally, or None when the key must not be written: the bucket is not trusted (anyone with its keys, or a
@@ -389,18 +464,33 @@ class Mirror(object):
         cfg = self.cfg()
         if not cfg:
             raise S3Error(0, "NotConfigured", "no offsite copy is configured on this node")
+        lock = self._lock(block=True)
+        try:
+            return self._rehydrate(cfg, what, progress, cancel, include_retained)
+        finally:
+            self._unlock(lock)
+
+    def _rehydrate(self, cfg, what, progress, cancel, include_retained):
         c = client_for(cfg)
         remote = c.list("")
         local = self.local_inventory()
         retained = (lambda k: False) if include_retained else self.retained_on_purpose()
         missing = [k for k in remote if k not in local and (what == "all" or k.startswith(what + "/"))]
         skipped = [k for k in missing if retained(k)]
-        keys = sorted((k for k in missing if not retained(k)), key=lambda k: (_order(k), k))
+
+        def order(k):
+            # the archive's identity files first, then the WAL (archive_command refuses a known archive found empty: hours of rehydrate
+            # would fill pg_wal on a running primary), then the repository in its safe order
+            if k.startswith("wal/"):
+                return (0, k) if k[4:] in ("ARCHIVE_OWNER.json", "ARCHIVE_KEY.json", ".retention_floor.json", ".pgarca-database-names") else (1, k)
+            return (2 + _order(k), k)
+        keys = sorted((k for k in missing if not retained(k)), key=order)
         differ = [k for k in remote if k in local and local[k] != remote[k]]
         total = sum(remote[k] for k in keys)
         done = 0
         got = 0
         refused = []
+        failed = []
         for i, k in enumerate(keys):
             if cancel and cancel():
                 raise S3Error(0, "Cancelled", "cancelled")
@@ -410,14 +500,22 @@ class Mirror(object):
                 done += remote[k]
                 continue
             os.makedirs(os.path.dirname(path), mode=0o750, exist_ok=True)
-            c.get_to_file(k, path)
+            try:
+                c.get_to_file(k, path, expect_size=remote[k])        # size checked: a connection cut early never leaves a short file in place
+            except S3Error as e:
+                if e.status in (401, 403):
+                    raise
+                failed.append("%s (%s)" % (k, e))
+                continue
             got += 1
             done += remote[k]
             if progress and (i % 10 == 0 or i == len(keys) - 1):
                 progress({"phase": "rehydrate", "downloaded": got, "to_download": len(keys), "bytes": done, "bytes_total": total})
         if refused:
             self.log("warn", "offsite rehydrate: %d object(s) refused (name outside the repository/archive or a local file in the way), e.g. %s" % (len(refused), refused[0]))
-        return {"downloaded": got, "bytes": done, "already_local": len(remote) - len(missing) - len(differ), "differ": differ[:20], "differ_count": len(differ),
+        if failed:
+            self.log("warn", "offsite rehydrate: %d object(s) could not be downloaded completely, e.g. %s: run it again" % (len(failed), failed[0]))
+        return {"downloaded": got, "failed": failed[:20], "failed_count": len(failed), "bytes": done, "already_local": len(remote) - len(missing) - len(differ), "differ": differ[:20], "differ_count": len(differ),
                 "refused": refused[:20], "refused_count": len(refused), "retained_skipped": len(skipped), "retained_bytes": sum(remote[k] for k in skipped)}
 
     # ---- background thread

@@ -69,7 +69,9 @@ class Runtime(object):
     def __init__(self, config):
         self.config = config
         # the configured data directory is looked at even where no glob reaches it (stopped, unusual path): explicit first, the PGDATA hint second
-        self.engine = ClusterDiscoveryEngine(search_paths=[x for x in (config.get("pg_data"), config.get("pg_data_hint")) if x], pg_user=config.get("pg_user") or "postgres")
+        self.engine = ClusterDiscoveryEngine(search_paths=[x for x in (config.get("pg_data"), config.get("pg_data_hint")) if x], pg_user=config.get("pg_user") or "postgres",
+                                             patroni_cafiles=[x for v in (config.get("patroni_ca_file"), config.get("tls_ca_file")) if v for x in str(v).split(os.pathsep) if x],
+                                             tls_insecure=bool(config.get("tls_insecure_skip_verify")))
         self.refreshed_at = 0.0
         self.db_alive = None
         self.report = {}
@@ -105,7 +107,10 @@ class Runtime(object):
         insts = rep.get("postgres_instances", [])
         pick = self._pick(insts, rep)
         self.instance = pick
-        _note_instance(c.get("state_dir"), pick)
+        if pick and pick.get("running"):
+            # only a RUNNING instance becomes the agent's binding: at boot nothing may run yet, and the alphabetical first stopped directory
+            # (a leftover of pg_upgrade) used to be recorded and served for good (regression review)
+            _note_instance(c.get("state_dir"), pick)
         if pick:
             sock = pick.get("socket_directory")
             sock = sock if sock and os.path.isdir(sock) else None
@@ -164,6 +169,16 @@ class Runtime(object):
             pick = next((i for i in insts if same(i.get("data_directory"), prev)), None)
             if pick is not None:
                 other = [i for i in insts if i is not pick and i.get("running")]
+                stopped_since = self._stopped_since(prev, pick.get("running"))
+                if not pick.get("running") and len(other) == 1 and stopped_since and time.time() - stopped_since > 3600:
+                    # stopped for more than an hour while exactly ONE other instance runs (a major upgrade, a move): that one is served from now on
+                    logger.warning("the instance this agent served (%s) has been stopped for over an hour and %s runs: serving %s from now on",
+                                   prev, other[0].get("data_directory"), other[0].get("data_directory"))
+                    rep.setdefault("findings", []).insert(0, {
+                        "severity": "warning", "code": "INSTANCE_SWITCHED", "title": "The agent now serves another instance",
+                        "detail": "%s has been stopped for over an hour and %s is the only one running: the agent serves it now (backups go to its own chain)." % (prev, other[0].get("data_directory")),
+                        "fix": "If this is not what you want, set pg_data in the agent settings.", "target": other[0].get("data_directory")})
+                    return other[0]
                 if not pick.get("running") and other:
                     rep.setdefault("findings", []).insert(0, {
                         "severity": "warning", "code": "BOUND_STOPPED", "title": "The instance this agent serves is stopped while another one runs",
@@ -171,6 +186,30 @@ class Runtime(object):
                         "fix": "If %s replaced it (major upgrade, move), set pg_data to it in the agent settings." % other[0].get("data_directory"), "target": prev})
                 return pick
         return next((i for i in insts if i.get("running") and i.get("port_listening")), None) or next((i for i in insts if i.get("running")), None) or (insts[0] if insts else None)
+
+    def _stopped_since(self, data_dir, running):
+        """Since when the bound instance is seen stopped (persisted: an agent restart does not reset it); None while it runs."""
+        p = os.path.join(self.config.get("state_dir") or "", "instance-stopped.json")
+        if running:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+            return None
+        try:
+            with open(p) as f:
+                j = json.load(f)
+            if j.get("data_directory") == data_dir:
+                return float(j.get("since") or 0) or None
+        except (OSError, ValueError, TypeError):
+            pass
+        try:
+            with open(p + ".tmp", "w") as f:
+                json.dump({"data_directory": data_dir, "since": time.time()}, f)
+            os.rename(p + ".tmp", p)
+        except OSError:
+            pass
+        return time.time()
 
     @staticmethod
     def _pick_patroni(pick, clusters, n_instances, pg_data=None):
@@ -282,6 +321,17 @@ class Runtime(object):
             v = [x for x in (self.config.get(key) or []) if x]
             if v:
                 out[name] = [{"path": x, "readable": os.path.isdir(x) and os.access(x, os.R_OK | os.X_OK)} for x in v]
+        if out.get("repo_previous"):
+            try:                                                   # another encryption setting than this node's: listed, but its sets cannot be read here
+                from pg_arca.engine.crypt import from_settings
+                from pg_arca.engine.repo import _crypto_mismatch
+                cr = from_settings(self.config.get("encryption_key_file") or None)
+                for e in out["repo_previous"]:
+                    why = _crypto_mismatch(e["path"], cr) if e["readable"] else ""
+                    if why:
+                        e["readable"], e["why"] = False, why
+            except Exception:
+                pass
         if self.config.get("repo_path"):
             out["repo_path"] = self.config.get("repo_path")
         if self.config.get("wal_archive_dir"):

@@ -46,6 +46,22 @@ class Lock(object):
         self.release()
 
 
+def _crypto_mismatch(root, crypto):
+    """Why `root` cannot be read with `crypto` ('' when it can, or when it has no repo.json to tell)."""
+    try:
+        meta = read_json(os.path.join(root, "repo.json"))
+    except (IOError, OSError, ValueError):
+        return ""
+    enc = meta.get("encryption") or None
+    if enc and not crypto:
+        return "encrypted (key %s) and no key is configured here" % enc.get("key_id")
+    if enc and enc.get("key_id") != crypto.key_id:
+        return "encrypted with another key (%s)" % enc.get("key_id")
+    if crypto and not enc:
+        return "not encrypted, and this node reads with an encryption key"
+    return ""
+
+
 class Repo(object):
     def __init__(self, path, stanza, wal=None, algo=None, level=3, crypto=None, previous=None, readonly=False):
         self.path = os.path.realpath(path)
@@ -53,6 +69,14 @@ class Repo(object):
         # earlier locations of this repository (the destination was changed and the old content is not migrated yet): READ only. Their sets are
         # listed and restorable; new backups never deduplicate against them, never use them as parent and retention never touches them.
         self.previous = [os.path.realpath(x) for x in (previous or []) if x and os.path.realpath(x) != self.path]
+        # a previous location written with another encryption setting (plain, or another key) cannot be read with this one: its sets were listed
+        # as restorable and every read failed (independent review). Left out of the read paths, reported as unreadable.
+        self.unreadable_previous = {}
+        for root in list(self.previous):
+            why = _crypto_mismatch(root, crypto)
+            if why:
+                self.previous.remove(root)
+                self.unreadable_previous[root] = why
         self.stanza = stanza
         self.wal = wal                       # WalManager
         self.algo = algo

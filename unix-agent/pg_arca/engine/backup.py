@@ -738,7 +738,14 @@ def _storage_error(e, ctx):
     import errno as _e
     where = ctx.repo.path
     fn = getattr(e, "filename", None)
-    if fn and isinstance(fn, str):
+    if fn and isinstance(fn, str) and e.errno in (_e.ENOSPC, getattr(_e, "EDQUOT", -1)):
+        try:
+            outside = not os.path.realpath(fn).startswith(os.path.realpath(where).rstrip("/") + "/")
+        except (OSError, ValueError):
+            outside = False
+        if outside:
+            return EngineError("PGA-GEN-047", "no space left on the filesystem of %s: %s" % (fn, e.strerror or e), "free space there (scratch / temporary directory) and run it again")
+    if fn and isinstance(fn, str) and e.errno not in (_e.ENOSPC, getattr(_e, "EDQUOT", -1)):
         try:
             inside = os.path.realpath(fn).startswith(os.path.realpath(where).rstrip("/") + "/")
         except (OSError, ValueError):

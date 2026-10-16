@@ -101,6 +101,7 @@ if _zstd is None:                                   # Python >= 3.14 has zstd in
         _stdz = None
 
 
+KEY_FILE = "ARCHIVE_KEY.json"          # which encryption key the archive's segments use ("none": plain): one key per archive
 OWNER_FILE = "ARCHIVE_OWNER.json"      # the database (system identifier) this archive belongs to: one database per WAL archive directory
 
 
@@ -281,6 +282,55 @@ class WalManager:
         if cur and cur != sysid:
             raise WalArchiveError("PGA-WAL-032", "this WAL archive (%s) belongs to another database (system identifier %s; this one is %s): each PostgreSQL cluster "
                                   "needs its own WAL archive directory. Set a different wal_archive_dir for this cluster" % (self.wal_dir, cur, sysid))
+
+    def archive_key(self):
+        """key_id recorded for this archive, "none" for a plain one, None when nothing is recorded yet."""
+        try:
+            with open(os.path.join(self.wal_dir, KEY_FILE), "r", encoding="utf-8") as f:
+                return str(json.load(f).get("key_id") or "") or None
+        except (IOError, OSError, ValueError):
+            return None
+
+    def _check_key(self):
+        """One key per archive: a node without the key, or with another one, archiving into it (after a failover, a node configured differently)
+        made segments that no single setting can read back - point-in-time recovery across that window was lost while archive_command said
+        success (independent offsite/encryption review). The first writer records the key the archive already uses (from its segments' meta), else its own."""
+        mine = self.crypto.key_id if self.crypto else "none"
+        cur = self.archive_key()
+        if cur is None:
+            cur = self._infer_key() or mine
+            p = os.path.join(self.wal_dir, KEY_FILE)
+            tmp = "%s.%d.%d.%s.tmp" % (p, os.getpid(), threading.get_ident(), os.urandom(4).hex())
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"key_id": cur, "since": time.time()}, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                try:
+                    os.link(tmp, p)
+                except FileExistsError:
+                    pass
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            cur = self.archive_key() or cur
+        if cur != mine:
+            raise WalArchiveError("PGA-WAL-033", "this WAL archive (%s) is %s, and this node %s: its segments could not be read back with one setting. "
+                                  "Configure the same encryption key file on every node that archives here"
+                                  % (self.wal_dir, "encrypted with key %s" % cur if cur != "none" else "not encrypted",
+                                     "has key %s" % mine if mine != "none" else "has no key"))
+
+    def _infer_key(self):
+        """The key the archive's newest segments were written with ("none" for plain ones), None when the archive holds no segment yet."""
+        try:
+            metas = sorted((n for n in os.listdir(self.wal_dir) if n.endswith(".meta") and SEG_RE.match(n[:-5])), reverse=True)[:5]
+        except OSError:
+            return None
+        for n in metas:
+            m = self._read_meta(n[:-5])
+            if m is not None:
+                return m.get("key_id") if m.get("enc") else "none"
+        return None
 
     def _known(self, sysid):
         if not self.known_file:
@@ -551,6 +601,8 @@ class WalManager:
         sysid = segment_sysid(src_path) if not is_history else None
         if sysid:
             self._check_owner(sysid)
+        if not is_history:
+            self._check_key()
         raw_sha = _sha256_file(src_path)
         existing, codec = self._find(name)
         if existing:
@@ -707,6 +759,9 @@ class WalManager:
         from other short-lived databases. Kept with the archive (shared by every node), written only when something new is seen, bounded."""
         seen = getattr(self, "_dbn_seen", None)
         if seen is None:
+            own = self._read_database_names(self.wal_dir, strict=True)
+            if own is None:
+                return False                       # unreadable (another key, I/O error, torn file): never rewritten from an empty view
             seen = self._dbn_seen = dict(self.database_names())
         new = dict((str(d.get("oid")), str(d.get("name"))) for d in dbs or [] if d.get("oid") and d.get("name"))
         if all(seen.get(k) == v for k, v in new.items()):
@@ -720,7 +775,10 @@ class WalManager:
         theirs = self._read_database_names(src_dir)
         seen = getattr(self, "_dbn_seen", None)
         if seen is None:
-            seen = self._dbn_seen = dict(self._read_database_names(self.wal_dir))
+            own = self._read_database_names(self.wal_dir, strict=True)
+            if own is None:
+                return 0
+            seen = self._dbn_seen = dict(own)
         add = dict((k, v) for k, v in theirs.items() if k not in seen)
         if not add:
             return 0
@@ -728,6 +786,9 @@ class WalManager:
         return len(add) if self._write_database_names(seen) else 0
 
     def _write_database_names(self, seen):
+        mine, cur = (self.crypto.key_id if self.crypto else "none"), self.archive_key()
+        if cur is not None and cur != mine:
+            return False                           # never plaintext (or another key) into an archive that uses a different key
         if len(seen) > 5000:
             for k in sorted(seen, key=lambda x: int(x) if x.isdigit() else 0)[:len(seen) - 5000]:
                 seen.pop(k, None)
@@ -750,15 +811,20 @@ class WalManager:
             if os.path.exists(tmp):
                 os.unlink(tmp)
 
-    def _read_database_names(self, d):
+    def _read_database_names(self, d, strict=False):
+        """{oid: name}; {} when there is no registry. Any other failure (another key, I/O, a torn file): {} - or None with strict, for a writer
+        that must not overwrite what it could not read (independent review: a node without the key reduced the registry to nothing)."""
         try:
             with open(os.path.join(d, self.DBNAMES), "rb") as f:
                 data = f.read()
+        except (IOError, OSError) as e:
+            return {} if getattr(e, "errno", None) == errno.ENOENT else (None if strict else {})
+        try:
             if self.crypto:
                 data = self.crypto.open(data, "dbnames")
             return dict(json.loads(data.decode("utf-8")).get("names") or {})
         except Exception:
-            return {}
+            return None if strict else {}
 
     def database_names(self):
         """{oid (str): name} recorded by note_databases ({} when none or unreadable); the archive's previous locations are read too (this one wins)."""
@@ -790,7 +856,7 @@ class WalManager:
                     plain = self.crypto.open(f.read(), "wal:" + name)
                 with open(src, "wb") as f:
                     f.write(plain)
-            elif self.crypto and not name.endswith(".history") and not BACKUP_LABEL_RE.match(name):
+            elif self.crypto and meta is None and not name.endswith(".history") and not BACKUP_LABEL_RE.match(name):
                 # no meta: an encrypted object whose writer died before writing it is still ours - decrypt it; only a really plain object is refused
                 try:
                     with open(path, "rb") as f:

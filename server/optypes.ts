@@ -161,7 +161,12 @@ export function hbaOpenRule(rules: any): string | null {
     // the method as the agent applies it (trimmed, first word); anything but a challenge/certificate method towards the network is an opening:
     // trust and password, but also ident (the client says who it is), ldap/radius/pam (clear text on the wire) - independent security review
     const m = String(r.method || '').trim().split(/\s+/)[0].toLowerCase(), t = String(r.type || '').trim().toLowerCase(), a = String(r.address || '').trim();
-    const safe = ['scram-sha-256', 'md5', 'cert', 'reject', 'gss', 'sspi'];
+    // safe anywhere: challenge, certificate, Kerberos/SSPI, OAuth bearer (PG 18), reject. Clear-text password methods (password, ldap, pam, radius)
+    // are acceptable on hostssl only (TLS protects the password on the wire); trust and ident never (regression review: an LDAP rule over TLS,
+    // offered by the console's own editor, made every later pg_hba change admin-only)
+    const safe = ['scram-sha-256', 'md5', 'cert', 'reject', 'gss', 'sspi', 'oauth'];
+    const clearText = ['password', 'ldap', 'pam', 'radius'];
+    if (t === 'hostssl' && clearText.includes(m)) continue;
     if (!safe.includes(m) && t !== 'local' && !localAddr(a)) return `${t || 'host'} ${r.database ?? 'all'} ${r.user ?? 'all'} ${a || '(no address)'} ${m || '(no method)'}`;
   }
   return null;

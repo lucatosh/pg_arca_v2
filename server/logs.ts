@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import type http from 'http';
-import { sessionUser } from './auth';
+import { sessionUser, sameOrigin } from './auth';
 import { LEVEL_SEVERITY, FLUSH_MS, MAX_QUEUE, MAX_BUFFERED_BYTES, recordLog, recent, setWatching } from './logring';
 import type { LiveLogEntry } from './logring';
 export type { LiveLogEntry } from './logring';
@@ -92,12 +92,8 @@ setInterval(recompute, 2000).unref();
 
 /** Same origin as the console (Host, or X-Forwarded-Host behind a proxy), or listed in PG_ARCA_ALLOWED_ORIGINS (comma separated). No Origin header = not a browser: allowed (the session cookie is still required). */
 export function originAllowed(req: any): boolean {
-  const origin = String(req.headers?.origin || '');
-  if (!origin) return true;
-  const o = origin.replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase();
-  const hosts = [req.headers?.host, req.headers?.['x-forwarded-host']].filter(Boolean).flatMap((h: string) => String(h).split(',')).map(h => h.trim().toLowerCase());
-  const extra = String(process.env.PG_ARCA_ALLOWED_ORIGINS || '').split(',').map(x => x.trim().replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase()).filter(Boolean);
-  return hosts.includes(o) || extra.includes(o);
+  if (!String(req.headers?.origin || '')) return true;
+  return sameOrigin({ headers: { ...req.headers, referer: undefined } });   // one rule for the WebSocket and the API (ports normalised)
 }
 
 function onConnection(ws: WebSocket, req: any, authenticate: (req: any) => string | null) {
