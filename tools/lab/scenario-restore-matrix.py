@@ -57,15 +57,27 @@ class Cluster(object):
 
     def _candidates(self, c):
         out = []
-        for exe in ("psql", "/usr/pgsql-16/bin/psql", "/usr/lib/postgresql/18/bin/psql", "/usr/lib/postgresql/14/bin/psql"):
+        for exe in ("psql", "/usr/pgsql-16/bin/psql", "/usr/pgsql-15/bin/psql", "/usr/pgsql-17/bin/psql", "/usr/lib/postgresql/18/bin/psql", "/usr/lib/postgresql/14/bin/psql"):
             out.append(["docker", "exec", "-u", "postgres", c, exe, "-X", "-Atq"])
             out.append(["docker", "exec", "-u", "postgres", c, exe, "-X", "-Atq", "-h", "/run/pg15", "-p", "5433"])
             if SUPERPW:
                 out.append(["docker", "exec", "-e", "PGPASSWORD=" + SUPERPW, c, exe, "-X", "-Atq", "-h", "localhost", "-U", "postgres"])
         return out
 
+    @staticmethod
+    def container(node):
+        """The container of a node: its name, or the one whose hostname is the node's name (hy-rm: node hyb1 runs in container hy1)."""
+        names = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True).stdout.split()
+        if node in names:
+            return node
+        for n in names:
+            h = subprocess.run(["docker", "inspect", "-f", "{{.Config.Hostname}}", n], capture_output=True, text=True).stdout.strip()
+            if h == node:
+                return n
+        return node
+
     def sql(self, db, q, sock=None, port=None):
-        c = self.primary()
+        c = self.container(self.primary())
         if not self.psql or self.psql[4] != c:
             for cand in self._candidates(c):
                 r = subprocess.run(cand + ["-d", "postgres", "-c", "select 1"], capture_output=True, text=True)
