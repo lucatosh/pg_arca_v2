@@ -7,6 +7,10 @@ export type RestoreIntent = 'table' | 'rows' | 'database' | 'cluster';
 const pending: Record<string, RestoreIntent> = {};
 /** The restore wizard takes it at mount: the situation is already chosen. */
 export const takePendingIntent = (clusterId: string): RestoreIntent | null => { const i = pending[clusterId] || null; delete pending[clusterId]; return i; };
+/** A point chosen elsewhere (a named restore point): the wizard's When step starts on it. */
+const pendingPoint: Record<string, { lsn: string; label: string }> = {};
+export const takePendingPoint = (clusterId: string) => { const p = pendingPoint[clusterId] || null; delete pendingPoint[clusterId]; return p; };
+export function openRestoreAt(clusterId: string, lsn: string, label: string) { pendingPoint[clusterId] = { lsn, label }; go(`c/${encodeURIComponent(clusterId)}/restore`); }
 export function openRestore(clusterId: string, intent?: RestoreIntent) { if (intent) pending[clusterId] = intent; go(`c/${encodeURIComponent(clusterId)}/restore`); }
 
 export interface Task { id: string; label: string; hint: string; icon: string; run: (clusterId: string) => void; agentOnly?: boolean }

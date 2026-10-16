@@ -94,8 +94,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=Restore completed', { timeout: 15000 }); await p.waitForSelector('text=roles created as NOLOGIN placeholders'); await shot('12-restore-done');
   await p.click('summary:has-text("Summary for the incident ticket")'); await p.waitForSelector('pre.out:has-text("Restore on prodpg")'); assert(/Back to: .*\nHow it ended: copy in /.test(await p.locator('pre.out:has-text("Restore on prodpg")').innerText()), 'incident summary');
   // the checked copy takes the place of appdb with one click (no SQL to type): typed confirmation, the original kept as appdb_before_...
-  await p.click('button:has-text("in place of appdb")'); if (!(await p.locator('.modal button:has-text("Replace")').isDisabled())) throw new Error('swap needs the typed confirmation');
-  assert.equal(await typeName(), 'appdb'); await p.click('.modal button:has-text("Replace")'); await p.waitForSelector('text=appdb replaced', { timeout: 10000 }); await p.waitForSelector('code:has-text("appdb_before_")'); await shot('12f-db-swapped');
+  await p.click('button:has-text("in place of appdb")'); if (!(await p.locator('.modal button:has-text("Put in place")').isDisabled())) throw new Error('swap needs the typed confirmation');
+  assert.equal(await typeName(), 'appdb'); await p.click('.modal button:has-text("Put in place")'); await p.waitForSelector('text=appdb replaced', { timeout: 10000 }); await p.waitForSelector('code:has-text("appdb_before_")'); await shot('12f-db-swapped');
   // and the default end: restore + replace in ONE operation
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need a database")'); await p.waitForSelector('button[role=radio]:has-text("billing")', { timeout: 10000 });
   await p.click('button[role=radio]:has-text("billing")'); await p.click('button:has-text("Next")'); await p.waitForSelector('text=To which point in time?');
@@ -146,7 +146,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button.start-restore'); await p.click('.modal button:has-text("Start")');
   await p.waitForSelector('text=Differences found', { timeout: 15000 });   // the row comparison starts by itself
   await p.click('label:has-text("[200]") input'); await p.click('label:has-text("[1]") input'); await shot('12a-rows');
-  await p.click('button:has-text("Apply (2)")'); await p.click('.modal button:has-text("Apply")'); await p.waitForSelector('text=Rows recovered', { timeout: 10000 });
+  await p.click('button:has-text("Put back the 2 selected rows")'); await p.click('.modal button:has-text("Put back")'); await p.waitForSelector('text=Rows recovered', { timeout: 10000 });
   // default end for rows: every deleted / changed row back in the same operation
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I deleted or updated rows")');
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
@@ -172,6 +172,10 @@ const base = process.env.BASE || 'http://localhost:5188';
   // the copy instead: asks where, and production is not touched
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need to rebuild the whole server")'); await p.click('button:has-text("Next")');
   await p.click('label:has-text("Only a temporary copy to inspect")'); await p.waitForSelector('text=Where to put the copy', { timeout: 10000 });
+  // "Restore to this point…" from the Backup tab: the wizard opens with that point as the target once the situation is chosen
+  await tab('Protection', 'Backup'); await p.click('.card:has-text("Restore points") button:has-text("Restore to this point")'); await p.waitForSelector('text=What happened?');
+  await p.click('button.choice:has-text("I need a database")'); await p.click('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button:has-text("Next")');
+  await p.waitForSelector('label.opt.on:has-text("Restore point: Before release 4.2")', { timeout: 10000 }); await shot('09d-restore-point-preset');
   // recovery & storage: recovery instance (global -> cluster, check, installation) and backup destination (check, apply)
   await p.goto(base + '/#/infra'); await p.waitForSelector('h1:has-text("Storage & recovery")'); await p.waitForSelector('text=All clusters');
   await p.locator('tr:has-text("All clusters") button:has-text("Edit")').click(); await p.waitForSelector('text=Where the recovery instance runs');
@@ -243,24 +247,24 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.keyboard.press('Control+k'); await p.waitForSelector('[role=dialog][aria-label="Quick search"]'); await p.keyboard.type('audit'); await p.keyboard.press('Enter');
   await p.waitForSelector('text=Who changed what: every action'); await shot('15-audit');
   // discovery
-  await p.goto(base + '/#/discovery'); await p.waitForSelector('text=Configuration differences between nodes'); await p.waitForSelector('text=To fix'); await shot('15a-discovery');
+  await p.goto(base + '/#/discovery'); await p.waitForSelector('text=Configuration differences between nodes'); await p.waitForSelector('.card:has-text("Findings")'); await shot('15a-discovery');
   // strategies
   await p.goto(base + '/#/strategy'); await p.waitForSelector('text=without automatic backups'); await shot('15b-strategy');
-  await p.click('button:has-text("Apply the recommended ones per environment")'); await p.waitForSelector('text=Every cluster has an active policy'); await shot('15c-strategy-applied');
+  await p.click('button:has-text("Apply the recommended ones per environment")'); await p.waitForSelector('.modal >> text=Production'); await p.click('.modal button:has-text("Apply")'); await p.waitForSelector('text=Every cluster has an active policy'); await shot('15c-strategy-applied');
   await p.click('tr:has-text("prodpg") button:has-text("Assign")'); await p.click('label.opt:has-text("Long retention")'); await p.click('.modal button:has-text("Save")');
   await p.waitForSelector('tr:has-text("prodpg"):has-text("Assigned to this cluster")');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Backup policy'); await p.waitForSelector('.card .badge:has-text("Long retention")'); await shot('15d-backup-strategy');
   // a template with the rc.1 policy fields: days of recoverability, heavy-work hours, read rate limit -> summarized on the card, kept on reopen
   { await p.goto(base + '/#/strategy'); await p.waitForSelector('button:has-text("New template")'); await p.click('button:has-text("New template")'); await p.waitForSelector('.modal:has-text("New template")');
     const fld = (l) => `.modal .field:has(label:text-is("${l}")) input`;
-    await p.fill(fld('Name'), 'Night window'); await p.click('.modal button:has-text("Advanced:")'); await p.fill(fld('Keep restore points for at least (days)'), '30'); await p.fill(fld('Read rate limit (MB/s, 0 = none)'), '50');
+    await p.fill(fld('Name'), 'Night window'); await p.click('.modal button:has-text("Advanced:")'); await p.fill(fld('Keep point-in-time recovery for at least (days)'), '30'); await p.fill(fld('Read rate limit (MB/s, 0 = none)'), '50');
     await p.fill(fld('Recovery point objective (minutes, 0 = none)'), '15'); await p.fill(fld('Recovery time objective (minutes, 0 = none)'), '240');
     await p.fill('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=0', '22'); await p.fill('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=1', '6');
     await shot('15d1-template-fields'); await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Template saved');
     const card = p.locator('.tpl:has-text("Night window")'); await card.waitFor();
     for (const s of ['30 days of history', 'read limit 50 MB/s', 'fulls and verifications 22:00–06:00', 'RPO 15 min', 'RTO 4 h']) assert.ok((await card.innerText()).includes(s), `template summary shows "${s}"`);
     await card.locator('button:has-text("Edit")').click(); await p.waitForSelector('.modal:has-text("Edit template")'); await p.click('.modal button:has-text("Advanced:")');
-    assert.equal(await p.inputValue(fld('Keep restore points for at least (days)')), '30'); assert.equal(await p.inputValue(fld('Read rate limit (MB/s, 0 = none)')), '50'); assert.equal(await p.inputValue(fld('Recovery point objective (minutes, 0 = none)')), '15');
+    assert.equal(await p.inputValue(fld('Keep point-in-time recovery for at least (days)')), '30'); assert.equal(await p.inputValue(fld('Read rate limit (MB/s, 0 = none)')), '50'); assert.equal(await p.inputValue(fld('Recovery point objective (minutes, 0 = none)')), '15');
     assert.equal(await p.inputValue('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=0'), '22'); assert.equal(await p.inputValue('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=1'), '6');
     await p.fill(fld('Read rate limit (MB/s, 0 = none)'), '0'); await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Template saved');
     await p.waitForFunction(() => { const c = [...document.querySelectorAll('.tpl')].find(e => e.textContent.includes('Night window')); return c && !c.textContent.includes('read limit'); });

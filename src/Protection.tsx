@@ -30,7 +30,9 @@ export function protectionDetails(p?: Protection | null, long = false): string[]
 }
 
 export function ProtectionLine({ p, long = false, problems = true }: { p?: Protection | null; long?: boolean; problems?: boolean }) {
-  const kind = !p ? undefined : p.state === 'ok' ? 'ok' : p.state === 'warn' ? 'warn' : p.state === 'bad' ? 'bad' : undefined;
+  // when the problems are listed apart (cluster header), the dot answers only the sentence next to it: how far back the data can be restored
+  const st = !problems && p && p.backups && p.archiving === 'ok' && p.rpoState === 'ok' ? 'ok' : p?.state;
+  const kind = !p ? undefined : st === 'ok' ? 'ok' : st === 'warn' ? 'warn' : st === 'bad' ? 'bad' : undefined;
   const det = protectionDetails(p, long);
   return <span className="protline" title={(p?.problems || []).map(x => x.title).join('\n') || undefined}>
     <Dot kind={kind as any} /><span><strong>{protectionHeadline(p)}</strong>{det.length ? <span className="faint">{' · '}{det.join(' · ')}</span> : null}

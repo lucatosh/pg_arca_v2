@@ -47,7 +47,7 @@ export function Audit({ clusters }: { clusters: any[] }) {
 
 const FIX_TAB: Record<string, [string, string]> = { ARCHIVE_OFF: ['backup', 'Open Backup'], ARCHIVE_FOREIGN: ['backup', 'Open Backup'], NO_CHECKSUMS: ['backup', 'Open Backup'], SSL_OFF: ['hba', 'Open Access (HBA)'], WAL_MINIMAL: ['params', 'Open Parameters'] };
 const SEV: Record<string, number> = { critical: 0, warning: 1, info: 2 };
-const SEV_LABEL: Record<string, string> = { critical: 'Critical', warning: 'To fix', info: 'Suggestion' };
+const SEV_LABEL: Record<string, string> = { critical: 'Urgent', warning: 'Needs attention', info: 'Information' };
 
 export function Discovery() {
   const q = useQuery<any>('/api/discovery/results', { interval: 10000 });
@@ -62,7 +62,7 @@ export function Discovery() {
     <div className="pagehead"><div className="grow"><h1>Discovery</h1><p className="sub">How each server is configured: what the agents find on the servers, what to fix in their configuration and where nodes of the same cluster disagree. Problems of the clusters themselves (backups, replication, archiving) are on <a href="#/today">Today</a>.</p></div><Button icon="refresh" busy={busy} onClick={scan}>Run now</Button></div>
     {d ? <div className="grid g4">{[['Nodes with agent', d.summary.nodes, ''], ...(d.summary.postgres ? [['PostgreSQL instances', d.summary.postgres, '']] : []), ['Critical configuration findings', d.summary.critical, d.summary.critical ? 'bad' : 'ok'], ['Differences between nodes', d.summary.drift, d.summary.drift ? 'warn' : 'ok']].map(([l, v, k]) => <Card key={l as string}><div className="kpi"><span className="v" style={k === 'bad' ? { color: 'var(--bad)' } : k === 'warn' ? { color: 'var(--warn)' } : undefined}>{v}</span><span className="l">{l}</span></div></Card>)}</div> : null}
     {!d ? <Skeleton h={100} /> : !d.nodes.length ? <Card><Empty icon="search" title="No agent connected">Real discovery starts from the agent: install it on a server (Clusters → Connect cluster) and the services found will appear here.</Empty></Card> : <div className="stack-l" style={{ marginTop: 16 }}>
-      <Card title="To fix" actions={<select className="input" style={{ width: 'auto' }} value={sev} onChange={e => setSev(e.target.value)} aria-label="Severity"><option value="all">All</option><option value="critical">Critical</option><option value="warning">To fix</option><option value="info">Suggestions</option></select>} pad={false}>
+      <Card title="Findings" actions={<select className="input" style={{ width: 'auto' }} value={sev} onChange={e => setSev(e.target.value)} aria-label="Severity"><option value="all">All</option><option value="critical">Urgent</option><option value="warning">Needs attention</option><option value="info">Information</option></select>} pad={false}>
         {!grouped.length ? <div className="bd"><Banner kind="ok" title="No configuration findings">The agents found nothing to report in the servers' configuration{sev !== 'all' ? ' with this filter' : ''}. Cluster problems, if any, are on Today.</Banner></div> :
           <div className="tablewrap"><table className="t"><tbody>{grouped.map((f, i) => <tr key={i}><td style={{ width: 120 }}><Badge kind={f.severity === 'critical' ? 'bad' : f.severity === 'warning' ? 'warn' : 'info'}>{SEV_LABEL[f.severity] || f.severity}</Badge></td>
             <td><strong>{f.title}</strong><div className="small muted">{f.detail}</div>{f.fix ? <div className="small" style={{ marginTop: 4 }}><Icon n="zap" s={13} /> {f.fix}</div> : null}</td>

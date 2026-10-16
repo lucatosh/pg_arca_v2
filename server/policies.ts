@@ -116,7 +116,9 @@ export function mountPolicyRoutes(app: any, store: Store) {
     return {
       templates: allTemplates(st), suggested: SUGGESTED, assignments: st.settings.policyAssignments || {},
       folders: [...new Set(st.clusters.map((c: any) => normFolder(c.folder)).filter(Boolean))].sort(),
-      clusters: st.clusters.filter((c: any) => !c.isSandbox).map((c: any) => ({ id: c.id, name: c.name, environment: c.environment, folder: normFolder(c.folder), source: c.source, effective: resolvePolicy(st, c) })),
+      clusters: st.clusters.filter((c: any) => !c.isSandbox).map((c: any) => ({ id: c.id, name: c.name, environment: c.environment, folder: normFolder(c.folder), source: c.source, effective: resolvePolicy(st, c),
+        // a geo standby site is backed up on its primary site: it does not count as "without automatic backups"
+        standbySite: Object.values(st.nodes).some((n: any) => n.clusterId === c.id && (n.snapshot?.patroni?.local_node?.role === 'standby_leader' || !!n.snapshot?.patroni?.standby_cluster)) })),
     };
   };
   app.get('/api/policies', (_req: Request, res: Response) => res.json(view()));

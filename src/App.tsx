@@ -88,7 +88,8 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
       {clusters.length ? (() => { const real = clusters.filter(c => !c.isSandbox); const t = real.map(c => toneOf(c, healthMap)); const bad = t.filter(x => x === 'bad').length, warn = t.filter(x => x === 'warn').length;
         const tone = bad ? 'bad' : warn ? 'warn' : 'ok';
         return <button className={`fleetstate ${tone}`} onClick={() => go('today')} title="Overall status: open Today for causes and next steps"><Dot kind={tone} />
-          <span className="lbl">{bad ? `${bad} urgent` : warn ? `${warn} need attention` : 'All good'}</span><span className="lbl faint small">{real.length - bad - warn}/{real.length} ok</span></button>; })() : null}
+          {/* the same counts as Today (findings, not clusters): one number for one thing across the console */}
+          <span className="lbl">{hc?.critical ? `${hc.critical} urgent` : ''}{hc?.critical && hc?.warning ? ' · ' : ''}{hc?.warning ? `${hc.warning} need${hc.warning === 1 ? 's' : ''} attention` : ''}{!hc?.critical && !hc?.warning ? (bad || warn ? 'Needs attention' : 'All good') : ''}</span></button>; })() : null}
       <div className="sidescroll">
       <div className="sgroup">Overview</div>
       <nav>
@@ -146,7 +147,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
             return <>{base?.folder ? <><Icon n="chev" s={12} /><span className="faint trunc">{base.folder}</span></> : null}{p ? <><Icon n="chev" s={12} /><a className="trunc" href={`#/c/${encodeURIComponent(p.id)}`} title="Primary site">{p.name}</a></> : null}</>; })()}<Icon n="chev" s={12} /><strong className="trunc">{cur?.name || '…'}</strong></> : <strong>{PAGE_TITLE[route.page] || ''}</strong>}
         </div>
         <div className="grow" />
-        <button className="btn actbtn" onClick={() => window.dispatchEvent(new Event('arca:dock-toggle'))} aria-controls="dock-panel" title="Activity: running and recent operations (Ctrl J)"><Icon n="activity" /><span className="pt">Activity</span></button>
+        <span id="actslot" className="actslot" />
         <button className="btn palbtn" onClick={() => setPal(true)} aria-label="Search clusters and actions"><Icon n="search" /><span className="pt">Search clusters, actions…</span><span className="kbd end">Ctrl K</span></button>
       </div>
       <main className="page" ref={pageRef}>

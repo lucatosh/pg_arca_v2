@@ -7,6 +7,7 @@ import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Modal, Skeleton, bytes, dt, dur, ago, num, nof, setName } from '../ui';
 import { Op, revalidate, toast, useOpRunner, useQuery, useDraft } from '../hooks';
 import { OP_LABEL, OpPanel, Result } from './shared';
+import { openRestoreAt } from '../tasks';
 
 export const TYPE_LABEL: Record<string, string> = { full: 'Full', diff: 'Differential', incr: 'Incremental' };
 export interface SetRow { id: string; type: 'full' | 'diff' | 'incr'; parent?: string; status: string; start_time?: string; stop_time?: string; duration_sec?: number; bytes_logical: number; bytes_written: number; reason?: string; timeline?: number }
@@ -56,7 +57,7 @@ export function BackupTab({ c }: { c: any }) {
     <Banner kind={v.kind} title={v.title} actions={!d.policy?.enabled || d.policySource?.scope === 'none' ? (rec.sug && !d.policySource?.disabled ? <Button sm kind="primary" icon="shield" busy={rec.busy} onClick={rec.assign}>Schedule with “{rec.sug.name}” (recommended)</Button> : null) : undefined}>{v.text}</Banner>
     {d.archiveMode === 'off' ? <ArchiveSetup c={c} refresh={q.refresh} /> : null}
     <RunCard c={c} hasFull={done.some(s => s.type === 'full')} running={d.running || []} refresh={q.refresh} />
-    <RestorePoints c={c} />
+    <RestorePoints c={c} from={done.length ? Math.min(...done.map(s => Date.parse(s.stop_time!) || Infinity)) : Infinity} />
     <div className="grid g2"><StrategyCard c={c} policy={d.policySource?.scope === 'none' || d.policySource?.disabled ? null : d.policy} source={d.policySource} onSaved={q.refresh} /><HealthCard c={c} d={d} refresh={q.refresh} /></div>
     <SetsCard sets={sets} d={d} />
     {(() => { const ns = (reg.data?.nodes || []).filter((n: any) => n.clusterId === c.id && n.kind !== 'worker'); return ns.length ? <OffsiteCopy clusterId={c.id} nodes={ns.map((n: any) => ({ id: n.id, name: n.name, online: n.online }))} /> : null; })()}
@@ -82,7 +83,7 @@ function ArchiveSetup({ c, refresh }: { c: any; refresh: () => void }) {
 /** Named points to come back to ("Before release 4.2"): marked before a risky change, offered first in the restore wizard. */
 export function useRestorePoints(clusterId: string) { return useQuery<{ points: RestorePoint[] }>(`/api/clusters/${encodeURIComponent(clusterId)}/restore-points`, { interval: 60000 }); }
 export interface RestorePoint { name: string; lsn: string; at: string; timeline: number | null; by: string; opId: string }
-function RestorePoints({ c }: { c: any }) {
+function RestorePoints({ c, from }: { c: any; from: number }) {
   const q = useRestorePoints(c.id); const list = q.data?.points || [];
   const r = useOpRunner(c.id, () => { q.refresh(); revalidate(`/api/clusters/${encodeURIComponent(c.id)}/restore-points`); }, `rp:${c.id}`);
   const [ask, setAsk] = useState(false); const [name, setName] = useDraft(`rp:${c.id}:name`, ''); const ok = /^[A-Za-z0-9 _.:/+#()-]{1,60}$/.test(name.trim());
@@ -91,8 +92,9 @@ function RestorePoints({ c }: { c: any }) {
     <p className="small muted">Before a risky change (a release, a migration, a bulk update) mark the moment: if it goes wrong, the restore wizard offers it as the point to go back to.</p>
     {r.op && r.op.status !== 'succeeded' ? <OpPanel op={r.op} error={r.error} label="Marking the restore point" /> : null}
     {r.op?.status === 'succeeded' && r.op.result?.warning ? <Banner kind="warn">{r.op.result.warning}</Banner> : null}
-    {list.length ? <div className="tablewrap"><table className="t"><tbody>{(all ? list : list.slice(0, 5)).map(p => <tr key={p.opId}>
-      <td><strong>{p.name}</strong></td><td className="small nowrap">{dt(p.at)}</td><td className="small muted">by {p.by}</td><td className="small mono xp">{p.lsn}</td></tr>)}</tbody></table></div>
+    {list.length ? <div className="tablewrap"><table className="t"><tbody>{(all ? list : list.slice(0, 5)).map(p => { const gone = Date.parse(p.at) < from; return <tr key={p.opId} style={gone ? { opacity: .6 } : undefined}>
+      <td><strong>{p.name}</strong></td><td className="small nowrap">{dt(p.at)}</td><td className="small muted">by {p.by}</td><td className="small mono xp">{p.lsn}</td>
+      <td className="num">{gone ? <span className="small faint" title="The oldest backup kept is more recent than this point">No longer restorable</span> : <Button sm icon="restore" onClick={() => openRestoreAt(c.id, p.lsn, `restore point “${p.name}” (${dt(p.at)})`)}>Restore to this point…</Button>}</td></tr>; })}</tbody></table></div>
       : <p className="small faint">No restore point yet.</p>}
     {list.length > 5 ? <button className="linkbtn small" onClick={() => setAll(!all)}>{all ? 'Show the latest 5' : `Show all ${list.length}`}</button> : null}
     {ask ? <Modal title="Mark a restore point" onClose={() => setAsk(false)} footer={<><div className="grow" /><Button onClick={() => setAsk(false)}>Cancel</Button>
@@ -118,11 +120,11 @@ function RunCard({ c, hasFull, running, refresh }: { c: any; hasFull: boolean; r
   const hint = { full: 'Copies everything. The starting point of every chain.', diff: 'Only what changed since the last full backup.', incr: 'Only the pages changed since the last backup: fast and small.' }[type];
   return <Card title="Run a backup">
     <div className="stack">
-      <div className="row wrap"><div className="seg" role="group" aria-label="Backup type">{(['full', 'diff', 'incr'] as const).map(t => <button key={t} aria-pressed={type === t} disabled={active || (t !== 'full' && !hasFull)} onClick={() => { setType(t); r.reset(); }}>{TYPE_LABEL[t]}</button>)}</div>
-        <Button kind="primary" icon="play" busy={r.busy} disabled={active} onClick={() => r.run('backup_run', { type, start_fast: fast }, { nodeId: from || undefined })}>Start backup</Button><span className="small muted">{hint}</span></div>
+      <div className="row wrap"><div className="seg xp" role="group" aria-label="Backup type">{(['full', 'diff', 'incr'] as const).map(t => <button key={t} aria-pressed={type === t} disabled={active || (t !== 'full' && !hasFull)} onClick={() => { setType(t); r.reset(); }}>{TYPE_LABEL[t]}</button>)}</div>
+        <Button kind="primary" icon="play" busy={r.busy} disabled={active} onClick={() => r.run('backup_run', { type, start_fast: fast }, { nodeId: from || undefined })}>Start backup</Button><span className="small muted"><strong className="xpn">{TYPE_LABEL[type]}. </strong>{hint}<span className="xpn"> The type and the other options are in the expert view.</span></span></div>
       {fromReplica && !walShared && !sameWalPath ? <Banner kind="warn" title="This replica may not see the WAL the primary archives">The backup waits for the segments the primary archives. The cluster has no shared destination (NFS/SMB) configured, so each node most likely writes to its own local directory: the wait would fail within a minute. Run the backup from the primary, or set one shared archive for every node in Storage &amp; recovery → Backup storage.</Banner> : null}
       {mine.length > 1 ? <label className="row small" style={{ gap: 8 }}>Run from <select className="input" style={{ width: 'auto' }} value={from} onChange={e => setFrom(e.target.value)}><option value="">automatic (primary)</option>{mine.map(n => <option key={n.id} value={n.id}>{n.name}{n.role ? ` — ${n.role}` : ''}</option>)}</select><span className="muted">— from a replica the primary carries no load; the console asks it to switch the WAL segment by itself.</span></label> : null}
-      <label className="row small" style={{ gap: 8 }}><input type="checkbox" checked={fast} onChange={e => setFast(e.target.checked)} /> Immediate checkpoint <span className="muted">— the backup starts right away; when off, PostgreSQL spreads the checkpoint and the start can take a few minutes (less I/O).</span></label>
+      <label className="row small xp" style={{ gap: 8 }}><input type="checkbox" checked={fast} onChange={e => setFast(e.target.checked)} /> Immediate checkpoint <span className="muted">— the backup starts right away; when off, PostgreSQL spreads the checkpoint and the start can take a few minutes (less I/O).</span></label>
       {!hasFull ? <p className="small muted">The first backup must be a full backup.</p> : null}
       {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} />{r.op?.status === 'succeeded' ? <Banner kind="ok" title={`${setName(r.op.result?.set)} completed`}>{bytes(r.op.result?.bytes_logical)} read, {bytes(r.op.result?.bytes_written)} written to the repository in {dur(r.op.result?.duration_sec)}{r.op.result?.chunks_dedup ? `; ${num(r.op.result.chunks_dedup)} chunks already present (deduplication)` : ''}.</Banner> : null}</> : null}
       {other.map(o => <div key={o.id} className="stack"><OpPanel op={o} cancel={() => cancelOther(o.id)} /></div>)}

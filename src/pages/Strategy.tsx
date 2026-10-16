@@ -1,13 +1,13 @@
 import React, { useMemo, useState } from 'react';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Empty, Field, Icon, Modal, Skeleton, nof } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, nof } from '../ui';
 import { revalidate, toast, useQuery, clearDrafts, useDraft, revalidateMatching } from '../hooks';
 import { go } from '../router';
 
 interface Policy { enabled: boolean; fullEveryHours: number; incrEveryHours: number; retentionFull: number; verifyEveryHours: number; verifyDeep: boolean; retryAfterMinutes: number; retentionDays?: number; preferStandby?: boolean; readLimitMBs?: number; windowStart?: number; windowEnd?: number; rpoTargetMinutes?: number; rtoTargetMinutes?: number }
 interface Tpl { id: string; name: string; description: string; builtin: boolean; policy: Policy }
 interface Source { scope: string; key: string; templateId?: string; templateName?: string; disabled?: boolean }
-interface PView { templates: Tpl[]; suggested: Record<string, string>; assignments: Record<string, { templateId?: string; policy?: Policy; disabled?: boolean }>; folders: string[]; clusters: { id: string; name: string; environment: string; folder: string; source: string; effective: { policy: Policy | null; source: Source } }[] }
+interface PView { templates: Tpl[]; suggested: Record<string, string>; assignments: Record<string, { templateId?: string; policy?: Policy; disabled?: boolean }>; folders: string[]; clusters: { id: string; name: string; environment: string; folder: string; source: string; effective: { policy: Policy | null; source: Source }; standbySite?: boolean }[] }
 const ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 const ENV_LABEL: Record<string, string> = { prod: 'Production', prep: 'Pre-production', int: 'Integration', dev: 'Development', test: 'Test' };
 const BLANK: Policy = { enabled: true, fullEveryHours: 168, incrEveryHours: 24, retentionFull: 2, verifyEveryHours: 168, verifyDeep: false, retryAfterMinutes: 30 };
@@ -49,7 +49,7 @@ function PolicyForm({ p, setP }: { p: Policy; setP: (p: Policy) => void }) {
   const n = (k: keyof Policy) => (e: React.ChangeEvent<HTMLInputElement>) => setP({ ...p, [k]: Number(e.target.value) });
   const [adv, setAdv] = useState(false);
   return <div className="stack">
-    <Field label="Keep restore points for at least (days)" hint="Every point in time of this many days back stays restorable, whatever else happens (0 = keep only the number of full backups set under Advanced)."><input className="input" type="number" min={0} max={3650} value={p.retentionDays ?? 0} onChange={n('retentionDays')} style={{ maxWidth: 140 }} /></Field>
+    <Field label="Keep point-in-time recovery for at least (days)" hint="Every point in time of this many days back stays restorable, whatever else happens (0 = keep only the number of full backups set under Advanced)."><input className="input" type="number" min={0} max={3650} value={p.retentionDays ?? 0} onChange={n('retentionDays')} style={{ maxWidth: 140 }} /></Field>
     <div className="grid g2">
       <Every label="Full backup" value={p.fullEveryHours} choices={FULL_EVERY} unit="hours" min={24} max={720} onChange={v => setP({ ...p, fullEveryHours: v })} />
       <Every label="Incremental backup" hint="Only what changed since the previous backup: fast and small." value={p.incrEveryHours} choices={INCR_EVERY} unit="hours" min={0} max={168} onChange={v => setP({ ...p, incrEveryHours: v })} />
@@ -128,7 +128,8 @@ export function StrategyPage() {
   const [dlg, setDlg] = useDraft<{ scope: 'global' | 'env' | 'folder' | 'cluster'; k: string; label: string; env?: string } | null>('strategy:dlg', null);
   const [edit, setEdit] = useDraft<Tpl | 'new' | null>('strategy:edit', null); const [folderEdit, setFolderEdit] = useDraft<string | null>('strategy:folder', null);
   const v = q.data;
-  const uncovered = useMemo(() => (v?.clusters || []).filter(c => !c.effective.policy && c.source !== 'direct'), [v]);
+  const uncovered = useMemo(() => (v?.clusters || []).filter(c => !c.effective.policy && c.source !== 'direct' && !c.standbySite), [v]);
+  const [askApply, setAskApply] = useState(false);
   if (!v) return <div className="stack"><Skeleton h={40} /><Skeleton h={220} /></div>;
   const envCount = (e: string) => v.clusters.filter(c => c.environment === e).length;
   const applySuggested = async () => {
@@ -143,7 +144,12 @@ export function StrategyPage() {
     <td className="num"><Button sm onClick={() => setDlg({ scope, k, label: title, env })}>Assign</Button></td></tr>; };
   return <>
     <div className="pagehead"><div className="grow"><h1>Backup policies</h1><p className="sub">Decide once per environment or folder; every cluster follows the closest level. An assignment on a single cluster overrides everything.</p></div></div>
-    {uncovered.length ? <Banner kind="warn" title={`${nof(uncovered.length, 'cluster')} without automatic backups`} actions={<Button sm kind="primary" onClick={applySuggested}>Apply the recommended ones per environment</Button>}>{uncovered.map(c => c.name).join(', ')}. The recommended template depends on the environment (production → “{v.templates.find(t => t.id === v.suggested.prod)?.name}”).</Banner> : v.clusters.length ? <Banner kind="ok" title="Every cluster has an active policy" /> : null}
+    {uncovered.length ? <Banner kind="warn" title={`${nof(uncovered.length, 'cluster')} without automatic backups`} actions={<Button sm kind="primary" onClick={() => setAskApply(true)}>Apply the recommended ones per environment…</Button>}>{uncovered.map(c => c.name).join(', ')}. The recommended template depends on the environment (production → “{v.templates.find(t => t.id === v.suggested.prod)?.name}”).</Banner> : v.clusters.length ? <Banner kind="ok" title="Every cluster has an active policy" /> : null}
+    {askApply ? <Confirm title="Apply the recommended policies?" confirmLabel="Apply" onClose={() => setAskApply(false)} onConfirm={() => { setAskApply(false); applySuggested(); }}>
+      {/* whole environments change in one click: say exactly which, with what, and which clusters they reach */}
+      <ul className="small" style={{ margin: 0, paddingLeft: 18 }}>{[...new Set(uncovered.map(c => c.environment))].filter(e => ENVS.includes(e)).map(e => <li key={e}>
+        <strong>{ENV_LABEL[e] || e}</strong> → “{v.templates.find(t => t.id === v.suggested[e])?.name || v.suggested[e]}”: {nof(envCount(e), 'cluster')} of this environment ({v.clusters.filter(c => c.environment === e).map(c => c.name).join(', ')})</li>)}</ul>
+      <p className="small muted">Backups start at the next scheduled time of each policy. A cluster or folder with its own assignment keeps it.</p></Confirm> : null}
     <div className="stack-l" style={{ marginTop: 16 }}>
       <Card title="Levels" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Level</th><th>Assignment</th><th /></tr></thead><tbody>
         <Line scope="global" k="" title="All clusters" sub="Applies wherever no environment, folder or cluster sets its own" />

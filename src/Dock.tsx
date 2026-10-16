@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from './api';
 import { Icon, Button, Progress, ago } from './ui';
 import { Op, OPS_SLIM_KEY, isTerminal, revalidateOps, toast, useQuery, useRole, dismissToastsTagged, isOnScreen } from './hooks';
@@ -102,12 +103,19 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
   const pickFilt = (f: 'all' | 'failed' | 'ok') => { setFilt(f); write(FILT, f); };
   const chipClass = running.length ? 'live' : failedNew.length ? 'fail' : '';
   const one = running.length === 1 ? running[0] : null; const onePct = one ? pctOf(one.progress) : null;
-  const chipText = one ? `${label(one)}${onePct != null ? ` · ${onePct}%` : ' running'}` : running.length ? `${running.length} operations running` : failedNew.length ? `${failedNew.length} ${failedNew.length === 1 ? 'operation failed' : 'operations failed'}` : 'Activity';
+  // a failure names WHAT failed (round 4: "1 operation failed" during a restore was read as the restore)
+  const chipText = one ? `${label(one)}${onePct != null ? ` · ${onePct}%` : ' running'}` : running.length ? `${running.length} operations running` : failedNew.length === 1 ? `${label(failedNew[0])} failed` : failedNew.length ? `${failedNew.length} operations failed` : 'Activity';
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => { setSlot(document.getElementById('actslot')); }, []);
 
   // idle, the activity lives in the top bar (a floating chip covered the wizards' Next / Put back buttons, round-3 review):
   // the chip floats only while something runs or has just failed, and the panel opens where it was asked from
-  const floating = !!chipClass;
-  return <div className={`dock ${floating ? '' : 'top'}`} role="complementary" aria-label="Activity">
+  // the top bar carries the state (running / failed, by name); the chip floats only while something RUNS - a failure no longer sits over the
+  // page's buttons for ten minutes
+  const floating = chipClass === 'live';
+  const topBtn = slot ? createPortal(<button className={`btn actbtn ${chipClass}`} onClick={() => toggle()} aria-expanded={open} aria-controls="dock-panel" title="Activity: running and recent operations (Ctrl J)">
+    {chipClass ? <span className="pip" /> : <Icon n="activity" />}<span className="pt">{chipClass ? chipText : 'Activity'}</span></button>, slot) : null;
+  return <div className={`dock ${floating ? '' : 'top'}`} role="complementary" aria-label="Activity">{topBtn}
     {open ? <div className="dock-panel" id="dock-panel" onKeyDown={e => { if (e.key === 'Escape') toggle(false); }}>
       <div className="dock-hd"><Icon n="activity" /><h2>Activity</h2>
         <span className="small faint">{running.length ? `${running.length} running` : 'No operation running'}</span>

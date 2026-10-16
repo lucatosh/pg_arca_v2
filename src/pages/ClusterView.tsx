@@ -25,7 +25,7 @@ const PREVIEW_TEXT: Record<string, string> = {};
 
 export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const q = useQuery<{ cluster: any }>(`/api/clusters/${encodeURIComponent(id)}`, { interval: 5000 });
-  const [detach, setDetach] = useState(false); const [busy, setBusy] = useState(false); const [spin, setSpin] = useState(false);
+  const [detach, setDetach] = useState(false); const [showF, setShowF] = useState(false); const [busy, setBusy] = useState(false); const [spin, setSpin] = useState(false);
   const [gl, setGl] = useState(false); const allClusters: any[] = useQuery<any>('/api/clusters').data?.clusters || []; const useRoleIsAdmin = useRole() === 'admin';
   const c = q.data?.cluster; const cur = TAB_ITEMS.some(t => t.id === tab) ? tab! : 'overview'; const grp = groupOf(cur);
   // the header badge must agree with the health findings (the sidebar already does): a cluster whose WAL archiving is failing is not "Healthy"
@@ -40,6 +40,9 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
     catch (e: any) { toast(e.message, 'bad'); setBusy(false); }
   };
   const agentic = c.source !== 'direct' && !c.isSandbox;
+  // the reasons in full where they are the subject (overview, backup); on a working page (a restore under way) one line, opened on request:
+  // the wizard must not start below the fold
+  const wide = showF || cur === 'overview' || cur === 'backup';
   const eff = hw === 'critical' ? 'critical' : hw === 'warning' && c.status === 'healthy' ? 'degraded' : c.status;
   return <>
     <div className="pagehead">
@@ -47,7 +50,8 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
         {c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Connection only</Badge> : null}</div>
         <p className="sub">{c.environment} · PostgreSQL {c.pgVersion || '—'}</p>
         {agentic && hc?.protection ? <div style={{ marginTop: 6 }}><ProtectionLine p={hc.protection} long problems={!findings.length} /></div> : null}
-        {findings.length ? <ul className="cfind" aria-label="What needs attention on this cluster">{findings.slice(0, 4).map(i => <li key={i.key} className={i.severity === 'critical' ? 'bad' : 'warn'}>
+        {findings.length && !wide ? <div className="small" style={{ marginTop: 6 }}><Dot kind={findings.some(i => i.severity === 'critical') ? 'bad' : 'warn'} /> {findings.length === 1 ? findings[0].title : `${findings.length} things need attention`} <button className="linkbtn" onClick={() => setShowF(true)}>Show</button></div> : null}
+        {findings.length && wide ? <ul className="cfind" aria-label="What needs attention on this cluster">{findings.slice(0, 4).map(i => <li key={i.key} className={i.severity === 'critical' ? 'bad' : 'warn'}>
           <Dot kind={i.severity === 'critical' ? 'bad' : 'warn'} /><span><strong>{i.title}</strong>{i.cause ? <span className="muted"> — {i.cause}</span> : null}</span>
           {i.action ? <button className="linkbtn nowrap" onClick={() => openIssue(i)}>{i.action.label}</button> : null}</li>)}
           {findings.length > 4 ? <li><a href="#/today">{findings.length - 4} more on Today</a></li> : null}</ul> : null}</div>
@@ -55,7 +59,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
       <Button icon="refresh" busy={spin} title="Reloads the status of the cluster, nodes, backups and operations right away" onClick={async () => { setSpin(true); const k = encodeURIComponent(id); await Promise.all([revalidate(`/api/clusters/${k}`), revalidate('/api/clusters'), revalidate('/api/nodes'), revalidate(`/api/clusters/${k}/backups`), revalidate(`/api/operations?clusterId=${k}`)]); setSpin(false); toast('Status refreshed', 'ok'); }}>Refresh</Button>
       <Button kind="ghost" className="icon" icon="trash" onClick={() => setDetach(true)} aria-label="Detach this cluster" title="Detach… — stop managing this cluster from the console (PostgreSQL and the backups are not touched)" /></div>
     {c.isSandbox ? <Banner kind="info" title="Demo cluster">Sample data: operations are not executed. You can delete it once you have connected a real cluster.</Banner> : null}
-    {agentic ? <AgentUpdateBanner clusterId={c.id} /> : null}
+    {agentic && (cur === 'overview' || cur === 'nodes') ? <AgentUpdateBanner clusterId={c.id} /> : null}
     {/* the 30-day ribbon where it answers the question of the page (overview, backups); elsewhere the protection line above says it and the work starts higher */}
     {agentic && (cur === 'overview' || cur === 'backup') ? <ProtectionRibbon c={c} /> : null}
     {agentic ? <ActivityStrip id={c.id} /> : null}

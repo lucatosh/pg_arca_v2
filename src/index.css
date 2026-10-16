@@ -273,7 +273,9 @@ pre.out { background: var(--surface-2); border: 1px solid var(--line); padding: 
 .dock { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; max-width: calc(100vw - 32px); pointer-events: none; }
 .dock > * { pointer-events: auto; }
 .dock.top { top: 64px; bottom: auto; } .dock.top .dock-panel { transform-origin: top right; }
-.actbtn .pt { margin-left: 2px; } @media (max-width: 860px) { .actbtn .pt { display: none; } }
+.actbtn .pt { margin-left: 2px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } @media (max-width: 860px) { .actbtn .pt { display: none; } }
+.actslot { display: contents; } .actbtn .pip { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.actbtn.live { border-color: var(--now); } .actbtn.live .pip { background: var(--now); } .actbtn.fail { border-color: var(--bad); color: var(--bad); } .actbtn.fail .pip { background: var(--bad); }
 .dock-chip { display: inline-flex; align-items: center; gap: 9px; height: 42px; padding: 0 16px 0 13px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-shadow: var(--sh-2); cursor: pointer; font-weight: 600; transition: transform .1s, border-color .12s; }
 .dock-chip:hover { transform: translateY(-1px); border-color: var(--ink-3); }
 .dock-chip .pip { width: 10px; height: 10px; border-radius: 50%; background: var(--ink-3); }
@@ -506,6 +508,7 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 @media (max-width: 720px) { .activitystrip > button, .activitystrip > .btn, .activitystrip > .linkbtn { flex-basis: 100%; text-align: left; } .activitystrip .faint { display: none; } }
 @media (max-width: 720px) { .fleettable .midonly { display: none; } .fleettable td.protcell { min-width: 160px; } }
 :root:not([data-detail="expert"]) .xp { display: none !important; }   /* technical internals: shown in the expert view only */
+:root[data-detail="expert"] .xpn { display: none !important; }      /* the simple view's plain summary of what the expert view lets you choose */
 /* toasts at the top centre, under the top bar: at the bottom right they covered the Save / Next buttons of forms and dialogs (review, round 2) */
 .toasts { top: 64px; bottom: auto; right: auto; left: 50%; transform: translateX(-50%); align-items: center; width: max-content; max-width: min(560px, calc(100vw - 32px)); }
 @media (max-width: 720px) { .toasts { top: 10px; left: 12px; right: 12px; transform: none; width: auto; max-width: none; } }
