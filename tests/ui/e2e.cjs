@@ -147,7 +147,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need to rebuild the whole server")');
   await p.waitForSelector('label.opt.on:has-text("The latest saved point")', { timeout: 10000 }); await p.click('button:has-text("Next")');
   await p.waitForSelector('label.opt.on:has-text("Restore the production server in place")'); await p.waitForSelector('code:has-text("postgresql@16-main.service")', { timeout: 10000 });
-  await p.waitForSelector('text=WAL not yet archived'); await p.waitForSelector('text=/standby server\\(s\\) stream from this server.*must be rebuilt/');
+  await p.waitForSelector('text=WAL not yet archived'); await p.waitForSelector('text=/standby servers? streams? from this server.*must be rebuilt/');
   if (await p.locator('text=Where to put the copy').count()) throw new Error('replacing production asks for no copy destination');
   await shot('12j-server-fix-check');
   await p.click('button.start-restore'); await p.waitForSelector('.modal >> text=in place of production');
