@@ -83,7 +83,15 @@ class Cluster(object):
         return r.stdout.strip()
 
     def op(self, typ, params, wait=1800):
-        s, d = call("POST", "/api/clusters/%s/operations" % self.id, {"type": typ, "params": params}, {"Idempotency-Key": str(uuid.uuid4())})
+        t_conf = time.time()
+        while True:
+            s, d = call("POST", "/api/clusters/%s/operations" % self.id, {"type": typ, "params": params}, {"Idempotency-Key": str(uuid.uuid4())})
+            # the console refuses a restore while scheduled maintenance (expire, a backup) is queued or running on the same data: a DBA waits, so do we
+            busy = s == 409 and ((d.get("with") or {}).get("type") in ("backup_expire", "backup_run", "backup_verify", "restore_drill")) and not d.get("overridable")
+            if not busy or time.time() - t_conf > 1800:
+                break
+            print("   (waiting: %s)" % (d.get("message") or "")[:120], flush=True)
+            time.sleep(15)
         if s >= 300 or "operation" not in d:
             return {"status": "http%s" % s, "error": json.dumps(d)[:600]}
         o = d["operation"]; t0 = time.time()
