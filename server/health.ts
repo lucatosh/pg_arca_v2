@@ -56,9 +56,13 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     // names both ways out (bring the agent back, or detach the cluster) instead of an urgent problem that never changes
     const lastNews = Math.max(0, ...nodes.map(n => ts(n.lastSeen)).filter(Number.isFinite));
     const silentFor = !online.length && lastNews ? now - lastNews : 0;
-    if (!primary && !standbySite) add(silentFor > 3 * 86400_000
+    // a node just enrolled has not reported yet: that is the normal first minute, not an outage (the e2e "connect a server" flow showed it urgent)
+    const enrolled = Math.max(0, ...nodes.map(n => ts(n.enrolledAt)).filter(Number.isFinite));
+    if (!primary && !standbySite && !lastNews && nodes.length && enrolled && now - enrolled < 15 * 60_000) add({ severity: 'info', code: 'no_primary', title: 'Waiting for the agent’s first report',
+      cause: 'The server was added a moment ago: its status, backups and findings appear after the agent’s first report (usually within a minute).', action: { label: 'Open the cluster', page: 'cluster' } });
+    else if (!primary && !standbySite) add(silentFor > 3 * 86400_000
       ? { severity: 'warning', code: 'no_primary', title: `No news from this cluster for ${hrs(silentFor / 3600_000)}`, cause: `No agent has reported since ${new Date(lastNews).toISOString().slice(0, 16).replace('T', ' ')} UTC. If the servers were switched off or decommissioned, detach the cluster (its backups stay in the repository); otherwise start pg-arca-agent on its nodes.`, action: { label: 'Open the cluster', page: 'cluster' } }
-      : { severity: 'critical', code: 'no_primary', title: 'No reachable primary', cause: online.length ? 'The agents respond but no node reports the primary role.' : lastNews ? `No agent of the cluster has responded since ${new Date(lastNews).toISOString().slice(0, 16).replace('T', ' ')} UTC (${hrs(silentFor / 3600_000)}).` : 'No agent of the cluster has ever responded.', action: { label: 'Open the cluster', page: 'cluster' } });
+      : { severity: 'critical', code: 'no_primary', title: 'No reachable primary', cause: online.length ? 'The agents respond but no node reports the primary role.' : lastNews ? `No agent of the cluster has responded since ${new Date(lastNews).toISOString().slice(0, 16).replace('T', ' ')} UTC (${hrs(silentFor / 3600_000)}).` : 'The agent was installed but has never reported: check on the server that the pg-arca-agent service runs and can reach the console address (journalctl -u pg-arca-agent).', action: { label: 'Open the cluster', page: 'cluster' } });
     for (const n of nodes.filter(x => !on(x))) {
       if (!primary && online.length === 0 && !standbySite) break;                 // every node silent: one finding (no_primary) says it, not one per node
       add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Node ${n.name} is not responding`, cause: n.lastSeen ? `Last seen ${new Date(n.lastSeen).toISOString()}. Agent stopped, server down or network interrupted.` : 'This node has never sent data.' });
