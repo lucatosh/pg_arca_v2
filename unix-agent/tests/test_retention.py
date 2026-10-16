@@ -30,12 +30,35 @@ class RetentionDaysTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)
 
-    def _set(self, sid, days_ago, lsn):
+    def _set(self, sid, days_ago, lsn, duration=0):
         ts = time.time() - days_ago * 86400
         d = self.repo.own_path("backup", sid)
         os.makedirs(d)
-        write_json(os.path.join(d, "meta.json"), {"id": sid, "type": "full", "parent": None, "status": "COMPLETE", "started_ts": ts,
+        write_json(os.path.join(d, "meta.json"), {"id": sid, "type": "full", "parent": None, "status": "COMPLETE", "started_ts": ts, "duration_sec": duration,
                                                  "start_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)), "start_lsn": lsn, "stop_lsn": lsn, "timeline": 1})
+
+    def test_a_running_restore_pins_what_it_reads(self):
+        self._set("20250825-000000F", 42, "0/8000000")
+        self._set("20251006-000000F", 0, "3/0")
+        c = Ctx(self.repo); c.retention_days = 0
+        self.assertEqual(expire(c, dry_run=True)["delete_sets"], ["20250825-000000F"])
+        with self.repo.pinned(["20250825-000000F"], "0/8000000"):
+            plan = expire(c, dry_run=True)
+            self.assertEqual(plan["delete_sets"], [], "a restore reads it right now")
+            self.assertEqual(plan["wal_keep_from_lsn"], "0/08000000")
+        self.assertEqual(expire(c, dry_run=True)["delete_sets"], ["20250825-000000F"], "the pin is gone with the restore")
+        self.repo.pin("dead", ["20250825-000000F"], "0/8000000", ttl=-1)
+        self.assertEqual(expire(c, dry_run=True)["delete_sets"], ["20250825-000000F"], "a pin nobody refreshes dies by itself")
+
+    def test_a_full_running_across_the_cutoff_does_not_carry_it(self):
+        # points just after the cutoff come before that full ENDS: the previous full must stay (independent review)
+        self._set("20250901-000000F", 37, "1/0")
+        self._set("20250908-000000F", 30.05, "2/0", duration=4 * 3600)            # started 30 days + 72 min ago, ran 4 h: ends inside the window
+        self._set("20251006-000000F", 0, "3/0")
+        self._set("20251007-000000F", 0, "4/0")
+        c = Ctx(self.repo); c.retention_full = 1
+        plan = expire(c, dry_run=True)
+        self.assertNotIn("20250901-000000F", plan["delete_sets"], plan)
 
     def test_window_of_30_days_with_weekly_fulls(self):
         self._set("20250901-000000F", 35, "1/0")

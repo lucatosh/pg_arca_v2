@@ -83,12 +83,20 @@ def volumes(needs):
     return list(vols.values())
 
 
+def _reserve(total, live):
+    """Free space that must remain after a restore: 5 % of a live data volume (2 % of another), at least 1 GiB (256 MiB), at most 50 GiB (20 GiB) -
+    on a 10 TB volume 5 % is 500 GB, and a restore that leaves 300 GB free was refused for nothing."""
+    if live:
+        return max(min(int(0.05 * total), 50 << 30), 1 << 30)
+    return max(min(int(0.02 * total), 20 << 30), 256 << 20)
+
+
 def space_checks(vols, add):
     """One finding per volume. The live cluster's volume is held to a stricter standard: PostgreSQL stops (PANIC on WAL write) when it fills up."""
     for v in vols:
         after = v["free"] - v["need"]
         live = "data" in v["roles"]
-        keep = max(int(0.05 * v["total"]), 1 << 30) if live else max(int(0.02 * v["total"]), 256 << 20)
+        keep = _reserve(v["total"], live)
         v["free_after"] = after
         what = " + ".join(ROLE_LABEL.get(r, r) for r in v["roles"])
         where = ", ".join(v["paths"])
@@ -176,7 +184,7 @@ def check(ctx, plan, merged_sel=None, target_set=None, need_dest=0, into=None, n
         need = int(need_dest * 1.15)
         if isinstance(disk, dict) and disk.get("free_bytes") is not None and disk.get("total_bytes"):
             free, total = int(disk["free_bytes"]), int(disk["total_bytes"])
-            keep = max(int(0.05 * total), 1 << 30)
+            keep = _reserve(total, True)
             plan["dest_free_bytes"] = free
             if free - need < 0:
                 add("dest_space", "bad", "not enough space on the data volume of the destination cluster: %s free, about %s needed" % (human(free), human(need)),

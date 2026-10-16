@@ -390,6 +390,8 @@ def _pg_restore(admin, dbname, dumpfile, jobs, extra=(), keep_owners=False, canc
 def _recover_once(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel, name=None, immediate=False):
     eph = Ephemeral(ctx, name=name)
     t0 = time.time()
+    pin = ctx.repo.pinned([c["id"] for c in chain], chain[0].get("start_lsn"))      # retention keeps what this recovery reads
+    pin.__enter__()
     try:
         stats = eph.build(chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, immediate, progress, cancel)
         if progress:
@@ -403,6 +405,8 @@ def _recover_once(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name
     except BaseException:
         eph.cleanup()
         raise
+    finally:
+        pin.__exit__(None, None, None)                      # recovered (or failed): the instance reads nothing from the repository any more
 
 
 def _recover(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel, name=None, immediate=False):
@@ -720,7 +724,10 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
             eph.cleanup()
             hit = find_drop_database_lsn(ctx, chain, entry["oid"], reached) if reached else None
             if hit:
+                clamp = info.get("target_clamped")
                 eph, info = _stop_before_drop(ctx, chain, entry, hit, keep | {entry["oid"]}, progress, cancel)
+                if clamp:
+                    info.setdefault("target_clamped", clamp)
                 info["created_after_backup"] = True
                 return eph, info
         else:
@@ -749,20 +756,31 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
         placeholder = {"name": entry["name"], "oid": None, "size": 0, "relations": [], "late": True, "base_set": entry.get("base_set") or chain[-1]["id"], "_later": True,
                        "note": "database '%s' was dropped and created again after the backup (oid %s, the backup holds oid %s): the database of that name at the "
                                "requested point is the later one, rebuilt from the archived WAL" % (entry["name"], later, entry["oid"])}
+        clamp = info.get("target_clamped")
         eph, info = _recover_db(ctx, chain, placeholder, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+        if clamp:
+            info.setdefault("target_clamped", clamp)
         info["note"] = placeholder["note"]
         entry.update(oid=placeholder["oid"], late=True, note=placeholder["note"])
         return eph, info
+    clamp = info.get("target_clamped")
+
+    def said(r):
+        # the requested point was after the end of the archive: that stays said when the database then has to be taken from before a DROP
+        # (lab, geo-dc2: the answer lost it and the operator did not learn that the archive ended before the point)
+        if r and clamp:
+            r[1].setdefault("target_clamped", clamp)
+        return r
     if not later and not entry.get("_later"):
         got = _later_dropped(ctx, chain, entry, reached, progress, cancel)
         if got:
-            return got
+            return said(got)
     hit = find_drop_database_lsn(ctx, chain, entry["oid"], reached) if reached else None
     if not hit:
         raise EngineError("PGA-PITR-015", "database '%s' does not exist at the requested point (it is damaged or gone at %s and no DROP DATABASE was found in the WAL)" % (entry["name"], reached or "?"),
                           "choose an earlier time (the WAL scan in the console shows when it was dropped); after a failover, check that the new "
                           "timeline's history file is in the archive")
-    return _stop_before_drop(ctx, chain, entry, hit, {entry["oid"]}, progress, cancel)
+    return said(_stop_before_drop(ctx, chain, entry, hit, {entry["oid"]}, progress, cancel))
 
 
 def _late_keep(ctx, chain):

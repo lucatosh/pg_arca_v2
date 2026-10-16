@@ -325,6 +325,40 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
             "note": "the previous location was not deleted: it is no longer needed for restores" if complete else "some content is still only in the previous location"}
 
 
+def _wal_still_used(ctx, src_repo, src_wal, recent=3600, check_recent=False):
+    """Why the previous WAL archive must NOT be emptied ('' when it may): one archive directory serves one DATABASE, and the sites of a geo pair
+    (two stanzas, same system identifier) share it - wiping it for this cluster destroyed the other site's PITR history (independent review).
+    Sign: another stanza of this database in that repository (check_recent adds: segments written there in the last hour - off by default, a
+    late segment of this cluster's own looks the same)."""
+    newest = 0
+    for n in os.listdir(src_wal):
+        try:
+            newest = max(newest, os.path.getmtime(os.path.join(src_wal, n)))
+        except OSError:
+            pass
+    if check_recent and newest and time.time() - newest < recent:
+        return "the previous WAL archive %s still receives segments (last one %d s ago): another node or site archives there" % (src_wal, int(time.time() - newest))
+    sysid = None
+    try:
+        sysid = next((s.get("system_identifier") for s in ctx.repo.own_sets() if s.get("system_identifier")), None)
+    except Exception:
+        pass
+    root = os.path.join(src_repo or "", "stanza")
+    if sysid and os.path.isdir(root):
+        for st in os.listdir(root):
+            if st == ctx.stanza:
+                continue
+            d = os.path.join(root, st, "backup")
+            for sid in (os.listdir(d) if os.path.isdir(d) else []):
+                try:
+                    m = read_json(os.path.join(d, sid, "meta.json"))
+                except (IOError, OSError, ValueError):
+                    continue
+                if str(m.get("system_identifier")) == str(sysid):
+                    return "stanza %s (the same database, e.g. the other site of a geo pair) has backups there and may use the same WAL archive" % st
+    return ""
+
+
 def drop_previous(ctx, src_repo=None, src_wal=None, abandon=False):
     """Delete THIS cluster's content from a previous location: its stanza (sets) and the chunks no other stanza there still uses (garbage collection
     with the usual grace), and its WAL files. Refused while a set or WAL file of this cluster exists ONLY there, unless abandon=True (the PITR
@@ -344,7 +378,10 @@ def drop_previous(ctx, src_repo=None, src_wal=None, abandon=False):
         if os.path.isdir(os.path.join(src_repo, "cas")) and os.path.isdir(os.path.join(src_repo, "stanza")):
             freed, removed = _gc_cas(Repo(src_repo, ctx.stanza, crypto=ctx.crypto))
             out["chunks_removed"], out["bytes_freed"] = removed, freed
-    if src_wal and os.path.isdir(src_wal):
+    busy = _wal_still_used(ctx, src_repo, src_wal, check_recent=False) if src_wal and os.path.isdir(src_wal) else None
+    if busy:
+        out["wal_kept"] = busy                              # another stanza of this database (the other site of a geo pair) may archive there
+    if src_wal and os.path.isdir(src_wal) and not busy:
         for n in os.listdir(src_wal):
             p = os.path.join(src_wal, n)
             if os.path.isfile(p) and n != "ARCHIVE_OWNER.json":

@@ -127,3 +127,13 @@ class SystemDbOids(unittest.TestCase):
         self.assertTrue(PERMANENT_CONNECT.search('FATAL:  could not open file "base/13780/1259": No such file or directory'))
         self.assertFalse(PERMANENT_CONNECT.search("FATAL:  the database system is not yet accepting connections"))
         self.assertFalse(PERMANENT_CONNECT.search("FATAL:  the database system is starting up"))
+
+
+class Reserve(unittest.TestCase):
+    def test_reserve_is_bounded(self):
+        from pg_arca.engine.restorecheck import _reserve
+        GiB = 1 << 30
+        self.assertEqual(_reserve(10 * GiB, True), 1 * GiB)                  # small volume: at least 1 GiB
+        self.assertEqual(_reserve(200 * GiB, True), 10 * GiB)                # 5 %
+        self.assertEqual(_reserve(10240 * GiB, True), 50 * GiB)              # a 10 TB volume: 50 GiB, not 500
+        self.assertEqual(_reserve(10240 * GiB, False), 20 * GiB)

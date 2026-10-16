@@ -112,6 +112,31 @@ def parse_conf(text: str) -> Dict[str, str]:
     return out
 
 
+def _flow_split(s):
+    """Split a YAML flow collection's content on the commas that are not inside quotes or nested brackets."""
+    out, cur, depth, q = [], "", 0, None
+    for ch in s:
+        if q:
+            cur += ch
+            if ch == q:
+                q = None
+            continue
+        if ch in "'\"":
+            q = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+            continue
+        cur += ch
+    if cur.strip():
+        out.append(cur)
+    return out
+
+
 def parse_simple_yaml(text: str) -> Dict[str, Any]:
     """
     Minimal YAML reader sufficient for patroni.yml (maps, nested maps, scalars,
@@ -131,7 +156,16 @@ def parse_simple_yaml(text: str) -> Dict[str, Any]:
         if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
             return v[1:-1]
         if v.startswith("[") and v.endswith("]"):
-            return [scalar(x) for x in v[1:-1].split(",") if x.strip()]
+            return [scalar(x) for x in _flow_split(v[1:-1]) if x.strip()]
+        if v.startswith("{") and v.endswith("}"):
+            # inline maps ({username: rewinder, password: "rw"}) - common in patroni.yml; without PyYAML (python:3.6 platform-python, slim
+            # images) they used to come back as one string and the geo rewind crashed reading its credentials (multi-OS matrix, 16/10)
+            out = {}
+            for part in _flow_split(v[1:-1]):
+                if ":" in part:
+                    kk, vv = part.split(":", 1)
+                    out[kk.strip().strip("'\"")] = scalar(vv)
+            return out
         low = v.lower()
         if low in ("true", "yes"):
             return True

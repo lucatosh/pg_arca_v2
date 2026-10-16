@@ -162,3 +162,55 @@ class PartitionRoots(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MigrateSibling(unittest.TestCase):
+    def test_previous_wal_archive_of_a_geo_pair_is_not_wiped(self):
+        """One WAL archive directory serves one database; the two sites of a geo pair (two stanzas, same system identifier) share it: dropping
+        the previous location for one of them must not empty the archive the other one still uses (independent review)."""
+        from pg_arca.engine import migrate
+        from pg_arca.engine.util import write_json
+        t = tempfile.mkdtemp()
+        try:
+            repo, wal = os.path.join(t, "repo"), os.path.join(t, "wal")
+            os.makedirs(wal)
+            open(os.path.join(wal, "000000010000000000000001"), "w").close()
+
+            class C(object):
+                stanza = "site1"
+
+                class repo(object):
+                    @staticmethod
+                    def own_sets():
+                        return [{"system_identifier": 42}]
+            self.assertEqual(migrate._wal_still_used(C, repo, wal), "")
+            os.makedirs(os.path.join(repo, "stanza", "site2", "backup", "S1"))
+            write_json(os.path.join(repo, "stanza", "site2", "backup", "S1", "meta.json"), {"system_identifier": 42})
+            self.assertIn("site2", migrate._wal_still_used(C, repo, wal))
+            write_json(os.path.join(repo, "stanza", "site2", "backup", "S1", "meta.json"), {"system_identifier": 7})
+            self.assertEqual(migrate._wal_still_used(C, repo, wal), "", "another database's stanza does not share this archive")
+        finally:
+            shutil.rmtree(t)
+
+
+class StandbyTimeline(unittest.TestCase):
+    def test_the_histories_say_the_standby_timeline_when_the_control_file_lags(self):
+        from pg_arca.engine.backup import _standby_tli
+        from pg_arca.wal_manager import WalManager
+        t = tempfile.mkdtemp()
+        try:
+            wal, pgd = os.path.join(t, "wal"), os.path.join(t, "pgdata")
+            os.makedirs(os.path.join(pgd, "pg_wal"))
+            with open(os.path.join(pgd, "pg_wal", "00000002.history"), "w") as f:
+                f.write("1\t0/5000000\tno recovery target specified\n")
+            with open(os.path.join(pgd, "pg_wal", "00000009.history"), "w") as f:      # another lineage (it does not descend from 1... via 2)
+                f.write("7\t0/1000000\tno recovery target specified\n")
+
+            class C(object):
+                pgdata = pgd
+            C.wal = WalManager(wal)
+            self.assertEqual(_standby_tli(C, 1, 0x6000000), 2, "past the fork: the new timeline")
+            self.assertEqual(_standby_tli(C, 1, 0x4000000), 1, "before the fork: still the old one")
+            self.assertEqual(_standby_tli(C, 2, 0x6000000), 2)
+        finally:
+            shutil.rmtree(t)

@@ -36,6 +36,25 @@ class GeoRewind(unittest.TestCase):
             f.write("postgresql:\n  authentication:\n    superuser:\n      username: postgres\n      password: su\n")
         self.assertEqual(g.patroni_auth(y), ("postgres", "su"))
 
+    def test_inline_maps_without_pyyaml(self):
+        """patroni.yml writes credentials as inline maps; a host without PyYAML (RHEL 8 platform-python, slim images) must read them too
+        (found by the multi-OS matrix on python 3.6: the geo rewind crashed)."""
+        import builtins
+        from pg_arca.discovery import parse_simple_yaml
+        real = builtins.__import__
+
+        def no_yaml(name, *a, **k):
+            if name == "yaml":
+                raise ImportError(name)
+            return real(name, *a, **k)
+        builtins.__import__ = no_yaml
+        try:
+            y = parse_simple_yaml('postgresql:\n  authentication:\n    rewind: {username: rewinder, password: "r,w"}\n  list: [a, "b,c", {x: 1}]\n')
+        finally:
+            builtins.__import__ = real
+        self.assertEqual(y["postgresql"]["authentication"]["rewind"], {"username": "rewinder", "password": "r,w"})
+        self.assertEqual(y["postgresql"]["list"], ["a", "b,c", {"x": 1}])
+
 
 if __name__ == "__main__":
     unittest.main()

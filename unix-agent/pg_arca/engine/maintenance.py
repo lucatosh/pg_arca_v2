@@ -130,6 +130,13 @@ def verify(ctx, deep=False, progress=None, cancel=None):
         if miss:
             problems.append("%s: %d WAL segment(s) between start and stop are not archived (first %s)" % (s["id"], len(miss), miss[0]))
             entry["problems"] += len(miss)
+        else:
+            from pg_arca.engine.backup import _late_wal_doubt
+            need = [wal_name(s["timeline"], n, seg) for n in range(wal_segno(lsn_to_int(s["start_lsn"]), seg), last_wal_segno(s, seg) + 1)]
+            why = _late_wal_doubt(ctx, s, need)
+            if why:                                                # the names are there, but maybe another server's WAL
+                problems.append("%s: %s" % (s["id"], why))
+                entry["problems"] += 1
     for pr in repo.index().problems:                               # a pack index that cannot be read: its chunks look missing above; say why
         problems.append("pack index unreadable: %s" % pr)
     cont = ctx.wal.verify_continuity(max_age=0)
@@ -183,7 +190,9 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
             # a set whose only fault was late WAL (archiver blocked, repaired since) is a good backup now: complete it instead of deleting it as junk
             from pg_arca.engine.backup import _finish_pending_wal
             for s in sets:
-                if s.get("status") == "UNRECOVERABLE" and s.get("wal_timeout"):
+                # PENDING_WAL: the agent died while waiting for the archiver (a live backup holds the stanza lock, so none is running now) -
+                # its data and manifest are durable; deleting it as junk threw a good backup away (independent review)
+                if (s.get("status") == "UNRECOVERABLE" and s.get("wal_timeout")) or s.get("status") == "PENDING_WAL":
                     _finish_pending_wal(ctx, s)
         done = [s for s in sets if s.get("status") == "COMPLETE"]
         fulls = [s for s in done if s["type"] == "full"]
@@ -192,7 +201,10 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
             # every point of the last N days must stay restorable: a point just after the cutoff needs the newest full that STARTED BEFORE it
             # (its chain and WAL carry the point forward), so that full is kept too, not only the fulls younger than the cutoff
             cutoff = time.time() - days * 86400
-            older = [f for f in fulls if (f.get("started_ts") or 0) < cutoff]
+            # a full serves the points AFTER its end: the one that carries the cutoff is the newest that ENDED before it (independent review:
+            # chosen by its start, a full running across the cutoff was kept instead and the points between the cutoff and its end were lost)
+            ended = lambda f: (f.get("started_ts") or 0) + float(f.get("duration_sec") or 0)
+            older = [f for f in fulls if ended(f) < cutoff]
             spanning = older[-1]["id"] if older else None
             doomed_fulls = [f for f in doomed_fulls if (f.get("started_ts") or 0) < cutoff and f["id"] != spanning]
         doomed = []
@@ -200,13 +212,20 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
             doomed += _dependents(sets, f)
         # failed / unrecoverable / pending leftovers are always collectable
         # a set that only waits for late WAL (archiver blocked) is kept for a week: it becomes a good backup the moment the archive catches up
-        grace = lambda s: s.get("status") == "UNRECOVERABLE" and s.get("wal_timeout") and time.time() - (s.get("started_ts") or 0) < 7 * 86400
+        grace = lambda s: ((s.get("status") == "UNRECOVERABLE" and s.get("wal_timeout")) or s.get("status") == "PENDING_WAL") and \
+            time.time() - (s.get("started_ts") or 0) < 7 * 86400
         junk = [s for s in sets if s.get("status") in ("FAILED", "UNRECOVERABLE", "RUNNING", "PENDING_WAL", "EXPIRING") and s not in doomed and not grace(s)]
         doomed_ids = set(s["id"] for s in doomed) | set(s["id"] for s in junk)
+        pins = repo.pins()                                         # running restores: their sets and the WAL they may still fetch stay
+        pinned = set(x for p in pins for x in (p.get("sets") or []))
+        if pinned & doomed_ids:
+            getattr(ctx, "log", lambda *a: None)("info", "expire: %d set(s) kept for now, a running restore reads them: %s" % (len(pinned & doomed_ids), ", ".join(sorted(pinned & doomed_ids))))
+        doomed_ids -= pinned
         keep = [s for s in done if s["id"] not in doomed_ids]
         # sets still only in a previous location (destination changed, not migrated yet / kept on purpose) are restorable from here, and the
         # WAL they need after the switch lives in THIS archive: the floor must not cut below their start either
         prev_lsns = [lsn_to_int(s["start_lsn"]) for s in repo.sets() if s.get("location") and s.get("status") == "COMPLETE" and s.get("start_lsn")]
+        prev_lsns += [lsn_to_int(p["wal_from"]) for p in pins if p.get("wal_from")]
         oldest_lsn = min([lsn_to_int(s["start_lsn"]) for s in keep] + prev_lsns, default=None)
         plan = {"delete_sets": sorted(doomed_ids), "keep_sets": [s["id"] for s in keep], "retention_full": keep_full}
         if oldest_lsn is not None:

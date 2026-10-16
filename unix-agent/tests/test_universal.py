@@ -267,7 +267,7 @@ class Python36(unittest.TestCase):
                 tree = ast.parse(src)
                 for n in ast.walk(tree):
                     where = "%s:%d" % (os.path.relpath(path, root), getattr(n, "lineno", 0))
-                    if isinstance(n, ast.NamedExpr):
+                    if getattr(ast, "NamedExpr", None) and isinstance(n, ast.NamedExpr):   # (on 3.6/3.7 itself the walrus cannot even parse)
                         bad.append(where + " walrus operator")
                     elif isinstance(n, ast.Attribute) and n.attr in self.BAD_ATTRS:
                         bad.append("%s .%s (Python >= 3.7)" % (where, n.attr))

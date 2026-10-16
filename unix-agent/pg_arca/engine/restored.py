@@ -23,7 +23,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from pg_arca.engine import ephcfg
-from pg_arca.engine.backup import _check_cancel
+from pg_arca.engine.backup import _check_cancel, build_chain
 from pg_arca.engine.destcheck import mount_of, mounts
 from pg_arca.engine.pgsession import PgConn, PgSession
 from pg_arca.engine.safety import assert_writable_target
@@ -552,6 +552,15 @@ def register_and_start(ctx, state_dir, dest, plan, action="promote", ttl_hours=D
         raise EngineError("PGA-RST-050", "the copy is restored in %s, but PostgreSQL %d is not installed on this host, so it cannot be started here" % (dest, major),
                           "install PostgreSQL %d (Storage & recovery -> Recovery instance -> Install the binaries), then press Start on the restored copy" % major)
     notes = []
+    # the copy fetches WAL from the archive while it recovers: retention keeps the WAL from its base on until it is ready (independent review)
+    pin = None
+    try:
+        chain = [c["id"] for c in build_chain(ctx.repo, ctx.repo.resolve_set(plan.get("set")))] if plan.get("set") else []
+        if chain:
+            pin = ctx.repo.pinned(chain, ctx.repo.resolve_set(chain[0]).get("start_lsn"), name="copy-" + rid)
+            pin.__enter__()
+    except Exception:
+        pin = None
     try:
         res = start(it, progress, cancel, notes=notes)
     except EngineError as e:
@@ -561,6 +570,9 @@ def register_and_start(ctx, state_dir, dest, plan, action="promote", ttl_hours=D
         _stop(it)                                           # cancelled (or broken) while recovering: the copy stays on disk, stopped, and expires as usual
         _update(state_dir, rid, state="stopped", want="stopped", port=it["port"], conf_fixes=it.get("conf_fixes"), notes=notes)
         raise
+    finally:
+        if pin is not None:
+            pin.__exit__(None, None, None)
     it.update(state=res["state"], notes=notes, listen_addresses=_listen(it), databases=_databases(it) if res["state"] != "stopped" else None, error=None)
     if res["state"] == "stopped":
         it["want"] = "stopped"

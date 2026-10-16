@@ -33,6 +33,9 @@ class Admin:
 class E2E(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        import shutil
+        if not shutil.which("tsx"):
+            raise unittest.SkipTest("tsx (the console's TypeScript runner) is not installed here")
         cls.proc = subprocess.Popen(["tsx", "tests/e2e/harness.ts"], cwd=ROOT, stdout=subprocess.PIPE, universal_newlines=True)
         line = cls.proc.stdout.readline(); assert line.startswith("READY"), line
         cls.base = "http://127.0.0.1:%s" % line.split()[1]

@@ -102,6 +102,14 @@ class StandbyTests(unittest.TestCase):
         r = restore_instance(S.ctx, dest=dest, immediate=True, action="pause")
         self.assertTrue(os.path.exists(os.path.join(dest, "backup_label")))
 
+    def test_07_incremental_on_the_primary_after_a_standby_chain_is_a_full(self):
+        # the base full's label (BACKUP FROM: standby) next to a primary's pg_control is refused by PostgreSQL: the chain never changes side
+        churn(1)
+        meta = run_backup(T.F.ctx, "incr")
+        self.assertEqual(meta["status"], "COMPLETE")
+        self.assertEqual(meta["type"], "full", meta)
+        self.assertFalse(meta["from_standby"])
+
 
 if __name__ == "__main__":
     unittest.main()

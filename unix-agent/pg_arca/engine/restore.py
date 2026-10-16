@@ -893,6 +893,23 @@ def target_dir_check(ctx, dest, delta, what="restore destination", resume=False)
 def restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,
                      action="promote", timeline="latest", delta=False, tablespace_remap=None, dry_run=False, immediate=False,
                      progress=None, cancel=None, resume=False, keep_archiving=False):
+    """See _restore_instance. A real restore pins the sets it extracts and the WAL from its base on: a retention run meanwhile keeps them."""
+    kw = dict(set_spec=set_spec, dest=dest, target_time=target_time, target_lsn=target_lsn, target_xid=target_xid, target_name=target_name, inclusive=inclusive,
+              action=action, timeline=timeline, delta=delta, tablespace_remap=tablespace_remap, dry_run=dry_run, immediate=immediate, progress=progress,
+              cancel=cancel, resume=resume, keep_archiving=keep_archiving)
+    if dry_run:
+        return _restore_instance(ctx, **kw)
+    try:
+        chain = build_chain(ctx.repo, choose_set(ctx.repo, set_spec, parse_target_time(target_time) if target_time else None, target_lsn, target_xid, target_name))
+    except Exception:
+        return _restore_instance(ctx, **kw)                # the real call says what is wrong
+    with ctx.repo.pinned([c["id"] for c in chain], chain[0].get("start_lsn")):
+        return _restore_instance(ctx, **kw)
+
+
+def _restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_lsn=None, target_xid=None, target_name=None, inclusive=True,
+                      action="promote", timeline="latest", delta=False, tablespace_remap=None, dry_run=False, immediate=False,
+                      progress=None, cancel=None, resume=False, keep_archiving=False):
     """keep_archiving=False (default): the restored copy is made SAFE to start next to production - archive_mode off (it would otherwise push a new
     timeline and its history file into production's WAL archive, where the next real failover then collides), no synchronous standby to wait for,
     no upstream to follow. True only when the copy REPLACES the original server."""

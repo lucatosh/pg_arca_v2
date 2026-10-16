@@ -239,7 +239,15 @@ def _start_backup(ctx, sess, start_sql, fast_on, progress, cancel):
     return box.get("lsn")
 
 
-def current_timeline(sess, in_recovery):
+def _chain_base(repo, s):
+    """The full at the root of set s's chain."""
+    try:
+        return build_chain(repo, s)[0]
+    except EngineError:
+        return s
+
+
+def current_timeline(sess, in_recovery, ctx=None, lsn=None):
     """The timeline new WAL is being written on RIGHT NOW. pg_control_checkpoint() lags after a promotion (it only moves when the first checkpoint of the new timeline
     completes), so a backup started just after a failover would be labelled with the OLD timeline: wrong WAL names to wait for and an incremental chained onto a
     parent from another timeline. On a primary the WAL insert position says it exactly; a standby only has the control file."""
@@ -248,7 +256,56 @@ def current_timeline(sess, in_recovery):
             return int(sess.scalar("SELECT ('x' || substr(pg_walfile_name(pg_current_wal_insert_lsn()), 1, 8))::bit(32)::int"))
         except EngineError:
             pass
-    return int(sess.scalar("SELECT timeline_id FROM pg_control_checkpoint()"))
+    ctl = int(sess.scalar("SELECT timeline_id FROM pg_control_checkpoint()"))
+    if in_recovery and ctx is not None:
+        # a standby's control file lags until a restartpoint on the new timeline (independent review: the first standby backup after the
+        # upstream's failover was labelled with the old timeline and waited for segment names that never exist): the timeline histories
+        # (the standby's pg_wal and the archive) say which timeline the replay position is on
+        try:
+            if lsn is None:
+                v = sess.scalar("SELECT pg_last_wal_replay_lsn()::text")
+                lsn = lsn_to_int(v) if v else None
+            if lsn is not None:
+                return _standby_tli(ctx, ctl, lsn)
+        except (EngineError, ValueError):
+            pass
+    return ctl
+
+
+def _standby_tli(ctx, ctl_tli, lsn):
+    """The newest timeline of this server's lineage (its history lists ctl_tli) that had begun at `lsn`; ctl_tli when there is none."""
+    seen = []
+    for d in (os.path.join(ctx.pgdata, "pg_wal") if getattr(ctx, "pgdata", None) else None, None):
+        try:
+            names = os.listdir(d or ctx.wal.wal_dir)
+        except (OSError, AttributeError, TypeError):
+            continue
+        for f in names:
+            m = re.match(r"^([0-9A-F]{8})\.history$", f)
+            if m and int(m.group(1), 16) > ctl_tli:
+                seen.append((int(m.group(1), 16), d))
+    for n, d in sorted(seen, key=lambda x: -x[0]):
+        forks = ctx.wal._history_forks(n, directory=d) or {}
+        if ctl_tli in forks and forks and lsn >= forks[max(forks)]:
+            return n
+    return ctl_tli
+
+
+def _stop_time(sess, in_recovery):
+    """The set's end on the clock of the commit timestamps a time target is compared with. The agent's clock is used, unless the server says
+    a later time: on a standby, the last replayed commit carries the PRIMARY's clock - a standby whose clock is behind would otherwise date
+    the end too early and a time target inside that gap could pick this set although it ends after the target (independent review)."""
+    t = now_utc()
+    try:
+        v = sess.scalar("SELECT to_char(%s AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS')" % ("pg_last_xact_replay_timestamp()" if in_recovery else "now()"))
+        if v:
+            from datetime import datetime, timezone
+            srv = datetime.strptime(v, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+            if srv > t:
+                t = srv
+    except Exception:
+        pass
+    return iso(t)
 
 
 def _stop_backup(sess):
@@ -290,7 +347,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             log("warn", "compat: " + text)
         sysid = sess.scalar("SELECT system_identifier FROM pg_control_system()")
         in_recovery = sess.scalar("SELECT pg_is_in_recovery()") == "t"
-        tli = current_timeline(sess, in_recovery)
+        tli = current_timeline(sess, in_recovery, ctx)
         data_dir = sess.scalar("SHOW data_directory")
         if os.path.realpath(data_dir) != ctx.pgdata:
             raise EngineError("PGA-CFG-015", "connected instance uses data_directory %s but the agent is configured for %s" % (data_dir, ctx.pgdata),
@@ -351,6 +408,13 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                 log("warn", "no usable parent: promoting %s to full" % btype)
                 btype = "full"
             elif cand.get("system_identifier") != sysid:
+                btype = "full"
+            elif bool(_chain_base(repo, cand).get("from_standby")) != bool(in_recovery):
+                # a restore installs the BASE full's backup_label next to the LAST set's pg_control: a label "BACKUP FROM: standby" with a
+                # primary's control file (or the reverse) is refused by PostgreSQL ("backup_label contains data inconsistent with control file").
+                # Each chain therefore stays on one side (independent review: a full on the standby, then incrementals on the primary)
+                log("warn", "the parent chain was taken on a %s and this backup runs on a %s: promoting %s to full"
+                    % ("standby" if not in_recovery else "primary", "standby" if in_recovery else "primary", btype))
                 btype = "full"
             elif int(cand.get("timeline") or 0) != tli:
                 # after a failover/PITR the new timeline's LSNs can be LOWER than the parent's start LSN (promoted replica that lagged): the LSN page filter
@@ -467,7 +531,14 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             progress({"phase": "finalize", "set": set_id})
         stop_lsn, labelfile, spcmap = _stop_backup(sess)
         started_backup = False
-        tli_stop = current_timeline(sess, in_recovery)
+        tli_stop = current_timeline(sess, in_recovery, ctx, lsn_to_int(stop_lsn))
+        lt = re.search(r"START TIMELINE: (\d+)", labelfile or "")
+        if in_recovery and lt and int(lt.group(1)) != tli:
+            # PostgreSQL's own label is the authority on where this backup started
+            if parent is not None:
+                raise EngineError("PGA-CLU-014", "this standby was on timeline %s when the backup started, not %d as estimated: the incremental's parent may be "
+                                  "on another timeline" % (lt.group(1), tli), "retry: the next run starts from the right timeline")
+            tli = meta["timeline"] = int(lt.group(1))
         if tli_stop != tli:
             raise EngineError("PGA-CLU-014", "timeline changed during the backup (%d -> %d): failover happened" % (tli, tli_stop), "retry; copied chunks are reused")
         meta["stop_lsn"] = stop_lsn
@@ -479,7 +550,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         write_file_atomic(os.path.join(sdir, "backup_label"), labelfile.encode("utf-8"), 0o640)
         repo.write_zjson(os.path.join(sdir, "manifest.json.z"), manifest, set_id + "/manifest")
         repo.write_zjson(os.path.join(sdir, "catalog.json.z"), cat, set_id + "/catalog")
-        meta.update({"status": "PENDING_WAL", "stop_time": iso(), "duration_sec": round(time.time() - t_start, 1), "stats": totals,
+        meta.update({"status": "PENDING_WAL", "stop_time": _stop_time(sess, in_recovery), "duration_sec": round(time.time() - t_start, 1), "stats": totals,
                      "tablespaces": tbs, "hostname": socket.gethostname()})
         repo.write_meta(meta)
 
@@ -505,6 +576,14 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                 raise EngineError("PGA-WAL-020", meta["reason"],
                                   ("check archive_command / pg_stat_archiver on the primary (this backup ran on a standby: the primary archives its WAL)"
                                    if in_recovery else "check archive_command / pg_stat_archiver") + "; the set is marked UNRECOVERABLE")
+        # present by NAME is not enough: when another server wrote these names (split brain, a promotion without the archive) the copies in the
+        # archive are its WAL, not ours - this set would be COMPLETE and fail at restore time (independent review: only the late-WAL path checked)
+        why = _late_wal_doubt(ctx, {"timeline": tli, "stop_lsn": stop_lsn}, _wal_needed(tli, start_lsn, stop_lsn, seg_size, in_recovery))
+        if why:
+            meta.update(status="UNRECOVERABLE", reason=why, late_wal_doubt=why)
+            repo.write_meta(meta)
+            raise EngineError("PGA-WAL-023", "backup %s is not usable: %s" % (set_id, why),
+                              "resolve the divergence (WAL archive findings: which server is the real primary), then take a new FULL backup")
         meta["status"] = "COMPLETE"
         meta["completed"] = iso()
         repo.write_meta(meta)

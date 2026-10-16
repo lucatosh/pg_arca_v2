@@ -511,6 +511,74 @@ class Repo(object):
             return False
         return True
 
+    # ------------------------------------------------------------------ pins: what running restores read
+    def pin(self, name, sets, wal_from_lsn, ttl=1800):
+        """A running restore (extraction, a recovery instance, a restored copy still recovering) declares the sets it reads and the oldest WAL it
+        may still fetch: retention keeps them while the pin is alive (independent review: an expire at night removed the base set and raised
+        the WAL floor under a restore that had been running for hours). A pin that is not refreshed dies by itself after `ttl` seconds."""
+        d = self.own_path("pins")
+        os.makedirs(d, exist_ok=True)
+        tmp = os.path.join(d, ".%s.tmp.%d" % (name, os.getpid()))
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"sets": list(sets), "wal_from": wal_from_lsn, "until": time.time() + ttl, "host": socket.gethostname(), "pid": os.getpid()}, f)
+        os.rename(tmp, os.path.join(d, name + ".json"))
+
+    def unpin(self, name):
+        try:
+            os.unlink(self.own_path("pins", name + ".json"))
+        except OSError:
+            pass
+
+    def pins(self):
+        """Live pins: [{sets, wal_from, until, ...}]; expired ones are removed."""
+        out = []
+        d = self.own_path("pins")
+        for n in (os.listdir(d) if os.path.isdir(d) else []):
+            if not n.endswith(".json") or n.startswith("."):
+                continue
+            try:
+                with open(os.path.join(d, n), "r", encoding="utf-8") as f:
+                    j = json.load(f)
+            except (IOError, OSError, ValueError):
+                continue
+            if float(j.get("until") or 0) > time.time():
+                out.append(j)
+            else:
+                try:
+                    os.unlink(os.path.join(d, n))
+                except OSError:
+                    pass
+        return out
+
+    def pinned(self, sets, wal_from_lsn, ttl=1800, name=None):
+        """Context manager: pin while the block runs, refreshed every ttl/3 by a thread."""
+        repo = self
+        name = name or "restore-%s" % uuid.uuid4().hex[:12]
+
+        class _P(object):
+            def __enter__(self_):
+                self_.stop = threading.Event()
+                try:
+                    repo.pin(name, sets, wal_from_lsn, ttl)
+                except OSError:
+                    return self_                           # a read-only repository (a restore from a mounted copy): nothing to protect it from
+
+                def keep():
+                    while not self_.stop.wait(ttl / 3.0):
+                        try:
+                            repo.pin(name, sets, wal_from_lsn, ttl)
+                        except OSError:
+                            pass
+                self_.t = threading.Thread(target=keep, daemon=True)
+                self_.t.start()
+                return self_
+
+            def __exit__(self_, *exc):
+                self_.stop.set()
+                repo.unpin(name)
+                return False
+        return _P()
+
     RETIRED = "retired.json"
     RETIRED_MAX = 20000
 

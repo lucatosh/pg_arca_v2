@@ -71,7 +71,7 @@ def patroni_auth(config_path, kinds=("rewind", "superuser")):
     auth = ((cfg.get("postgresql") or {}).get("authentication") or {})
     for k in kinds:
         a = auth.get(k) or {}
-        if a.get("username"):
+        if isinstance(a, dict) and a.get("username"):
             return str(a["username"]), str(a.get("password") or "")
     raise EngineError("PGA-GEO-021", "no rewind / superuser credentials in %s" % config_path)
 
