@@ -16,7 +16,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.fill('input[type=password]', 'correct-horse-battery'); await p.click('button[type=submit]');
   await p.waitForSelector('text=Connected clusters'); await p.waitForSelector('text=prodpg');
   // organise: prodpg into prod > billing/api; the sidebar and the list group it, with the state of the group
-  await p.click('tr:has-text("prodpg") button:has-text("Organize")'); await p.fill('.modal input[list]', 'billing/api'); await p.click('.modal button:has-text("Save")');
+  await p.click('tr:has-text("prodpg") button[aria-label^="Organize"]'); await p.fill('.modal input[list]', 'billing/api'); await p.click('.modal button:has-text("Save")');
   await p.waitForSelector('.side .fhead.folder:has-text("billing")'); await p.waitForSelector('.fleettable tr.frow:has-text("api")'); await shot('02-clusters');
   assert(await p.locator('text=Demo cluster').count() >= 1, 'demo present');
   await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Data protection'); await shot('03-overview');
@@ -142,14 +142,14 @@ const base = process.env.BASE || 'http://localhost:5188';
   // whole server, default end: PRODUCTION itself goes back (stop, swap, start, primary again); the previous data directory is kept and can be given back
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need to rebuild the whole server")');
   await p.waitForSelector('label.opt.on:has-text("The latest saved point")', { timeout: 10000 }); await p.click('button:has-text("Next")');
-  await p.waitForSelector('label.opt.on:has-text("Repair the production server")'); await p.waitForSelector('code:has-text("postgresql@16-main.service")', { timeout: 10000 });
+  await p.waitForSelector('label.opt.on:has-text("Restore the production server in place")'); await p.waitForSelector('code:has-text("postgresql@16-main.service")', { timeout: 10000 });
   await p.waitForSelector('text=WAL not yet archived'); await p.waitForSelector('text=/standby server\\(s\\) stream from this server.*must be rebuilt/');
   if (await p.locator('text=Where to put the copy').count()) throw new Error('replacing production asks for no copy destination');
   await shot('12j-server-fix-check');
   await p.click('button.start-restore'); await p.waitForSelector('.modal >> text=in place of production');
   if (!(await p.locator('.modal button:has-text("Start")').isDisabled())) throw new Error('replacing production needs the typed confirmation');
   await p.fill('.modal input', 'REPLACE'); await p.click('.modal button:has-text("Start")');
-  await p.waitForSelector('text=The production server is back as it was', { timeout: 15000 }); await p.waitForSelector('text=primary again after 14 s');
+  await p.waitForSelector('text=The production server is back as it was', { timeout: 15000 }); await p.click('summary:has-text("What pg_arca did, step by step")'); await p.waitForSelector('text=primary again after 14 s');
   await p.waitForSelector('text=Kept directories'); await shot('12k-server-fixed');
   await p.click('.card:has-text("Kept directories") button:has-text("Delete")'); await p.fill('.modal input', 'main.pgarca-before-20260101000500'); await p.click('.modal button:has-text("Delete")');
   await p.waitForSelector('text=Kept directories', { state: 'detached', timeout: 10000 });
@@ -176,7 +176,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('.modal button:has-text("Close")');
   await p.click('.side button.navbtn:has-text("All clusters")'); await p.click('a:has-text("prodpg")'); await p.waitForSelector('text=Data protection');
   // ops tab, logs tab, preview tab
-  await tab('Maintenance', 'Operations'); await p.waitForSelector('text=Operation log'); await shot('13-ops');
+  await tab('Maintenance', 'Operations'); await p.waitForSelector('text=Operations on this cluster'); await shot('13-ops');
   await tab('Maintenance', 'Logs'); await p.waitForSelector('text=Live logs');
   await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console'); await p.waitForSelector('text=Active replicas without'); await shot('14-hba');
   // offsite copy (S3): no copy yet -> set it up -> test+save -> status shown -> sync and dry run -> a refused bucket is reported, not saved
@@ -303,11 +303,11 @@ const base = process.env.BASE || 'http://localhost:5188';
   // relationships: the standby site sits under its primary (auto); "no relationship" detaches it; a cluster without telemetry declared as replica by hand
   await p.goto(base + '/#/'); await p.waitForSelector('.fleettable tr.replicarow');
   const stbyName = (await p.locator('.fleettable tr.replicarow strong').first().innerText()).trim();
-  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button:has-text("Organize")`); await p.check('.modal input[name=glm] >> nth=2'); await p.click('.modal button:has-text("Save")');
+  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button[aria-label^="Organize"]`); await p.check('.modal input[name=glm] >> nth=2'); await p.click('.modal button:has-text("Save")');
   await p.waitForFunction(() => !document.querySelector('.fleettable tr.replicarow'), null, { timeout: 15000 });
-  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button:has-text("Organize")`); await p.check('.modal input[name=glm] >> nth=0'); await p.click('.modal button:has-text("Save")');
+  await p.click(`.fleettable tr:has(strong:text-is("${stbyName}")) button[aria-label^="Organize"]`); await p.check('.modal input[name=glm] >> nth=0'); await p.click('.modal button:has-text("Save")');
   await p.waitForSelector('.fleettable tr.replicarow', { timeout: 15000 });
-  await p.click('.fleettable tr:has(strong:text-is("pg-e2e-new")) button:has-text("Organize")'); await p.check('.modal input[name=glm] >> nth=1');
+  await p.click('.fleettable tr:has(strong:text-is("pg-e2e-new")) button[aria-label^="Organize"]'); await p.check('.modal input[name=glm] >> nth=1');
   await p.selectOption('.modal fieldset select', { label: 'prodpg · prod' }); await p.click('.modal button:has-text("Save")');
   await p.waitForSelector('.fleettable tr.replicarow:has-text("pg-e2e-new")', { timeout: 15000 }); await shot('19c-manual-link');
   await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("set by hand")'); await shot('19d-geo-manual');

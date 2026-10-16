@@ -501,3 +501,5 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 /* banner actions: beside the text on wide screens, under it on a phone (a long "Schedule with …" button made the Backup tab wider than the screen) */
 .banner { flex-wrap: wrap; } .banner > .grow { min-width: 0; flex: 1 1 260px; } .banner .bacts { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
 @media (max-width: 720px) { .banner .bacts { flex-basis: 100%; padding-left: 30px; } .banner .bacts .btn { white-space: normal; text-align: left; } }
+@media (max-width: 720px) { .activitystrip > button, .activitystrip > .btn, .activitystrip > .linkbtn { flex-basis: 100%; text-align: left; } .activitystrip .faint { display: none; } }
+@media (max-width: 720px) { .fleettable .midonly { display: none; } .fleettable td.protcell { min-width: 160px; } }

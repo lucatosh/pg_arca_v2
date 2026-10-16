@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { api } from '../api';
-import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago, bytes } from '../ui';
+import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago, bytes, nof } from '../ui';
 import { revalidate, toast, useOpRunner, useQuery, useDraft, clearDrafts } from '../hooks';
 import { go } from '../router';
 import { InstallCommand, OP_LABEL, OpPanel, statusBadge } from './shared';
@@ -41,7 +41,7 @@ export function WorkersPage({ role }: { role: string }) {
           <td><strong>{w.name}</strong>{w.label ? <div className="small muted">{w.label}</div> : null}</td>
           <td>{w.roles.length ? <div className="row wrap gap-s">{w.roles.map(r => <Badge key={r} kind="accent">{ROLE_LABEL[r]?.label || r}</Badge>)}</div> : <span className="faint">—</span>}</td>
           <td>{w.pgMajors.length ? w.pgMajors.map(m => <Badge key={m}>{m}</Badge>) : <span className="faint">{w.reported ? 'none' : '…'}</span>}</td>
-          <td className="small">{w.cpus ? `${w.cpus} CPU · ` : ''}{w.memTotal ? `${bytes(w.memTotal)} RAM` : ''}{w.remoteMounts ? ` · ${w.remoteMounts} network shares` : ''}</td>
+          <td className="small">{w.cpus ? `${w.cpus} CPU · ` : ''}{w.memTotal ? `${bytes(w.memTotal)} RAM` : ''}{w.remoteMounts ? ` · ${nof(w.remoteMounts, 'network share')}` : ''}</td>
           <td className="small">{w.usedBy.length ? `recovery for ${w.usedBy.map(usedText).join(', ')}` : <span className="faint">—</span>}</td>
           <td>{w.online ? <Badge kind="ok">online</Badge> : <Badge kind="bad" title={w.lastSeen ? `last seen ${ago(w.lastSeen)}` : undefined}>offline</Badge>}</td></tr>)}</tbody></table></div></Card>}
     {add ? <AddWorker onClose={() => setAdd(false)} /> : null}

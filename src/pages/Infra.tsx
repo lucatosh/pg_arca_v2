@@ -80,7 +80,7 @@ const DestForm: React.FC<FormProps> = ({ value: v, set }) => <div className="sta
   <Banner kind="info" title="What happens when you change the destination">Existing backups stay where they are: they are not moved. The new destination starts with a new full backup; restores from older points keep reading from the old path as long as you keep it.</Banner></div>;
 
 const KINDS: Record<'ephemeral' | 'destination', KindUI> = {
-  ephemeral: { title: 'Recovery instance', intro: 'To restore a database, a schema or a table without touching the running cluster, pg_arca starts a temporary PostgreSQL instance on files extracted from the backup. Here you decide where it runs and with which resources: for all clusters, per environment, per folder or per cluster.', Form: EphForm, summary: ephSummary, fields: Object.keys(EPH_LABELS), labels: EPH_LABELS },
+  ephemeral: { title: 'Where restores run', intro: 'To restore a database, a schema or a table without touching the running cluster, pg_arca starts a temporary PostgreSQL instance on files extracted from the backup. Here you decide where it runs and with which resources: for all clusters, per environment, per folder or per cluster.', Form: EphForm, summary: ephSummary, fields: Object.keys(EPH_LABELS), labels: EPH_LABELS },
   destination: { title: 'Backup destination', intro: 'Where the repository and WAL archive go. Once for all clusters, per environment, per folder or per cluster; the {cluster} {env} {id} placeholders give each cluster its own directory. Before applying, every node verifies that the destination really works.', Form: DestForm, summary: destSummary, fields: Object.keys(DEST_LABELS), labels: DEST_LABELS },
 };
 
@@ -116,7 +116,7 @@ function PreflightModal({ cluster, onClose }: { cluster: SCluster; onClose: () =
   const plan = r?.install_plan; const modes = plan?.modes || {};
   useEffect(() => { if (plan?.recommended) setMode(plan.recommended); }, [plan?.recommended]);
   const m = modes[mode];
-  return <Modal wide title={`Recovery check — ${cluster.name}`} onClose={onClose} footer={<><Button icon="refresh" onClick={() => pre.run('ephemeral_preflight', {})} busy={pre.busy}>Run the check again</Button><div className="grow" /><Button onClick={onClose}>Close</Button></>}>
+  return <Modal wide title={`Where restores run: check — ${cluster.name}`} onClose={onClose} footer={<><Button icon="refresh" onClick={() => pre.run('ephemeral_preflight', {})} busy={pre.busy}>Run the check again</Button><div className="grow" /><Button onClick={onClose}>Close</Button></>}>
     <div className="stack">
       {!r ? <OpPanel op={pre.op} error={pre.error} label="Recovery instance check" /> : <>
         <Banner kind={r.ok ? (r.level === 'warn' ? 'warn' : 'ok') : 'bad'} title={r.ok ? 'This node can run recoveries' : 'Recovery cannot start from this node'}>
@@ -252,7 +252,7 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
       <Banner kind="info" title="Applying the destination">Sets the repository and WAL archive on every node’s agent. On the primary, pg_arca immediately checks that the next WAL segment lands in the new directory; if it does not, it switches back to the previous one by itself and says so. Existing backups stay readable in the previous location (including for a PITR spanning the change) and you can migrate them in the background. The new destination starts with a full backup. In a protected environment a second administrator must approve.</Banner>
       <div><Button kind="primary" icon="zap" busy={busy === 'apply'} disabled={!allOk || !!busy} onClick={() => act('apply')}>Apply to the nodes</Button>{!allOk ? <span className="small muted"> Every node needs a recent passed check.</span> : null}</div>
       {done ? (done.approval ? <Banner kind="info" title="Awaiting approval">A destination change in this environment requires approval from another administrator (Today page). It is applied as soon as it is approved.</Banner>
-        : <Banner kind="ok" title="Apply started">{nof(done.operations.length, 'operation')} sent to the nodes (see the Activity panel). {done.note}</Banner>) : null}
+        : <Banner kind="ok" title="Apply started">{nof(done.operations.length, 'operation')} sent to the nodes (follow them in Activity, bottom right). {done.note}</Banner>) : null}
       {err ? <Banner kind="bad">{err}</Banner> : null}
       <PreviousLocation cluster={cluster} d={d} /></div>}
   </Modal>;
@@ -268,12 +268,12 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
   if (!v) return <div className="stack"><Skeleton h={40} /><Skeleton h={220} /></div>;
   const line = (scope: Scope, k: string, title: string, sub?: string) => { const a = v.assignments[scopeKey(scope, k)]; return <tr key={scopeKey(scope, k)}>
     <td><strong>{title}</strong>{sub ? <div className="small muted">{sub}</div> : null}</td>
-    <td>{a ? <div className="row wrap gap-s">{Object.keys(a).filter(f => f !== 'portMax').map(f => <Badge key={f} kind="accent" title={f === 'portMin' ? `${a.portMin}–${a.portMax}` : f === 'centralNode' ? (v.nodes.find(n => n.id === a[f])?.name || a[f]) : JSON.stringify(a[f])}>{f === 'centralNode' ? `Node: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : f === 'placement' ? (a[f] === 'central' ? 'On a central node' : 'On the cluster node') : ui.labels[f] || f}</Badge>)}</div> : <span className="muted">Inherits</span>}</td>
+    <td>{a ? <div className="row wrap gap-s">{Object.keys(a).filter(f => f !== 'portMax').map(f => <Badge key={f} kind="accent" title={f === 'portMin' ? `${a.portMin}–${a.portMax}` : f === 'centralNode' ? (v.nodes.find(n => n.id === a[f])?.name || a[f]) : JSON.stringify(a[f])}>{f === 'centralNode' ? `Node: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : f === 'placement' ? (a[f] === 'central' ? 'On a central node' : 'On the cluster node') : ui.labels[f] || f}</Badge>)}</div> : <span className="muted">{scope === 'global' ? 'Not set (built-in defaults)' : 'Inherits'}</span>}</td>
     <td className="num"><Button sm onClick={() => setDlg({ scope, k, label: title })}>Edit</Button></td></tr>; };
   return <div className="stack-l">
     <p className="sub" style={{ margin: 0, maxWidth: 820 }}>{ui.intro}</p>
     <Card title="Levels" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Level</th><th>What it sets</th><th /></tr></thead><tbody>
-      {line('global', '', 'All clusters', 'Fallback value')}
+      {line('global', '', 'All clusters', 'Applies wherever no environment, folder or cluster sets its own')}
       {ENVS.map(e => line('env', e, `Environment: ${ENV_LABEL[e]}`, nof(v.clusters.filter(c => c.environment === e).length, 'cluster')))}
       {v.folders.map(f => line('folder', f, `Folder: ${f}`, nof(v.clusters.filter(c => c.folder === f || c.folder.startsWith(f + '/')).length, 'cluster')))}</tbody></table></div></Card>
     <Card title="Cluster" pad={false}>{!v.clusters.length ? <div style={{ padding: 16 }} className="muted">No connected clusters.</div> : <div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>In effect</th><th /></tr></thead><tbody>
@@ -290,7 +290,7 @@ export function InfraPage({ tab }: { tab?: string }) {
   const t: 'ephemeral' | 'destination' = tab === 'destination' ? 'destination' : 'ephemeral';
   return <>
     <div className="pagehead"><div className="grow"><h1>Storage & recovery</h1><p className="sub">Where recoveries run and where backups are written: once for everything, then exceptions per environment, folder or cluster.</p></div></div>
-    <Tabs value={t} onChange={v => go(`infra/${v}`)} items={[{ id: 'ephemeral', label: 'Recovery instance', icon: 'restore' }, { id: 'destination', label: 'Backup destination', icon: 'server' }]} />
+    <Tabs value={t} onChange={v => go(`infra/${v}`)} items={[{ id: 'ephemeral', label: 'Where restores run', icon: 'restore' }, { id: 'destination', label: 'Backup destination', icon: 'server' }]} />
     <div style={{ marginTop: 16 }}><ScopedTab kind={t} key={t} /></div></>;
 }
 

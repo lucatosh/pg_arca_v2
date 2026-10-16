@@ -77,7 +77,7 @@ function ConsoleAddress() {
   const save = async () => { setBusy(true); setErr(null); try { await api('PUT', '/api/console-address', { publicUrl: v || '' }); await revalidate('/api/console-address'); toast('Console address saved', 'ok'); } catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); } };
   return <Card title="Console address">
     <p className="small muted" style={{ marginTop: 0 }}>The address the database servers use to reach this console: it appears in the agent install and upgrade commands. If empty, the address you opened the console with in the browser is used.</p>
-    {q.data?.warning && !q.data.configured ? <Banner kind="warn">{q.data.warning}</Banner> : null}
+    {q.data?.warning && !q.data.configured ? <Banner kind="warn">{String(q.data.warning).replace(/\s*\(Settings → Console address\)/, '').replace(/Set the console address reachable from the servers/, 'Enter below the address the servers can reach')}</Banner> : null}
     <Field label="Address reachable from the servers" hint={q.data ? `In use now: ${q.data.effective}` : undefined} error={err}><div className="row gap-s"><input className="input mono" value={v ?? ''} onChange={e => setV(e.target.value)} placeholder="https://pgarca.example.com" /><Button kind="primary" busy={busy} disabled={v === null || v === (q.data?.publicUrl || '')} onClick={save}>Save address</Button></div></Field>
   </Card>;
 }

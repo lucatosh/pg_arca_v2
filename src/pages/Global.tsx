@@ -3,8 +3,17 @@ import { api, uid } from '../api';
 import { Badge, Banner, Button, Card, Empty, Icon, Skeleton, dt, num } from '../ui';
 import { go } from '../router';
 import { toast, useQuery, revalidate, useDraft } from '../hooks';
-import { ActivitySwitch } from './shared';
+import { ActivitySwitch, OP_LABEL } from './shared';
 
+/** The audit trail in words (independent review, round 2: raw 'op.submit:hba_plan', JSON details, every request an amber 'Warning'). The raw
+ *  action stays as a tooltip: an auditor can still search and quote it. */
+const actionText = (a: string) => { const m = /^op\.(submit:)?(.+)$/.exec(a || ''); if (m) return `${m[1] ? 'Requested: ' : ''}${OP_LABEL[m[2]] || m[2].replace(/_/g, ' ')}`;
+  const t = String(a || '').replace(/[._:]+/g, ' ').trim(); return t ? t.charAt(0).toUpperCase() + t.slice(1) : '—'; };
+const outcome = (st: string): [string, string] => { const u = String(st || '').toUpperCase();
+  return u === 'SUCCESS' || u === 'SUCCEEDED' ? ['OK', 'ok'] : u === 'FAILED' || u === 'FAILURE' ? ['Failed', 'bad'] : u === 'QUEUED' ? ['Requested', ''] : u === 'RUNNING' ? ['Running', 'info']
+    : u === 'CANCELLED' ? ['Cancelled', ''] : u === 'EXPIRED' ? ['Expired', 'warn'] : ['Warning', 'warn']; };
+const detailsText = (d: any) => { if (d == null || d === '') return ''; let v = d; if (typeof d === 'string') { try { v = JSON.parse(d); } catch { return d; } }
+  if (!v || typeof v !== 'object') return String(v); return Object.entries(v).filter(([k, x]) => x != null && x !== '' && k !== 'opId').map(([k, x]) => `${k.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}: ${typeof x === 'object' ? JSON.stringify(x) : String(x)}`).join(' · '); };
 export function Audit({ clusters }: { clusters: any[] }) {
   const [cl, setCl] = useDraft('audit:cl', 'all'); const [st, setSt] = useDraft('audit:st', 'all'); const [s, setS] = useDraft('audit:s', '');
   const q = useQuery<{ total: number; entries: any[] }>(`/api/audit/history?limit=200&clusterId=${cl}&status=${st}&search=${encodeURIComponent(s)}`, { interval: 10000 });
@@ -15,9 +24,9 @@ export function Audit({ clusters }: { clusters: any[] }) {
       <input className="input" style={{ maxWidth: 280 }} placeholder="Search" value={s} onChange={e => setS(e.target.value)} /></div>
     <Card pad={false}>{q.loading ? <div className="bd"><Skeleton h={80} /></div> : !q.data?.entries.length ? <Empty icon="list" title="No activity" /> :
       <div className="tablewrap"><table className="t"><thead><tr><th>When</th><th>Action</th><th>Cluster</th><th>User</th><th>Outcome</th><th>Details</th></tr></thead><tbody>
-        {q.data.entries.map(e => <tr key={e.id}><td className="nowrap">{dt(e.timestamp)}</td><td><code>{e.action}</code></td><td>{e.clusterName || '—'}</td><td>{e.user}</td>
-          <td><Badge kind={e.status === 'SUCCESS' ? 'ok' : e.status === 'FAILED' ? 'bad' : 'warn'}>{e.status === 'SUCCESS' ? 'OK' : e.status === 'FAILED' ? 'Failed' : 'Warning'}</Badge></td>
-          <td className="muted trunc" style={{ maxWidth: 360 }} title={e.details}>{e.details}</td></tr>)}</tbody></table></div>}</Card>
+        {q.data.entries.map(e => { const o = outcome(e.status); return <tr key={e.id}><td className="nowrap">{dt(e.timestamp)}</td><td title={e.action}>{actionText(e.action)}</td><td>{e.clusterName || '—'}</td><td>{e.user}</td>
+          <td><Badge kind={o[1] as any}>{o[0]}</Badge></td>
+          <td className="muted trunc small" style={{ maxWidth: 360 }} title={e.details}>{detailsText(e.details)}</td></tr>; })}</tbody></table></div>}</Card>
     {q.data ? <p className="faint small">{num(q.data.total)} entries{q.data.total > 200 ? ' — showing the latest 200' : ''}.</p> : null}
   </>;
 }

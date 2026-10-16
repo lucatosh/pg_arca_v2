@@ -139,14 +139,14 @@ export function StrategyPage() {
   const lineOf = (scope: 'global' | 'env' | 'folder', k: string) => asgLabel(v.assignments[scope === 'global' ? 'global' : `${scope}:${k}`], v.templates);
   const Line = ({ scope, k, title, sub, env }: { scope: 'global' | 'env' | 'folder'; k: string; title: string; sub?: string; env?: string }) => { const a = lineOf(scope, k); return <tr>
     <td><strong>{title}</strong>{sub ? <div className="small muted">{sub}</div> : null}</td>
-    <td>{a ? <Badge kind={a === 'No automatic backups' ? 'warn' : 'accent'}>{a}</Badge> : <span className="muted">Inherits</span>}</td>
+    <td>{a ? <Badge kind={a === 'No automatic backups' ? 'warn' : 'accent'}>{a}</Badge> : <span className="muted">{scope === 'global' ? 'No policy (manual backups only)' : 'Inherits'}</span>}</td>
     <td className="num"><Button sm onClick={() => setDlg({ scope, k, label: title, env })}>Assign</Button></td></tr>; };
   return <>
     <div className="pagehead"><div className="grow"><h1>Backup policies</h1><p className="sub">Decide once per environment or folder; every cluster follows the closest level. An assignment on a single cluster overrides everything.</p></div></div>
     {uncovered.length ? <Banner kind="warn" title={`${nof(uncovered.length, 'cluster')} without automatic backups`} actions={<Button sm kind="primary" onClick={applySuggested}>Apply the recommended ones per environment</Button>}>{uncovered.map(c => c.name).join(', ')}. The recommended template depends on the environment (production → “{v.templates.find(t => t.id === v.suggested.prod)?.name}”).</Banner> : v.clusters.length ? <Banner kind="ok" title="Every cluster has an active policy" /> : null}
     <div className="stack-l" style={{ marginTop: 16 }}>
       <Card title="Levels" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Level</th><th>Assignment</th><th /></tr></thead><tbody>
-        <Line scope="global" k="" title="All clusters" sub="Fallback value when no level below is set" />
+        <Line scope="global" k="" title="All clusters" sub="Applies wherever no environment, folder or cluster sets its own" />
         {ENVS.map(e => <Line key={e} scope="env" k={e} env={e} title={`Environment: ${ENV_LABEL[e]}`} sub={`${nof(envCount(e), 'cluster')} · recommended: ${v.templates.find(t => t.id === v.suggested[e])?.name}`} />)}
         {v.folders.map(f => <Line key={f} scope="folder" k={f} title={`Folder: ${f}`} sub={nof(v.clusters.filter(c => c.folder === f || c.folder.startsWith(f + '/')).length, 'cluster')} />)}</tbody></table></div></Card>
 

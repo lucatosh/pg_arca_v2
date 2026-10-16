@@ -10,7 +10,7 @@ export function UsersPage({ me }: { me: string }) {
   const [add, setAdd] = useState(false); const [del, setDel] = useState<string | null>(null); const [reset, setReset] = useState<string | null>(null);
   const act = async (fn: () => Promise<any>, ok: string) => { try { await fn(); toast(ok, 'ok'); revalidate('/api/users'); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } };
   return <>
-    <div className="pagehead"><div className="grow"><h1>Users</h1><p className="sub">Who can access the console and what they can do. Every action stays in the audit log with the name of who performed it.</p></div><Button kind="primary" icon="plus" onClick={() => setAdd(true)}>New user</Button></div>
+    <div className="pagehead"><div className="grow"><h1>Users</h1><p className="sub">Who can access the console and what they can do. Every action stays in the Activity log with the name of who performed it.</p></div><Button kind="primary" icon="plus" onClick={() => setAdd(true)}>New user</Button></div>
     <Card pad={false}>{!q.data ? <div className="bd"><Skeleton h={60} /></div> : <div className="tablewrap"><table className="t"><thead><tr><th>User</th><th>Role</th><th>Status</th><th /></tr></thead><tbody>
       {q.data.users.map(u => <tr key={u.user}><td><strong>{u.user}</strong>{u.user === me ? <span className="faint"> (you)</span> : null}{u.bootstrap ? <div className="small muted">Initial account</div> : null}{u.source === 'ldap' ? <div className="small muted">Directory account{u.lastLoginAt ? ` · last sign-in ${ago(u.lastLoginAt)}` : ''}</div> : null}</td>
         <td>{u.bootstrap ? <Badge kind="accent">{ROLE.admin[0]}</Badge> : u.source === 'ldap' ? <span title="The role comes from the directory groups at every sign-in (see Directory sign-in below)"><Badge kind={u.role === 'admin' ? 'accent' : undefined}>{ROLE[u.role]?.[0] || u.role}</Badge> <span className="faint small">from the directory</span></span> : <select className="input" style={{ width: 'auto' }} value={u.role} aria-label={`Role of ${u.user}`} onChange={e => act(() => api('PATCH', `/api/users/${encodeURIComponent(u.user)}`, { role: e.target.value }), 'Role updated: the user must sign in again')}>{Object.entries(ROLE).map(([k, [l]]) => <option key={k} value={k}>{l}</option>)}</select>}</td>
@@ -23,7 +23,7 @@ export function UsersPage({ me }: { me: string }) {
     <Directory />
     {add ? <AddUser onClose={() => setAdd(false)} onDone={() => { setAdd(false); revalidate('/api/users'); }} /> : null}
     {reset ? <ResetPw name={reset} onClose={() => setReset(null)} /> : null}
-    {del ? <Confirm danger title={`Delete ${del}?`} confirmLabel="Delete" onClose={() => setDel(null)} onConfirm={() => { const n = del; setDel(null); act(() => api('DELETE', `/api/users/${encodeURIComponent(n)}`), 'User deleted'); }}><p>The user loses access immediately. Their past actions stay in the audit log.</p></Confirm> : null}
+    {del ? <Confirm danger title={`Delete ${del}?`} confirmLabel="Delete" onClose={() => setDel(null)} onConfirm={() => { const n = del; setDel(null); act(() => api('DELETE', `/api/users/${encodeURIComponent(n)}`), 'User deleted'); }}><p>The user loses access immediately. Their past actions stay in the Activity log.</p></Confirm> : null}
   </>;
 }
 

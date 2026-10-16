@@ -50,12 +50,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   assert.equal(await p.locator('input[list=hba-users]').inputValue(), 'halfway', 'the half-typed rule is still in the form'); await shot('f2-hba-kept');
   await p.click('button:has-text("Discard changes")'); await p.waitForSelector('text=No changes compared');
   // 6. a modal with typed data does not vanish on a stray click outside; Esc asks; X closes
-  await p.goto(base + '/#/'); await p.click('tr:has-text("prodpg") button:has-text("Organize")'); await p.fill('.modal input[list]', 'new/folder');
+  await p.goto(base + '/#/'); await p.click('tr:has-text("prodpg") button[aria-label^="Organize"]'); await p.fill('.modal input[list]', 'new/folder');
   await p.mouse.click(5, 5); await p.waitForSelector('.modal-ask'); assert(await p.locator('.modal input[list]').inputValue() === 'new/folder', 'typed data still there');
   await p.click('.modal-ask button:has-text("Keep editing")'); await p.keyboard.press('Escape'); await p.waitForSelector('.modal-ask'); await shot('f3-modal-ask');
   await p.click('.modal-ask button:has-text("Close")'); await p.waitForSelector('.modal', { state: 'detached' });
   // ...and a modal without changes closes on a click outside as before
-  await p.click('tr:has-text("prodpg") button:has-text("Organize")'); await p.mouse.click(5, 5); await p.waitForSelector('.modal', { state: 'detached' });
+  await p.click('tr:has-text("prodpg") button[aria-label^="Organize"]'); await p.mouse.click(5, 5); await p.waitForSelector('.modal', { state: 'detached' });
   // 7. Back restores the scroll position of a long page
   await p.goto(base + '/#/history'); await p.waitForTimeout(800);
   const pg = p.locator('main.page'); await pg.evaluate(e => e.scrollTo({ top: 400 })); await p.waitForTimeout(200); const y = await pg.evaluate(e => e.scrollTop);

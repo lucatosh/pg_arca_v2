@@ -25,14 +25,14 @@ export function Clusters({ clusters, loading, demoAvailable }: { clusters: any[]
   const real = clusters.filter(c => !c.isSandbox);
   // one source for every status in the console (the briefing): the KPI used to count c.status while the sidebar used the findings
   const hb = useHealth(30000).data; const prot = ((hb?.clusters || []) as any[]).filter((x: any) => x.protection && x.protection.state !== 'none');
-  const protectedN = prot.filter((x: any) => x.protection.state === 'ok').length; const unprot = prot.filter((x: any) => x.protection.state === 'bad').length;
+  const protectedN = prot.filter((x: any) => x.protection.state === 'ok').length; const unprot = prot.filter((x: any) => x.protection.state === 'bad').length; const attn = prot.length - protectedN - unprot;
   const restoreDemo = async () => { try { await api('POST', '/api/clusters/demo'); revalidate('/api/clusters'); } catch (e: any) { toast(e.message, 'bad'); } };
   return <>
     <div className="pagehead"><div className="grow"><h1>Clusters</h1><p className="sub">All the PostgreSQL clusters managed by this console.</p></div>
       <Button kind="primary" icon="plus" onClick={() => setWiz(true)}>Connect cluster</Button></div>
     {clusters.length ? <div className="grid g4 kpis">
-      <Card><div className="kpi"><span className="v">{clusters.length}</span><span className="l">Connected clusters</span></div></Card>
-      <Card><div className="kpi"><span className="v" style={unprot ? { color: 'var(--bad)' } : undefined}>{protectedN}<span className="faint" style={{ fontSize: 14 }}> / {prot.length}</span></span><span className="l">{unprot ? `Protected · ${unprot} not protected` : 'Protected (restorable, no open problem)'}</span></div></Card>
+      <Card><div className="kpi"><span className="v">{real.length}</span><span className="l">Connected clusters{clusters.length > real.length ? ' (plus the demo)' : ''}</span></div></Card>
+      <Card><div className="kpi"><span className="v" style={unprot ? { color: 'var(--bad)' } : undefined}>{protectedN}<span className="faint" style={{ fontSize: 14 }}> / {prot.length}</span></span><span className="l">{unprot || attn ? `protected · ${[unprot ? `${unprot} not protected` : '', attn ? `${attn} ${attn === 1 ? 'needs' : 'need'} attention` : ''].filter(Boolean).join(' · ')}` : 'Protected: restorable, nothing open'}</span></div></Card>
       <Card><div className="kpi"><span className="v">{clusters.reduce((a, c) => a + (c.haState?.nodes?.length || 0), 0)}</span><span className="l">Nodes</span></div></Card>
       <Card><div className="kpi"><span className="v">{bytes(clusters.reduce((a, c) => a + (c.totalSizeBytes || 0), 0))}</span><span className="l">Managed data</span></div></Card>
     </div> : null}
@@ -64,9 +64,9 @@ function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; 
       {replica && parentEnv && c.environment && c.environment !== parentEnv ? <span className="faint small">· {c.environment}</span> : null}
       {replica ? <span className="geotag" title="Standby site (standby cluster): receives data from the primary above">DR</span> : c.replicas?.length ? <span className="geotag p" title={`Primary site, replicated to ${c.replicas.map((r: any) => r.name).join(', ')}`}>GEO</span> : null}</span></td>
     <td className={replica ? 'stcell' : undefined} title={replica ? `Standby of ${c.geo.peers?.find((p: any) => p.role === 'primary')?.name}: ${replicaText(c)}` : undefined}><span className="small">{replica ? <>Standby{c.geo.link === 'manual' ? ' (set by hand)' : ''} · <span style={{ color: c.geo.health === 'ok' ? undefined : `var(--${c.geo.health})` }}>{replicaText(c)}</span></> : health[c.id] === 'critical' ? <span style={{ color: 'var(--bad)', fontWeight: 600 }}>Critical problems</span> : health[c.id] === 'warning' ? <span style={{ color: 'var(--warn)' }}>Needs attention</span> : c.status === 'healthy' ? 'Healthy' : c.status === 'degraded' ? 'Degraded' : c.status}{replica && (health[c.id] === 'critical' || health[c.id] === 'warning') ? <span className="faint"> · {health[c.id] === 'critical' ? 'critical problems' : 'needs attention'}</span> : null}</span></td>
-    <td className="protcell">{c.isSandbox || c.source === 'direct' ? modeOf(c) : <ProtectionLine p={prot[c.id]} />}</td><td>{stratOf(c, pol)}</td><td className="wideonly" title={c.pgVersion || undefined}>{c.pgVersion ? String(c.pgVersion).split(' ')[0] : '—'}</td>
-    <td className="num">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num">{bytes(c.totalSizeBytes)}</td><td className="num wideonly">{num(c.tps)}</td>
-    <td className="num">{c.isSandbox || !isAdmin ? null : <button className="btn ghost sm" onClick={e => { e.stopPropagation(); onOrganize(c); }} title="Environment, folder and replication relationship">Organize…</button>}</td></tr>;
+    <td className="protcell">{c.isSandbox || c.source === 'direct' ? modeOf(c) : <ProtectionLine p={prot[c.id]} />}</td><td className="midonly">{stratOf(c, pol)}</td><td className="wideonly" title={c.pgVersion || undefined}>{c.pgVersion ? String(c.pgVersion).split(' ')[0] : '—'}</td>
+    <td className="num midonly">{c.haState?.nodes?.length ?? c.agentNodes?.length ?? 0}</td><td className="num midonly">{bytes(c.totalSizeBytes)}</td><td className="num wideonly">{num(c.tps)}</td>
+    <td className="num">{c.isSandbox || !isAdmin ? null : <button className="btn ghost sm icon" onClick={e => { e.stopPropagation(); onOrganize(c); }} title="Organize: environment, folder and replication relationship" aria-label={`Organize ${c.name}`}><Icon n="settings" s={15} /></button>}</td></tr>;
   const row = (c: any, depth: number) => [one(c, depth), ...(c.replicas || []).map((r: any) => one(r, depth + 1, true, c.environment))];
   const folder = (n: FolderNode, env: string, depth: number): React.ReactNode[] => {
     const k = `${env}:${n.path}`; const open = fold.isOpen(k, true);
@@ -75,7 +75,7 @@ function FleetTable({ clusters, pol, onOrganize }: { clusters: any[]; pol: any; 
       ...(open ? [...n.children.flatMap(ch => folder(ch, env, depth + 1)), ...n.clusters.flatMap(c => row(c, depth + 1))] : [])];
   };
   return <div className="tablewrap"><table className="t fleettable">
-    <thead><tr><th>Cluster</th><th>Status</th><th>Protection</th><th title="Backup policy (schedule and retention)">Policy</th><th className="wideonly">PostgreSQL</th><th className="num">Nodes</th><th className="num">Size</th><th className="num wideonly">TPS</th><th /></tr></thead>
+    <thead><tr><th>Cluster</th><th>Status</th><th>Protection</th><th className="midonly" title="Backup policy (schedule and retention)">Policy</th><th className="wideonly">PostgreSQL</th><th className="num midonly">Nodes</th><th className="num midonly">Size</th><th className="num wideonly">TPS</th><th /></tr></thead>
     <tbody>{groups.flatMap(g => {
       const k = `env:${g.env}`; const open = fold.isOpen(k, true);
       return [<tr key={k} className={`erow ${g.tone}`} onClick={() => fold.toggle(k, true)}><td colSpan={9}><span className="row gap-s"><Icon n={open ? 'down' : 'chev'} s={13} /><span className={`envmark ${g.env}`} /><strong>{g.label}</strong><Dot kind={g.tone} />{summary(g)}<span className="small faint"> · {nodes(g.root)} {nodes(g.root) === 1 ? 'node' : 'nodes'} · {bytes(size(g.root))}</span></span></td></tr>,

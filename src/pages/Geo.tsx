@@ -76,7 +76,7 @@ function GroupCard({ g, role, running }: { g: Group; role: string; running: bool
     {role === 'admin' ? <div className="row wrap" style={{ marginTop: 14 }}>
       {prim && stand.map(s => <Button key={'sw' + s.clusterId} icon="swap" disabled={running || s.health === 'bad'} title={s.health === 'bad' ? 'The standby site is not healthy' : undefined} onClick={() => setDlg(s.endpoint ? { kind: 'switch', site: s } : { kind: 'endpoint', site: s, next: 'switch' })}>Planned switchover to {s.name}</Button>)}
       {stand.map(s => <Button key={'pr' + s.clusterId} kind="danger" icon="alert" disabled={running} onClick={() => setDlg({ kind: 'promote', site: s })}>Promote {s.name} (disaster recovery)…</Button>)}
-      {g.sites.map(s => <Button key={'ep' + s.clusterId} sm kind="ghost" onClick={() => setDlg({ kind: 'endpoint', site: s })}>Address of {s.name}</Button>)}
+      {g.sites.map(s => <Button key={'ep' + s.clusterId} sm kind="ghost" onClick={() => setDlg({ kind: 'endpoint', site: s })}>Set the address of {s.name}…</Button>)}
     </div> : null}
     {dlg?.kind === 'endpoint' ? <EndpointDialog s={dlg.site} onClose={() => setDlg(null)} onSaved={dlg.next === 'switch' ? ep => setDlg({ kind: 'switch', site: { ...dlg.site, endpoint: ep } }) : undefined} /> : null}
     {dlg?.kind === 'demote' ? (() => { const keepSite = [prim, ...extra].find(x => x && x.clusterId !== dlg.site.clusterId)!; return <Confirm title={`Demote ${dlg.site.name}?`} confirmLabel="Demote" requireText="DEMOTE" danger onClose={() => setDlg(null)}

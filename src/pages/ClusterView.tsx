@@ -4,6 +4,7 @@ import { Modal, Badge, Banner, Button, Card, Confirm, Dot, Empty, Field, Icon, S
 import { Op, readDraft, revalidate, toast, useDraft, useOpRunner, useQuery, isTerminal, useRole, writeDraft } from '../hooks';
 import { go } from '../router';
 import { CLUSTER_TASKS } from '../tasks';
+import { OP_SPECS } from '../../server/optypes';
 import { statusKind } from '../App';
 import { useHealth } from './Today';
 import { InstallCommand, OP_LABEL, OpPanel, PHASE, Result, statusBadge } from './shared';
@@ -49,7 +50,8 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
       <Button kind="ghost" icon="trash" onClick={() => setDetach(true)} title="Stop managing this cluster from the console (PostgreSQL and the backups are not touched)">Detach…</Button></div>
     {c.isSandbox ? <Banner kind="info" title="Demo cluster">Sample data: operations are not executed. You can delete it once you have connected a real cluster.</Banner> : null}
     {agentic ? <AgentUpdateBanner clusterId={c.id} /> : null}
-    {agentic ? <ProtectionRibbon c={c} /> : null}
+    {/* the 30-day ribbon where it answers the question of the page (overview, backups); elsewhere the protection line above says it and the work starts higher */}
+    {agentic && (cur === 'overview' || cur === 'backup') ? <ProtectionRibbon c={c} /> : null}
     {agentic ? <ActivityStrip id={c.id} /> : null}
     {c.geo ? <div className={`geostrip ${c.geo.health}`}><Icon n="swap" s={14} /><span className="small">{c.geo.role === 'standby'
       ? <><strong>Standby site (DR)</strong> of {c.geo.peers?.filter((p: any) => p.role === 'primary').map((p: any) => p.name).join(', ') || '?'} — {c.geo.lagBytes == null ? 'lag not measurable' : c.geo.lagBytes === 0 ? 'in sync' : `${bytes(c.geo.lagBytes)} behind`}{c.geo.problems?.length ? ` · ${c.geo.problems[0]}` : ''}</>
@@ -226,9 +228,12 @@ function Params({ c }: { c: any }) {
 function Operations({ c }: { c: any }) {
   const q = useQuery<{ operations: Op[] }>(`/api/operations?clusterId=${encodeURIComponent(c.id)}`, { interval: 3000 });
   const [open, setOpen] = useState<string | null>(null);
-  const ops = q.data?.operations || [];
+  // the checks and reads pages run by themselves (offsite settings, restore plans…) are hidden unless asked: the list is about what changed things
+  const [checks, setChecks] = useDraft(`ops:${c.id}:checks`, false);
+  const all = q.data?.operations || []; const isRead = (o: Op) => OP_SPECS[o.type] ? !OP_SPECS[o.type].mutating : false;
+  const ops = checks ? all : all.filter(o => !isRead(o)); const hidden = all.length - ops.length;
   const cancel = async (id: string) => { try { await api('POST', `/api/operations/${id}/cancel`); q.refresh(); } catch (e: any) { toast(e.message, 'bad'); } };
-  return <Card title="Operation log" pad={false}>
+  return <Card title="Operations on this cluster" pad={false} actions={hidden || checks ? <label className="check small"><input type="checkbox" checked={checks} onChange={e => setChecks(e.target.checked)} />Show checks and reads{!checks && hidden ? ` (${hidden})` : ''}</label> : undefined}>
     {!ops.length ? <Empty icon="list" title="No operations">Backups, restores and other actions appear here with outcome and duration.</Empty> :
       <div className="tablewrap"><table className="t"><thead><tr><th>When</th><th>Operation</th><th>Status</th><th>Started by</th><th /></tr></thead><tbody>
         {ops.map(o => <React.Fragment key={o.id}><tr className="click" onClick={() => setOpen(open === o.id ? null : o.id)}>
