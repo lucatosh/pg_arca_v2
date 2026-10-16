@@ -6,7 +6,7 @@ import { go } from '../router';
 import { CLUSTER_TASKS } from '../tasks';
 import { OP_SPECS } from '../../server/optypes';
 import { statusKind } from '../App';
-import { useHealth } from './Today';
+import { useHealth, openIssue } from './Today';
 import { InstallCommand, OP_LABEL, OpPanel, PHASE, Result, statusBadge } from './shared';
 const BackupTab = lazy(() => import('./Backup').then(m => ({ default: m.BackupTab })));
 const RestoreTab = lazy(() => import('./Restore').then(m => ({ default: m.RestoreTab })));
@@ -29,7 +29,9 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const [gl, setGl] = useState(false); const allClusters: any[] = useQuery<any>('/api/clusters').data?.clusters || []; const useRoleIsAdmin = useRole() === 'admin';
   const c = q.data?.cluster; const cur = TAB_ITEMS.some(t => t.id === tab) ? tab! : 'overview'; const grp = groupOf(cur);
   // the header badge must agree with the health findings (the sidebar already does): a cluster whose WAL archiving is failing is not "Healthy"
-  const hc = useHealth(30000).data?.clusters?.find((x: any) => x.id === id); const hw = hc?.worst as string | undefined;
+  const hd = useHealth(30000).data; const hc = hd?.clusters?.find((x: any) => x.id === id); const hw = hc?.worst as string | undefined;
+  // the reasons behind the badge, on the cluster's own page (they were only on Today): what to do first, with its action
+  const findings: any[] = (hd?.issues || []).filter((i: any) => i.clusterId === id && i.severity !== 'info').sort((a: any, b: any) => (a.severity === 'critical' ? 0 : 1) - (b.severity === 'critical' ? 0 : 1));
   if (q.error?.status === 404) return <Empty icon="db" title="Cluster not found" action={<Button onClick={() => go('')}>Back to the list</Button>}>It may have been detached.</Empty>;
   if (!c) return <div className="stack"><Skeleton h={30} w={260} /><Skeleton h={120} /></div>;
   const doDetach = async () => {
@@ -41,13 +43,17 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const eff = hw === 'critical' ? 'critical' : hw === 'warning' && c.status === 'healthy' ? 'degraded' : c.status;
   return <>
     <div className="pagehead">
-      <div className="grow"><div className="row wrap"><h1>{c.name}</h1><Badge kind={statusKind(eff)} title={hw === 'critical' || hw === 'warning' ? 'There are open findings for this cluster: see Today, or the banners below' : undefined}>{eff === 'healthy' ? 'Healthy' : eff === 'degraded' ? (hw === 'warning' ? 'Needs attention' : 'Degraded') : eff === 'critical' ? 'Critical problems' : eff}</Badge>
+      <div className="grow"><div className="row wrap"><h1>{c.name}</h1><Badge kind={statusKind(eff)} title={findings.length ? 'The reasons are listed below the title' : undefined}>{eff === 'healthy' ? 'Healthy' : eff === 'degraded' ? 'Needs attention' : eff === 'critical' ? 'Urgent' : eff}</Badge>
         {c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Connection only</Badge> : null}</div>
         <p className="sub">{c.environment} · PostgreSQL {c.pgVersion || '—'}</p>
-        {agentic && hc?.protection ? <div style={{ marginTop: 6 }}><ProtectionLine p={hc.protection} long /></div> : null}</div>
+        {agentic && hc?.protection ? <div style={{ marginTop: 6 }}><ProtectionLine p={hc.protection} long problems={!findings.length} /></div> : null}
+        {findings.length ? <ul className="cfind" aria-label="What needs attention on this cluster">{findings.slice(0, 4).map(i => <li key={i.key} className={i.severity === 'critical' ? 'bad' : 'warn'}>
+          <Dot kind={i.severity === 'critical' ? 'bad' : 'warn'} /><span><strong>{i.title}</strong>{i.cause ? <span className="muted"> — {i.cause}</span> : null}</span>
+          {i.action ? <button className="linkbtn nowrap" onClick={() => openIssue(i)}>{i.action.label}</button> : null}</li>)}
+          {findings.length > 4 ? <li><a href="#/today">{findings.length - 4} more on Today</a></li> : null}</ul> : null}</div>
       {agentic && cur !== 'restore' ? <Button kind="primary" icon="restore" onClick={() => go(`c/${encodeURIComponent(id)}/restore`)} title="Restore a table, rows, a database or the whole server">Restore…</Button> : null}
       <Button icon="refresh" busy={spin} title="Reloads the status of the cluster, nodes, backups and operations right away" onClick={async () => { setSpin(true); const k = encodeURIComponent(id); await Promise.all([revalidate(`/api/clusters/${k}`), revalidate('/api/clusters'), revalidate('/api/nodes'), revalidate(`/api/clusters/${k}/backups`), revalidate(`/api/operations?clusterId=${k}`)]); setSpin(false); toast('Status refreshed', 'ok'); }}>Refresh</Button>
-      <Button kind="ghost" icon="trash" onClick={() => setDetach(true)} title="Stop managing this cluster from the console (PostgreSQL and the backups are not touched)">Detach…</Button></div>
+      <Button kind="ghost" className="icon" icon="trash" onClick={() => setDetach(true)} aria-label="Detach this cluster" title="Detach… — stop managing this cluster from the console (PostgreSQL and the backups are not touched)" /></div>
     {c.isSandbox ? <Banner kind="info" title="Demo cluster">Sample data: operations are not executed. You can delete it once you have connected a real cluster.</Banner> : null}
     {agentic ? <AgentUpdateBanner clusterId={c.id} /> : null}
     {/* the 30-day ribbon where it answers the question of the page (overview, backups); elsewhere the protection line above says it and the work starts higher */}

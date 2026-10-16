@@ -81,7 +81,7 @@ const DestForm: React.FC<FormProps> = ({ value: v, set }) => <div className="sta
 
 const KINDS: Record<'ephemeral' | 'destination', KindUI> = {
   ephemeral: { title: 'Where restores run', intro: 'To restore a database, a schema or a table without touching the running cluster, pg_arca starts a temporary PostgreSQL instance on files extracted from the backup. Here you decide where it runs and with which resources: for all clusters, per environment, per folder or per cluster.', Form: EphForm, summary: ephSummary, fields: Object.keys(EPH_LABELS), labels: EPH_LABELS },
-  destination: { title: 'Backup destination', intro: 'Where the repository and WAL archive go. Once for all clusters, per environment, per folder or per cluster; the {cluster} {env} {id} placeholders give each cluster its own directory. Before applying, every node verifies that the destination really works.', Form: DestForm, summary: destSummary, fields: Object.keys(DEST_LABELS), labels: DEST_LABELS },
+  destination: { title: 'Backup storage', intro: 'Where the repository and WAL archive go. Once for all clusters, per environment, per folder or per cluster; the {cluster} {env} {id} placeholders give each cluster its own directory. Before applying, every node verifies that the destination really works.', Form: DestForm, summary: destSummary, fields: Object.keys(DEST_LABELS), labels: DEST_LABELS },
 };
 
 /** Edit what ONE level sets. Empty fields are not stored: they keep inheriting. */
@@ -233,7 +233,7 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
   };
   const nodes: any[] = d?.nodes || []; const online = nodes.filter(n => n.online);
   const allOk = !!d?.destination && online.length > 0 && online.every(n => d.checks?.[n.id]?.ok === true && d.checks[n.id].fresh);
-  return <Modal wide title={`Backup destination — ${cluster.name}`} onClose={onClose} footer={<><Button onClick={onClose}>Close</Button></>}>
+  return <Modal wide title={`Backup storage — ${cluster.name}`} onClose={onClose} footer={<><Button onClick={onClose}>Close</Button></>}>
     {!d ? <Skeleton h={80} /> : !d.destination ? <div className="stack">
       {d.current?.repo ? <Banner kind="info" title="Destination set on the node">The cluster writes to <code>{d.current.repo}</code> (WAL to <code>{d.current.wal || '—'}</code>), from the agent configuration. To manage it from the console, set a path for this cluster, its environment, a folder or all clusters: then check and apply it from here.</Banner>
         : <Banner kind="warn" title="No destination configured">Set a path at the global, environment, folder or cluster level.</Banner>}
@@ -289,8 +289,8 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
 export function InfraPage({ tab }: { tab?: string }) {
   const t: 'ephemeral' | 'destination' = tab === 'destination' ? 'destination' : 'ephemeral';
   return <>
-    <div className="pagehead"><div className="grow"><h1>Storage & recovery</h1><p className="sub">Where recoveries run and where backups are written: once for everything, then exceptions per environment, folder or cluster.</p></div></div>
-    <Tabs value={t} onChange={v => go(`infra/${v}`)} items={[{ id: 'ephemeral', label: 'Where restores run', icon: 'restore' }, { id: 'destination', label: 'Backup destination', icon: 'server' }]} />
+    <div className="pagehead"><div className="grow"><h1>Storage & recovery</h1><p className="sub">Where restores run and where backups are written: once for everything, then exceptions per environment, folder or cluster.</p></div></div>
+    <Tabs value={t} onChange={v => go(`infra/${v}`)} items={[{ id: 'ephemeral', label: 'Where restores run', icon: 'restore' }, { id: 'destination', label: 'Backup storage', icon: 'server' }]} />
     <div style={{ marginTop: 16 }}><ScopedTab kind={t} key={t} /></div></>;
 }
 

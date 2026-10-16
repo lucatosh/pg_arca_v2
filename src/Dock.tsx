@@ -85,9 +85,9 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
   const toggle = useCallback((v?: boolean) => setOpen(o => { const n = v ?? !o; write(KEY, n ? '1' : '0'); return n; }), []);
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); toggle(); } };
-    const show = () => toggle(true);
-    window.addEventListener('keydown', k); window.addEventListener('arca:dock', show);
-    return () => { window.removeEventListener('keydown', k); window.removeEventListener('arca:dock', show); };
+    const show = () => toggle(true); const flip = () => toggle();
+    window.addEventListener('keydown', k); window.addEventListener('arca:dock', show); window.addEventListener('arca:dock-toggle', flip);
+    return () => { window.removeEventListener('keydown', k); window.removeEventListener('arca:dock', show); window.removeEventListener('arca:dock-toggle', flip); };
   }, [toggle]);
 
   const cancel = async (o: SlimOp) => {
@@ -104,7 +104,10 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
   const one = running.length === 1 ? running[0] : null; const onePct = one ? pctOf(one.progress) : null;
   const chipText = one ? `${label(one)}${onePct != null ? ` · ${onePct}%` : ' running'}` : running.length ? `${running.length} operations running` : failedNew.length ? `${failedNew.length} ${failedNew.length === 1 ? 'operation failed' : 'operations failed'}` : 'Activity';
 
-  return <div className="dock" role="complementary" aria-label="Activity">
+  // idle, the activity lives in the top bar (a floating chip covered the wizards' Next / Put back buttons, round-3 review):
+  // the chip floats only while something runs or has just failed, and the panel opens where it was asked from
+  const floating = !!chipClass;
+  return <div className={`dock ${floating ? '' : 'top'}`} role="complementary" aria-label="Activity">
     {open ? <div className="dock-panel" id="dock-panel" onKeyDown={e => { if (e.key === 'Escape') toggle(false); }}>
       <div className="dock-hd"><Icon n="activity" /><h2>Activity</h2>
         <span className="small faint">{running.length ? `${running.length} running` : 'No operation running'}</span>
@@ -144,8 +147,8 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
       </div>
       <div className="dock-ft"><span className="small faint">Ctrl J opens and closes</span><div className="grow" /><a className="small" href="#/history" onClick={() => toggle(false)}>History</a>{recent.length ? <Button sm kind="ghost" onClick={clear}>Clear list</Button> : null}</div>
     </div> : null}
-    <button className={`dock-chip ${chipClass}`} onClick={() => toggle()} aria-expanded={open} aria-controls="dock-panel" title="Activity (Ctrl J)">
+    {floating ? <button className={`dock-chip ${chipClass}`} onClick={() => toggle()} aria-expanded={open} aria-controls="dock-panel" title="Activity (Ctrl J)">
       <span className="pip" /><span aria-live="polite">{chipText}</span><Icon n="down" className={open ? '' : 'flip'} />
-    </button>
+    </button> : null}
   </div>;
 }

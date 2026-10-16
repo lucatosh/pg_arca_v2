@@ -25,14 +25,14 @@ export function protectionDetails(p?: Protection | null, long = false): string[]
   if (p.lastBackupAt) out.push(`last backup ${ago(p.lastBackupAt)}`);
   if (long && p.lastFullAt && p.lastFullAt !== p.lastBackupAt) out.push(`last full ${ago(p.lastFullAt)}`);
   if (p.offsiteAt !== undefined) out.push(p.offsiteAt ? `offsite copy ${ago(p.offsiteAt)}` : 'offsite copy never synced');
-  if (long && p.rtoSeconds) out.push(`whole-cluster restore ≈ ${span(p.rtoSeconds)}`);
+  if (long && p.rtoSeconds) out.push(`server restore ≈ ${span(p.rtoSeconds)}`);
   return out;
 }
 
-export function ProtectionLine({ p, long = false }: { p?: Protection | null; long?: boolean }) {
+export function ProtectionLine({ p, long = false, problems = true }: { p?: Protection | null; long?: boolean; problems?: boolean }) {
   const kind = !p ? undefined : p.state === 'ok' ? 'ok' : p.state === 'warn' ? 'warn' : p.state === 'bad' ? 'bad' : undefined;
   const det = protectionDetails(p, long);
   return <span className="protline" title={(p?.problems || []).map(x => x.title).join('\n') || undefined}>
     <Dot kind={kind as any} /><span><strong>{protectionHeadline(p)}</strong>{det.length ? <span className="faint">{' · '}{det.join(' · ')}</span> : null}
-      {long && p?.problems?.length ? <span className="small" style={{ display: 'block', color: p.state === 'bad' ? 'var(--bad)' : 'var(--warn)' }}>{p.problems.map(x => x.title).join(' · ')}</span> : null}</span></span>;
+      {long && problems && p?.problems?.length ? <span className="small" style={{ display: 'block', color: p.state === 'bad' ? 'var(--bad)' : 'var(--warn)' }}>{p.problems.map(x => x.title).join(' · ')}</span> : null}</span></span>;
 }

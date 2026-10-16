@@ -1075,10 +1075,14 @@ class OperationExecutor:
                 try:
                     if s.scalar("SELECT pg_is_in_recovery()") == "t":
                         raise EngineError("PGA-RST-084", "this server is a standby: replace the PRIMARY (the standby is then rebuilt from it)")
-                    n = int(s.scalar("SELECT count(*) FROM pg_stat_replication") or 0)
+                    # which standbys, by name: the operator must know WHICH servers to rebuild afterwards (a count alone left them guessing)
+                    rows = s.query("SELECT coalesce(nullif(application_name, ''), 'unnamed'), coalesce(host(client_addr), 'local socket') FROM pg_stat_replication ORDER BY 1") or []
+                    who = ["%s (%s)" % (r[0], r[1]) if len(r) >= 2 else str(r[0]) for r in rows]
+                    n = len(who)
                     if n:
-                        warn.append(("1 standby server streams from this server: after the replacement it follows a past timeline and must be rebuilt from it" if n == 1 else
-                                     "%d standby servers stream from this server: after the replacement they follow a past timeline and must be rebuilt from it" % n))
+                        names = ", ".join(who[:6]) + (", ..." if n > 6 else "")
+                        warn.append(("1 standby server streams from this server: %s. After the replacement it follows a past timeline and must be rebuilt from the restored primary (pg_rewind, or a new base backup)" % names if n == 1 else
+                                     "%d standby servers stream from this server: %s. After the replacement they follow a past timeline and must be rebuilt from the restored primary (pg_rewind, or a new base backup)" % (n, names)))
                 finally:
                     s.close()
             except EngineError as e:

@@ -23,11 +23,13 @@ function PendingApprovals({ me, role }: { me: string; role: string }) {
       {a.requestedBy === me ? <Button sm onClick={() => act(a.id, 'cancel')}>Cancel the request</Button> : (role !== 'admin' ? <span className="small muted">An administrator is needed.</span> : null)}</div></div>)}</div></Card>;
 }
 
+/** Where a finding's action leads (Today and the cluster header use the same routing). */
+export const openIssue = (i: any) => go(i.action?.page === 'geo' ? 'geo' : String(i.clusterId).startsWith('worker:') ? `w/${encodeURIComponent(String(i.clusterId).slice(7))}` : i.action?.page === 'cluster' || !i.action?.page ? `c/${encodeURIComponent(i.clusterId)}` : i.action.page === 'strategy' ? 'strategy' : `c/${encodeURIComponent(i.clusterId)}/${i.action.page}`);
 export function TodayPage({ me, role }: { me: string; role: string }) {
   const q = useHealth(15000); const d = q.data;
   // information waits behind a switch when there is something to act on: the list starts with what needs doing
   const [showInfo, setShowInfo] = useDraft('today:info', false); const nInfo = (d?.issues || []).filter((i: any) => i.severity === 'info').length;
-  const open = (i: any) => go(i.action?.page === 'geo' ? 'geo' : String(i.clusterId).startsWith('worker:') ? `w/${encodeURIComponent(String(i.clusterId).slice(7))}` : i.action?.page === 'cluster' || !i.action?.page ? `c/${encodeURIComponent(i.clusterId)}` : i.action.page === 'strategy' ? 'strategy' : `c/${encodeURIComponent(i.clusterId)}/${i.action.page}`);
+  const open = openIssue;
   return <>
     <div className="pagehead"><div className="grow"><h1>Today</h1><p className="sub">What needs attention now, with the likely cause and the next step.{d ? ` Updated ${ago(d.generatedAt)}.` : ''}</p></div></div>
     <PendingApprovals me={me} role={role} />

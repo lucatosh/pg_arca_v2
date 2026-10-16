@@ -7,7 +7,21 @@ import { ActivitySwitch, OP_LABEL } from './shared';
 
 /** The audit trail in words (independent review, round 2: raw 'op.submit:hba_plan', JSON details, every request an amber 'Warning'). The raw
  *  action stays as a tooltip: an auditor can still search and quote it. */
-const actionText = (a: string) => { const m = /^op\.(submit:)?(.+)$/.exec(a || ''); if (m) return `${m[1] ? 'Requested: ' : ''}${OP_LABEL[m[2]] || m[2].replace(/_/g, ' ')}`;
+// what people did, in their words (round 3 review: 'Auth login', 'Token create', 'Geo stanza')
+const ACTION_TEXT: Record<string, string> = {
+  'auth.login': 'Signed in', 'auth.setup': 'First administrator created', 'auth.change_password': 'Password changed',
+  'agent.enroll': 'Agent joined', 'agent.join.approve': 'Agent join approved', 'agent.join.reject': 'Agent join rejected', 'token.create': 'Join token created',
+  'apitoken.create': 'API token created', 'apitoken.revoke': 'API token revoked', 'approval.requested': 'Approval requested',
+  'backup.policy': 'Backup policy changed', 'policy.assign': 'Backup policy assigned', 'policy.template.save': 'Policy template saved', 'policy.template.delete': 'Policy template deleted',
+  'cluster.attach_direct': 'Cluster connected (connection only)', 'cluster.detach': 'Cluster detached', 'cluster.merge': 'Clusters merged', 'cluster.merge_refused': 'Cluster merge refused', 'cluster.update': 'Cluster settings changed',
+  'destination.apply': 'Backup storage changed', 'archive_fallback': 'WAL archiving switched to the fallback', 'enable_rewind': 'pg_rewind enabled',
+  'geo.endpoint': 'Geo-redundancy address changed', 'geo.failover': 'Geo-redundancy failover', 'geo.switchover': 'Geo-redundancy switchover', 'geo.job': 'Geo-redundancy job', 'geo.link': 'Geo-redundancy relationship changed',
+  'geo.policy': 'Geo-redundancy policy changed', 'geo.rejoin': 'Former primary site rejoined', 'geo.settings': 'Geo-redundancy settings changed', 'geo.stanza': 'Geo-redundancy pair registered',
+  'ldap.configure': 'LDAP sign-in configured', 'ldap.test': 'LDAP sign-in tested', 'node.make_worker': 'Node made a worker host', 'node.revoke': 'Node access revoked',
+  'notifications.save': 'Notifications changed', 'settings.advanced': 'Advanced settings changed', 'settings.console_address': 'Console address changed',
+  'user.create': 'User created', 'user.delete': 'User deleted', 'user.update': 'User changed', 'worker.update': 'Worker host changed',
+};
+const actionText = (a: string) => { if (ACTION_TEXT[a]) return ACTION_TEXT[a]; const m = /^op\.(submit:)?(.+)$/.exec(a || ''); if (m) return `${m[1] ? 'Requested: ' : ''}${OP_LABEL[m[2]] || m[2].replace(/_/g, ' ')}`;
   const t = String(a || '').replace(/[._:]+/g, ' ').trim(); return t ? t.charAt(0).toUpperCase() + t.slice(1) : '—'; };
 const outcome = (st: string): [string, string] => { const u = String(st || '').toUpperCase();
   return u === 'SUCCESS' || u === 'SUCCEEDED' ? ['OK', 'ok'] : u === 'FAILED' || u === 'FAILURE' ? ['Failed', 'bad'] : u === 'QUEUED' ? ['Requested', ''] : u === 'RUNNING' ? ['Running', 'info']
@@ -23,10 +37,10 @@ export function Audit({ clusters }: { clusters: any[] }) {
       <select className="input" style={{ width: 160 }} value={st} onChange={e => setSt(e.target.value)} aria-label="Outcome"><option value="all">Any outcome</option><option value="SUCCESS">Succeeded</option><option value="FAILED">Failed</option><option value="WARNING">Warnings</option></select>
       <input className="input" style={{ maxWidth: 280 }} placeholder="Search" value={s} onChange={e => setS(e.target.value)} /></div>
     <Card pad={false}>{q.loading ? <div className="bd"><Skeleton h={80} /></div> : !q.data?.entries.length ? <Empty icon="list" title="No activity" /> :
-      <div className="tablewrap"><table className="t"><thead><tr><th>When</th><th>Action</th><th>Cluster</th><th>User</th><th>Outcome</th><th>Details</th></tr></thead><tbody>
+      <div className="tablewrap"><table className="t"><thead><tr><th>When</th><th>Action</th><th>Cluster</th><th>User</th><th>Outcome</th><th className="xp">Details</th></tr></thead><tbody>
         {q.data.entries.map(e => { const o = outcome(e.status); return <tr key={e.id}><td className="nowrap">{dt(e.timestamp)}</td><td title={e.action}>{actionText(e.action)}</td><td>{e.clusterName || '—'}</td><td>{e.user}</td>
           <td><Badge kind={o[1] as any}>{o[0]}</Badge></td>
-          <td className="muted trunc small" style={{ maxWidth: 360 }} title={e.details}>{detailsText(e.details)}</td></tr>; })}</tbody></table></div>}</Card>
+          <td className="muted trunc small xp" style={{ maxWidth: 360 }} title={e.details}>{detailsText(e.details)}</td></tr>; })}</tbody></table></div>}</Card>
     {q.data ? <p className="faint small">{num(q.data.total)} entries{q.data.total > 200 ? ' — showing the latest 200' : ''}.</p> : null}
   </>;
 }

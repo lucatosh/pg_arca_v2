@@ -43,10 +43,10 @@ function SiteCard({ s, onOpen }: { s: Site; onOpen: () => void }) {
   return <div className={`geosite ${s.role} ${s.health}`}>
     <div className="row"><Dot kind={s.online ? s.health : 'bad'} /><button className="linkbtn" onClick={onOpen}><strong>{s.name}</strong></button><div className="grow" />{s.link === 'manual' ? <Badge title="Relationship declared by an operator (Organize… in the cluster list)">set by hand</Badge> : null}<Badge kind={s.role === 'primary' ? 'accent' : undefined}>{ROLE_LABEL[s.role]}</Badge></div>
     <dl className="kv small">
-      <dt>Leader</dt><dd>{s.leader || <span style={{ color: 'var(--bad)' }}>none reachable</span>}{s.timeline ? <span className="faint"> · timeline {s.timeline}</span> : null}</dd>
+      <dt>Leader</dt><dd>{s.leader || <span style={{ color: 'var(--bad)' }}>none reachable</span>}{s.timeline ? <span className="faint xp"> · timeline {s.timeline}</span> : null}</dd>
       <dt className="xp">WAL position</dt><dd className="mono xp">{s.lsn || '—'}</dd>
       {s.role === 'standby' ? <>
-        <dt>Receives from</dt><dd>{s.upstream ? <span className="mono">{s.upstream.host}:{s.upstream.port}</span> : '—'}{s.upstream?.slot ? <span className="faint"> · slot {s.upstream.slot}</span> : null}</dd>
+        <dt>Receives from</dt><dd>{s.upstream ? <span className="mono">{s.upstream.host}:{s.upstream.port}</span> : '—'}{s.upstream?.slot ? <span className="faint xp"> · slot {s.upstream.slot}</span> : null}</dd>
         <dt>WAL receiver</dt><dd>{s.receiver?.status === 'streaming' ? <Badge kind="ok">streaming</Badge> : <Badge kind="bad">{s.receiver?.status || 'absent'}</Badge>}{s.receiver?.silentSec != null ? <span className="faint"> · last message {Math.round(s.receiver.silentSec)} s ago</span> : null}</dd>
       </> : null}
       <dt>Reachable from the other sites as</dt><dd>{s.endpoint ? <><span className="mono">{s.endpoint.host}:{s.endpoint.port}</span>{s.endpointSource === 'detected' ? <span className="faint small" title="Detected from the address the standby site uses to reach it: the switchback will use it"> · detected</span> : null}</> : <span className="faint">not set</span>}</dd>
@@ -67,7 +67,7 @@ function GroupCard({ g, role, running }: { g: Group; role: string; running: bool
       <div className="geolinks">{stand.map(s => <div key={s.clusterId} className={`geolink ${s.health}`}>
         <div className="arrow"><span /></div>
         <div className="small"><strong>{s.lagBytes == null ? '—' : s.lagBytes === 0 ? 'in sync' : `${bytes(s.lagBytes)} behind`}</strong></div>
-        <div className="small faint">{s.receiver?.status === 'streaming' ? 'WAN link up' : 'WAN link down'}{s.slot ? ` · slot ${s.slot.active ? 'active' : 'INACTIVE'}${s.slot.retainedBytes != null ? `, retaining ${bytes(s.slot.retainedBytes)}` : ''}` : ''}</div>
+        <div className="small faint">{s.receiver?.status === 'streaming' ? 'WAN link up' : 'WAN link down'}{s.slot ? <span className={s.slot.active ? 'xp' : undefined}>{` · slot ${s.slot.active ? 'active' : 'INACTIVE'}${s.slot.retainedBytes != null ? `, retaining ${bytes(s.slot.retainedBytes)}` : ''}`}</span> : ''}</div>
       </div>)}</div>
       <div className="stack">{[...extra, ...stand].map(s => <SiteCard key={s.clusterId} s={s} onOpen={() => go(`c/${encodeURIComponent(s.clusterId)}`)} />)}</div>
     </div>
@@ -165,7 +165,8 @@ function Readiness({ r, role }: { r: Ready; role: string }) {
     {open ? <ul className="geochecks">{(all ? [...issues.sort(byLevel), ...r.checks.filter(c => c.level === 'ok')] : [...issues].sort(byLevel).slice(0, 3)).map((c, i) => <li key={i} className={c.level}>
       <Icon n={c.level === 'ok' ? 'check' : c.level === 'info' ? 'info' : 'alert'} s={13} /><span className="grow">{c.text}{c.fix && c.level !== 'ok' ? <details className="howfix"><summary className="small faint">How to fix by hand</summary><span className="small">{c.fix}</span></details> : null}</span>
       {role === 'admin' && c.action && c.clusterId ? <Button sm busy={fixing === c.id + c.clusterId} onClick={() => fix(c)}>{c.action === 'archive_fallback' ? 'Enable the archive fallback' : 'Enable pg_rewind'}</Button> : null}</li>)}
-      <li className="more"><button className="linkbtn small" onClick={() => setAll(!all)}>{all ? 'Show only what needs attention' : issues.length > 3 ? `Show all ${r.checks.length} checks (${issues.length - 3} more to fix)` : `Show all ${r.checks.length} checks`}</button></li></ul> : null}
+      <li className="more"><button className="linkbtn small" onClick={() => setAll(!all)}>{all ? 'Show only what needs attention' : (() => { const shown = [...issues].sort(byLevel).slice(0, 3); const more = issues.filter(c => (c.level === 'warn' || c.level === 'bad') && !shown.includes(c)).length;
+        return more ? `Show all ${r.checks.length} checks (${more} more to fix)` : issues.length > 3 ? `Show all ${r.checks.length} checks (${nof(issues.length - 3, 'more note')})` : `Show all ${r.checks.length} checks`; })()}</button></li></ul> : null}
     {edit ? <Modal title="Data loss target (RPO)" onClose={() => setEdit(false)} footer={<><div className="grow" /><Button onClick={() => setEdit(false)}>Cancel</Button><Button kind="primary" busy={busy} onClick={save}>Save</Button></>}>
       <Field label="Seconds of transactions it is acceptable to lose if the primary site disappears" hint="Above the target the pair has something to fix; above ten times the target it is not ready. Applies to all site pairs.">
         <input className="input" type="number" min={1} max={86400} value={rpo} onChange={e => setRpo(e.target.value)} /></Field></Modal> : null}

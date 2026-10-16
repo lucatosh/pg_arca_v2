@@ -10,6 +10,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   // cluster pages live in four areas: pick the area (pill), then the page (underline tab)
   const tab = async (area, name) => { await p.click(`.gnav >> role=tab[name="${area}"]`); if (name) await p.click(`.clusternav .tabs >> role=tab[name=/${name}/]`); };
   const shot = n => p.screenshot({ path: `${out}/${n}.png` });
+  // typed confirmations ask for the NAME of what is overwritten: read it from the dialog and type it
+  const typeName = async () => { const t = await p.textContent('.modal .field label'); const m = /^Type (.+) to confirm$/.exec(t || ''); assert(m, 'typed confirmation: ' + t); await p.fill('.modal input.input', m[1]); return m[1]; };
   await p.goto(base); await p.waitForSelector('text=Sign in'); await shot('01-login');
   await p.fill('input[autocomplete=username]', 'admin'); await p.fill('input[type=password]', 'wrong-password-1'); await p.click('button[type=submit]');
   await p.waitForSelector('text=Wrong username or password'); await p.waitForTimeout(1300);
@@ -23,8 +25,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   // "What do you need?": one click lands in the restore wizard with the situation chosen; back to the situations for the flows below
   // simple view by default: internals (backup ids, LSN) appear with the "technical details" switch, and go again
   assert.equal(await p.evaluate(() => document.documentElement.getAttribute('data-detail')), 'basic');
-  await p.click('button[aria-label="Technical details"]'); assert.equal(await p.evaluate(() => document.documentElement.getAttribute('data-detail')), 'expert');
-  await p.click('button[aria-label="Technical details"]');
+  await p.click('.viewsw button:has-text("Expert")'); assert.equal(await p.evaluate(() => document.documentElement.getAttribute('data-detail')), 'expert');
+  await p.click('.viewsw button:has-text("Simple")');
   await p.click('.task:has-text("Put back a dropped or emptied table")'); await p.waitForSelector('.rsum:has-text("I dropped or truncated a table")'); await shot('03a-task-restore');
   await p.click('button:has-text("Situation")'); await p.waitForSelector('text=What happened?');
   // backup tab
@@ -40,7 +42,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Start backup")'); await p.waitForSelector('text=Copying data'); { const strip = await p.waitForSelector('.activitystrip:has-text("Backup (")', { timeout: 8000 }).catch(() => null);   // the strip polls: a 3 s fake backup may end first
     if (strip) assert(!/backup_run|\bcopy\b,/.test(await strip.innerText()), 'the strip shows labels, not raw operation types or phase keys'); } await shot('05-backup-running');
   // the dock's Log opens a floating window with THIS operation's log (not the database log): movable, minimisable, closable
-  await p.click('.dock-chip'); await p.click('.dock-item button:has-text("Log")'); await p.waitForSelector('.oplog'); await p.waitForSelector('.oplog-body .ln', { timeout: 8000 });
+  await p.click((await p.$('.dock-chip')) ? '.dock-chip' : '.actbtn'); await p.click('.dock-item button:has-text("Log")'); await p.waitForSelector('.oplog'); await p.waitForSelector('.oplog-body .ln', { timeout: 8000 });
   assert(/Backup/.test(await p.locator('.oplog-hd .nm').innerText()), 'log window is titled with the operation');
   { const hd = await p.locator('.oplog-hd').boundingBox(); const x0 = (await p.locator('.oplog').boundingBox()).x; await p.mouse.move(hd.x + 60, hd.y + 10); await p.mouse.down(); await p.mouse.move(hd.x + 160, hd.y - 60, { steps: 4 }); await p.mouse.up();
     assert(Math.abs((await p.locator('.oplog').boundingBox()).x - x0 - 100) < 6, 'window moves with the header'); }
@@ -59,8 +61,10 @@ const base = process.env.BASE || 'http://localhost:5188';
   assert(await p.locator('.dbrow:has-text("arca_rl_20261010")').count() === 1, 'pg_arca working database is listed (apart)');
   await p.click('button[role=radio]:has-text("reports")'); await p.waitForSelector('.dropnote'); await shot('07a-restore-dropped');
   await p.click('button[role=radio]:has-text("appdb")'); await shot('07-restore-what'); await p.click('button:has-text("Next")');
-  // when: the latest point is preselected (and recommended) for a whole database
-  await p.waitForSelector('text=To which point in time?'); assert(await p.waitForSelector('label.opt.on:has-text("The latest saved point") .badge:has-text("Recommended")', { timeout: 5000 }).catch(() => null), 'latest preselected');
+  // when: appdb still exists, so the latest point holds the damage: the WAL is searched by itself and the moment just before is recommended
+  await p.waitForSelector('text=To which point in time?'); assert(await p.waitForSelector('label.opt.on:has-text("Just before:") .badge:has-text("Recommended")', { timeout: 10000 }).catch(() => null), 'just-before recommended for a live database');
+  assert(await p.locator('label.opt:has-text("The latest saved point") .badge:has-text("Recommended")').count() === 0, 'latest is not recommended for a live database');
+  await p.click('label.opt:has-text("The latest saved point") input'); await p.waitForSelector('text=/appdb.*still exists, and the latest point holds/'); await shot('08a-latest-warning');
   await p.click('label.opt:has-text("A specific point in time") input'); await p.click('button:has-text("1 hour ago")'); await p.waitForSelector('input[aria-label^="Date and time"]');
   await p.click('summary:has-text("Find the exact moment")'); await p.waitForSelector('[role=slider]'); await shot('08-timeline');
   const tr = await p.locator('.rt .track').boundingBox();
@@ -71,8 +75,9 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button:has-text("Next")'); await p.waitForSelector('text=Review and confirm'); await p.waitForSelector('.rplan:has-text("appdb")');
   await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 }); await p.waitForSelector('.preflight.warn');
   await p.click('summary:has-text("Technical details")'); await p.waitForSelector('.spacebars .vol'); await p.waitForSelector('.placement code:has-text("/var/tmp/pg_arca_scratch")'); await shot('11-plan');
-  // the END of the job is chosen here: by default the recovered database REPLACES appdb (the tool finishes the job); the copy path keeps the name field
-  await p.waitForSelector('label.opt.on.risky:has-text("Replace appdb with the recovered one") .badge:has-text("Terminates the open sessions on appdb")'); await shot('11a-end-choice');
+  // the END of the job is chosen here and never preselected when it replaces a live database: the start waits for the choice
+  await p.waitForSelector('label.opt.risky:has-text("Replace appdb with the recovered one") .badge:has-text("Terminates the open sessions on appdb")'); await p.waitForSelector('text=Choose how the restore ends');
+  assert(await p.locator('label.opt.on:has-text("Replace appdb")').count() === 0, 'replace not preselected'); assert(await p.locator('button.start-restore').isDisabled(), 'start waits for the end choice'); await shot('11a-end-choice');
   await p.click('label.opt:has-text("Only a copy to check") input'); await p.waitForSelector('.field:has-text("New database name") input');
   // a taken destination name is a blocker: the start button stays disabled
   const nameIn = p.locator('.field:has-text("New database name") input');
@@ -85,13 +90,14 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=Restore completed', { timeout: 15000 }); await p.waitForSelector('text=roles created as NOLOGIN placeholders'); await shot('12-restore-done');
   // the checked copy takes the place of appdb with one click (no SQL to type): typed confirmation, the original kept as appdb_before_...
   await p.click('button:has-text("in place of appdb")'); if (!(await p.locator('.modal button:has-text("Replace")').isDisabled())) throw new Error('swap needs the typed confirmation');
-  await p.fill('.modal input.input', 'REPLACE'); await p.click('.modal button:has-text("Replace")'); await p.waitForSelector('text=appdb replaced', { timeout: 10000 }); await p.waitForSelector('code:has-text("appdb_before_")'); await shot('12f-db-swapped');
+  assert.equal(await typeName(), 'appdb'); await p.click('.modal button:has-text("Replace")'); await p.waitForSelector('text=appdb replaced', { timeout: 10000 }); await p.waitForSelector('code:has-text("appdb_before_")'); await shot('12f-db-swapped');
   // and the default end: restore + replace in ONE operation
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need a database")'); await p.waitForSelector('button[role=radio]:has-text("billing")', { timeout: 10000 });
-  await p.click('button[role=radio]:has-text("billing")'); await p.click('button:has-text("Next")'); await p.click('button:has-text("Next")'); await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 });
-  await p.waitForSelector('label.opt.on:has-text("Replace billing")'); await p.click('button.start-restore');
+  await p.click('button[role=radio]:has-text("billing")'); await p.click('button:has-text("Next")'); await p.waitForSelector('text=To which point in time?');
+  await p.click('label.opt:has-text("The latest saved point") input'); await p.click('button:has-text("Next")'); await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 });
+  await p.click('label.opt:has-text("Replace billing") input'); await p.waitForSelector('label.opt.on:has-text("Replace billing")'); await p.click('button.start-restore'); await p.waitForSelector('.modal >> text=Replace billing on');
   if (!(await p.locator('.modal button:has-text("Start")').isDisabled())) throw new Error('replacing a database needs the typed confirmation');
-  await p.fill('.modal input.input', 'REPLACE'); await p.click('.modal button:has-text("Start")');
+  assert.equal(await typeName(), 'billing'); await p.click('.modal button:has-text("Start")');
   await p.waitForSelector('text=/billing.*is back as it was/', { timeout: 15000 }); await p.waitForSelector('code:has-text("billing_before_")'); await shot('12g-db-replaced');
   // a table was dropped: what the WAL found is offered at once; one click picks the table AND the point just before
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I dropped or truncated a table")');
@@ -116,7 +122,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('label.opt:has-text("Replace with the recovered version") input'); await p.waitForSelector('summary:has-text("What exactly would change")', { timeout: 10000 });
   await p.getByRole('button', { name: 'Put back, replacing the current tables', exact: true }).click();
   if (!(await p.locator('.modal button:has-text("Put back")').isDisabled())) throw new Error('replace needs the typed confirmation');
-  await p.fill('.modal input.input', 'REPLACE'); await shot('12d-replace-confirm');
+  await p.waitForSelector('.modal :text("Replace public.orders in appdb (prodpg)?")'); assert.equal(await typeName(), 'appdb'); await shot('12d-replace-confirm');
   await p.click('.modal button:has-text("Put back")');
   // the check before the swap: rows of a table not restored would point at nothing -> refused, nothing changed; the operator may accept it knowingly
   await p.waitForSelector('text=Rows that would be orphaned', { timeout: 10000 }); await p.waitForSelector('text=public.items (order_id)'); await shot('12e-orphans-refused');
@@ -146,13 +152,14 @@ const base = process.env.BASE || 'http://localhost:5188';
   // whole server, default end: PRODUCTION itself goes back (stop, swap, start, primary again); the previous data directory is kept and can be given back
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need to rebuild the whole server")');
   await p.waitForSelector('label.opt.on:has-text("The latest saved point")', { timeout: 10000 }); await p.click('button:has-text("Next")');
-  await p.waitForSelector('label.opt.on:has-text("Restore the production server in place")'); await p.waitForSelector('code:has-text("postgresql@16-main.service")', { timeout: 10000 });
+  await p.waitForSelector('text=Choose how the restore ends'); assert(await p.locator('label.opt.on:has-text("Restore the production server in place")').count() === 0, 'in-place server restore never preselected');
+  await p.click('label.opt:has-text("Restore the production server in place") input'); await p.waitForSelector('code:has-text("postgresql@16-main.service")', { timeout: 10000 });
   await p.waitForSelector('text=WAL not yet archived'); await p.waitForSelector('text=/standby servers? streams? from this server.*must be rebuilt/');
   if (await p.locator('text=Where to put the copy').count()) throw new Error('replacing production asks for no copy destination');
   await shot('12j-server-fix-check');
   await p.click('button.start-restore'); await p.waitForSelector('.modal >> text=in place of production');
   if (!(await p.locator('.modal button:has-text("Start")').isDisabled())) throw new Error('replacing production needs the typed confirmation');
-  await p.fill('.modal input', 'REPLACE'); await p.click('.modal button:has-text("Start")');
+  assert.equal(await typeName(), 'prodpg'); await p.click('.modal button:has-text("Start")');
   await p.waitForSelector('text=The production server is back as it was', { timeout: 15000 }); await p.click('summary:has-text("What pg_arca did, step by step")'); await p.waitForSelector('text=primary again after 14 s');
   await p.waitForSelector('text=Kept directories'); await shot('12k-server-fixed');
   await p.click('.card:has-text("Kept directories") button:has-text("Delete")'); await p.fill('.modal input', 'main.pgarca-before-20260101000500'); await p.click('.modal button:has-text("Delete")');
@@ -168,12 +175,12 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.locator('tr:has-text("prodpg") button:has-text("Verify")').click(); await p.waitForSelector('text=Recovery cannot start from this node', { timeout: 10000 }); await p.waitForSelector('text=Install PostgreSQL 15'); await shot('16-infra-preflight');
   await p.click('button:has-text("Install PostgreSQL 15")'); await p.fill('.modal input >> nth=-1', 'INSTALL'); await p.click('.modal button:has-text("Install") >> nth=-1'); await p.waitForSelector('text=Installing the binaries', { timeout: 10000 });
   await p.click('.modal button:has-text("Close")');
-  await p.click('role=tab[name="Backup destination"]'); await p.waitForSelector('text=Where the repository and WAL archive go');
+  await p.click('role=tab[name="Backup storage"]'); await p.waitForSelector('text=Where the repository and WAL archive go');
   await p.locator('tr:has-text("All clusters") button:has-text("Edit")').click(); await p.waitForSelector('text=Where backups are written');
   await p.selectOption('.modal select >> nth=0', 'nfs'); await p.fill('input[placeholder="/mnt/backup/pgarca"]', '/mnt/backup/pgarca'); await p.fill('input[placeholder="/mnt/backup/wal/{env}/{cluster}"]', '/mnt/backup/wal/{env}/{cluster}');
   assert(await p.locator('.modal option[disabled]:has-text("Preview")').count() >= 4, 'object stores are listed as preview and disabled');
   await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Settings saved'); await shot('17-infra-dest');
-  await p.locator('tr:has-text("prodpg") button:has-text("Check and apply")').click(); await p.waitForSelector('text=/Backup destination . prodpg/');
+  await p.locator('tr:has-text("prodpg") button:has-text("Check and apply")').click(); await p.waitForSelector('text=/Backup storage . prodpg/');
   assert(await p.locator('button:has-text("Apply to the nodes")').isDisabled(), 'apply needs a check first');
   await p.click('button:has-text("Check on all nodes")'); await p.waitForSelector('text=is on nfs4', { timeout: 15000 }); await p.waitForSelector('text=check passed', { timeout: 15000 });
   await p.click('button:has-text("Apply to the nodes")'); await p.waitForSelector('text=Apply started', { timeout: 10000 }); await shot('18-infra-applied');

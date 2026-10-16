@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { takePendingIntent } from '../tasks';
 import { Badge, Banner, Button, Card, Confirm, Details, Empty, Field, Icon, Skeleton, bytes, dt, num, ago, nof, setName, dday } from '../ui';
 import { Op, useDraft, useOpRunner, useQuery } from '../hooks';
+import { useHealth } from './Today';
 import { OpPanel, Result, hintFor } from './shared';
 import { DestPicker, RestoredCard, RestoredList, TTL_CHOICES } from './Restored';
 import { itCheck, itFix } from '../i18n';
@@ -75,8 +76,11 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [tgt, setTgt] = useDraft<Target | null>(K + ':tgt', null);
   const [dest, setDest] = useDraft(K + ':dest', ''); const [newName, setNewName] = useDraft(K + ':newName', ''); const [action, setAction] = useDraft<'promote' | 'pause'>(K + ':action', 'promote'); const [delta, setDelta] = useDraft(K + ':delta', false); const [keepArch, setKeepArch] = useDraft(K + ':keepArch', false); const [mkRoles, setMkRoles] = useDraft(K + ':mkRoles', true); const [ttl, setTtl] = useDraft(K + ':ttl', 24);
   // the END of the job, chosen before starting: the tool repairs the original (default) or only produces a copy to look at
-  const [fin, setFin] = useDraft<'fix' | 'copy'>(K + ':fin', 'fix');
+  // null: not chosen yet. An end that stops PostgreSQL or replaces a live database is never preselected (round-3 review): the operator picks it
+  const [finRaw, setFin] = useDraft<'fix' | 'copy' | null>(K + ':fin', null);
   const [ask, setAsk] = useState(false);
+  // after a server restore: is a schedule going to take the next full by itself? (the briefing says 'no_schedule' when not)
+  const scheduled = !(useHealth(60000).data?.issues || []).some((i: any) => i.clusterId === c.id && i.code === 'no_schedule'); const fullAfter = useOpRunner(c.id, undefined, K + ':fullAfter');
   const prom = useOpRunner(c.id, undefined, K + ':prom'); const prev = useOpRunner(c.id, undefined, K + ':prev'); const [pmode, setPmode] = useDraft<PMode | null>(K + ':pmode', null); const [pdrop, setPdrop] = useDraft(K + ':pdrop', true); const [askPromote, setAskPromote] = useState(false); const [askOrphans, setAskOrphans] = useState(false);
   const [lastPromoteV, setLastPromote] = useDraft<any>(K + ':lastPromote', null); const lastPromote = { current: lastPromoteV }; const [pschema, setPschema] = useDraft(K + ':pschema', '');
   const dbsR = useOpRunner(c.id, undefined, K + ':dbs'); const dropsR = useOpRunner(c.id, undefined, K + ':drops'); const liveR = useOpRunner(c.id, undefined, K + ':live'); const tdropR = useOpRunner(c.id, undefined, K + ':tdrop'); const [fxHours, setFxHours] = useDraft(K + ':fxHours', 72);
@@ -95,6 +99,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   useEffect(() => { if (intent === 'table' && !fx.op && !fx.busy) fx.run('wal_forensics', { mode: 'events', hours: fxHours, limit: 30 }); }, [intent]);
   // "wrong rows": once the table is known, look for the mass DELETE / UPDATE
   useEffect(() => { if (intent === 'rows' && step === 2 && obj && !dml.op && !dml.busy) dml.run('wal_forensics', { mode: 'dml', hours: 24, min_rows: dmlMin, limit: 30 }); }, [intent, step, obj]);
+  // "a database as it was before" and it still exists: the latest point holds the damage, so look for it (drops, truncations, mass DELETE / UPDATE in it)
+  useEffect(() => { if (intent !== 'database' || step !== 2 || !db || selDropped) return; if (!fx.op && !fx.busy) fx.run('wal_forensics', { mode: 'events', hours: fxHours, limit: 30 }); if (!dml.op && !dml.busy) dml.run('wal_forensics', { mode: 'dml', hours: 24, min_rows: dmlMin, limit: 30 }); }, [intent, step, db]);
 
   // functions, not values: they read state declared further down (what exists now, what is gone)
   const dbExists = () => !!live?.has(db);
@@ -117,6 +123,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     .map(x => ({ name: String(x.name), oid: String(x.oid ?? ''), size: Number(x.size) || 0, late: true }))], [dbsR.op, c.databases]);
   // what exists NOW (agent snapshot): a database in the backups and not here was DROPPED
   const live: Set<string> | null = Array.isArray(c.databases) && c.databases.length ? new Set<string>(c.databases.map((x: any) => x.name)) : null;
+  // tables, and a database that no longer exists, come back by default (nothing live is overwritten without the operator's choice further on)
+  const fin: 'fix' | 'copy' | null = finRaw ?? (scope === 'object' || (scope === 'database' && !!db && !!live && !live.has(db)) ? 'fix' : null);
   const droppedDbs = useMemo(() => (live ? dbs.filter(x => !live.has(x.name) && kindOf(x.name) === 'app') : []), [dbs, live]);
   const drops: Record<string, DropInfo> = useMemo(() => { const m: Record<string, DropInfo> = {}; for (const x of dropsR.op?.result?.dropped || []) m[String(x.oid)] = { time: x.time, time_exact: !!x.time_exact }; return m; }, [dropsR.op]);
   useEffect(() => {
@@ -143,27 +151,30 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const touches = (names: string[]) => names.some(n => objs.some(id => n === id || n.startsWith(id + '.')) || (scope === 'database' && splitId(n)[0] === db));
   const suggestions: Sugg[] = useMemo(() => {
     const out: Sugg[] = []; const seen = new Set<string>();
-    if (intent === 'table') for (const e of [...(fx.op?.result?.events || []), ...(tdropR.op?.result?.events || [])]) {
+    if (intent === 'table' || (intent === 'database' && !selDropped)) for (const e of [...(fx.op?.result?.events || []), ...(tdropR.op?.result?.events || [])]) {
       const names: string[] = [...(e.names || []), ...(e.tables || [])]; if (!e.lsn || seen.has(e.lsn) || !touches(names)) continue; seen.add(e.lsn);
       const at = parseWalTime(e.time); const what = e.rewrite_possible ? 'truncated or rewritten' : e.kind === 'TRUNCATE' ? 'truncated' : 'dropped';
       const title = `${shortName(names.find(n => touches([n])) || names[0] || '')} ${what}`;
       out.push({ key: 'lsn:' + e.lsn, title, at, exact: e.time_exact !== false, tgt: { mode: 'lsn', lsn: e.lsn, label: `${title} (${Number.isFinite(at) ? fmtWhen(at) : e.lsn})` } });
     }
-    if (intent === 'rows') for (const e of dml.op?.result?.events || []) {
+    if (intent === 'rows' || (intent === 'database' && !selDropped)) for (const e of dml.op?.result?.events || []) {
       if (!touches(e.names || [])) continue; const at = parseWalTime(e.time);
       const what = e.kind === 'DELETE' ? `${num(e.deleted)} rows deleted` : e.kind === 'UPDATE' ? `${num(e.updated)} rows updated` : `${num(e.deleted)} deleted and ${num(e.updated)} updated`;
       out.push({ key: 'xid:' + e.xid, title: `${what} in ${shortName(e.names[0])}`, at, exact: e.time_exact !== false, tgt: { mode: 'xid', xid: String(e.xid), lsn: e.lsn, label: `${what} in ${shortName(e.names[0])} (${Number.isFinite(at) ? fmtWhen(at) : 'xid ' + e.xid})` } });
     }
     return out.sort((a, b) => (b.at || 0) - (a.at || 0));
-  }, [intent, fx.op, tdropR.op, dml.op, objs, db, scope]);
+  }, [intent, fx.op, tdropR.op, dml.op, objs, db, scope, selDropped]);
+  // both searches for a database: still running while either runs; a failure of either is said
+  const dbScan = { busy: fx.busy || dml.busy || (!!fx.op && !isTerminalOp(fx.op)) || (!!dml.op && !isTerminalOp(dml.op)), op: dml.op && dml.op.status !== 'succeeded' ? dml.op : fx.op && fx.op.status !== 'succeeded' ? fx.op : dml.op || fx.op };
   const tgtKey = (t: Target | null) => !t ? '' : t.mode === 'lsn' ? 'lsn:' + t.lsn : t.mode === 'xid' ? 'xid:' + t.xid : t.mode;
   // entering "when": the most recent thing that went wrong is the natural choice; a whole database or server defaults to the latest point
-  useEffect(() => { if (step !== 2 || tgt) return; if (suggestions.length) setTgt(suggestions[0].tgt); else if (intent === 'database' || intent === 'cluster') setTgt({ mode: 'latest' }); }, [step, suggestions.length]);
+  useEffect(() => { if (step !== 2 || tgt) return; if (suggestions.length) setTgt(suggestions[0].tgt); else if ((intent === 'database' && selDropped) || intent === 'cluster') setTgt({ mode: 'latest' }); }, [step, suggestions.length]);
 
   const okWhat = scope === 'instance' || (scope === 'database' && !!db) || (scope === 'object' && objs.length > 0 && (intent !== 'rows' || (objs.length === 1 && splitId(obj).length === 3)));
   const okName = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(newName);
   // the end of the job overwrites something that exists now: typed confirmation
   const overwrites = () => fixServer() || (fin === 'fix' && ((scope === 'database' && dbExists()) || (scope === 'object' && intent !== 'rows' && finMode() === 'replace')));
+  const needEnd = fin === null && !(scope === 'instance' && patroni);
   const okWhere = fixServer() ? true : scope === 'instance' ? destNow().startsWith('/') : scope === 'database' ? (fin === 'fix' || okName) : true;
   const [whenBad, setWhenBad] = useState(false);
   const objq = useQuery<any>(`/api/clusters/${encodeURIComponent(c.id)}/objectives`, { interval: 120000 });   // a time typed but not understood: never restore to the previous one silently
@@ -182,7 +193,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const [swappedFor, setSwappedFor] = useState<string | null>(null); const swapped = !!exec.op && swappedFor === exec.op.id;
   const check = () => { if (okWhere || scope === 'instance') plan.run('restore_plan', planParams()); else plan.reset(); };
   // the end changed (another destination name for a database): the check runs again with it
-  const finSeen = useRef(fin);
+  const finSeen = useRef<'fix' | 'copy' | null>(fin);
   useEffect(() => { if (finSeen.current === fin) return; finSeen.current = fin; if (step === 3 && !exec.op && (scope === 'database' || scope === 'instance')) { if (scope === 'instance') { setDest(''); plan.run('restore_plan', planParams()); } else check(); } }, [fin]);
   const pickDest = (p: string) => { setDest(p); setTimeout(() => plan.run('restore_plan', { scope: 'instance', ...params().p, destination: p }), 0); };
   // where the recovery runs changed (from the dialog opened in the check step, or by a colleague): the verdict shown is stale, check again
@@ -192,8 +203,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   // a whole instance needs no destination to be checked: the agent proposes one (and every other volume it could use) and the check runs on it
   const goCheck = () => { setStep(3); plan.run('restore_plan', planParams()); };
   const choose = (i: Intent) => {
-    setIntent(i); setObjs([]); setTgt(null); plan.reset(); dml.reset(); prev.reset(); setFin('fix'); setPmode(null);
-    if (i === 'cluster') { setScope('instance'); setFin(c.haState?.managedByPatroni ? 'copy' : 'fix'); setStep(2); return; }
+    setIntent(i); setObjs([]); setTgt(null); plan.reset(); dml.reset(); prev.reset(); setFin(null); setPmode(null);
+    if (i === 'cluster') { setScope('instance'); setFin(c.haState?.managedByPatroni ? 'copy' : null); setStep(2); return; }
     setScope(i === 'database' ? 'database' : 'object'); setObjMode('table'); setStep(1);
   };
   // arrived from "What do you need?" (overview or Ctrl+K): the situation is already chosen, unless a restore is under way here
@@ -235,6 +246,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
       <div className="row"><Button onClick={() => setStep(0)}>Back</Button><div className="grow" /><Button kind="primary" disabled={!okWhat} onClick={() => setStep(2)}>Next</Button></div></div></Card>}
 
     {step === 2 && <Card title={intent === 'rows' ? 'When were the rows changed?' : intent === 'table' ? 'Back to when?' : 'To which point in time?'}><div className="stack">
+      {intent === 'database' && !selDropped && db ? <WalScanState op={dbScan.op} busy={dbScan.busy} found={suggestions.length} what={`drops, truncations and mass deletes or updates in ${db}`}
+        more={() => { dml.reset(); setDmlMin(10); setFxHours(720); fx.run('wal_forensics', { mode: 'events', hours: 720, limit: 30 }); setTimeout(() => dml.run('wal_forensics', { mode: 'dml', hours: 168, min_rows: 10, limit: 30 }), 0); }} /> : null}
       {intent === 'rows' || intent === 'table' ? <WalScanState op={intent === 'rows' ? dml.op : fx.op} busy={intent === 'rows' ? dml.busy : fx.busy} found={suggestions.length}
         what={intent === 'rows' ? `DELETEs and UPDATEs of at least ${num(dmlMin)} rows in the last 24 hours` : `drops and truncations in the last ${Math.round(fxHours / 24)} days`}
         more={intent === 'rows' ? () => { dml.reset(); setDmlMin(10); setTimeout(() => dml.run('wal_forensics', { mode: 'dml', hours: 168, min_rows: 10, limit: 30 }), 0); } : () => { setFxHours(720); fx.run('wal_forensics', { mode: 'events', hours: 720, limit: 30 }); }} /> : null}
@@ -244,9 +257,10 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
           <div><strong>Just before: {s.title}</strong> {i === 0 ? <Badge kind="ok">Recommended</Badge> : null}</div>
           <div className="small muted">{Number.isFinite(s.at) ? `${s.exact ? '' : 'about '}${fmtWhen(s.at)} · ${ago2(s.at)}` : 'time not recorded in the WAL'}. You go back to the exact state of a moment before: everything committed before it is kept.</div></div></label>)}
         <label className={`opt ${tgt?.mode === 'latest' ? 'on' : ''}`}><input type="radio" checked={tgt?.mode === 'latest'} onChange={() => setTgt({ mode: 'latest' })} /><div className="grow">
-          <div><strong>{selDropped ? 'Just before it was dropped' : 'The latest saved point'}</strong> {!suggestions.length && (intent === 'database' || intent === 'cluster') ? <Badge kind="ok">Recommended</Badge> : null}</div>
+          <div><strong>{selDropped ? 'Just before it was dropped' : 'The latest saved point'}</strong> {!suggestions.length && ((intent === 'database' && selDropped) || intent === 'cluster') ? <Badge kind="ok">Recommended</Badge> : null}</div>
           <div className="small muted">{selDropped ? <>pg_arca finds the DROP of <strong>{db}</strong> in the WAL by itself and stops just before it.</> : <>Up to the last archived transaction ({d.archiver?.last_archived_time ? ago2(Date.parse(d.archiver.last_archived_time)) : 'just now'}).</>}</div>
-          {tgt?.mode === 'latest' && (intent === 'rows' || (intent === 'table' && goneNow === false)) ? <div className="hba-warn small" style={{ marginTop: 4 }}>Careful: the latest point already contains the mistake. Pick an earlier point in time.</div> : null}</div></label>
+          {tgt?.mode === 'latest' && (intent === 'rows' || (intent === 'table' && goneNow === false)) ? <div className="hba-warn small" style={{ marginTop: 4 }}>Careful: the latest point already contains the mistake. Pick an earlier point in time.</div>
+            : tgt?.mode === 'latest' && intent === 'database' && !selDropped ? <div className="hba-warn small" style={{ marginTop: 4 }}><span>Careful: <strong>{db}</strong> still exists, and the latest point holds whatever damaged it. Pick the moment just before the damage, unless you only want a copy of it as it is now.</span></div> : null}</div></label>
         <label className={`opt ${tgt?.mode === 'time' ? 'on' : ''}`}><input type="radio" checked={tgt?.mode === 'time'} onChange={() => setTgt({ mode: 'time', ms: Math.max(from, Date.now() - 3600e3) })} /><div className="grow">
           <div><strong>A specific point in time</strong></div>
           {tgt?.mode === 'time' ? <div className="stack-s" style={{ marginTop: 6 }} onClick={e => e.preventDefault()}>
@@ -267,7 +281,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
     {step === 3 && <div className="stack-l">
       <Card title="Review and confirm"><div className="stack">
         <div className="rplan">
-          <p>You recover {whatTxt}, {whenTxt}.</p>
+          <p>{scope === 'instance' ? 'Restore' : scope === 'database' ? 'Restore' : intent === 'rows' ? 'Put back rows of' : 'Put back'} {whatTxt}, {whenTxt}.</p>
           <ol className="small">{fixServer() ? <><li>The server is rebuilt as it was <strong>next to the current data</strong>, on the same disk, while production keeps running.</li><li>Then pg_arca <strong>stops PostgreSQL</strong>, swaps the rebuilt data in for the current data and starts it again: it recovers up to the chosen point and comes back as primary, on the same port and address. Applications are down only during this step.</li><li>The previous data is kept in a safety directory next to it (to go back); if the server does not start, pg_arca puts everything back as it was by itself.</li></>
             : scope === 'instance' ? <><li>A full copy of the server is rebuilt in the directory chosen below (pg_arca proposes the best-suited disk).</li><li>pg_arca <strong>starts</strong> the copy on a free port, isolated from production: it does not archive, replicate or run jobs. The running server is not touched.</li><li>{ttl ? <>It stays available for {TTL_CHOICES.find(x => x[0] === ttl)?.[1] || `${ttl} hours`}, then pg_arca stops and deletes it (you can keep it longer at any time).</> : <>It stays until you delete it.</>}</li></>
             : scope === 'database' ? <><li>pg_arca rebuilds <strong>{db}</strong> as it was at that point{fin === 'fix' ? '' : <>, as a new database named <strong>{newName || '…'}</strong></>}.</li><li>{live?.has(db) ? <>The current {db} database stays as it is for now.</> : <>No existing database is touched.</>}</li><li>{fin === 'fix' ? (live?.has(db) ? <>At the end it takes the place of <strong>{db}</strong> (open sessions are terminated; the current {db} is kept as a safety copy).</> : <>It comes back under its own name, <strong>{db}</strong>.</>) : <>You check it and, if it is fine, swap it in for the original with one click.</>}</li></>
@@ -296,13 +310,16 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
           <PlanView p={pres} scope={scope} />{scope !== 'instance' ? <RecoveryPlacement clusterId={c.id} /> : null}</div></Details> : null}
         {plan.op?.status === 'failed' && scope === 'instance' && /PGA-RST-040/.test(String(plan.op.error || '')) && !exec.op ? <Banner kind="info" title="That directory holds an interrupted restore" actions={<Button sm icon="restore" onClick={() => { setStep(4); exec.run('restore_instance', { ...params().p, resume: true }); }}>Resume it</Button>}>When resuming, pg_arca completes the copy by writing only what is missing or different. To start from scratch, empty the directory or choose another one.</Banner> : null}
         <div className="row"><Button onClick={() => setStep(2)}>Back</Button><div className="grow" />{blocked ? <span className="small" style={{ color: 'var(--bad)' }}>Resolve the items in red to proceed</span> : null}
-          <Button className="start-restore" kind={overwrites() ? 'danger' : 'primary'} icon="restore" disabled={blocked || plan.op?.status !== 'succeeded' || !okWhere} onClick={() => setAsk(true)}>{fixServer() ? 'Stop PostgreSQL and restore' : overwrites() ? (scope === 'database' ? `Restore and replace ${db} (ends its sessions)` : 'Restore and replace the current tables') : 'Start the restore'}</Button></div></div></Card>
+          {needEnd ? <span className="small" style={{ color: 'var(--warn)' }}>Choose how the restore ends</span> : null}
+          <Button className="start-restore" kind={overwrites() ? 'danger' : 'primary'} icon="restore" disabled={blocked || needEnd || plan.op?.status !== 'succeeded' || !okWhere} onClick={() => setAsk(true)}>{fixServer() ? 'Stop PostgreSQL and restore' : overwrites() ? (scope === 'database' ? `Restore and replace ${db} (ends its sessions)` : 'Restore and replace the current tables') : 'Start the restore'}</Button></div></div></Card>
     </div>}
 
     {step === 4 && <Card title="Restore"><div className="stack"><OpPanel op={exec.op} error={exec.error} cancel={exec.cancel} />
       {doneOk && !swapped ? <Banner kind="ok" title="Restore completed">{scope === 'instance' && exec.op!.result.replace?.replaced ? <>The production server is back as it was {whenTxt} and is <strong>primary</strong> again, on the same port. The previous data is kept in <code>{exec.op!.result.replace.old_kept_as}</code>.
           <details className="small" style={{ marginTop: 6 }}><summary style={{ cursor: 'pointer' }}>What pg_arca did, step by step</summary><ul style={{ margin: '6px 0 0 18px' }}>{(exec.op!.result.replace.steps || []).map((x: string, i: number) => <li key={i}>{itCheck(x)}</li>)}</ul></details>
-          <p className="small">pg_arca takes a new full backup by itself on the next run (production is on a new timeline).</p></>
+          {scheduled ? <p className="small">pg_arca takes a new full backup by itself on the next scheduled run (production is on a new timeline).</p>
+            : <div className="row wrap gap-s small" style={{ marginTop: 6 }}><span>Production is on a new timeline and no backup schedule is active: take a full backup now, so the restored state is protected.</span>
+              <Button sm kind="primary" icon="play" busy={fullAfter.busy} disabled={!!fullAfter.op} onClick={() => fullAfter.run('backup_run', { type: 'full' })}>{fullAfter.op ? 'Full backup started' : 'Take a full backup'}</Button></div>}</>
         : scope === 'instance' ? (exec.op!.result.instance ? <>The server copy is <strong>{exec.op!.result.instance.state === 'paused' ? 'paused at the chosen point' : 'running'}</strong>: the connection details are below.</> : <>Copy ready in <code>{exec.op!.result.destination}</code>{exec.op!.result.start_hint ? <>: start it in its final place (<code>{exec.op!.result.start_hint}</code>).</> : '.'}</>)
         : scope === 'database' ? (exec.op!.result.swap?.replaced ? <><strong>{db}</strong> is back as it was {whenTxt}. {exec.op!.result.swap.old_kept_as ? <>The database as it was before the restore is kept as <code>{exec.op!.result.swap.old_kept_as}</code> (drop it once you have checked){exec.op!.result.swap.sessions_ended ? `; sessions terminated: ${exec.op!.result.swap.sessions_ended}` : ''}.</> : null}</>
             : exec.op!.result.result_database === db ? <><strong>{db}</strong> is back under its own name, as it was {whenTxt}.</>
@@ -324,7 +341,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
         <Details k={`${K}:whole`} summary="Or bring back the whole table">
           <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode || 'as_new'} recommended="as_new" anyGone={goneNow} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} allowOrphans={lastPromote.current ? () => setAskOrphans(true) : undefined} schema={pschema} setSchema={v => { setPschema(v); prev.reset(); }} /></Details></> : <>
         <Promote stage={exec.op!.result.result_database} what={objs} deps={exec.op!.result.dependencies} warnings={exec.op!.result.warnings} mode={pmode || recommendedMode(goneNow)} recommended={recommendedMode(goneNow)} anyGone={goneNow} setMode={m => { setPmode(m); prev.reset(); }} drop={pdrop} setDrop={setPdrop} runner={prom} preview={prev} ask={() => setAskPromote(true)} allowOrphans={lastPromote.current ? () => setAskOrphans(true) : undefined} schema={pschema} setSchema={v => { setPschema(v); prev.reset(); }} />
-        {objs.length === 1 && splitId(obj).length === 3 && goneNow !== true ? <Details k={`${K}:somerows`} summary="Recover only some rows"><RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /></Details> : null}</>) : null}
+        {objs.length === 1 && splitId(obj).length === 3 && goneNow !== true ? <Details k={`${K}:somerows`} summary="Put back only some rows"><RowRecovery clusterId={c.id} stage={exec.op!.result.result_database} obj={obj} /></Details> : null}</>) : null}
       <Result op={exec.op} />
       {scope === 'instance' && exec.op && ['failed', 'cancelled'].includes(exec.op.status) && /PGA-RST-040|cancel|interrott|interrupt|No space|ENOSPC|PGA-RST-03/i.test(String(exec.op.error || '')) ? <Banner kind="info" title="Restore interrupted" actions={<Button sm icon="restore" onClick={() => exec.run('restore_instance', { ...(exec.op!.params || params().p), resume: true })}>Resume where it stopped</Button>}>
         The partial copy in <code>{(exec.op.params || {}).destination || dest}</code> is recognized: when resuming, pg_arca writes only what is missing or different (useful after a cancellation, a full disk that was freed, or an agent restart).</Banner> : null}
@@ -333,13 +350,13 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
 
     {askOrphans ? <Confirm title="Proceed leaving orphaned rows?" danger requireText="ORPHANS" confirmLabel="Proceed" onClose={() => setAskOrphans(false)} onConfirm={() => { setAskOrphans(false); prom.run('restore_promote', { ...lastPromote.current, allow_orphans: true }); }}>
       <p>The tables are replaced anyway. The foreign keys involved stay <strong>NOT VALID</strong>: the orphaned rows remain until you fix them by hand, and the application may run into them.</p></Confirm> : null}
-    {askPromote ? (() => { const m = pmode || (intent === 'rows' ? 'as_new' : recommendedMode(goneNow)); return <Confirm title="Put back into the database?" danger={m === 'replace'} requireText={m === 'replace' ? 'REPLACE' : undefined} confirmLabel="Put back" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); setLastPromote({ stage_db: exec.op!.result.result_database, object: obj, mode: m, drop_stage: pdrop, ...(m === 'replace' ? { confirm: 'REPLACE' } : {}), ...(m === 'as_new' && pschema ? { target_schema: pschema } : {}) }); prom.run('restore_promote', { stage_db: exec.op!.result.result_database, object: obj, mode: m, drop_stage: pdrop, ...(m === 'replace' ? { confirm: 'REPLACE' } : {}), ...(m === 'as_new' && pschema ? { target_schema: pschema } : {}) }); }}>
-      <p>{m === 'as_new' ? <>The recovered tables appear next to the originals with a name ending in <code>_pitr_&lt;date&gt;</code>. Nothing existing is touched.</> : m === 'missing_only' ? <>Only the tables that no longer exist come back, under their own names; the existing ones stay as they are.</> : <>The current tables are renamed <code>_old_&lt;date&gt;</code> (their data is kept, you can go back) and the recovered ones take their place in a single transaction. Foreign keys and views are re-attached.</>}</p>
+    {askPromote ? (() => { const m = pmode || (intent === 'rows' ? 'as_new' : recommendedMode(goneNow)); const what = objs.length === 1 ? shortName(obj) : `${objs.length} tables`; return <Confirm title={m === 'replace' ? `Replace ${what} in ${db} (${c.name})?` : `Put ${what} back into ${db} (${c.name})?`} danger={m === 'replace'} requireText={m === 'replace' ? db : undefined} confirmLabel="Put back" onClose={() => setAskPromote(false)} onConfirm={() => { setAskPromote(false); setLastPromote({ stage_db: exec.op!.result.result_database, object: obj, mode: m, drop_stage: pdrop, ...(m === 'replace' ? { confirm: 'REPLACE' } : {}), ...(m === 'as_new' && pschema ? { target_schema: pschema } : {}) }); prom.run('restore_promote', { stage_db: exec.op!.result.result_database, object: obj, mode: m, drop_stage: pdrop, ...(m === 'replace' ? { confirm: 'REPLACE' } : {}), ...(m === 'as_new' && pschema ? { target_schema: pschema } : {}) }); }}>
+      <p>{m === 'as_new' ? <>The recovered tables appear next to the originals with a name ending in <code>_pitr_&lt;date&gt;</code>. Nothing existing is touched.</> : m === 'missing_only' ? <>Only the tables that no longer exist come back, under their own names; the existing ones stay as they are.</> : objs.length === 1 ? <>The current table is kept as <code>{keptAs(splitId(obj).slice(-1)[0], 'old')}</code> (its data stays, you can go back) and the recovered one takes its place in a single transaction. Foreign keys and views are re-attached.</> : <>The current tables are kept under their name plus <code>_old_</code> and the date and time (their data stays, you can go back) and the recovered ones take their place in a single transaction. Foreign keys and views are re-attached.</>}</p>
       <p className="small muted">{pdrop ? 'The staging database is dropped once the operation succeeds.' : 'The staging database stays available.'}</p></Confirm>; })() : null}
-    {ask ? <Confirm title="Start the restore?" confirmLabel="Start" danger={overwrites()} requireText={overwrites() ? 'REPLACE' : undefined} onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); setStep(4); exec.run(x.type, x.p); }}>
+    {ask ? <Confirm title={fixServer() ? `Restore ${c.name} in place?` : scope === 'database' && overwrites() ? `Replace ${db} on ${c.name}?` : overwrites() ? `Replace ${objs.length === 1 ? shortName(obj) : `${objs.length} tables`} in ${db} (${c.name})?` : 'Start the restore?'} confirmLabel="Start" danger={overwrites()} requireText={overwrites() ? (fixServer() ? c.name : db) : undefined} onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); const x = params(); setStep(4); exec.run(x.type, x.p); }}>
       <p>{fixServer() ? <>Rebuilds the server as it was {whenTxt} and puts it <strong>in place of production</strong>: PostgreSQL is stopped, restarted on the restored data and comes back as primary. The current data is kept in a safety directory.</>
         : scope === 'instance' ? <>Rebuilds the server in <code>{destNow()}</code> and starts it{keepArch ? ' (no: with archiving enabled you start it yourself)' : ''}. The current data is not changed.</>
-        : scope === 'database' ? (fin === 'fix' && dbExists() ? <>Rebuilds <code>{db}</code> as it was and puts it <strong>in place</strong> of the current one: open sessions on <code>{db}</code> are terminated, the current one is kept as <code>{db}_before_…</code>.</> : fin === 'fix' ? <>Brings <code>{db}</code> back under its own name.</> : <>Creates database <code>{newName}</code> from <code>{db}</code>. The current data is not changed.</>)
+        : scope === 'database' ? (fin === 'fix' && dbExists() ? <>Rebuilds <code>{db}</code> as it was and puts it <strong>in place</strong> of the current one: open sessions on <code>{db}</code> are terminated, the current one is kept as <code>{keptAs(db, 'before')}</code>.</> : fin === 'fix' ? <>Brings <code>{db}</code> back under its own name.</> : <>Creates database <code>{newName}</code> from <code>{db}</code>. The current data is not changed.</>)
         : intent === 'rows' && fin === 'fix' ? <>Puts back into <code>{shortName(obj)}</code> every row deleted or updated after that point (safety copy first, a single transaction).</>
         : fin === 'fix' ? <>Puts {objs.length === 1 ? <code>{shortName(obj)}</code> : <>{objs.length} objects</>} back into <code>{db}</code>{finMode() === 'replace' ? <> <strong>in place</strong> of the current versions (which are kept, renamed)</> : finMode() === 'as_new' ? ' next to the current versions' : ' (only what is missing)'}.</>
         : <>Rebuilds {objs.length === 1 ? <code>{shortName(obj)}</code> : <>{objs.length} objects</>} in a staging database. The current data is not changed.</>} If anything fails before the end, whatever was created is removed.</p></Confirm> : null}
@@ -353,7 +370,7 @@ function RecentDrops({ op, busy, onPick }: { op: Op | null; busy: boolean; onPic
   const evs = (op?.status === 'succeeded' ? op.result.events || [] : []).filter((e: any) => (e.names || []).some((n: string) => splitId(n).length === 3)).slice(-6).reverse();
   if (busy || (op && !isTerminalOp(op))) return <div className="small muted row gap-s"><Icon n="refresh" spin s={14} />Searching the WAL for recently dropped or truncated tables…</div>;
   if (!evs.length) return op?.status === 'succeeded' ? <p className="small muted">The WAL of the last few days shows no dropped or truncated tables: pick the database and table below.</p> : null;
-  return <div className="recent"><div className="small"><strong>Recently dropped or emptied (from the transaction log)</strong> — click to recover it as it was just before</div>
+  return <div className="recent"><div className="small"><strong>Recently dropped or emptied (from the transaction log)</strong> — click one to put it back as it was just before</div>
     {evs.map((e: any, i: number) => { const t = parseWalTime(e.time); const names: string[] = (e.names || []).filter((n: string) => splitId(n).length === 3);
       return <button key={i} className="recentrow" onClick={() => onPick(e)}><Badge kind="bad">{e.rewrite_possible ? 'truncated or rewritten' : e.kind === 'TRUNCATE' ? 'truncated' : 'dropped'}</Badge>
         <span className="grow"><strong>{names.slice(0, 3).map(shortName).join(', ')}</strong>{names.length > 3 ? ` and ${names.length - 3} more` : ''} <span className="faint">in {splitId(names[0])[0]}</span></span>
@@ -378,14 +395,14 @@ function ForensicsTools({ fx, dml, fxHours, setFxHours, dmlMin, setDmlMin, onPic
       <Button sm icon="search" busy={fx.busy} onClick={() => fx.run('wal_forensics', { mode: 'events', hours: fxHours, limit: 30 })}>Find drops and truncations</Button></div>
     {fx.op && fx.op.status !== 'succeeded' ? <OpPanel op={fx.op} error={fx.error} cancel={fx.cancel} /> : null}
     {fx.op?.status === 'succeeded' ? <>
-      <div className="small muted">{num(fx.op.result.segments_scanned)} segments scanned{fx.op.result.segments_cached ? ` (${num(fx.op.result.segments_cached)} already cached)` : ''} in {fx.op.result.elapsed_sec} s{fx.op.result.window?.from ? ` · since ${Number.isFinite(Date.parse(fx.op.result.window.from)) ? dt(fx.op.result.window.from) : fx.op.result.window.from}` : ''}</div>
+      <div className="small muted xp">{num(fx.op.result.segments_scanned)} segments scanned{fx.op.result.segments_cached ? ` (${num(fx.op.result.segments_cached)} already cached)` : ''} in {fx.op.result.elapsed_sec} s{fx.op.result.window?.from ? ` · since ${Number.isFinite(Date.parse(fx.op.result.window.from)) ? dt(fx.op.result.window.from) : fx.op.result.window.from}` : ''}</div>
       {fx.op.result.complete === false ? <Banner kind="warn" title="Partial scan">The time limit was reached: run the search again to continue where it stopped.</Banner> : null}
       {fx.op.result.events.length ? <table className="t"><thead><tr><th>Event</th><th>Objects</th><th>When</th><th /></tr></thead><tbody>
         {[...fx.op.result.events].reverse().map((e: any, i: number) => { const t = parseWalTime(e.time); return <tr key={i}><td><Badge kind="bad" title={e.rewrite_possible ? 'The WAL of a TRUNCATE and that of a table rewrite (VACUUM FULL, CLUSTER, ALTER TABLE changing a type) are identical: check whether maintenance was running at that time.' : undefined}>{e.rewrite_possible ? 'Table truncated or rewritten' : KIND_LABEL[e.kind] || e.kind}</Badge></td><td className="small">{(e.names || []).join(', ') || '—'}{e.nrels > (e.names || []).length ? ` and ${e.nrels - e.names.length} more` : ''}</td>
           <td className="small nowrap">{Number.isFinite(t) ? `${e.time_exact === false ? 'about ' : ''}${fmtWhen(t)}` : e.time}</td>
           <td className="num"><Button sm onClick={() => onPick({ mode: 'lsn', lsn: e.lsn, label: `${KIND_LABEL[e.kind] || e.kind} ${(e.names || [])[0] || ''} (${Number.isFinite(t) ? fmtWhen(t) : e.lsn})` })}>Use this moment</Button></td></tr>; })}</tbody></table>
         : <p className="muted small">No drop or truncation found in the scanned period.</p>}</> : null}
-    <strong className="small">Mass deletes or updates (DELETE or UPDATE without WHERE)</strong>
+    <strong className="small">Mass deletes or updates (many rows in one transaction)</strong>
     <p className="small muted">Committed transactions that deleted or updated many rows of a table. Restoring to “just before” excludes that transaction; rolled-back transactions do not appear.</p>
     <div className="row wrap"><span className="seg" role="group" aria-label="Minimum rows">{[[100, '100+ rows'], [1000, '1,000+'], [10000, '10,000+'], [100000, '100,000+']].map(([n, t]) => <button key={n} aria-pressed={dmlMin === n} onClick={() => setDmlMin(n as number)}>{t}</button>)}</span>
       <Button sm icon="search" busy={dml.busy} onClick={() => dml.run('wal_forensics', { mode: 'dml', hours: fxHours, min_rows: dmlMin, limit: 30 })}>Find mass deletes and updates</Button></div>
@@ -492,7 +509,7 @@ function ObjectPicker({ r, busy, search, setSearch, db, value, onChange, mode, l
     <div className={`tree ${mode}`}>{busy && !schemas.length ? <div style={{ padding: 12 }} className="muted">Reading the catalog…</div> : null}
       {schemas.map(s => { const sid = qid(db, s.name); const whole = has(sid); const ids = s.objects.map((o: any) => qid(db, s.name, o.name)); const sg = schemaGone(sid);
         return <div key={s.name}><label className={`sch ${sg ? 'gone' : ''}`}><input type="checkbox" checked={whole} onChange={() => toggleSchema(s.name, ids)} /> <strong>{s.name}</strong>{s.tables != null ? <span className="faint small"> — {s.tables} {s.tables === 1 ? 'table' : 'tables'}, {bytes(s.bytes)}{whole && mode === 'table' ? ' · whole schema' : ''}</span> : null}
-          {sg ? <Gone info={schemaDrop(sid, ids)} busy={dropsBusy} lastLabel="dropped" /> : live ? <span className="here small">Present</span> : null}</label>
+          {sg ? <Gone info={schemaDrop(sid, ids)} busy={dropsBusy} /> : live ? <span className="here small">Present</span> : null}</label>
           {mode === 'table' ? s.objects.map((o: any) => { const id = qid(db, s.name, o.name); const on = whole || has(id); const g = tableGone(id);
             const kindTag = o.kind === 'v' ? 'view' : o.kind === 'm' ? 'materialized view' : null;
             return <React.Fragment key={id}><button aria-pressed={on} disabled={whole} onClick={() => toggleTable(id)} className={g ? 'gone' : ''}><input type="checkbox" readOnly checked={on} tabIndex={-1} /><span className="grow">{o.name}{kindTag ? <span className="faint small" style={{ marginLeft: 8 }}>{kindTag}</span> : null}{o.late ? <span className="here small" title="Not in any backup: it is rebuilt from the archived WAL" style={{ marginLeft: 8 }}>after the last backup</span> : null}</span>{g && !sg ? <Gone info={drops[id]} busy={dropsBusy} lastLabel="dropped" /> : null}<span className="faint small">{o.partitions ? `${o.partitions} partitions · ` : ''}{o.kind === 'v' ? '' : bytes(o.size)}</span></button>
@@ -521,12 +538,12 @@ const ACTION: Record<string, string> = { swap: 'replaces', create: 'is created',
 
 function PromotePlan({ p }: { p: any }) {
   return <div className="stack">{p.preflight?.checks?.length && p.preflight.level !== 'ok' ? <Preflight pf={p.preflight} /> : null}<SpaceBars vols={p.space} /><table className="t"><thead><tr><th>Table</th><th>What happens</th><th className="num">Rows at the target</th></tr></thead><tbody>
-    {(p.tables || []).map((t: any) => <tr key={`${t.schema}.${t.name}`}><td><code>{t.schema}.{t.name}</code></td><td className="small">{ACTION[t.action] || t.action}{t.old_kept_as ? <> — the current one is kept as <code>{t.old_kept_as}</code></> : null}{t.new_name ? <> as <code>{t.new_name}</code></> : null}{t.schema_drift ? <div className="hba-warn small" style={{ marginTop: 4 }}>Structure changed since then{t.schema_drift.columns_only_now?.length ? `: columns added later (${t.schema_drift.columns_only_now.join(', ')}) that the replacement removes` : ''}{t.schema_drift.type_changed?.length ? `; type changed: ${t.schema_drift.type_changed.join(', ')}` : ''}. Consider “next to the originals” or row recovery.</div> : null}</td><td className="num">{t.rows_at_target != null ? num(t.rows_at_target) : '—'}</td></tr>)}</tbody></table>
+    {(p.tables || []).map((t: any) => <tr key={`${t.schema}.${t.name}`}><td><code>{t.schema}.{t.name}</code></td><td className="small">{ACTION[t.action] || t.action}{t.action === 'swap' && t.old_kept_as ? <> — the current one is kept as <code>{t.old_kept_as}</code></> : null}{t.action === 'copy' && t.new_name ? <> as <code>{t.new_name}</code></> : null}{t.schema_drift ? <div className="hba-warn small" style={{ marginTop: 4 }}>Structure changed since then{t.schema_drift.columns_only_now?.length ? `: columns added later (${t.schema_drift.columns_only_now.join(', ')}) that the replacement removes` : ''}{t.schema_drift.type_changed?.length ? `; type changed: ${t.schema_drift.type_changed.join(', ')}` : ''}. Consider “next to the originals” or row recovery.</div> : null}</td><td className="num">{t.rows_at_target != null ? num(t.rows_at_target) : '—'}</td></tr>)}</tbody></table>
     <dl className="kv"><dt>Foreign keys to re-attach</dt><dd>{num((p.inbound_fks || []).length + (p.outbound_fks || []).length)}{(p.inbound_fks || []).length ? <span className="small muted"> — {(p.inbound_fks as any[]).slice(0, 4).map(f => `${f.table}→${f.ref_table}`).join(', ')}{p.inbound_fks.length > 4 ? '…' : ''}</span> : null}</dd>
       <dt>Views to recreate</dt><dd>{num((p.views || []).length)}{(p.views || []).length ? <span className="small muted"> — {(p.views as any[]).slice(0, 4).map(v => v.name).join(', ')}{p.views.length > 4 ? '…' : ''}</span> : null}</dd>
       {p.missing_prereq && Object.values(p.missing_prereq).some((x: any) => x.length) ? <><dt>To create first</dt><dd className="small">{Object.entries(p.missing_prereq).filter(([, v]: any) => v.length).map(([k, v]: any) => `${k}: ${v.join(', ')}`).join(' · ')}</dd></> : null}</dl>
     {(p.rebind || []).length ? <div className="small"><strong>Re-attached to the restored table:</strong> {(p.rebind as string[]).join(' · ')}</div> : null}
-    {(p.blocking || []).length ? <Banner kind="bad" title="The promotion cannot start">{(p.blocking as string[]).map((w, i) => <div key={i} className="small">{itCheck(w)}</div>)}</Banner> : null}
+    {(p.blocking || []).length ? <Banner kind="bad" title="Put back cannot start">{(p.blocking as string[]).map((w, i) => <div key={i} className="small">{itCheck(w)}</div>)}</Banner> : null}
     {(p.warnings || []).map((w: string, i: number) => <div key={i} className="small" style={{ color: 'var(--warn, #d9a441)' }}>{itCheck(w)}</div>)}</div>;
 }
 
@@ -580,7 +597,7 @@ function RowRecovery({ clusterId, stage, obj, auto }: { clusterId: string; stage
     <div className="row"><strong>{title}</strong><Badge>{num(total)}</Badge><div className="grow" />{rows.length ? <><Button onClick={() => all(rows, true, set)}>Select all</Button><Button onClick={() => all(rows, false, set)}>None</Button></> : null}</div>
     <p className="small muted">{hint}{total > rows.length ? ` Showing the first ${rows.length} of ${num(total)}.` : ''}</p>
     {rows.map(w => <label key={keyStr(w.key)} className="check"><input type="checkbox" checked={!!state[keyStr(w.key)]} onChange={e => set(x => ({ ...x, [keyStr(w.key)]: e.target.checked }))} /><span><code>{keyStr(w.key)}</code> <span className="small muted">{show(w)}</span></span></label>)}</div> : null;
-  return <div className="stack"><div className="hr" /><strong>Recover only some rows</strong>
+  return <div className="stack"><div className="hr" /><strong>Put back only some rows</strong>
     <p className="small muted">Compare the restored table (<code>{stage}</code>) with the current one and bring back only the rows you choose. Before anything is touched, the current versions are copied into a safety table; everything happens in a single transaction.</p>
     {!d && !done ? <div><Button icon="search" busy={diff.busy} disabled={diff.busy} onClick={() => diff.run('restore_diff', { stage_db: stage, object: obj, limit: 200 })}>Compare row by row</Button></div> : null}
     {(diff.op || diff.error) && !d ? <OpPanel op={diff.op} error={diff.error} label="Row comparison" /> : null}
@@ -603,10 +620,17 @@ function RowRecovery({ clusterId, stage, obj, auto }: { clusterId: string; stage
 }
 
 /** What the restore does at the END: repair the original (the default - the tool finishes the job) or only produce a copy to look at. */
-function EndChoice({ fin, setFin, kind, db, exists, newName, mode, setMode, gone, what }: { fin: 'fix' | 'copy'; setFin: (v: 'fix' | 'copy') => void; kind: 'database' | 'rows' | 'objects'; db: string; exists: boolean; newName: string;
+/** The name the agent gives what it sets aside (granular.py: <name>_before_/_old_ + UTC YYYYmmdd_HHMMSS, at most 63 bytes), shown with the current time:
+ *  the operator sees the real shape instead of a literal '<date>'. */
+export function keptAs(name: string, kind: 'before' | 'old'): string {
+  const n = new Date(); const p = (x: number) => String(x).padStart(2, '0');
+  const sfx = `_${kind}_${n.getUTCFullYear()}${p(n.getUTCMonth() + 1)}${p(n.getUTCDate())}_${p(n.getUTCHours())}${p(n.getUTCMinutes())}${p(n.getUTCSeconds())}`;
+  return name.slice(0, 63 - sfx.length) + sfx;
+}
+function EndChoice({ fin, setFin, kind, db, exists, newName, mode, setMode, gone, what }: { fin: 'fix' | 'copy' | null; setFin: (v: 'fix' | 'copy') => void; kind: 'database' | 'rows' | 'objects'; db: string; exists: boolean; newName: string;
   mode: PMode; setMode: (m: PMode) => void; gone: boolean | null; what: string }) {
   const fixTitle = kind === 'database' ? (exists ? `Replace ${db} with the recovered one` : `Bring ${db} back under its own name`) : kind === 'rows' ? 'Put back all rows as they were' : `Put back into ${db}`;
-  const fixText = kind === 'database' ? (exists ? `Open sessions on ${db} are terminated and the recovered database takes its name. The current one is kept as ${db}_before_<date> so you can go back.` : 'The dropped database comes back exactly as it was, under the same name.')
+  const fixText = kind === 'database' ? (exists ? `Open sessions on ${db} are terminated and the recovered database takes its name. The current one is kept as ${keptAs(db, 'before')} so you can go back.` : 'The dropped database comes back exactly as it was, under the same name.')
     : kind === 'rows' ? 'Re-inserts the deleted rows and reverts the updated ones to their value at that point. Rows inserted later are kept. The current versions are first saved into a safety table.'
     : mode === 'missing_only' ? 'Only what no longer exists comes back, under its own name; what exists stays as it is.' : mode === 'replace' ? 'The current versions are renamed (kept, so you can go back) and the recovered ones take their place, with foreign keys and views re-attached.' : 'The recovered versions appear next to the current ones with the _pitr_<date> suffix: nothing existing is touched.';
   // what the in-place choice does to what is running now: said on the option itself (an independent review found the replacement of a live
@@ -625,7 +649,7 @@ function EndChoice({ fin, setFin, kind, db, exists, newName, mode, setMode, gone
   </div></Field>;
 }
 
-function ServerEnd({ fin, setFin, patroni }: { fin: 'fix' | 'copy'; setFin: (v: 'fix' | 'copy') => void; patroni: boolean }) {
+function ServerEnd({ fin, setFin, patroni }: { fin: 'fix' | 'copy' | null; setFin: (v: 'fix' | 'copy') => void; patroni: boolean }) {
   return <Field label="When done"><div className="stack-s" role="radiogroup" aria-label="When done">
     <label className={`opt ${fin === 'fix' ? 'on' : ''} ${patroni ? 'dis' : 'risky'}`}><input type="radio" name="sfin" disabled={patroni} checked={fin === 'fix'} onChange={() => setFin('fix')} /><div className="grow">
       <div><strong>Restore the production server in place</strong> {!patroni ? <Badge kind="bad">Stops PostgreSQL · short downtime</Badge> : null}</div>
@@ -672,11 +696,11 @@ function SwapDb({ clusterId, restored, original, exists, onDone }: { clusterId: 
   useEffect(() => { if (done) onDone?.(); }, [done]);
   return <div className="stack-s">
     {!done ? <div className="row wrap gap-s"><Button kind={exists ? 'danger' : 'primary'} icon="swap" busy={r.busy} onClick={() => setAsk(true)}>{exists ? `Put ${restored} in place of ${original} (ends its sessions)` : `Rename it to ${original}`}</Button>
-      <span className="small muted">{exists ? `Open sessions on ${original} are terminated; the current one is kept as ${original}_before_<date>.` : `${original} does not exist now: the recovered database takes its name.`}</span></div> : null}
+      <span className="small muted">{exists ? `Open sessions on ${original} are terminated; the current one is kept as ${keptAs(original, 'before')}.` : `${original} does not exist now: the recovered database takes its name.`}</span></div> : null}
     {r.op && !done ? <OpPanel op={r.op} error={r.error} /> : r.error ? <Banner kind="bad">{r.error}</Banner> : null}
     {done ? <Banner kind="ok" title={`${original} replaced`}>{res?.old_kept_as ? <>The previous one is kept as <code>{res.old_kept_as}</code> (drop it once you have checked).</> : <>{restored} is now called {original}.</>}{res?.sessions_ended ? ` Sessions terminated: ${res.sessions_ended}.` : ''}</Banner> : null}
-    {ask ? <Confirm title={exists ? `Swap ${restored} in for ${original}?` : `Rename ${restored} to ${original}?`} danger={exists} requireText={exists ? 'REPLACE' : undefined} confirmLabel={exists ? 'Replace' : 'Rename'} onClose={() => setAsk(false)}
+    {ask ? <Confirm title={exists ? `Swap ${restored} in for ${original}?` : `Rename ${restored} to ${original}?`} danger={exists} requireText={exists ? original : undefined} confirmLabel={exists ? 'Replace' : 'Rename'} onClose={() => setAsk(false)}
       onConfirm={() => { setAsk(false); r.run('restore_db_swap', { restored, original, confirm: 'REPLACE' }); }}>
-      <p>{exists ? <>Connections to <code>{original}</code> are terminated and refused for a few seconds, then <code>{original}</code> becomes <code>{original}_before_…</code> and <code>{restored}</code> takes its name, in a single transaction. Applications reconnect to the recovered database.</> : <><code>{restored}</code> is renamed to <code>{original}</code>.</>}</p></Confirm> : null}
+      <p>{exists ? <>Connections to <code>{original}</code> are terminated and refused for a few seconds, then <code>{original}</code> becomes <code>{keptAs(original, 'before')}</code> and <code>{restored}</code> takes its name, in a single transaction. Applications reconnect to the recovered database.</> : <><code>{restored}</code> is renamed to <code>{original}</code>.</>}</p></Confirm> : null}
   </div>;
 }

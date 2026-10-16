@@ -6,6 +6,7 @@ import { dismissToast, useDraft, useToasts } from './hooks';
 const P: Record<string, string> = {
   sun: 'M12 16a4 4 0 100-8 4 4 0 000 8zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',
   moon: 'M21 13A9 9 0 1111 3a7 7 0 0010 10z',
+  halfmoon: 'M12 3a9 9 0 100 18V3zM12 3a9 9 0 010 18',
   ark: 'M3 15c3 1.5 6 2 9 2s6-.5 9-2l-2 4H5l-2-4zM12 3v8M12 5l5 3-5 2',
   db: 'M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6',
   server: 'M3 5h18v6H3zM3 13h18v6H3zM7 8h.01M7 16h.01', shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM9 12l2 2 4-4',

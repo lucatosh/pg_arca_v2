@@ -108,7 +108,7 @@ const withAgent = process.env.NO_AGENT !== '1';
       if (op.type === 'restore_db_swap') { await sleep(300); return report(op.id, { status: 'succeeded', result: { replaced: true, restored: p.restored, original: p.original, old_kept_as: p.original + '_before_20260101_000000', sessions_ended: 1 } }); }
       if (op.type === 'restore_promote') {
         await sleep(300);
-        const plan = { mode: p.mode, tables: [{ schema: 'public', name: 'orders', kind: 'r', action: p.mode === 'as_new' ? 'copy' : 'swap', exists_now: true, rows_at_target: 1234, old_kept_as: `orders_old_${stamp()}`, new_name: `orders_pitr_${stamp()}` }],
+        const plan = { mode: p.mode, tables: [{ schema: 'public', name: 'orders', kind: 'r', action: p.mode === 'as_new' ? 'copy' : 'swap', exists_now: true, rows_at_target: 1234, ...(p.mode === 'as_new' ? { new_name: `orders_pitr_${stamp()}` } : { old_kept_as: `orders_old_${stamp()}` }) }],
           inbound_fks: [{ name: 'items_order_fk', schema: 'public', table: 'items', ref_schema: 'public', ref_table: 'orders' }], outbound_fks: [], views: [{ schema: 'public', name: 'v_totals', kind: 'v' }], warnings: [], missing_prereq: { extensions: [], schemas: [], types: [], functions: [] } };
         if (p.dry_run) return report(op.id, { status: 'succeeded', result: { ...plan, dry_run: true } });
         // replace: the check before the swap finds rows that would be orphaned (refused, nothing changed) until the operator accepts them
@@ -143,7 +143,7 @@ const withAgent = process.env.NO_AGENT !== '1';
       if (op.type === 'restore_kept_list') return report(op.id, { status: 'succeeded', result: { kept: keptDirs.map(k => ({ ...k })) } });
       if (op.type === 'restore_kept_drop') { await sleep(300); keptDirs = keptDirs.filter(k => k.path !== p.path); return report(op.id, { status: 'succeeded', result: { removed: p.path } }); }
       if ((op.type === 'restore_plan' || op.type === 'restore_instance') && p.replace_production) {
-        const rep = { method: 'systemd', unit: 'postgresql@16-main.service', was_running: true, data_directory: PGD, carry_unarchived_wal: !p.target_time, warnings: ['1 standby server(s) stream from this server: after the replacement they follow a past timeline and must be rebuilt from it'], kept: keptDirs.map(k => ({ ...k })) };
+        const rep = { method: 'systemd', unit: 'postgresql@16-main.service', was_running: true, data_directory: PGD, carry_unarchived_wal: !p.target_time, warnings: ['1 standby server streams from this server: db2 (10.0.0.12). After the replacement it follows a past timeline and must be rebuilt from the restored primary (pg_rewind, or a new base backup)'], kept: keptDirs.map(k => ({ ...k })) };
         const base = { set: sets[sets.length - 1].id, chain: sets.slice(-2).map(s => s.id), target: p.target_time || 'end of archive', bytes: 5e9, files: 1200, missing_wal: [], destination: PGD + '.pgarca-new-' + stamp(),
           space: [{ paths: [PGD], roles: ['dest', 'data'], need: 5.3e9, free: 4.3e10, total: 2.0e11, free_after: 3.77e10 }], preflight: { ok: true, level: 'ok', checks: [{ id: 'chunks', level: 'ok', text: 'all 61234 backup chunks needed are present in the repository' }] } };
         if (op.type === 'restore_plan') return report(op.id, { status: 'succeeded', result: { ...base, dry_run: true, replace: rep } });
