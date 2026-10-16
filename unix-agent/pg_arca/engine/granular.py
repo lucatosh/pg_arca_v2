@@ -525,12 +525,60 @@ def _db_usable(eph, entry):
     return row[0][0] != "-2"
 
 
-def _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name):
+def _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name, chain=None):
     """Catalog entry of `db` in the base backup, or - when the database was CREATED AFTER that backup - a placeholder: the recovery rebuilds it from the WAL alone
-    (CREATE DATABASE is replayed; its oid, encoding and size are read from the recovered instance). Only possible when the recovery really goes past the backup."""
-    if db in cat["databases"]:
-        return cat["databases"][db]
-    return {"name": db, "oid": None, "size": 0, "relations": [], "late": True, "base_set": target["id"]}
+    (CREATE DATABASE is replayed; its oid, encoding and size are read from the recovered instance). Only possible when the recovery really goes past the backup.
+    A NAME can belong to two databases over time (dropped, then created again - for instance by a restore under its own name): the backup knows the
+    earlier one (its oid), the server holds the later one. A point after the earlier one was dropped means the later one (found in the lab: a PITR of a
+    database restored under its own name gave back the incarnation before the drop)."""
+    placeholder = {"name": db, "oid": None, "size": 0, "relations": [], "late": True, "base_set": target["id"]}
+    if db not in cat["databases"]:
+        return placeholder
+    entry = cat["databases"][db]
+    later = _later_incarnation(ctx, db, entry, chain, tt, target_lsn, target_xid, target_name)
+    if later:
+        placeholder["note"] = later
+        return placeholder
+    return entry
+
+
+def _later_incarnation(ctx, db, entry, chain, tt, target_lsn, target_xid, target_name):
+    """A message when the requested point concerns a LATER database of the same name than the one in the backup, else None. Decided from facts
+    only: the server has `db` under another oid now, and the WAL shows the DROP of the backed-up oid before the requested point."""
+    if not chain or entry.get("oid") is None or target_xid or target_name:
+        return None
+    try:
+        s = PgSession(ctx.conn.with_db("postgres"), read_only=True)
+        try:
+            live = s.scalar("SELECT oid::text FROM pg_database WHERE datname = %s" % sql_lit(db))
+        finally:
+            s.close()
+    except Exception:
+        return None
+    if not live or str(live) == str(entry["oid"]):
+        return None
+    try:
+        from pg_arca.engine import walscan
+        r = walscan.scan(ctx, mode="databases", hours=0, since_iso=chain[0].get("start_time"), limit=500, budget_sec=300, cache_dir=getattr(ctx, "forensics_cache", None))
+        drop = [x for x in r.get("dropped") or [] if str(x.get("oid")) == str(entry["oid"])]
+    except Exception as e:
+        ctx.log("warning", "database '%s' has another oid now (%s, the backup knows %s) and the WAL could not be read to tell which one is meant: %s"
+                % (db, live, entry["oid"], getattr(e, "message", e)))
+        return None
+    if not drop:
+        return None
+    d = drop[-1]
+    if target_lsn:
+        after = lsn_to_int(target_lsn) > lsn_to_int(d["lsn"])
+    elif tt:
+        a, b = target_time_to_dt(tt), target_time_to_dt(_re.sub(r"^(\d{4}-\d{2}-\d{2})T", r"\1 ", str(d.get("time")))) if d.get("time") else None
+        after = bool(a and b and a > b)
+    else:
+        after = True                                     # the latest point: the database that exists now
+    if not after:
+        return None
+    return ("database '%s' was dropped at %s and created again (oid %s, the backup holds oid %s): the requested point concerns the later one, "
+            "rebuilt from the archived WAL" % (db, d.get("time") or d.get("lsn"), live, entry["oid"]))
 
 
 def _all_live(ctx, db, sel, dbentry):
@@ -633,7 +681,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     (never a reactivated account), so owners and privileges are kept exactly; otherwise owners/privileges are skipped and the roles listed."""
     target, chain, tt, note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
-    entry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name)
+    entry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name, chain)
     new_name = new_name or default_restore_name(db)
     _check_name(new_name, "destination database name")
     merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter(({entry["oid"]} if entry["oid"] is not None else set()) | system_db_oids(cat)))
@@ -643,6 +691,8 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
             "target": tt or target_lsn or target_xid or target_name or "end of archive"}
     if note:
         plan["note"] = note
+    if entry.get("note"):
+        plan["note"] = ((plan.get("note") or "") + "; " + entry["note"]).lstrip("; ")
     plan["saved_pct"] = round(100.0 * (1 - plan["extract_bytes"] / float(max(plan["cluster_bytes"], 1))), 1)
     plan["database_bytes"] = entry["size"]
     taken = None
@@ -898,7 +948,7 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     db, sel = objmod.parse_selection(spec, objects)
     target, chain, tt, _note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
-    dbentry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name)
+    dbentry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name, chain)
     late_objs, late_live = None, False
     try:
         nrel = objmod.selection_in_catalog(dbentry, sel) if not dbentry.get("late") else None

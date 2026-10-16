@@ -122,9 +122,17 @@ def state(cl, db, **kw):
     return s
 
 
+def _seq_ok(got, want):
+    # PostgreSQL WAL-logs a sequence 32 values ahead (SEQ_LOG_VALS): after a recovery it resumes up to 32 further on, never behind - safe
+    try:
+        return 0 <= int(got) - int(want) <= 32
+    except (TypeError, ValueError):
+        return got == want
+
+
 def same(cl, scn, got, want, only=None):
     keys = only or list(want)
-    bad = [k for k in keys if got.get(k) != want.get(k)]
+    bad = [k for k in keys if not (_seq_ok(got.get(k), want.get(k)) if k == "seq" else got.get(k) == want.get(k))]
     return check(cl, scn, "content identical to the recorded state (%s)" % ", ".join(keys), not bad, "; ".join("%s: %s != %s" % (k, got.get(k), want.get(k)) for k in bad))
 
 
