@@ -119,7 +119,21 @@ class OffsiteTests(unittest.TestCase):
         # a changed file (meta.json rewritten with another status text) is uploaded again
         self.repo.write_meta({"id": "20260101-000000F", "status": "COMPLETE", "type": "full", "start_time": "2026-01-01T00:00:00Z", "note": "a longer meta"})
         self.assertEqual(self.m.sync()["uploaded"], 1)
-        # a set expired locally: deleted remotely only after the grace, meta first
+        # a set that vanished WITHOUT retention removing it (lost / remounted storage): never deleted remotely, said
+        bk = self.repo.own_path("backup", "20260101-000000F")
+        shutil.copytree(bk, bk + ".save")
+        shutil.rmtree(bk)
+        gone_t = time.time() - offsite.KEEP_DELETE_GRACE - 1
+        self.m.sync(force=True)
+        g = json.load(open(self.m.gone_path))
+        json.dump(dict((k, gone_t) for k in g), open(self.m.gone_path, "w"))
+        st_lost = self.m.sync(force=True)
+        self.assertEqual(st_lost["deleted"], 0, st_lost)
+        self.assertEqual(st_lost["only_offsite"], 4, st_lost)
+        os.rename(bk + ".save", bk)
+        self.m.sync(force=True)
+        # a set expired locally (retention journals it): deleted remotely only after the grace, meta first
+        self.repo.retire(sets=["20260101-000000F"])
         shutil.rmtree(self.repo.own_path("backup", "20260101-000000F"))
         st3 = self.m.sync()
         self.assertEqual((st3["deleted"], st3["waiting_delete"]), (0, 4))
@@ -130,6 +144,35 @@ class OffsiteTests(unittest.TestCase):
         st4 = self.m.sync(force=True)
         self.assertEqual(st4["deleted"], 4)
         self.assertFalse(any(k.startswith("repo/stanza/main/backup/20260101-000000F/") for k in offsite.client_for(self.m.cfg()).list("")))
+
+    def test_a_refused_pack_keeps_its_sets_off_the_bucket(self):
+        """One pack refused by the store (a proxy body limit): the sets of that cycle must not appear COMPLETE offsite pointing at a missing pack,
+        and a cycle with failures deletes nothing (independent review)."""
+        if REAL:
+            self.skipTest("needs the fake store")
+        hs = [self.repo.put_chunk(b"%06d" % i * 100)[0] for i in range(20)]
+        self.repo.flush()
+        self._set("20260102-000000F", hs)
+        self.srv.fail_match = lambda k: k.endswith(".pack")
+        try:
+            st = self.m.sync(force=True)
+        finally:
+            self.srv.fail_match = None
+        self.assertFalse(st["ok"])
+        remote = offsite.client_for(self.m.cfg()).list("")
+        self.assertFalse([k for k in remote if "/backup/20260102-000000F/" in k], remote)
+        st = self.m.sync(force=True)
+        self.assertTrue(st["ok"], st)
+        self.assertIn("repo/stanza/main/backup/20260102-000000F/meta.json", offsite.client_for(self.m.cfg()).list(""))
+
+    def test_format1_chunk_files_are_mirrored(self):
+        """A repository upgraded from format 1 keeps per-file chunks that current sets still use: they go offsite too."""
+        legacy = os.path.join(self.repo_path, "cas", "ab", "cd")
+        os.makedirs(legacy)
+        with open(os.path.join(legacy, "abcd" + "0" * 60), "wb") as f:
+            f.write(b"x" * 10)
+        self.assertTrue(self.m.sync(force=True)["ok"])
+        self.assertIn("repo/cas/ab/cd/abcd" + "0" * 60, offsite.client_for(self.m.cfg()).list(""))
 
     def test_empty_local_never_deletes_remotely(self):
         hs = [self.repo.put_chunk(b"%06d" % i * 100)[0] for i in range(5)]

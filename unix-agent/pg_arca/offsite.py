@@ -80,6 +80,22 @@ def _local_repo_files(repo_path):
                         out["cas/packs/" + f] = os.path.getsize(os.path.join(pd, f))
                     except OSError:
                         pass
+    # a repository upgraded from format 1 keeps its per-file chunks (cas/aa/bb/<hash>) and new sets deduplicate against them: they are part of
+    # what a restore needs (independent review: mirrored only as packs, every such set failed with PGA-REPO-014 after a rehydrate)
+    cas = os.path.join(repo_path, "cas")
+    if os.path.isdir(cas):
+        for a in os.listdir(cas):
+            if len(a) != 2 or not os.path.isdir(os.path.join(cas, a)):
+                continue
+            for dp, _dn, fns in os.walk(os.path.join(cas, a)):
+                for f in fns:
+                    if f.startswith(".") or f.endswith(".tmp") or ".tmp." in f:
+                        continue
+                    fp = os.path.join(dp, f)
+                    try:
+                        out[os.path.relpath(fp, repo_path).replace(os.sep, "/")] = os.path.getsize(fp)
+                    except OSError:
+                        pass
     sroot = os.path.join(repo_path, "stanza")
     if os.path.isdir(sroot):
         for st in os.listdir(sroot):
@@ -131,7 +147,7 @@ def _sig(local):
 
 def _order(key):
     """Upload order: packs and descriptors first, then set files (meta.json last of all), then WAL. Deletion uses the reverse."""
-    if key.startswith("repo/cas/packs/"):
+    if key.startswith("repo/cas/"):                 # packs + indexes, and format-1 chunk files
         return 0
     if key in ("repo/repo.json",) or key.endswith("/stanza.json"):
         return 1
@@ -246,8 +262,15 @@ class Mirror(object):
             for k in down:
                 gone.setdefault(k, now)
             local_empty = not any(k.startswith("repo/") for k in local) or (self.config.get("wal_archive_dir") and not any(k.startswith("wal/") for k in local))
-            deletable = [] if local_empty else [k for k in down if now - gone[k] >= KEEP_DELETE_GRACE]
-            st.update(to_upload=len(up), bytes_to_upload=sum(local[k] for k in up), to_delete=len(deletable), waiting_delete=len(down) - len(deletable), local_empty=local_empty, remote_objects=len(remote))
+            # the bucket only forgets what THIS node removed on purpose (retention, garbage collection, the WAL floor - the same journal the
+            # rehydrate reads). Anything else missing here is kept offsite: a lost or remounted share, an archive recreated empty by the next
+            # archive_command, a previous location after a destination change (independent review: 'local not empty' was the only guard, and
+            # 6 hours after losing the storage the copy that exists for that disaster was deleted)
+            on_purpose = self.retained_on_purpose()
+            deletable = [] if local_empty else [k for k in down if now - gone[k] >= KEEP_DELETE_GRACE and on_purpose(k)]
+            only_remote = [k for k in down if not on_purpose(k)]
+            st.update(to_upload=len(up), bytes_to_upload=sum(local[k] for k in up), to_delete=len(deletable), waiting_delete=len(down) - len(deletable) - len(only_remote),
+                      only_offsite=len(only_remote), only_offsite_sample=only_remote[:5], local_empty=local_empty, remote_objects=len(remote))
             if dry_run:
                 st["dry_run"] = True
                 return st
@@ -256,9 +279,12 @@ class Mirror(object):
             done_b = 0
             uploaded = deleted = failed = 0
             first_err = None
+            pack_failed = False
             for i, k in enumerate(up):
                 if cancel and cancel():
                     raise S3Error(0, "Cancelled", "cancelled")
+                if pack_failed and k.startswith("repo/stanza/") and "/backup/" in k:
+                    continue                                   # never a set offsite whose chunks are not all there (a failed pack): next cycle
                 path = self._local_path(k)
                 try:
                     c.put(k, path)
@@ -268,6 +294,7 @@ class Mirror(object):
                 except S3Error as e:                                   # one object failing must not stop the others; the next cycle retries it
                     failed += 1
                     first_err = first_err or str(e)
+                    pack_failed = pack_failed or k.startswith("repo/cas/")
                     if e.status in (401, 403) or failed >= 20:
                         raise
                     continue
@@ -275,7 +302,7 @@ class Mirror(object):
                 done_b += local[k]
                 if progress and (i % 20 == 0 or i == len(up) - 1):
                     progress({"phase": "offsite", "uploaded": uploaded, "to_upload": len(up), "bytes": done_b, "bytes_total": st["bytes_to_upload"]})
-            for k in deletable:
+            for k in (deletable if not failed else []):        # a cycle with failed uploads deletes nothing (a repacked pack's old copy stays)
                 c.delete(k)
                 deleted += 1
                 gone.pop(k, None)

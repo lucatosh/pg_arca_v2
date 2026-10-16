@@ -16,6 +16,7 @@ class FakeS3(object):
         self.access_key = access_key
         self.requests = []
         self.fail_every = fail_every                       # every n-th PUT fails with 500 (retry tests)
+        self.fail_match = None                             # a predicate on the key: those PUTs fail with 413 (one object refused, the others accepted)
         self.puts = 0
         srv = self
 
@@ -53,6 +54,8 @@ class FakeS3(object):
                 n = int(self.headers.get("content-length") or 0)
                 data = self.rfile.read(n)
                 srv.puts += 1
+                if srv.fail_match and srv.fail_match(k):
+                    return self._err(413, "EntityTooLarge", "simulated refusal of this object")
                 if srv.fail_every and srv.puts % srv.fail_every == 0:
                     return self._err(500, "InternalError", "simulated failure")
                 with srv.lock:
