@@ -504,3 +504,6 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 @media (max-width: 720px) { .activitystrip > button, .activitystrip > .btn, .activitystrip > .linkbtn { flex-basis: 100%; text-align: left; } .activitystrip .faint { display: none; } }
 @media (max-width: 720px) { .fleettable .midonly { display: none; } .fleettable td.protcell { min-width: 160px; } }
 :root:not([data-detail="expert"]) .xp { display: none !important; }   /* technical internals: shown in the expert view only */
+/* toasts at the top centre, under the top bar: at the bottom right they covered the Save / Next buttons of forms and dialogs (review, round 2) */
+.toasts { top: 64px; bottom: auto; right: auto; left: 50%; transform: translateX(-50%); align-items: center; width: max-content; max-width: min(560px, calc(100vw - 32px)); }
+@media (max-width: 720px) { .toasts { top: 10px; left: 12px; right: 12px; transform: none; width: auto; max-width: none; } }

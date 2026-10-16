@@ -110,6 +110,8 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     const expectH = pol?.enabled ? Math.min(pol.fullEveryHours, pol.incrEveryHours || pol.fullEveryHours) : 0;
     if (!sets.length && standbySite) {
       // backups are taken on the primary site (same database, shared repository): nothing to report here
+    } else if (!sets.length && !lastNews && !online.length) {
+      // never reported yet: whether it has backups is unknown, not 'none' (the first report says)
     } else if (!sets.length) {
       add({ severity: isProd || pol?.enabled ? 'critical' : 'warning', code: 'no_backup', title: 'No backup yet', cause: pol?.enabled ? 'The policy is active but there is no successful backup yet: the data is not protected.' : isProd ? 'The cluster has neither a backup policy nor any backups: the data is not protected.' : 'Not a production cluster, so this is not urgent, but it has neither a backup policy nor any backups: its data is not protected.', action: { label: pol?.enabled ? 'See the backups' : 'Assign a policy', page: pol?.enabled ? 'backup' : 'strategy' } });
     } else if (expectH && Number.isFinite(lastMs) && now - lastMs > expectH * 3600_000 * 2) {
