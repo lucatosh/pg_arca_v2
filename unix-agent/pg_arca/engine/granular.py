@@ -165,7 +165,28 @@ def _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_
     """_plan() for a restore that is about ONE database. When nothing pins the point in time and the database is not in the newest backup (it was dropped before that backup
     was taken), the newest backup that still contains it is used and recovery runs to the end of the archive: _recover_db stops just before the DROP DATABASE. Returns (target, chain, tt, note)."""
     target, chain, tt = _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name, immediate)
-    if set_spec or target_time or target_lsn or target_xid or target_name or immediate:
+    if set_spec or immediate:
+        return target, chain, tt, None
+    if target_time or target_lsn or target_xid or target_name:
+        # a point in time and a base backup that does not know the database: either it was created after that backup, or it was DROPPED before
+        # it (independent review: "nightly backup after the drop, point after the drop" answered "did not exist yet, choose a later time"). The
+        # newest older backup that has it serves both: recovering from it, the recovered instance itself says which database bears the name at
+        # the point (the dropped one stops just before its DROP, a later one of the same name is rebuilt from the WAL) - only longer to replay.
+        try:
+            if db in ctx.repo.load_catalog(target)["databases"]:
+                return target, chain, tt, None
+        except EngineError:
+            return target, chain, tt, None
+        for s in reversed(ctx.repo.complete_sets()):
+            if s["id"] == target["id"] or (s.get("stop_lsn") and target.get("stop_lsn") and lsn_to_int(s["stop_lsn"]) >= lsn_to_int(target["stop_lsn"])):
+                continue
+            try:
+                if db not in ctx.repo.load_catalog(s)["databases"]:
+                    continue
+                t2, c2, tt2 = _plan(ctx, s["id"], target_time, target_lsn, target_xid, target_name)
+            except EngineError:
+                break                               # its WAL is gone, or the target cannot be ordered against it: the newer backup it is
+            return t2, c2, tt2, "database '%s' is not in backup %s: recovery starts from %s, the newest backup that has it" % (db, target["id"], s["id"])
         return target, chain, tt, None
     try:
         if db in ctx.repo.load_catalog(target)["databases"]:
@@ -285,29 +306,47 @@ def _create_db(admin, name, entry, props=None):
         if s.scalar("SELECT 1 FROM pg_database WHERE datname=%s" % sql_lit(name)) == "1":
             raise EngineError("PGA-SEC-030", "destination database '%s' already exists" % name, "choose another name; existing databases are never overwritten")
         enc = entry.get("encoding") or "UTF8"
-        extra = ""
+        if props is None:
+            props = {}
+        loc = ""
         if entry.get("collate") and entry.get("ctype"):
-            extra = " LC_COLLATE %s LC_CTYPE %s" % (sql_lit(entry["collate"]), sql_lit(entry["ctype"]))
+            loc = " LC_COLLATE %s LC_CTYPE %s" % (sql_lit(entry["collate"]), sql_lit(entry["ctype"]))
         dmajor = int(s.scalar("SHOW server_version_num")) // 10000
-        ts = (props or {}).get("tablespace")
+        ts = props.get("tablespace")
+        tsx = ""
         if ts and ts != "pg_default":                    # the database lived in its own default tablespace: same here when it exists
             if s.scalar("SELECT 1 FROM pg_tablespace WHERE spcname = %s" % sql_lit(ts)) == "1":
-                extra += " TABLESPACE %s" % quote_ident(ts)
+                tsx = " TABLESPACE %s" % quote_ident(ts)
             else:
                 props.setdefault("_warnings", []).append("database %s: created in pg_default, the original default tablespace %s does not exist on this server" % (name, ts))
-        prov = (props or {}).get("provider")
-        if prov == "i" and (props or {}).get("locale") and dmajor >= 15:         # ICU: same provider and locale (sorting / unique indexes on text behave the same)
-            extra += " LOCALE_PROVIDER icu ICU_LOCALE %s" % sql_lit(props["locale"])
+        prov = props.get("provider")
+        if prov == "i" and props.get("locale") and dmajor >= 15:         # ICU: same provider and locale (sorting / unique indexes on text behave the same)
+            loc += " LOCALE_PROVIDER icu ICU_LOCALE %s" % sql_lit(props["locale"])
             if props.get("rules") and dmajor >= 16:
-                extra += " ICU_RULES %s" % sql_lit(props["rules"])
-        elif prov == "b" and (props or {}).get("locale") and dmajor >= 17:
-            extra += " LOCALE_PROVIDER builtin BUILTIN_LOCALE %s" % sql_lit(props["locale"])
+                loc += " ICU_RULES %s" % sql_lit(props["rules"])
+        elif prov == "b" and props.get("locale") and dmajor >= 17:
+            loc += " LOCALE_PROVIDER builtin BUILTIN_LOCALE %s" % sql_lit(props["locale"])
+        base = "CREATE DATABASE %s TEMPLATE template0 ENCODING %s" % (quote_ident(name), sql_lit(enc))
         try:
-            s.query("CREATE DATABASE %s TEMPLATE template0 ENCODING %s%s" % (quote_ident(name), sql_lit(enc), extra))
-        except EngineError:
-            s.query("CREATE DATABASE %s TEMPLATE template0 ENCODING %s" % (quote_ident(name), sql_lit(enc)))
+            s.query(base + loc + tsx)
+        except EngineError as first:
+            # the original locale is not available here (typical when restoring into another server): the database is still created, and the
+            # difference is SAID - text sorting and unique indexes on text follow this server's default now (independent review: the
+            # fallback used to drop the locale, and the tablespace with it, silently)
+            try:
+                s.query(base + tsx)
+                lost_ts = False
+            except EngineError:
+                s.query(base)
+                lost_ts = bool(tsx)
+            now = s.query("SELECT datcollate, datctype FROM pg_database WHERE datname = %s" % sql_lit(name))
+            was = "%s/%s" % (entry.get("collate") or "?", entry.get("ctype") or "?")
             if prov in ("i", "b"):
-                (props.setdefault("_warnings", [])).append("database %s: created WITHOUT the original locale provider (%s %s): not available on this server" % (name, "ICU" if prov == "i" else "builtin", props.get("locale")))
+                was += ", %s %s" % ("ICU" if prov == "i" else "builtin", props.get("locale"))
+            props.setdefault("_warnings", []).append(
+                "database %s: created with this server's default locale (%s) instead of the original (%s) - %s. Text sorting, LIKE / ORDER BY and unique "
+                "indexes on text may behave differently; install the original locale on this server and restore again for an exact copy%s"
+                % (name, "/".join(now[0]) if now and now[0] else "?", was, first.message[:200], "; the tablespace %s was not used either" % ts if lost_ts else ""))
     finally:
         s.close()
 
@@ -508,6 +547,19 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _name_at_point(eph, entry, info):
+    """The database recovered by its oid may bear another name at the point (renamed after the backup, before the point): every later step
+    connects by the name AT THE POINT (info['name_at_point']), and it is said (independent review: 'database does not exist')."""
+    s = PgSession(eph.conn("postgres"), read_only=True)
+    try:
+        now = s.scalar("SELECT datname FROM pg_database WHERE oid = %s" % int(entry["oid"]))
+    finally:
+        s.close()
+    if now and now != entry["name"]:
+        info["name_at_point"] = now
+        info["note"] = ((info.get("note") or "") + "; database '%s' was renamed to '%s' before the requested point: recovered under that name" % (entry["name"], now)).lstrip("; ")
+
+
 def _db_usable(eph, entry):
     """True when the recovered instance really holds a connectable database `entry` (not removed, not marked invalid by a DROP DATABASE that was partly replayed)."""
     s = PgSession(eph.conn("postgres"), read_only=True)
@@ -635,6 +687,23 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
         finally:
             s.close()
         if row and row[0]:
+            # the name at the point belongs to a database the backup knows under ANOTHER name (ALTER DATABASE ... RENAME after the backup): it is
+            # not new - its files are in the backup and must be extracted (independent review: the sparse recovery left a stub directory and the
+            # restore died on "could not open file base/<oid>/1259")
+            try:
+                known = [dict(e, name=entry["name"]) for n, e in ctx.repo.load_catalog(chain[-1])["databases"].items()
+                         if e.get("oid") is not None and int(e["oid"]) == int(row[0][0]) and n != entry["name"]]
+            except EngineError:
+                known = []
+            if known and not entry.get("_renamed"):
+                eph.cleanup()
+                was = [n for n, e in ctx.repo.load_catalog(chain[-1])["databases"].items() if e.get("oid") is not None and int(e["oid"]) == int(row[0][0])][0]
+                known[0].update(_renamed=True, base_set=entry.get("base_set"))
+                eph, info = _recover_db(ctx, chain, known[0], tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+                info["note"] = ("database '%s' is the database called '%s' in backup %s (renamed after it): recovered from its backed-up files"
+                                % (entry["name"], was, entry.get("base_set") or chain[-1]["id"]))
+                entry.update(oid=known[0]["oid"], late=False, size=known[0].get("size") or 0, note=info["note"])
+                return eph, info
             entry.update(oid=int(row[0][0]), encoding=row[0][1], collate=row[0][2], ctype=row[0][3])
             if _db_usable(eph, entry):
                 info["created_after_backup"] = True
@@ -654,6 +723,7 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
                           % (entry["name"], entry.get("base_set") or "?"), "choose a later time")
     eph, info = _recover(ctx, chain, {entry["oid"]}, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     if _db_usable(eph, entry):
+        _name_at_point(eph, entry, info)
         return eph, info
     reached = info.get("reached_lsn")
     # the recovered instance itself says which database has that name AT THE POINT: another oid = a later database of the same name (dropped
@@ -872,10 +942,11 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     eph, info = _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     if flushed:
         info["wal_flushed"] = flushed
+    src_db = info.get("name_at_point") or db              # renamed before the point: the recovered instance knows it by that name
     created = False
     tmp = tempfile.mkdtemp(prefix="pgarca-dump-")
     try:
-        sess = PgSession(eph.conn(db), read_only=True)
+        sess = PgSession(eph.conn(src_db), read_only=True)
         try:
             info["tables_at_target"] = int(sess.scalar("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') "
                                                        "AND n.nspname NOT IN ('pg_catalog','information_schema')"))
@@ -884,18 +955,18 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         if progress:
             progress({"phase": "transfer"})
         dumpfile = os.path.join(tmp, "db.dump")
-        rc, out, err = run_dump(eph.conn(db), eph.conn(db).args() + ["-f", dumpfile, "-d", db], cancel=cancel, jobs=max(1, int(jobs)))
+        rc, out, err = run_dump(eph.conn(src_db), eph.conn(src_db).args() + ["-f", dumpfile, "-d", src_db], cancel=cancel, jobs=max(1, int(jobs)))
         if rc != 0:
             raise EngineError("PGA-GEN-070", "pg_dump from the recovered instance failed: %s" % err.strip()[:600],
                               "the sparse extraction may lack a page needed by this database; retry with a different base set")
         info["dump_bytes"] = dump_size(dumpfile)
         info["dump_jobs"] = max(1, int(jobs))
         _check_cancel(cancel)
-        props = db_props(eph, db)
+        props = db_props(eph, src_db)
         warns = []
         # owners and privileges come back too, unless the destination lacks some of the roles they name (then: none of them, and the list says which roles)
         try:
-            used = roles_used(eph.conn(db))
+            used = roles_used(eph.conn(src_db))
         except EngineError as e:
             used, warns = None, ["could not list the roles the database uses (%s): owners and privileges were NOT restored" % e.message[:120]]
         missing = []
@@ -917,7 +988,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         extra = []
         used_ts = []
         try:
-            ts_s = PgSession(eph.conn(db), read_only=True)
+            ts_s = PgSession(eph.conn(src_db), read_only=True)
             try:
                 used_ts = [r[0] for r in ts_s.query("SELECT DISTINCT t.spcname FROM pg_class c JOIN pg_tablespace t ON t.oid = c.reltablespace "
                                                     "WHERE c.reltablespace <> 0 AND t.spcname NOT IN ('pg_default', 'pg_global')")]
@@ -1174,15 +1245,18 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     eph, info = _recover_db(ctx, chain, dbentry, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
     if flushed:
         info["wal_flushed"] = flushed
+    src_db = info.get("name_at_point") or db              # renamed before the point: the recovered instance knows it by that name
+    if src_db != db:
+        dbentry = dict(dbentry, name=src_db)
     created = False
     try:
-        src = PgSession(eph.conn(db), read_only=True)
+        src = PgSession(eph.conn(src_db), read_only=True)
         try:
             an = objmod.analyze(src, sel)
         finally:
             src.close()
 
-        sprops = db_props(eph, db)
+        sprops = db_props(eph, src_db)
 
         def make():
             _create_db(admin, stage, dbentry, {k: v for k, v in (sprops or {}).items() if k in ("provider", "locale", "rules")})
@@ -1394,7 +1468,7 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
     if v2 is not None and space:
         v2["preflight"] = space; v2["space"] = space.get("space")
     if v2 is not None:
-        if drop_stage and not dry_run:
+        if drop_stage and not dry_run and not ((v2.get("plan") or {}).get("lo_changed") or v2.get("large_objects_changed")):
             _drop_db(_dest_conn(ctx, into), stage_db)
             v2["stage_dropped"] = True
         return v2
@@ -1578,12 +1652,25 @@ def _keyhash(sess, fq, pk, common):
     return out
 
 
-def _sample(sess, fq, pk, keys):
+JSON_TEXT = "__pgarca_json_"
+
+
+def _json_cols(sess, fq):
+    """Columns of type json (not jsonb): their exact text matters (key order, duplicates, spaces - a signed payload) and to_jsonb() normalises it."""
+    return [r[0] for r in sess.query("SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass AND attnum > 0 AND NOT attisdropped AND atttypid = 'json'::regtype"
+                                     % sql_lit(fq)) if r and r[0]]
+
+
+def _sample(sess, fq, pk, keys, json_text=()):
+    """{key: row as JSON text}. json_text: json columns whose exact text travels next to the row (JSON_TEXT + name)."""
     keyexpr = "jsonb_build_array(%s)::text" % ",".join("t.%s" % quote_ident(c) for c in pk)
+    row = "to_jsonb(t)"
+    if json_text:
+        row = "(to_jsonb(t) || jsonb_build_object(%s))" % ",".join("%s, t.%s::text" % (sql_lit(JSON_TEXT + c), quote_ident(c)) for c in json_text)
     res = {}
     for i in range(0, len(keys), 200):
         part = keys[i:i + 200]
-        for r in sess.query("SELECT %s, to_jsonb(t)::text FROM %s t WHERE %s = ANY(ARRAY[%s])" % (keyexpr, fq, keyexpr, ",".join(sql_lit(k) for k in part))):
+        for r in sess.query("SELECT %s, %s::text FROM %s t WHERE %s = ANY(ARRAY[%s])" % (keyexpr, row, fq, keyexpr, ",".join(sql_lit(k) for k in part))):
             res[r[0]] = r[1]
     return res
 
@@ -1783,7 +1870,8 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
         # value in the new columns, a re-inserted row gets their DEFAULT (a NOT NULL column without default makes the whole transaction fail: said)
         res_note = ("columns only in the live table (%s): kept as they are for updated rows, DEFAULT for re-inserted rows" % ", ".join(missing)) if missing else None
         keyexpr = "jsonb_build_array(%s)::text" % ",".join("t.%s" % quote_ident(c) for c in li["pk"])
-        rows = _sample(st, fq, si["pk"], restore_keys) if restore_keys else {}
+        jtext = [c for c in _json_cols(tg, fq) if c in writable and c in _json_cols(st, fq)]
+        rows = _sample(st, fq, si["pk"], restore_keys, json_text=jtext) if restore_keys else {}
         absent = [k for k in restore_keys if k not in rows]
         if absent:
             raise EngineError("PGA-GEN-092", "%d key(s) not found in the recovered table, e.g. %s" % (len(absent), absent[0]))
@@ -1856,8 +1944,10 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
                 part = restore_keys[i:i + 500]
                 doc = "[" + ",".join(rows[k] for k in part) + "]"      # rows[k] is already JSON text from to_jsonb(): re-encoding via Python floats would round numeric(38,x)
                 conflict = ("DO UPDATE SET " + setlist) if setlist else "DO NOTHING"
-                tg.query("INSERT INTO %s (%s)%s SELECT %s FROM jsonb_populate_recordset(NULL::%s, %s::jsonb) ON CONFLICT (%s) %s"
-                         % (fq, collist, ovr, collist, fq, sql_lit(doc), ",".join(quote_ident(c) for c in li["pk"]), conflict))
+                # json columns from their exact text (independent review: through jsonb they came back with keys reordered and spaces gone)
+                sel = ",".join(("(e.value->>%s)::json" % sql_lit(JSON_TEXT + c)) if c in jtext else "r.%s" % quote_ident(c) for c in writable)
+                tg.query("INSERT INTO %s (%s)%s SELECT %s FROM jsonb_array_elements(%s::jsonb) e, LATERAL jsonb_populate_record(NULL::%s, e.value) r ON CONFLICT (%s) %s"
+                         % (fq, collist, ovr, sel, sql_lit(doc), fq, ",".join(quote_ident(c) for c in li["pk"]), conflict))
             for i in range(0, len(will_delete), 500):
                 part = will_delete[i:i + 500]
                 tg.query("DELETE FROM %s t WHERE %s = ANY(ARRAY[%s])" % (fq, keyexpr, ",".join(sql_lit(k) for k in part)))

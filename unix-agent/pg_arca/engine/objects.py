@@ -223,9 +223,17 @@ WITH RECURSIVE dep(oid, depth) AS (
 ), pick AS (SELECT oid FROM dep UNION SELECT unnest(%s::oid[]))
 SELECT COALESCE(jsonb_agg(jsonb_build_object('oid', c.oid::int, 'schema', n.nspname, 'name', c.relname, 'kind', c.relkind, 'def', pg_get_viewdef(c.oid, true),
        'owner', pg_get_userbyid(c.relowner), 'acl', %s, 'comment', obj_description(c.oid, 'pg_class'), 'opts', c.reloptions, 'selected', c.oid = ANY(%s),
-       'indexes', COALESCE((SELECT jsonb_agg(pg_get_indexdef(i.indexrelid)) FROM pg_index i WHERE i.indrelid = c.oid), '[]'::jsonb)) ORDER BY c.oid), '[]'::jsonb)::text
+       'populated', c.relispopulated,
+       'indexes', COALESCE((SELECT jsonb_agg(pg_get_indexdef(i.indexrelid)) FROM pg_index i WHERE i.indrelid = c.oid), '[]'::jsonb),
+       'triggers', COALESCE((SELECT jsonb_agg(pg_get_triggerdef(t.oid) ORDER BY t.tgname) FROM pg_trigger t WHERE t.tgrelid = c.oid AND NOT t.tgisinternal), '[]'::jsonb),
+       'rules', COALESCE((SELECT jsonb_agg(pg_get_ruledef(r.oid) ORDER BY r.rulename) FROM pg_rewrite r WHERE r.ev_class = c.oid AND r.rulename <> '_RETURN'), '[]'::jsonb),
+       'defaults', COALESCE((SELECT jsonb_agg(jsonb_build_object('col', a.attname, 'expr', pg_get_expr(d.adbin, d.adrelid))) FROM pg_attrdef d
+                             JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = c.oid), '[]'::jsonb),
+       'columns', COALESCE((SELECT jsonb_agg(jsonb_build_object('col', a.attname, 'comment', col_description(c.oid, a.attnum), 'acl', %s))
+                            FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                             AND (col_description(c.oid, a.attnum) IS NOT NULL OR a.attacl IS NOT NULL)), '[]'::jsonb)) ORDER BY c.oid), '[]'::jsonb)::text
 FROM pick p JOIN pg_class c ON c.oid = p.oid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('v','m')
-""" % (arr(list(base_oids) + list(selected_oids)), arr(selected_oids), ACL_SQL % "c.relacl", arr(selected_oids))) or []
+""" % (arr(list(base_oids) + list(selected_oids)), arr(selected_oids), ACL_SQL % "c.relacl", arr(selected_oids), ACL_SQL % "a.attacl")) or []
     voids = [v["oid"] for v in vrows]
     order = {}
     if voids:
@@ -698,7 +706,8 @@ def write_meta(sess, meta):
     sess.query("CREATE SCHEMA IF NOT EXISTS %s" % META)
     sess.query("CREATE TABLE IF NOT EXISTS %s.kv (k text PRIMARY KEY, v jsonb NOT NULL)" % META)
     sess.query("DELETE FROM %s.kv" % META)
-    sess.query("INSERT INTO %s.kv (k, v) VALUES ('meta', %s::jsonb)" % (META, sql_lit(json.dumps(meta, separators=(",", ":")))))
+    # ensure_ascii=False: a \u00e8 escape cannot be stored in a SQL_ASCII database's jsonb; the characters themselves come from this database
+    sess.query("INSERT INTO %s.kv (k, v) VALUES ('meta', %s::jsonb)" % (META, sql_lit(json.dumps(meta, separators=(",", ":"), ensure_ascii=False))))
 
 
 def read_meta(sess):
@@ -859,12 +868,12 @@ def _idx_and_seqs(sess, schema, name):
     return idx, seq
 
 
-def _view_ddl(v):
+def _view_ddl(v, data=True):
     kind = "MATERIALIZED VIEW" if v["kind"] == "m" else "VIEW"
     opts = ""
     if v.get("opts"):
         opts = " WITH (%s)" % ", ".join(v["opts"])
-    return kind, "CREATE %s %s%s AS %s%s" % (kind, qi(v["schema"], v["name"]), opts, v["def"], " WITH DATA" if v["kind"] == "m" else "")
+    return kind, "CREATE %s %s%s AS %s%s" % (kind, qi(v["schema"], v["name"]), opts, v["def"], (" WITH DATA" if data else " WITH NO DATA") if v["kind"] == "m" else "")
 
 
 def _slim(plan):
@@ -1115,8 +1124,15 @@ WHERE a.attnum > 0 AND NOT a.attisdropped AND a.atttypid IN %s AND c.relkind IN 
 def _add_fk(live, f, validate_later):
     d = f["def"]
     partitioned = live.scalar("SELECT relkind = 'p' FROM pg_class WHERE oid = %s::regclass" % sql_lit(qi(f["schema"], f["table"]))) == "t"
-    if partitioned:                                       # PostgreSQL cannot add a NOT VALID foreign key on a partitioned table: it is validated right away
-        live.query("ALTER TABLE %s ADD CONSTRAINT %s %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"]), d.replace(" NOT VALID", "")))
+    if partitioned and int(live.scalar("SHOW server_version_num") or 0) < 180000:
+        # before PostgreSQL 18 a foreign key on a partitioned table cannot be NOT VALID: it is validated right away. If that fails the swap is
+        # undone as a whole (independent review: it used to commit WITHOUT the key, an integrity rule silently gone)
+        try:
+            live.query("ALTER TABLE %s ADD CONSTRAINT %s %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"]), d.replace(" NOT VALID", "")))
+        except EngineError as e:
+            raise EngineError("PGA-GEN-106", "foreign key %s on the partitioned table %s.%s cannot be re-attached (%s)" % (f["name"], f["schema"], f["table"], e.message[:200]),
+                              "rows that break it appeared (or were accepted as orphans): before PostgreSQL 18 such a key cannot be left NOT VALID - restore "
+                              "the related tables together, or put the recovered tables next to the originals and recover rows")
         return
     if "NOT VALID" not in d:
         d += " NOT VALID"
@@ -1124,8 +1140,15 @@ def _add_fk(live, f, validate_later):
     validate_later.append(f)
 
 
-def _recreate_view(live, v, roles_ok):
-    kind, ddl = _view_ddl(v)
+def _recreate_view(live, v, roles_ok, warn=None, refresh_later=None):
+    """warn=None: every part must come back (a live view, inside the swap). With a list: a rule or trigger that cannot be recreated (its function is
+    not in this database) is reported there and the view stays."""
+    # inside the swap (refresh_later given) a materialized view is created EMPTY and filled after the commit: computing it there kept the
+    # application's tables locked for as long as the query ran (independent review)
+    later = refresh_later is not None and v["kind"] == "m"
+    kind, ddl = _view_ddl(v, data=not later)
+    if later and v.get("populated", True):
+        refresh_later.append(qi(v["schema"], v["name"]))
     live.query(ddl)
     fq = qi(v["schema"], v["name"])
     if v.get("owner") and (roles_ok is None or v["owner"] in roles_ok):
@@ -1137,6 +1160,28 @@ def _recreate_view(live, v, roles_ok):
     if v["kind"] == "m":
         for ix in v.get("indexes") or []:
             live.query(ix)
+    # what DROP VIEW took with it (independent review: an updatable view came back without its INSTEAD OF trigger - writes through it failed or
+    # skipped the audit): column defaults, column comments and grants, rules, triggers
+    for d in v.get("defaults") or []:
+        live.query("ALTER %s %s ALTER COLUMN %s SET DEFAULT %s" % (kind, fq, quote_ident(d["col"]), d["expr"]))
+    for c in v.get("columns") or []:
+        if c.get("comment"):
+            live.query("COMMENT ON COLUMN %s.%s IS %s" % (fq, quote_ident(c["col"]), sql_lit(c["comment"])))
+        for a in c.get("acl") or []:
+            if a["g"] == "PUBLIC" or roles_ok is None or a["g"] in roles_ok:
+                live.query("GRANT %s (%s) ON %s TO %s%s" % (a["p"], quote_ident(c["col"]), fq, "PUBLIC" if a["g"] == "PUBLIC" else quote_ident(a["g"]),
+                                                          " WITH GRANT OPTION" if a.get("o") else ""))
+    for what, stmt in [("rule", r.rstrip().rstrip(";")) for r in v.get("rules") or []] + [("trigger", t) for t in v.get("triggers") or []]:
+        if warn is None:
+            live.query(stmt)
+            continue
+        live.query("SAVEPOINT pgarca_vt")
+        try:
+            live.query(stmt)
+            live.query("RELEASE SAVEPOINT pgarca_vt")
+        except EngineError as e:
+            live.query("ROLLBACK TO SAVEPOINT pgarca_vt")
+            warn.append("%s of view %s was not recreated: %s" % (what, fq, e.message[:160]))
 
 
 def _seq_forward(live, seqs, pos_of):
@@ -1213,9 +1258,33 @@ def _promote_lobs(admin, stage_db, live, meta, todo, plan):
                 n += copy_large_objects(ss, live, oids, roles)
             except EngineError as e:
                 plan["warnings"].append("large objects referenced by %s.%s were not all restored: %s" % (r["schema"], r["name"], e.message[:200]))
+            try:
+                # a large object changed IN PLACE since the point (lo_put / lo_truncate) keeps its oid: the restored rows would point at the newer
+                # content (independent review). It is never overwritten (other rows may share it): said, and the staging copy is kept with it
+                both = [o for o in lo_referenced(ss, r["schema"], r["name"], cols) if o not in set(oids)]
+                changed = _lobs_changed(ss, live, both)
+                if changed:
+                    plan.setdefault("lo_changed", []).extend(changed)
+                    plan["warnings"].append("%d large object(s) referenced by %s.%s were changed in place after the point (oid %s): the current content was kept; "
+                                            "the content at the point is in the staging database %s (lo_get / lo_export there)"
+                                            % (len(changed), r["schema"], r["name"], ", ".join(map(str, changed[:8])), stage_db))
+            except EngineError:
+                pass
     finally:
         ss.close()
     return n
+
+
+def _lobs_changed(a, b, oids):
+    """Oids whose content differs between two databases (page by page digests: no large object is held in memory)."""
+    out = []
+    q = "SELECT loid::int, md5(string_agg(md5(data), '' ORDER BY pageno)) FROM pg_largeobject WHERE loid = ANY(ARRAY[%s]::oid[]) GROUP BY loid"
+    for i in range(0, len(oids), 500):
+        part = ",".join(map(str, oids[i:i + 500]))
+        da = dict((r[0], r[1]) for r in a.query(q % part) if r and r[0])
+        db = dict((r[0], r[1]) for r in b.query(q % part) if r and r[0])
+        out += [int(o) for o in da if da[o] != db.get(o)]
+    return sorted(out)
 
 
 FK_COLS = re.compile(r"FOREIGN KEY \((.+?)\) REFERENCES (?:[^(]+?)\((.+?)\)")
@@ -1244,8 +1313,9 @@ def _orphan_checks(live, plan, todo, sfx_new):
         except EngineError:
             continue
         if n:
+            part = live.scalar("SELECT relkind = 'p' FROM pg_class WHERE oid = %s::regclass" % sql_lit(child)) == "t"
             out.append({"direction": direction, "constraint": f["name"], "child": "%s.%s" % (f["schema"], f["table"]), "parent": "%s.%s" % (f["ref_schema"], f["ref_table"]),
-                        "columns": m.group(1), "rows": n})
+                        "columns": m.group(1), "rows": n, "partitioned": part})
     return out
 
 
@@ -1456,11 +1526,16 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                 raise EngineError("PGA-GEN-096", "promotion not done, nothing was changed: %s" % desc,
                                   "restore the related tables too (same instant), or put the recovered tables next to the originals (as new) and recover rows; "
                                   "allow_orphans=true goes ahead and leaves those foreign keys NOT VALID")
+            hard = [o for o in orph if o.get("partitioned")] if int(live.scalar("SHOW server_version_num") or 0) < 180000 else []
+            if hard:
+                raise EngineError("PGA-GEN-096", "promotion not done, nothing was changed: orphaned rows cannot be accepted for %s - a foreign key on a partitioned "
+                                  "table cannot be left NOT VALID before PostgreSQL 18" % ", ".join("%s (%s)" % (o["child"], o["constraint"]) for o in hard),
+                                  "restore the related tables too (same instant), or put the recovered tables next to the originals (as new) and recover rows")
             plan["warnings"].append("orphaned rows accepted: " + "; ".join("%d %s of %s point to %s rows that no longer exist (the foreign key stays NOT VALID, i.e. not enforced, until you fix them)" % (o["rows"], "row" if o["rows"] == 1 else "rows", o["child"], o["parent"]) for o in orph))
         # ---- phase 2: the swap, atomically
         if progress:
             progress({"phase": "swap"})
-        validate_later = []
+        validate_later, to_refresh = [], []
         swapped = [r for r in todo if r["action"] == "swap"]
         old_seq_pos = {}
         live.query("BEGIN")
@@ -1614,18 +1689,26 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                     _add_fk(live, f, validate_later)
                     live.query("RELEASE SAVEPOINT pgarca_fk")
                 except EngineError as e:
+                    if e.code == "PGA-GEN-106":
+                        raise                                 # never commit a partitioned table without its foreign key
                     live.query("ROLLBACK TO SAVEPOINT pgarca_fk")
                     plan["warnings"].append("foreign key %s on %s.%s could not be re-attached: %s" % (f["name"], f["schema"], f["table"], e.message[:160]))
-            roles_ok = _roles_present(live, meta.get("roles") or []) | _roles_present(live, [v.get("owner") for v in plan["live_views"] if v.get("owner")])
+            # live views were granted to roles of the live database: they all exist (found by the views test: a column grant to a role the
+            # recovered tables never mention was silently left out)
+            live_roles = [v.get("owner") for v in plan["live_views"] if v.get("owner")] + [a["g"] for v in plan["live_views"] for a in (v.get("acl") or [])] + \
+                [a["g"] for v in plan["live_views"] for c in (v.get("columns") or []) for a in (c.get("acl") or [])]
+            roles_ok = _roles_present(live, meta.get("roles") or []) | _roles_present(live, [x for x in live_roles if x and x != "PUBLIC"])
             for v in plan["live_views"]:                      # live views must come back exactly as they were: failing here undoes the whole swap
-                _recreate_view(live, v, roles_ok)
+                _recreate_view(live, v, roles_ok, refresh_later=to_refresh)
             for v in sorted(plan["recovered_views"], key=lambda x: x.get("order", 0)):
                 live.query("SAVEPOINT pgarca_v")
                 try:
-                    _recreate_view(live, v, roles_ok)
+                    mark = len(to_refresh)
+                    _recreate_view(live, v, roles_ok, warn=plan["warnings"], refresh_later=to_refresh)
                     live.query("RELEASE SAVEPOINT pgarca_v")
                 except EngineError as e:
                     live.query("ROLLBACK TO SAVEPOINT pgarca_v")
+                    del to_refresh[mark:]
                     plan["warnings"].append("view %s.%s was not recreated: %s" % (v["schema"], v["name"], e.message[:160]))
             live.query("COMMIT")
         except BaseException as e:
@@ -1646,6 +1729,11 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
         # the swap is committed: what follows is housekeeping and must not hang behind the application (a DDL of theirs, an anti-wraparound
         # vacuum, which is not cancelled for us): bounded waits, a step that cannot get its lock is reported, never waited for forever
         live.query("SET lock_timeout = '30s'")
+        for mv in to_refresh:                                # materialized views created empty inside the swap: filled now, in dependency order
+            try:
+                live.query("REFRESH MATERIALIZED VIEW %s" % mv)
+            except EngineError as e:
+                plan["warnings"].append("materialized view %s was recreated EMPTY and could not be filled (%s): run REFRESH MATERIALIZED VIEW %s" % (mv, e.message[:160], mv))
         for f in validate_later:
             try:
                 live.query("ALTER TABLE %s VALIDATE CONSTRAINT %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"])))
@@ -1679,7 +1767,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                       publications_moved=["%s: %s.%s" % (pb["pub"], pb["schema"], pb["table"]) for pb in plan.get("publications") or []],
                       rules_and_policies_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["name"]) for x in (plan.get("foreign_rules") or []) + (plan.get("foreign_policies") or []) + (plan.get("foreign_triggers") or [])],
                       defaults_rebound=["%s.%s.%s" % (x["schema"], x["table"], x["column"]) for x in plan.get("foreign_defaults") or []],
-                      functions_rebound=plan.get("rowtype_funcs_rebound") or [], large_objects_restored=lo_n,
+                      functions_rebound=plan.get("rowtype_funcs_rebound") or [], large_objects_restored=lo_n, large_objects_changed=plan.get("lo_changed") or [],
                       views_recreated=len(plan["live_views"]) + len([v for v in plan["recovered_views"] if not any(w.startswith("view %s.%s " % (v["schema"], v["name"])) for w in plan["warnings"])]),
                       sequences_created=["%s.%s" % (x["schema"], x["name"]) for x in seq_new], sequences_advanced=moved)
         if any(v.get("kind") == "m" for v in plan["recovered_views"]):

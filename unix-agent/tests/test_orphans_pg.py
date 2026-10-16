@@ -31,7 +31,9 @@ def setUpModule():
     q(DB, "CREATE TABLE customers (id int PRIMARY KEY, name text); CREATE TABLE orders (id int PRIMARY KEY, customer_id int REFERENCES customers(id), v text);"
           "CREATE TABLE lines (id int PRIMARY KEY, order_id int REFERENCES orders(id), qty int);"
           "INSERT INTO customers SELECT g, 'c' || g FROM generate_series(1, 10) g; INSERT INTO orders SELECT g, 1 + g % 10, 'o' FROM generate_series(1, 30) g;"
-          "INSERT INTO lines SELECT g, 1 + g % 30, g FROM generate_series(1, 60) g")
+          "INSERT INTO lines SELECT g, 1 + g % 30, g FROM generate_series(1, 60) g;"
+          "CREATE TABLE visits (id int, customer_id int REFERENCES customers(id), d date) PARTITION BY RANGE (d);"
+          "CREATE TABLE visits_2026 PARTITION OF visits FOR VALUES FROM ('2026-01-01') TO ('2027-01-01'); INSERT INTO visits VALUES (1, 1, '2026-05-01')")
     run_backup(F.ctx, "full")
     time.sleep(1.2)
     S["t"] = q("postgres", "SELECT to_char(now() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
@@ -81,6 +83,24 @@ class Orphans(unittest.TestCase):
         self.assertTrue(r["orphans"])
         self.assertTrue(any("orphaned rows accepted" in w and "NOT VALID" in w for w in r["plan"]["warnings"]), r["plan"]["warnings"])
         q("postgres", "DROP DATABASE pgarca_stage_o4")
+
+    def test_05_orphans_of_a_partitioned_table(self):
+        # a foreign key on a partitioned table cannot be NOT VALID before PostgreSQL 18: accepting orphans there used to commit the swap WITHOUT
+        # the key (independent review). Refused before anything changes; from 18 the key is left NOT VALID like any other
+        q(DB, "INSERT INTO customers VALUES (13, 'later'); INSERT INTO visits VALUES (2, 13, '2026-06-01')")   # customer 13 exists now, not at the restored instant
+        q("postgres", "SELECT pg_switch_wal()")
+        time.sleep(2)
+        if int(q("postgres", "SHOW server_version_num")[0][0]) < 180000:
+            before = q(DB, FP)
+            with self.assertRaises(EngineError) as cm:
+                self.promote(["customers"], "pgarca_stage_o5", allow_orphans=True)
+            self.assertEqual(cm.exception.code, "PGA-GEN-096")
+            self.assertIn("public.visits", cm.exception.message)
+            self.assertEqual(q(DB, FP), before, "nothing changed")
+        else:
+            self.promote(["customers"], "pgarca_stage_o5", allow_orphans=True)
+            self.assertEqual(q(DB, "SELECT convalidated::text FROM pg_constraint WHERE conrelid = 'visits'::regclass AND contype = 'f'")[0][0], "false")
+        q("postgres", "DROP DATABASE pgarca_stage_o5")
 
 
 if __name__ == "__main__":

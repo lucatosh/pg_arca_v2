@@ -36,6 +36,9 @@ def setUpModule():
     time.sleep(1.2)
     # the documents 31..40 are deleted: rows and their large objects (lo_manage unlinks 'anteprima', the application unlinks 'file')
     q(DB, "SELECT lo_unlink(file) FROM allegati WHERE id > 30; DELETE FROM allegati WHERE id > 30")
+    # document 2's file is rewritten IN PLACE (same oid): a restore keeps the current content (it may be shared) and says so
+    S["oid2"] = int(q(DB, "SELECT file FROM allegati WHERE id = 2")[0][0])
+    q(DB, "SELECT lo_put(file, 0, convert_to('CAMBIATO', 'UTF8')) FROM allegati WHERE id = 2")
     q("postgres", "SELECT pg_switch_wal()")
     time.sleep(3)
 
@@ -51,10 +54,13 @@ def content():
 class Lobs(unittest.TestCase):
     def test_01_table_restore_brings_back_the_large_objects_its_rows_reference(self):
         restore_object(F.ctx, DB, objects=["%s.public.allegati" % DB], target_time=S["t"], stage_db="pgarca_stage_lo")
-        r = promote_object(F.ctx, "pgarca_stage_lo", DB, mode="replace", drop_stage=False)
+        r = promote_object(F.ctx, "pgarca_stage_lo", DB, mode="replace", drop_stage=True)
         self.assertEqual(q(DB, "SELECT count(*) FROM allegati")[0][0], "40")
-        self.assertEqual(content(), S["content"], "every row's large objects are readable again")
+        self.assertEqual(content(), S["content"].replace("contenuto 2/", "CAMBIATOo 2/"), "every row's large objects are readable again")
         self.assertEqual(r.get("large_objects_restored"), 20, r)
+        self.assertEqual(r.get("large_objects_changed"), [S["oid2"]], r)
+        self.assertFalse(r.get("stage_dropped"), "the content at the point stays available in the staging copy")
+        self.assertEqual(q("pgarca_stage_lo", "SELECT convert_from(lo_get(%d), 'UTF8')" % S["oid2"])[0][0], "contenuto 2")
         self.assertEqual(q(DB, "SELECT convert_from(lo_get(file), 'UTF8') FROM altro")[0][0], "altro")
         q("postgres", "DROP DATABASE pgarca_stage_lo")
 

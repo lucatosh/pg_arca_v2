@@ -195,5 +195,19 @@ class DbProps(unittest.TestCase):
         self.assertEqual(row, ["f", "t", "f"], "a placeholder: never a reactivated account")
 
 
+    def test_07_original_locale_missing_here_is_said(self):
+        # restoring into a server without the source's libc locale: the database is still created, with this server's default, and the difference
+        # is a warning naming both (independent review: the fallback was silent and also dropped the tablespace)
+        from pg_arca.engine.granular import _create_db
+        props = {}
+        _create_db(F.ctx.conn, "loc_missing", {"encoding": "UTF8", "collate": "xx_ZZ.UTF-8", "ctype": "xx_ZZ.UTF-8"}, props)
+        try:
+            w = " ".join(props.get("_warnings") or [])
+            self.assertIn("instead of the original (xx_ZZ.UTF-8/xx_ZZ.UTF-8)", w)
+            self.assertIn("Text sorting", w)
+        finally:
+            q("postgres", "DROP DATABASE IF EXISTS loc_missing")
+
+
 if __name__ == "__main__":
     unittest.main()

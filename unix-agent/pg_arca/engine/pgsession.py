@@ -89,6 +89,9 @@ class PgSession(object):
             opts += " -c default_transaction_read_only=on"
         env = conn.env()
         env["PGOPTIONS"] = (env.get("PGOPTIONS", "") + " " + opts).strip()
+        # psql over pipes speaks the DATABASE's encoding (LATIN1, WIN1252, EUC_JP...): read as UTF-8 it raised UnicodeDecodeError on the first
+        # accented letter (independent review). The server converts to UTF-8 for us; SQL_ASCII (no conversion) keeps its bytes as surrogates
+        env["PGCLIENTENCODING"] = "UTF8"
         # over TCP (a remote 'into' server, a recovery host): keepalives after 60 s of silence - a firewall that silently drops an idle
         # connection otherwise left the session waiting on a dead socket for the OS default (hours)
         dbarg = self.dbname
@@ -97,7 +100,7 @@ class PgSession(object):
         cmd = [conn.exe("psql"), "-X", "-q", "-A", "-t", "-F", self.SEP, "-P", "pager=off", "-v", "ON_ERROR_STOP=0"] + conn.args() + ["-d", dbarg]
         try:
             self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      universal_newlines=True, bufsize=1, env=env, close_fds=True)
+                                      universal_newlines=True, encoding="utf-8", errors="surrogateescape", bufsize=1, env=env, close_fds=True)
         except OSError as e:
             raise EngineError("PGA-CFG-001", "cannot execute psql (%s)" % e, "install the PostgreSQL client or set pg_bin_dir")
         self._t = threading.Thread(target=self._drain, daemon=True)
@@ -272,11 +275,16 @@ def run_tool(conn, prog, args, timeout=None, input_text=None, extra_env=None, ca
         # money is written and read with lc_monetary: a database that sets its own (ALTER DATABASE ... SET lc_monetary = 'it_IT') dumps '1.234,56 €',
         # which a session with another lc_monetary refuses (or reads differently). Every dump and every load of the engine uses the same neutral one.
         env["PGOPTIONS"] = (env.get("PGOPTIONS", "") + " -c lc_monetary=C").strip()
+    if prog == "psql":
+        env["PGCLIENTENCODING"] = "UTF8"             # our text is UTF-8 whatever the database's encoding (see PgSession)
+    # text in and out as UTF-8 whatever the agent's locale (a service started with LANG unset is ASCII on Python 3.6); bytes that are not
+    # UTF-8 (a SQL_ASCII database, a LATIN1 dump's listing) survive as surrogates instead of failing the whole tool
+    txt = {"universal_newlines": True, "encoding": "utf-8", "errors": "surrogateescape"}
     if cancel is not None:
         from pg_arca.engine.util import Cancelled
         try:
             p = subprocess.Popen([conn.exe(prog) if conn else prog] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL, universal_newlines=True, env=env)
+                                 stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL, env=env, **txt)
         except OSError as e:
             raise EngineError("PGA-CFG-004", "cannot execute %s: %s" % (prog, e), "install the PostgreSQL server/client packages or set pg_bin_dir")
         t0, inp = time.time(), input_text
@@ -296,7 +304,7 @@ def run_tool(conn, prog, args, timeout=None, input_text=None, extra_env=None, ca
                     return 124, "", "%s timed out after %ss" % (prog, timeout)
     try:
         p = subprocess.run([conn.exe(prog) if conn else prog] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True, timeout=timeout, env=env, input=input_text)
+                           timeout=timeout, env=env, input=input_text, **txt)
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         return 124, "", "%s timed out after %ss" % (prog, timeout)

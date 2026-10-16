@@ -34,6 +34,9 @@ GUC_REMOVE = ["data_directory", "hba_file", "ident_file", "config_file", "extern
 GUC_BLOCKED_LIBS = {"pg_cron", "pglogical", "pg_partman_bgw", "pgagent", "pg_bulkload", "anon", "pg_background", "pgactive", "bdr", "pg_squeeze"}
 
 
+MAX_RECOVERY_SEC = 72 * 3600          # an absolute ceiling far beyond any real recovery: the stall limits do the real work
+
+
 class TargetNotReached(EngineError):
     """The archive ends before the requested recovery target. Carries what the instance DID reach, so callers can decide (clamp to the end of the archive, or explain)."""
 
@@ -295,18 +298,24 @@ class Ephemeral(object):
             raise EngineError("PGA-CFG-004", "cannot execute postgres: %s" % e)
         t0 = time.time()
         sockpath = os.path.join(self.sock, ".s.PGSQL.%d" % self.port)
-        while time.time() - t0 < wait:
+        # `wait` limits a STALL, not the whole start (independent review: a big full taken under heavy writes needs hours of WAL to become
+        # consistent, and a fixed 15 minutes failed the restore after the whole extraction): every new WAL segment applied resets it
+        moved, seen, last_look = t0, None, 0
+        while time.time() - moved < wait and time.time() - t0 < MAX_RECOVERY_SEC:
             _check_cancel(cancel)
             if self.proc.poll() is not None:
                 err = death_error(logfile, "during recovery")
                 self.cleanup()
                 raise err
-            if progress and time.time() - getattr(self, "_last_p", 0) > 5:
-                self._last_p = time.time()
+            if time.time() - last_look > 5:
+                last_look = time.time()
                 m = re.findall(r'restored log file "([0-9A-F]{24})"', tail_file(logfile, 30))
-                seg = parse_wal_name(m[-1], getattr(self, "_seg", 16 * 1024 * 1024)) if m else None
-                progress(self._replay_progress(seg[1] * self._seg if seg and getattr(self, "_seg", None) else None,
-                                               "applying WAL up to consistency%s" % (" (segment %s)" % m[-1] if m else "")))
+                if m and m[-1] != seen:
+                    seen, moved = m[-1], time.time()
+                if progress:
+                    seg = parse_wal_name(m[-1], getattr(self, "_seg", 16 * 1024 * 1024)) if m else None
+                    progress(self._replay_progress(seg[1] * self._seg if seg and getattr(self, "_seg", None) else None,
+                                                   "applying WAL up to consistency%s" % (" (segment %s)" % m[-1] if m else "")))
             if os.path.exists(sockpath):
                 try:
                     s = PgSession(self.conn("postgres"), read_only=True)
@@ -322,7 +331,8 @@ class Ephemeral(object):
                                           "report this with the agent log: the recovered files are incomplete for this PostgreSQL version")
             time.sleep(0.4)
         self.cleanup()
-        raise EngineError("PGA-PITR-011", "timeout starting the ephemeral instance (%ds)" % wait, "see %s" % logfile)
+        raise EngineError("PGA-PITR-011", "the recovery instance made no progress for %ds while becoming consistent (last WAL segment applied: %s)" % (wait, seen or "none"),
+                          "the next WAL segment may be missing or unreadable in the archive, or the recovery host is overloaded; see %s" % logfile)
 
     _TRANSIENT = ("terminating connection because of crash", "server closed the connection unexpectedly", "the database system is in recovery mode",
                   "the database system is starting up", "the database system is not yet accepting connections", "Connection refused", "No such file or directory")
@@ -350,11 +360,13 @@ class Ephemeral(object):
         except Exception:
             pass
 
-    def wait_target(self, timeout=3600, cancel=None, progress=None):
+    def wait_target(self, timeout=1800, cancel=None, progress=None):
+        """`timeout` limits a STALL: as long as the replay position moves, recovery goes on (a target days after a weekly full is hours of WAL)."""
         t0 = time.time()
         s = self._reconnect(t0 + 120, cancel)
+        moved, last_lsn = t0, None
         try:
-            while time.time() - t0 < timeout:
+            while time.time() - moved < timeout and time.time() - t0 < MAX_RECOVERY_SEC:
                 _check_cancel(cancel)
                 if self.proc is not None and self.proc.poll() is not None:
                     raise death_error(os.path.join(self.dir, "pg_arca-ephemeral.log"), "while recovering")
@@ -385,6 +397,8 @@ class Ephemeral(object):
                     self._log_transient(e)
                     s = self._reconnect(time.time() + 120, cancel)
                     continue
+                if lsn != last_lsn:
+                    last_lsn, moved = lsn, time.time()
                 if progress:
                     pr = self._replay_progress(lsn_to_int(lsn) if lsn and lsn != "-" else None, "WAL applied up to %s" % lsn)
                     pr["replay_lsn"] = lsn
@@ -392,12 +406,13 @@ class Ephemeral(object):
                 if paused or inrec == "f":
                     last_xact = s.scalar("SELECT COALESCE(pg_last_xact_replay_timestamp()::text,'')")
                     if paused and inrec != "f":
-                        self._promote(s, deadline=t0 + timeout)
+                        self._promote(s, deadline=time.time() + 900)
                     return time.time() - t0, lsn, last_xact
                 time.sleep(1)
         finally:
             s.close()
-        raise EngineError("PGA-PITR-012", "recovery did not reach the target within %ds" % timeout, "check WAL availability in the archive")
+        raise EngineError("PGA-PITR-012", "recovery made no progress for %ds before the target (last position applied: %s)" % (timeout, last_lsn or "?"),
+                          "the next WAL segment may be missing or unreadable in the archive, or the recovery host is overloaded")
 
     def _promote(self, s, deadline):
         """End recovery at the target. Stopping at the target leaves every transaction that was still open there 'in progress', and its locks too: a DROP / TRUNCATE /

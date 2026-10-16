@@ -38,7 +38,8 @@ def setUpModule():
           "INSERT INTO orders SELECT g, 'c' || g FROM generate_series(1, 10) g;"
           "INSERT INTO items SELECT g, g, 'sku' FROM generate_series(1, 10) g;"
           "INSERT INTO cat VALUES (1, NULL, 'root');"
-          "INSERT INTO products VALUES (1, 'A'), (2, 'B'); INSERT INTO lines VALUES (1, 'A'), (2, 'A'), (3, 'B')")
+          "INSERT INTO products VALUES (1, 'A'), (2, 'B'); INSERT INTO lines VALUES (1, 'A'), (2, 'A'), (3, 'B');"
+          "CREATE TABLE docs(id int PRIMARY KEY, body json); INSERT INTO docs VALUES (1, '{\"z\": 1,  \"a\": [1, 2], \"a\": 3}')")
     run_backup(F.ctx, "full")
     time.sleep(1.2)
     S["t0"] = now_txt()
@@ -49,10 +50,10 @@ def setUpModule():
           "INSERT INTO shipments VALUES (1, 11), (2, 1);"
           "INSERT INTO invoices VALUES (1, 13);"
           "INSERT INTO cat VALUES (100, 1, 'a'), (101, 100, 'b'), (102, 101, 'c');"
-          "UPDATE products SET code = 'A2' WHERE id = 1")
+          "UPDATE products SET code = 'A2' WHERE id = 1; DELETE FROM docs")
     q("postgres", "SELECT pg_switch_wal()")
     time.sleep(3)
-    restore_object(F.ctx, DB, objects=["%s.public.%s" % (DB, t) for t in ("orders", "items", "item_notes", "shipments", "invoices", "cat", "products", "lines")],
+    restore_object(F.ctx, DB, objects=["%s.public.%s" % (DB, t) for t in ("orders", "items", "item_notes", "shipments", "invoices", "cat", "products", "lines", "docs")],
                    target_time=S["t0"], stage_db=STAGE)
 
 
@@ -115,6 +116,11 @@ class RowsFk(unittest.TestCase):
         r = apply_rows(F.ctx, STAGE, spec, restore_all=["changed"], allow_cascade=True)
         self.assertEqual(q(DB, "SELECT string_agg(code, ',' ORDER BY id) FROM lines")[0][0], "A,A,B")
         self.assertEqual(q(DB, "SELECT string_agg(code, ',' ORDER BY id) FROM %s" % r["cascade_safety_copies"][0])[0][0], "A2,A2")
+
+    def test_06_json_comes_back_byte_for_byte(self):
+        # json (not jsonb) keeps its text: key order, duplicate keys, spaces - a signed payload must be the same bytes (independent review)
+        apply_rows(F.ctx, STAGE, "%s.public.docs" % DB, restore_all=["missing"])
+        self.assertEqual(q(DB, "SELECT body::text FROM docs WHERE id = 1")[0][0], '{"z": 1,  "a": [1, 2], "a": 3}')
 
 
 if __name__ == "__main__":

@@ -89,7 +89,7 @@ class PostgresClient:
         """Run a command. Returns (success, stdout, stderr)."""
         try:
             proc = subprocess.run(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, input=input_text,
-                                  universal_newlines=True, timeout=timeout, env=env)
+                                  universal_newlines=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
             return proc.returncode == 0, proc.stdout.strip(), proc.stderr.strip()
         except subprocess.TimeoutExpired:
             return False, "", "Command timed out after %ss" % timeout
@@ -110,6 +110,7 @@ class PostgresClient:
         env = dict(os.environ)
         env.setdefault("PGCONNECT_TIMEOUT", "5")
         env["PGAPPNAME"] = "pg_arca_agent"
+        env["PGCLIENTENCODING"] = "UTF8"         # names and comments of a LATIN1 / EUC database arrive as UTF-8 (the agent decodes UTF-8)
         env["PGOPTIONS"] = "-c statement_timeout=20000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=30000"
         return env
 
