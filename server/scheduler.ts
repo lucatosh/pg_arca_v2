@@ -31,10 +31,15 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     // standby takes the load instead: the console asks the primary to switch its WAL segment when the backup reaches the WAL phase.
     const primary = nodes.find(n => n.snapshot?.postgres?.is_in_recovery === false) || undefined;
     let target = primary;
+    let standbyAway = false;
     if (pol.preferStandby && primary) {
       const shared = (destinationFor(st, c).dest?.type || 'local') !== 'local';
       const standby = shared ? nodes.find(n => n.snapshot?.postgres?.alive === true && n.snapshot?.postgres?.is_in_recovery === true && n.snapshot?.postgres?.wal_receiver?.status === 'streaming') : undefined;
       if (standby) target = standby;
+      // the standby that normally takes them is away for a moment (heartbeat late, not streaming): an incremental sent to the primary would be taken
+      // as a full there (a chain stays on one side), and another full when the standby is back - two unplanned fulls in business hours that push the
+      // planned history out (independent review). Incrementals wait for it (up to 3 periods); fulls go where the policy can take them.
+      else standbyAway = shared && Object.values(st.nodes).some((n: any) => n.clusterId === c.id && n.snapshot?.postgres?.is_in_recovery === true);
     }
     if (!target) continue;
     const myOps = st.operations.filter(o => o.clusterId === c.id);
@@ -49,14 +54,16 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     // (independent review: 2 days ahead = 2 days without backups and no alert) - only dates up to the console's 'now' count
     const newest = (xs: number[]) => { const f = xs.filter(x => Number.isFinite(x) && x <= now + 300_000); return f.length ? Math.max(...f) : NaN; };
     const lastAny = newest([sets.length ? ts(sets[sets.length - 1].start_time) : NaN, ...okRuns.map(r => r.at)]);
-    const lastFull = newest([(() => { const f = sets.filter(s => s.type === 'full'); return f.length ? ts(f[f.length - 1].start_time) : NaN; })(), ...okRuns.filter(r => r.type === 'full').map(r => r.at)]);
+    // the newest full also when it is older than the 60 sets the heartbeat lists (last_full): otherwise "no full" -> a full at once, outside the hours
+    const lastFull = newest([(() => { const f = sets.filter(s => s.type === 'full'); return f.length ? ts(f[f.length - 1].start_time) : NaN; })(), ts(bk?.last_full?.start_time), ...okRuns.filter(r => r.type === 'full').map(r => r.at)]);
     const h = 3600_000;
 
     // back-off after a failed scheduled backup
     // consecutive failures with no success in between double the wait (retry, ×2, ×4… capped at 6 h): the same broken destination used to
     // be hit every 30 minutes all day (the lab counted 78 failed operations in 24 h, the same NFS error each time)
     const lastRunOk = Math.max(0, ...myOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').map(o => ts(o.updatedAt)).filter(Number.isFinite));   // a manual success ends the streak too
-    const fails = myOps.filter(o => o.type === 'backup_run' && o.status === 'failed' && o.idempotencyKey.startsWith('sched:') && ts(o.updatedAt) > lastRunOk).map(o => ts(o.updatedAt)).filter(Number.isFinite);
+    // an operator who CANCELS a scheduled run means "not now": it holds the next attempt back like a failure (it was re-submitted 30 s later)
+    const fails = myOps.filter(o => o.type === 'backup_run' && (o.status === 'failed' || o.status === 'cancelled') && o.idempotencyKey.startsWith('sched:') && ts(o.updatedAt) > lastRunOk).map(o => ts(o.updatedAt)).filter(Number.isFinite);
     const streak = fails.length; const lastFail = streak ? Math.max(...fails) : NaN;
     const wait = Math.min(pol.retryAfterMinutes * 60_000 * 2 ** Math.max(0, streak - 1), 6 * 3600_000);
     if (streak && now - lastFail < wait) continue;
@@ -88,7 +95,7 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
       // a full that failed in this bucket is retried through a new key after the back-off (attempt counter)
       const attempts = myOps.filter(o => o.idempotencyKey.startsWith(`sched:${c.id}:full:${bucket}`)).length;
       if (await submit('backup_run', { type: 'full', note: 'scheduled', ...limit }, `sched:${c.id}:full:${bucket}:${attempts}`)) continue;
-    } else if (pol.incrEveryHours && (!Number.isFinite(lastAny) || now - lastAny >= pol.incrEveryHours * h)) {
+    } else if (pol.incrEveryHours && (!Number.isFinite(lastAny) || now - lastAny >= pol.incrEveryHours * h) && !(standbyAway && Number.isFinite(lastAny) && now - lastAny < 3 * pol.incrEveryHours * h)) {
       const bucket = Math.floor(now / (pol.incrEveryHours * h));
       const attempts = myOps.filter(o => o.idempotencyKey.startsWith(`sched:${c.id}:incr:${bucket}`)).length;
       if (await submit('backup_run', { type: 'incr', note: 'scheduled', ...limit }, `sched:${c.id}:incr:${bucket}:${attempts}`)) continue;

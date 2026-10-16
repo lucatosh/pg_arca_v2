@@ -1075,6 +1075,13 @@ class OperationExecutor:
         if p.get("restore_test"):
             self._progress({"phase": "restore-test"})
             out["restore_test"] = restore_test(ctx, p.get("set"), self._progress, self._cancelled)
+        if not out.get("ok", True):
+            # a verification that FOUND problems is a failed verification: returned as a success it cleared the console's "verification failed"
+            # finding and counted as the proof that backups restore (independent review)
+            from pg_arca.engine.util import EngineError
+            pr = [str(x) for x in out.get("problems") or []]
+            raise EngineError("PGA-VRF-050", "verification found %d problem(s): %s%s" % (len(pr), "; ".join(pr[:5]), " ... and %d more" % (len(pr) - 5) if len(pr) > 5 else ""),
+                              "see which backup sets are affected; take a new full backup if the newest chain is involved")
         return out
 
     def h_backup_expire(self, p):

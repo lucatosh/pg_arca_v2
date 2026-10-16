@@ -31,6 +31,8 @@ export const maskUrl = (u: string) => { try { const x = new URL(u); return `${x.
 export function validUrl(u: any): string | null {
   try { const x = new URL(String(u)); return (x.protocol === 'http:' || x.protocol === 'https:') && String(u).length <= 600 ? null : 'an http(s) URL is required'; } catch { return 'invalid URL'; }
 }
+export const OPEN_AFTER_MS = 120_000;      // a new non-critical finding must last 2 minutes before it is sent
+export const RESOLVE_AFTER_MS = 300_000;   // a finding must be gone 5 minutes before "Resolved" is sent
 const ICON: Record<Severity, string> = { critical: '🔴', warning: '🟠', info: '🔵' };
 
 export function payload(w: Webhook, ev: { opened: Issue[]; reminders: Issue[]; resolved: { key: string; title: string; clusterName: string }[]; test?: boolean }, baseUrl = '') {
@@ -55,21 +57,36 @@ export async function notifyTick(store: Store, now = Date.now(), send: Sender = 
     if (ns.nextTryAt && now < ns.nextTryAt) continue;
     const cur = issues.filter(i => SEV_RANK[i.severity] <= SEV_RANK[w.minSeverity]);
     const known = ns.issues || {};
-    const opened = cur.filter(i => !known[i.key]);
-    const reminders = cur.filter(i => known[i.key] && now - known[i.key].sentAt >= (cfg.reminderHours || 24) * 3600_000);
+    // no storms from findings that flap (a heartbeat around the 45 s limit, a lag around its threshold): a new finding is sent once it has lasted
+    // OPEN_AFTER (critical ones at once), a known one is resolved once it has been gone RESOLVE_AFTER (independent review: 5 messages in 6 minutes)
+    const seen: Record<string, number> = { ...(ns.seen || {}) }; const gone: Record<string, number> = { ...(ns.gone || {}) };
     const curKeys = new Set(cur.map(i => i.key));
+    for (const i of cur) if (!known[i.key] && !seen[i.key]) seen[i.key] = now;
+    for (const k of Object.keys(seen)) if (!curKeys.has(k) || known[k]) delete seen[k];
+    const fresh = cur.filter(i => !known[i.key] && (i.severity === 'critical' || now - (seen[i.key] ?? now) >= OPEN_AFTER_MS));
+    // a known finding that got WORSE (warning -> critical) is said again at once, even with the reminder hours far away
+    const worse = cur.filter(i => known[i.key] && SEV_RANK[i.severity] < SEV_RANK[(known[i.key].severity || 'info') as Severity]);
+    const opened = [...fresh, ...worse];
+    const reminders = cur.filter(i => known[i.key] && !worse.includes(i) && now - known[i.key].sentAt >= (cfg.reminderHours || 24) * 3600_000);
     // a finding still open at a LOWER severity (below this webhook's threshold) is not resolved: no "🟢 Resolved" for a cluster that is still dark
     // (independent review); it is simply no longer repeated here, and announced as resolved once it is really gone
     const stillOpen = new Set(issues.map(i => i.key));
-    const resolved = Object.entries(known).filter(([k]) => !curKeys.has(k) && !stillOpen.has(k)).map(([k, v]: any) => ({ key: k, title: v.title, clusterName: v.clusterName }));
-    if (!opened.length && !reminders.length && !resolved.length) continue;
+    for (const k of Object.keys(known)) { if (curKeys.has(k) || stillOpen.has(k)) delete gone[k]; else if (!gone[k]) gone[k] = now; }
+    for (const k of Object.keys(gone)) if (!known[k]) delete gone[k];
+    const resolved = Object.entries(known).filter(([k]) => !curKeys.has(k) && !stillOpen.has(k) && now - (gone[k] ?? now) >= RESOLVE_AFTER_MS).map(([k, v]: any) => ({ key: k, title: v.title, clusterName: v.clusterName }));
+    const timersChanged = JSON.stringify(seen) !== JSON.stringify(ns.seen || {}) || JSON.stringify(gone) !== JSON.stringify(ns.gone || {});
+    if (!opened.length && !reminders.length && !resolved.length) {
+      if (timersChanged) await store.mutate(d => { const all = (d.settings.notifyState ||= {}); const x = (all[w.id] ||= { issues: {} }); x.seen = seen; x.gone = gone; });
+      continue;
+    }
     const r = await send(openUrl(store.dir, w.url), payload(w, { opened, reminders, resolved }));
     await store.mutate(d => {
       const all = (d.settings.notifyState ||= {});
       const s = (all[w.id] ||= { issues: {} });
+      s.seen = seen; s.gone = gone;
       if (r.ok) {
-        for (const i of [...opened, ...reminders]) s.issues[i.key] = { sentAt: now, title: i.title, clusterName: i.clusterName, severity: i.severity };
-        for (const x of resolved) delete s.issues[x.key];
+        for (const i of [...opened, ...reminders]) { s.issues[i.key] = { sentAt: now, title: i.title, clusterName: i.clusterName, severity: i.severity }; delete s.seen[i.key]; }
+        for (const x of resolved) { delete s.issues[x.key]; delete s.gone[x.key]; }
         s.lastOk = new Date(now).toISOString(); s.lastError = undefined; s.nextTryAt = undefined;
       } else { s.lastError = r.error; s.lastErrorAt = new Date(now).toISOString(); s.nextTryAt = now + 5 * 60_000; }
     });

@@ -386,13 +386,26 @@ class PackTests(unittest.TestCase):
             _age(os.path.join(pd, n), GC_GRACE + 3600)
         lk = self.repo.gc_lock(shared=True)
         try:
-            self.assertEqual(maintenance._gc_cas(Repo(self.root, "other", algo="zlib")), (0, 0))
+            self.assertIsNone(maintenance._gc_cas(Repo(self.root, "other", algo="zlib"), wait=0.3), "postponed, and said so")
+            self.assertEqual(read_count(self.root), 1)
+            self.assertIsNone(maintenance._gc_cas(Repo(self.root, "other", algo="zlib"), wait=0))
+            self.assertEqual(read_count(self.root), 2, "consecutive postponements are counted (the console reports them)")
             self.assertEqual(self.repo.get_chunk(h), self._data(2))
         finally:
             lk.release()
         self.assertEqual(maintenance._gc_cas(Repo(self.root, "other", algo="zlib"))[1], 1)
+        self.assertEqual(read_count(self.root), 0, "a pass that ran clears the count")
         lk2 = self.repo.gc_lock(shared=True); lk3 = self.repo.gc_lock(shared=True)   # shared locks do not exclude each other (primary + standby backups)
         lk2.release(); lk3.release()
+
+
+def read_count(root):
+    import json
+    try:
+        with open(os.path.join(root, "gc_postponed.json")) as f:
+            return json.load(f)["count"]
+    except (OSError, ValueError):
+        return 0
 
 
 if __name__ == "__main__":

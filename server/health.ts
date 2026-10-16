@@ -36,6 +36,20 @@ export function walPosition(pg: any, lastArchivedWal?: string | null): { backlog
 }
 const durH = (s: number) => s >= 7200 ? `${(s / 3600).toFixed(1).replace(/\.0$/, '')} h` : s >= 120 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`;
 
+/** The node whose repository report describes the cluster's backups: an ONLINE node first (a replaced or dead node's frozen snapshot said "last
+ *  backup 6 h ago" while the new primary had none and its scheduled fulls failed - independent review), the one that sees the most sets among them. */
+export function backupSource(nodes: any[], now = Date.now()): any {
+  const withBk = nodes.filter(n => n.snapshot?.backup?.configured);
+  const most = (xs: any[]) => [...xs].sort((a, b) => (b.snapshot.backup.sets || 0) - (a.snapshot.backup.sets || 0))[0];
+  return most(withBk.filter(n => !!n.lastSeen && now - Date.parse(n.lastSeen) < ONLINE_MS)) || most(withBk);
+}
+/** When the newest full started (ms), also when it is older than the 60 sets the heartbeat lists (`last_full`). */
+export function lastFullMs(bk: any): number {
+  const sets: any[] = (bk?.recent_sets || []).filter((s: any) => s.status === 'COMPLETE' && s.type === 'full');
+  const a = sets.length ? Date.parse(sets[sets.length - 1].start_time) : NaN; const b = Date.parse(bk?.last_full?.start_time || '');
+  return Number.isFinite(a) ? (Number.isFinite(b) ? Math.max(a, b) : a) : b;
+}
+
 export function evaluate(st: any, now = Date.now()): Issue[] {
   const out: Issue[] = [];
   for (const c of st.clusters as any[]) {
@@ -110,10 +124,17 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     }
 
     // ---- backups
-    const bk = (nodes.filter(n => n.snapshot?.backup?.configured).sort((a, b) => (b.snapshot.backup.sets || 0) - (a.snapshot.backup.sets || 0))[0] || primary)?.snapshot?.backup;
+    const bkNode = backupSource(nodes, now) || primary;
+    const bk = bkNode?.snapshot?.backup;
     const sets: any[] = (bk?.recent_sets || []).filter((s: any) => s.status === 'COMPLETE');
     const last = sets.length ? sets[sets.length - 1] : null;
     const lastMs = last ? ts(last.start_time) : NaN;
+    const skew = Number(bkNode?.clockSkewMs) || 0;                               // that node's clock minus the console's, from its heartbeats
+    const runs = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'backup_run');
+    const lastRunOk = Math.max(0, ...runs.filter(o => o.status === 'succeeded').map(o => ts(o.updatedAt)).filter(Number.isFinite));
+    // a node clock ahead dates its sets in the future: their age says nothing, the console's own record of the last successful run does
+    const clockAhead = (Number.isFinite(lastMs) && lastMs > now + 600_000) || skew > 600_000;
+    const effLast = Math.abs(skew) > 600_000 && Number.isFinite(lastMs) ? lastMs - skew : clockAhead ? (lastRunOk || NaN) : lastMs;
     const expectH = pol?.enabled ? Math.min(pol.fullEveryHours, pol.incrEveryHours || pol.fullEveryHours) : 0;
     if (!sets.length && standbySite) {
       // backups are taken on the primary site (same database, shared repository): nothing to report here
@@ -121,10 +142,11 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       // never reported yet: whether it has backups is unknown, not 'none' (the first report says)
     } else if (!sets.length) {
       add({ severity: isProd || pol?.enabled ? 'critical' : 'warning', code: 'no_backup', title: 'No backup yet', cause: pol?.enabled ? 'The policy is active but there is no successful backup yet: the data is not protected.' : isProd ? 'The cluster has neither a backup policy nor any backups: the data is not protected.' : 'Not a production cluster, so this is not urgent, but it has neither a backup policy nor any backups: its data is not protected.', action: { label: pol?.enabled ? 'See the backups' : 'Assign a policy', page: pol?.enabled ? 'backup' : 'strategy' } });
-    } else if (Number.isFinite(lastMs) && lastMs > now + 600_000) {
-      add({ severity: 'warning', code: 'clock_ahead', title: `Backup times are ${hrs((lastMs - now) / 3600_000)} in the future`, cause: 'The clock of the node that takes the backups is ahead of the console’s: backup ages and point-in-time targets based on it cannot be trusted. Synchronise the clocks (NTP) of the database nodes.', action: { label: 'See the backups', page: 'backup' } });
-    } else if (expectH && Number.isFinite(lastMs) && now - lastMs > expectH * 3600_000 * 2) {
-      const age = (now - lastMs) / 3600_000;
+    } else if (clockAhead) {
+      add({ severity: 'warning', code: 'clock_ahead', title: `The backup node's clock is ${hrs(Math.max(skew, lastMs - now) / 3600_000)} ahead`, cause: 'The clock of the node that takes the backups is ahead of the console’s: backup ages and point-in-time targets based on it cannot be trusted. Synchronise the clocks (NTP) of the database nodes.', action: { label: 'See the backups', page: 'backup' } });
+    }
+    if (sets.length && expectH && Number.isFinite(effLast) && now - effLast > expectH * 3600_000 * 2) {
+      const age = (now - effLast) / 3600_000;
       add({ severity: age > expectH * 4 ? 'critical' : 'warning', code: 'backup_stale', title: `Last backup ${hrs(age)} ago`, cause: `The policy expects a backup every ${hrs(expectH)}: at least one is missing. Check the last error or whether the agent is offline.`, action: { label: 'See the backups', page: 'backup' } });
     }
     // backups exist but nothing schedules them: protection depends on someone remembering. Said where everyone looks (the badge, the list,
@@ -132,11 +154,23 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     if (sets.length && !standbySite && !pol?.enabled) add({ severity: isProd ? 'warning' : 'info', code: 'no_schedule', title: 'Backups are not scheduled',
       cause: `Only manual backups run${Number.isFinite(lastMs) ? ` (the last one ${hrs((now - lastMs) / 3600_000)} ago)` : ''}: assign a backup policy so protection does not depend on someone remembering.`, action: { label: 'Schedule backups', page: 'backup' } });
     const failedSince = (bk?.last_failure && (!last || ts(bk.last_failure.start_time) > lastMs)) ? bk.last_failure : null;
-    if (failedSince) add({ severity: 'warning', code: 'backup_failed', title: 'The last backup attempt failed', cause: String(failedSince.reason || 'Reason not reported.').slice(0, 300), action: { label: 'See the backups', page: 'backup' } });
+    // runs that failed before writing any set (destination not mounted, lock, PostgreSQL down) are only in the operations: counted too
+    const runFails = runs.filter(o => o.status === 'failed' && ts(o.updatedAt) > lastRunOk).sort((a, b) => ts(b.updatedAt) - ts(a.updatedAt));
+    if (failedSince || runFails.length) {
+      const why = runFails.length ? String(runFails[0].error?.message || runFails[0].error || 'Reason not reported.') : String(failedSince.reason || 'Reason not reported.');
+      add({ severity: runFails.length >= 3 && (isProd || pol?.enabled) ? 'critical' : 'warning', code: 'backup_failed', title: runFails.length > 1 ? `The last ${runFails.length} backup attempts failed` : 'The last backup attempt failed',
+        cause: why.split('\n')[0].slice(0, 300), action: { label: 'See the backups', page: 'backup' } });
+    }
+    const gp = bk?.gc_postponed;
+    if (gp && Number(gp.count) >= 5) add({ severity: 'warning', code: 'gc_postponed', title: `Space of expired backups not reclaimed (${gp.count} cleanups postponed)`,
+      cause: `Every cleanup since ${String(gp.since || '?').slice(0, 16).replace('T', ' ')} UTC found a backup of another cluster running in the shared repository, so the space of expired backups was not freed. Leave a quiet moment between the clusters' backups (heavy-work hours), or run the cleanup when nothing else runs.`, action: { label: 'See the backups', page: 'backup' } });
     const lastVerify = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'backup_verify' && o.status === 'succeeded').map(o => ts(o.updatedAt)).sort().pop();
     // a verification that FAILED is a backup that may not restore: said where everyone looks, until the same verification succeeds
-    const vFail = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'backup_verify' && o.status === 'failed' && now - ts(o.updatedAt) < 7 * 86400_000)
-      .filter(o => !(st.operations as any[]).some(x => x.status === 'succeeded' && sameWork(x, o) && ts(x.updatedAt) > ts(o.updatedAt))).sort((a, b) => ts(b.updatedAt) - ts(a.updatedAt))[0];
+    // open until a LATER verification of this cluster succeeds that checks at least as much (any node: a standby / primary switch or a replaced node
+    // must be able to clear it), whatever its age - a 7-day cutoff dropped it while nothing had succeeded since (independent review)
+    const vFail = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'backup_verify' && o.status === 'failed')
+      .filter(o => !(st.operations as any[]).some(x => x.clusterId === c.id && x.type === 'backup_verify' && x.status === 'succeeded' && ts(x.updatedAt) > ts(o.updatedAt) && (!!x.params?.deep || !o.params?.deep) && (!x.params?.set || x.params.set === o.params?.set)))
+      .sort((a, b) => ts(b.updatedAt) - ts(a.updatedAt))[0];
     if (vFail) add({ severity: isProd ? 'critical' : 'warning', code: 'verify_failed', title: 'A backup verification failed', cause: `${String(vFail.error?.message || vFail.error || 'No reason reported.').slice(0, 300)} (${hrs((now - ts(vFail.updatedAt)) / 3600_000)} ago). Until the same verification succeeds, that backup may not restore.`, action: { label: 'See the backups', page: 'backup' } });
     if (pol?.enabled && pol.verifyEveryHours && sets.length) {
       const base = Number.isFinite(lastVerify as number) ? (lastVerify as number) : lastMs;
@@ -352,20 +386,21 @@ export function protectionOf(st: any, clusterId: string, issues: Issue[], now = 
   const c = (st.clusters as any[]).find(x => x.id === clusterId);
   if (!c || c.isSandbox || c.source === 'direct') return { state: 'none' as const, reason: 'not_managed' };
   const nodes = Object.values(st.nodes || {}).filter((n: any) => n.clusterId === clusterId) as any[];
-  const bk = (nodes.filter(n => n.snapshot?.backup?.configured).sort((a, b) => (b.snapshot.backup.sets || 0) - (a.snapshot.backup.sets || 0))[0])?.snapshot?.backup;
+  const bk = backupSource(nodes, now)?.snapshot?.backup;
   const sets: any[] = (bk?.recent_sets || []).filter((s: any) => s.status === 'COMPLETE');
   const at = (s: any) => s ? (s.stop_time || s.start_time || null) : null;
-  const lastBackupAt = at(sets[sets.length - 1]); const fulls = sets.filter(s => s.type === 'full'); const lastFullAt = at(fulls[fulls.length - 1]);
+  const lastBackupAt = at(sets[sets.length - 1]); const fulls = sets.filter(s => s.type === 'full'); const lastFullAt = at(fulls[fulls.length - 1]) || at(bk?.last_full);
   const ob = objectives(st, clusterId, now);
   const offs = nodes.map(n => n.snapshot?.offsite).filter((o: any) => o?.configured && o.enabled);
   const offLast = Math.max(0, ...offs.map((o: any) => Number(o.last_ok) || 0));
   const mine = issues.filter(i => i.clusterId === clusterId);
-  const KEY = new Set(['no_backup', 'no_schedule', 'verify_failed', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
+  // no_primary: nobody can say the archive is current (critical: none reachable; warning: silent for days); clock_ahead: the backup ages cannot be trusted
+  const KEY = new Set(['no_primary', 'clock_ahead', 'gc_postponed', 'no_backup', 'no_schedule', 'verify_failed', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
   const relevant = mine.filter(i => KEY.has(i.code));
   const standbySite = !sets.length && nodes.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader');
   const state = standbySite ? 'none' as const
     : !sets.length || relevant.some(i => i.severity === 'critical') || ob?.rpo.state === 'bad' ? 'bad' as const
-    : relevant.some(i => i.severity === 'warning') || ob?.rpo.state === 'warn' ? 'warn' as const : 'ok' as const;
+    : relevant.some(i => i.severity === 'warning') || ob?.rpo.state === 'warn' || ob?.rpo.state === 'unknown' ? 'warn' as const : 'ok' as const;
   return { state, reason: standbySite ? 'standby_site' : undefined, lastBackupAt, lastFullAt, backups: sets.length,
     rpoSeconds: ob?.rpo.seconds ?? null, rpoState: ob?.rpo.state || 'unknown', archiving: ob?.rpo.state === 'bad' && ob?.rpo.seconds == null ? (/off/.test(ob.rpo.text) ? 'off' : 'failing') : 'ok',
     rtoSeconds: ob?.rto.estimateSeconds ?? null, offsiteAt: offs.length ? (offLast ? new Date(offLast * 1000).toISOString() : null) : undefined,

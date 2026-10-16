@@ -8,7 +8,7 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { Store } from './store';
-import { evaluate, objectives } from './health';
+import { evaluate, objectives, backupSource, lastFullMs } from './health';
 import { APP_VERSION } from './version';
 
 const ONLINE_MS = 45_000;
@@ -55,12 +55,16 @@ export function renderMetrics(st: any, now = Date.now()): string {
     const status = c.status === 'down' ? 3 : worst === 2 ? 2 : c.status === 'degraded' || worst === 1 ? 1 : c.status === 'healthy' ? 0 : 3;
     line('pg_arca_cluster_status', L(c), status);
     for (const s of ['critical', 'warning', 'info']) line('pg_arca_cluster_findings', { ...L(c), severity: s }, my.filter(i => i.severity === s).length);
-    const sets: any[] = (prim?.snapshot?.backup?.recent_sets || []).filter((x: any) => x.status === 'COMPLETE');
-    const ts = (x: any) => { const t = Date.parse(x?.start_time || ''); return Number.isFinite(t) ? Math.floor(t / 1000) : 0; };
-    line('pg_arca_cluster_last_backup_timestamp_seconds', L(c), sets.length ? Math.max(...sets.map(ts)) : 0);
-    const fulls = sets.filter(x => x.type === 'full');
-    line('pg_arca_cluster_last_full_backup_timestamp_seconds', L(c), fulls.length ? Math.max(...fulls.map(ts)) : 0);
-    line('pg_arca_cluster_backup_sets', L(c), sets.length);
+    // the same backup source as the findings (an online node first, any node's last report otherwise): a primary down used to read as
+    // "0 backups, last at 1970" and fire every age alert. Unknown = the series is absent, not 0
+    const bks = backupSource(mine, now)?.snapshot?.backup;
+    if (bks) {
+      const sets: any[] = (bks.recent_sets || []).filter((x: any) => x.status === 'COMPLETE');
+      const ts = (x: any) => { const t = Date.parse(x?.start_time || ''); return Number.isFinite(t) ? Math.floor(t / 1000) : 0; };
+      if (sets.length) line('pg_arca_cluster_last_backup_timestamp_seconds', L(c), Math.max(...sets.map(ts)));
+      const lf = lastFullMs(bks); if (Number.isFinite(lf)) line('pg_arca_cluster_last_full_backup_timestamp_seconds', L(c), Math.floor(lf / 1000));
+      line('pg_arca_cluster_backup_sets', L(c), Number(bks.sets ?? sets.length));
+    }
     if (pg.archiver) {
       line('pg_arca_cluster_archiver_failed_total', L(c), Number(pg.archiver.failed_count || 0));
       const lf = Date.parse(pg.archiver.last_failed_time || ''); line('pg_arca_cluster_archiver_last_failed_timestamp_seconds', L(c), Number.isFinite(lf) ? Math.floor(lf / 1000) : 0);

@@ -6,6 +6,15 @@ import time
 from pg_arca.engine.util import iso, read_json, write_json
 
 
+def _gc_postponed(repo):
+    """Consecutive expires whose garbage collection had to be postponed (a backup of another cluster held the shared repository): the console warns."""
+    try:
+        d = read_json(repo.p("gc_postponed.json"))
+        return {"count": int(d.get("count") or 0), "since": d.get("since")}
+    except Exception:
+        return None
+
+
 class RepoSummary(object):
     def __init__(self, ctx):
         self.ctx = ctx
@@ -62,6 +71,10 @@ class RepoSummary(object):
                 "last_backup": ({k: last.get(k) for k in ("id", "type", "start_time", "stop_time", "duration_sec", "stop_lsn")} if last else None),
                 "last_backup_age_hours": age, "last_failure": ({k: failed[-1].get(k) for k in ("id", "status", "reason", "start_time")} if failed else None),
                 "full_count": len([s for s in done if s["type"] == "full"]),
+                # the newest full, whatever the length of recent_sets (60 sets: with hourly incrementals a weekly full fell off the list after
+                # 2.5 days and the console believed there was none - independent review)
+                "last_full": ({k: fulls[-1].get(k) for k in ("id", "start_time", "stop_time")} if fulls else None),
+                "gc_postponed": _gc_postponed(repo),
                 "total_chunks": (cas or {}).get("chunks"), "stored_bytes": stored, "raw_bytes": logical,
                 "dedup_ratio": round(logical / float(stored), 2) if stored else None, "repo_path": repo.path,
                 "encryption": ({"alg": "aes-256-gcm", "key_id": repo.crypto.key_id} if repo.crypto else None), "recent_sets": recent}

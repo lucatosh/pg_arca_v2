@@ -376,7 +376,7 @@ def drop_previous(ctx, src_repo=None, src_wal=None, abandon=False):
             out["sets_removed"] = len([x for x in os.listdir(os.path.join(sd, "backup")) if not x.startswith(".")]) if os.path.isdir(os.path.join(sd, "backup")) else 0
             shutil.rmtree(sd)
         if os.path.isdir(os.path.join(src_repo, "cas")) and os.path.isdir(os.path.join(src_repo, "stanza")):
-            freed, removed = _gc_cas(Repo(src_repo, ctx.stanza, crypto=ctx.crypto))
+            freed, removed = _gc_cas(Repo(src_repo, ctx.stanza, crypto=ctx.crypto)) or (0, 0)
             out["chunks_removed"], out["bytes_freed"] = removed, freed
     busy = _wal_still_used(ctx, src_repo, src_wal, check_recent=False) if src_wal and os.path.isdir(src_wal) else None
     if busy:

@@ -50,6 +50,52 @@ class RetentionDaysTest(unittest.TestCase):
         self.repo.pin("dead", ["20250825-000000F"], "0/8000000", ttl=-1)
         self.assertEqual(expire(c, dry_run=True)["delete_sets"], ["20250825-000000F"], "a pin nobody refreshes dies by itself")
 
+    def test_promoted_fulls_do_not_push_planned_chains_out(self):
+        """two incrementals the agent had to take as fulls (standby blip) must not cost the planned weekly chain (independent review)"""
+        self._set("20251005-000000F", 2, "1/0")                                   # planned (Sunday)
+        self._set("20251006-000000F", 1, "2/0")
+        self._set("20251007-000000F", 0, "3/0")
+        for sid in ("20251006-000000F", "20251007-000000F"):
+            m = self.repo.set_meta(sid); m["promoted_from"] = "incr"; self.repo.write_meta(m)
+        c = Ctx(self.repo); c.retention_full = 1; c.retention_days = 0
+        self.assertEqual(expire(c, dry_run=True)["delete_sets"], [], "the planned full stays with the forced ones after it")
+        self._set("20251008-000000F", 0, "4/0")                                   # the next planned full
+        self.assertEqual(expire(c, dry_run=True)["delete_sets"], ["20251005-000000F", "20251006-000000F", "20251007-000000F"])
+
+    def test_summary_names_the_last_full_beyond_the_recent_list(self):
+        from pg_arca.engine.summary import RepoSummary
+        self._set("20250901-000000F", 30, "1/0")
+        for i in range(70):                                                        # 70 incrementals after it: more than the 60 listed
+            sid = "20250901-000000F_%04dI" % i
+            d = self.repo.own_path("backup", sid); os.makedirs(d)
+            write_json(os.path.join(d, "meta.json"), {"id": sid, "type": "incr", "parent": "20250901-000000F", "status": "COMPLETE", "started_ts": time.time(),
+                                                     "start_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 86400 + i)), "start_lsn": "1/0", "stop_lsn": "1/0", "timeline": 1})
+        c = Ctx(self.repo); c.stanza = "main"
+        st = RepoSummary(c).get_stats()
+        self.assertFalse(any(x["type"] == "full" for x in st["recent_sets"]))
+        self.assertEqual(st["last_full"]["id"], "20250901-000000F")
+        self.assertIsNone(st["gc_postponed"])
+
+    def test_pinned_sets_are_not_marked_expiring(self):
+        self._set("20250825-000000F", 42, "0/8000000")
+        self._set("20251006-000000F", 0, "3/0")
+        c = Ctx(self.repo); c.retention_days = 0
+        c.log = lambda *a: None
+
+        class _W(object):
+            def list_segments(self):
+                return []
+
+            def set_retention_floor(self, *a):
+                pass
+
+            def __getattr__(self, n):
+                return lambda *a, **k: []
+        c.wal = _W()
+        with self.repo.pinned(["20250825-000000F"], "0/8000000"):
+            expire(c)
+        self.assertEqual(self.repo.set_meta("20250825-000000F")["status"], "COMPLETE", "a set a restore reads keeps its status")
+
     def test_a_full_running_across_the_cutoff_does_not_carry_it(self):
         # points just after the cutoff come before that full ENDS: the previous full must stay (independent review)
         self._set("20250901-000000F", 37, "1/0")

@@ -225,6 +225,8 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       if (typeof b.console_url === 'string' && /^https?:\/\/[^\s'"`$;|&<>]{1,200}$/.test(b.console_url)) n.consoleUrl = b.console_url.replace(/\/+$/, '');
       if (typeof b.tls_insecure === 'boolean') n.tlsInsecure = b.tls_insecure;
       // the CA file the agent trusts the console with (a private / self-signed certificate): the upgrade command must use the same one
+      // the node's clock against the console's (backup ages and schedules are computed in the console's time: a node ahead dated its sets in the future)
+      if (typeof b.agent_now === 'number' && Number.isFinite(b.agent_now)) n.clockSkewMs = Math.round(b.agent_now * 1000 - Date.now()); 
       if (typeof b.agent_instance === 'string' && /^[a-z0-9][a-z0-9_-]{0,30}$/.test(b.agent_instance)) n.agentInstance = b.agent_instance; else if (b.agent_instance === null) delete n.agentInstance;
       if (typeof b.tls_ca_file === 'string' && /^\/[^\s'"`$;|&<>]{1,200}$/.test(b.tls_ca_file)) n.tlsCaFile = b.tls_ca_file; else if (b.tls_ca_file === null) delete n.tlsCaFile;
       const started = Number(b.agent_started);

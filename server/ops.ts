@@ -278,6 +278,11 @@ export function report(store: Store, nodeId: string, opId: string, status: 'runn
     const op = draft.operations.find(o => o.id === opId);
     if (!op) return { ok: false, reason: 'unknown operation' };
     if (op.nodeId !== nodeId) return { ok: false, reason: 'operation belongs to another node' };
+    // an older agent returns a verification that FOUND problems as a success ({ok: false, problems}): it is a failed verification
+    if (status === 'succeeded' && op.type === 'backup_verify' && result && typeof result === 'object' && result.ok === false) {
+      const pr: string[] = Array.isArray(result.problems) ? result.problems.map(String) : [];
+      status = 'failed'; error = `PGA-VRF-050: verification found ${pr.length} problem(s): ${pr.slice(0, 5).join('; ')}${pr.length > 5 ? ` ... and ${pr.length - 5} more` : ''}`;
+    }
     // the console gave up on it while the owning agent was cut off (lease lapsed, then max attempts or ttl): the agent's real outcome wins
     const gaveUp = op.status === 'expired' && op.attempts > 0 || op.status === 'failed' && op.error === 'agent did not report a result';
     if (isTerminal(op.status) && !gaveUp) {

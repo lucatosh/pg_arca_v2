@@ -338,6 +338,7 @@ def run_backup(ctx, btype="incr", archive_timeout=120, progress=None, cancel=Non
 
 def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=None, limiter=_NO_LIMIT):
     repo, log = ctx.repo, ctx.log
+    requested = btype
     sess = PgSession(ctx.conn)
     meta = None
     started_backup = False
@@ -442,6 +443,10 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                 "pg_version": sess.version, "pg_version_num": sess.version_num, "timeline": tli, "status": "RUNNING", "started_ts": t_start,
                 "start_time": iso(), "host": socket.gethostname(), "pgdata": ctx.pgdata, "from_standby": in_recovery, "engine": ENGINE_VERSION,
                 "wal_segment_size": seg_size, "data_checksums": checksums, "note": note}
+        if requested != btype:
+            # an incremental the agent had to take as a full (other side of the chain, new timeline, broken parent): retention does not count it
+            # as one of the N chains to keep, or two unplanned fulls would push the planned history out (independent review)
+            meta["promoted_from"] = requested
         if limiter.rate > 0:
             meta["read_limit_mb_s"] = limiter.rate / 1048576.0
         repo.write_meta(meta)

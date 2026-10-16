@@ -12,7 +12,7 @@ from pg_arca.engine.backup import build_chain
 from pg_arca.engine.repo import GC_GRACE
 
 REPACK_FRACTION = 0.25            # a pack whose dead chunks weigh at least this share of it is rewritten without them
-from pg_arca.engine.util import EngineError, last_wal_segno, lsn_to_int, parse_wal_name, read_json, wal_name, wal_segno
+from pg_arca.engine.util import EngineError, iso, last_wal_segno, lsn_to_int, parse_wal_name, read_json, wal_name, wal_segno, write_json
 
 logger = logging.getLogger("pg_arca.maintenance")
 
@@ -196,7 +196,13 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
                     _finish_pending_wal(ctx, s)
         done = [s for s in sets if s.get("status") == "COMPLETE"]
         fulls = [s for s in done if s["type"] == "full"]
-        doomed_fulls = fulls[:max(0, len(fulls) - keep_full)]
+        # the N chains to keep are counted on PLANNED fulls: an incremental the agent had to promote (standby blip, timeline change) starts a chain
+        # too, kept with the others, but it does not push a planned week of history out
+        counted = [f for f in fulls if not f.get("promoted_from")] or fulls
+        if keep_full > 0 and len(counted) > keep_full:
+            doomed_fulls = fulls[:fulls.index(counted[-keep_full])]
+        else:
+            doomed_fulls = fulls[:max(0, len(fulls) - keep_full)] if keep_full <= 0 else []
         if days and doomed_fulls:
             # every point of the last N days must stay restorable: a point just after the cutoff needs the newest full that STARTED BEFORE it
             # (its chain and WAL carry the point forward), so that full is kept too, not only the fulls younger than the cutoff
@@ -234,7 +240,7 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         if dry_run:
             plan["dry_run"] = True
             return plan
-        for s in doomed + junk:                                      # mark first: a crash mid-delete leaves a recognisable EXPIRING set
+        for s in [x for x in doomed + junk if x["id"] in doomed_ids]:      # mark first (never a pinned set): a crash mid-delete leaves a recognisable EXPIRING set
             m = repo.set_meta(s["id"])
             if m:
                 m["status"] = "EXPIRING"
@@ -247,7 +253,10 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
             shutil.rmtree(repo.own_path("backup", sid), ignore_errors=True)        # only this location: a previous one is never touched by retention
         for d in repo.stale_set_dirs():                                  # starts that died before their meta (or empty claims): not sets, just clutter
             shutil.rmtree(repo.own_path("backup", d), ignore_errors=True)
-        freed, removed = _gc_cas(repo)
+        gc = _gc_cas(repo)
+        freed, removed = gc if gc is not None else (0, 0)
+        if gc is None:
+            plan["gc_postponed"] = True
         walrm = 0
         if oldest_lsn is not None:
             seg = keep[0].get("wal_segment_size") or ctx.seg_size
@@ -273,16 +282,37 @@ def _retire_pack(repo, pack):
         logger.warning("could not record the removed pack in the repository journal: %s", e)
 
 
-def _gc_cas(repo):
+def _gc_cas(repo, wait=120):
     """Mark & sweep over EVERY stanza in the repository (chunks are shared). Young chunks are never swept (GC grace). Skipped (0, 0) while a
     backup or a migration holds the repository's shared lock: they deduplicate against an index loaded at their start, and a pack deleted or
     rewritten meanwhile would leave their set pointing at nothing."""
-    lk = repo.gc_lock(shared=False)
+    lk = None
+    deadline = time.time() + wait                         # a repository shared by many clusters is rarely free: wait up to 2 minutes for a gap
+    while True:
+        lk = repo.gc_lock(shared=False)
+        if lk is not None or time.time() >= deadline:
+            break
+        time.sleep(min(10, max(0.1, deadline - time.time())))
+    mark = repo.p("gc_postponed.json")
     if lk is None:
-        logger.info("garbage collection postponed: a backup or migration is running in this repository (next expire)")
-        return 0, 0
+        try:
+            prev = read_json(mark)
+        except Exception:
+            prev = {}
+        n = int(prev.get("count") or 0) + 1
+        try:
+            write_json(mark, {"count": n, "since": prev.get("since") or iso()})
+        except OSError:
+            pass
+        logger.warning("garbage collection postponed (%d time(s) in a row): a backup or migration is running in this repository", n)
+        return None
     try:
-        return _gc_cas_locked(repo)
+        out = _gc_cas_locked(repo)
+        try:
+            os.unlink(mark)
+        except OSError:
+            pass
+        return out
     finally:
         lk.release()
 
