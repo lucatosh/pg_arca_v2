@@ -99,3 +99,17 @@ class FoldCreates(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EndOfWal(unittest.TestCase):
+    def test_end_of_a_timeline_is_not_an_unreadable_archive(self):
+        from pg_arca.engine.walscan import FATAL_RE
+        for end in ("pg_waldump: error: error in WAL record at 0/4A000028: record with incorrect prev-link D81E117B/1A1 at 0/4A0000A0",
+                    "pg_waldump: error: error in WAL record at 0/3000060: invalid record length at 0/30000D8: expected at least 24, got 0",
+                    "pg_waldump: error: error in WAL record at 0/5000110: incorrect resource manager data checksum in record at 0/5000188",
+                    "pg_waldump: error: error in WAL record at 0/6000028: unexpected pageaddr 0/1000000 in WAL segment 000000010000000000000006, LSN 0/6002000, offset 8192"):
+            self.assertIsNone(FATAL_RE.search(end), end)
+        for bad in ("pg_waldump: error: WAL file is from different database system: WAL file database system identifier is 1, pg_control database system identifier is 2",
+                    "pg_waldump: error: could not find file \"000000010000000000000007\": No such file or directory",
+                    "pg_waldump: error: invalid magic number D116 in WAL segment 000000010000000000000003, LSN 0/3000000, offset 0"):
+            self.assertIsNotNone(FATAL_RE.search(bad), bad)

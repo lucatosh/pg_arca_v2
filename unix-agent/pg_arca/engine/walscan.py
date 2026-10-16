@@ -31,7 +31,12 @@ TS_RE = re.compile(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)? [A-Za-z0-9+:-]+)
 PATH_RE = re.compile(r"(?:base|pg_tblspc/\d+/[^/\s]+)/(\d+)/(\d+)")
 TRIPLE_RE = re.compile(r"(\d+)/(\d+)/(\d+)")
 PAIR_RE = re.compile(r"(\d+)/(\d+)")
-FATAL_RE = re.compile(r"(different database system|incorrect|incompatible|not supported|unsupported|could not open|no such file|permission denied|invalid magic)", re.I)
+# what says pg_waldump cannot read this WAL at all (another version, another cluster, a missing file) - as opposed to the END of the valid WAL,
+# which pg_waldump also reports as an error: "record with incorrect prev-link", "invalid record length", "incorrect resource manager data
+# checksum", "unexpected pageaddr" ... are what follows the last record of a timeline in its last segment (found on the lab: a site promoted
+# after the geo failover left that segment with old recycled data after its end, and every restore of that cluster was refused)
+FATAL_RE = re.compile(r"(different database system|incompatible|not supported|unsupported|could not open|could not find|no such file|permission denied|"
+                      r"invalid magic|invalid WAL segment size|could not read file)", re.I)
 
 KINDS = {"events": ("Transaction", "Storage", "Database"), "databases": ("Database",), "dml": ("Heap",), "tablespaces": ("Tablespace",)}
 CODE = {"events": "E", "databases": "D", "dml": "M", "tablespaces": "T"}   # what a cache entry holds; "E" (everything) also answers a "D" question; "M" = row changes per transaction
