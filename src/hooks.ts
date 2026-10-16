@@ -128,6 +128,11 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(() => !!(pk && readDraft<Op>(pk) && !isTerminal(readDraft<Op>(pk)!.status)));
   const [conflict, setConflict] = useState<any>(null);          // 409 from the console: a colleague's operation collides with this one (who, what, since)
+  // a request waiting for a second administrator (four-eyes): followed until it is decided; once approved, the operation it started is followed
+  // like any other (independent review: the wizard lost it, showed an empty card and let the operator submit it again)
+  const ak = pk ? pk + ':apr' : null;
+  const [approval, setApproval0] = useState<any>(() => (ak ? readDraft<any>(ak) ?? null : null));
+  const setApproval = useCallback((a: any) => { setApproval0(a); if (ak) writeDraft(ak, a || undefined); }, [ak]);
   const last = useRef<{ type: string; params: any; extra: any } | null>(null);
   const keyRef = useRef<{ sig: string; key: string } | null>(null);
   const timer = useRef<any>(null);
@@ -145,7 +150,18 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
     timer.current = setTimeout(() => poll(id), 1000);
   }, [onDone, setOp]);
 
-  useEffect(() => { const o = pk ? readDraft<Op>(pk) : null; if (o && !isTerminal(o.status)) poll(o.id); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+  const pollApproval = useCallback(async (id: string) => {
+    try {
+      const r = await get<{ approvals: any[] }>('/api/approvals');
+      if (!alive.current) return;
+      const a = (r.approvals || []).find(x => x.id === id);
+      if (a && a.status === 'approved' && a.operationId) { setApproval(null); setBusy(true); poll(a.operationId); return; }
+      if (!a || ['rejected', 'cancelled', 'expired'].includes(a.status) || (a.status === 'approved' && !a.operationId)) { setApproval(a ? { ...a, final: true } : { id, status: 'gone', final: true }); return; }
+      setApproval(a);
+    } catch { /* console briefly unreachable: try again */ }
+    timer.current = setTimeout(() => pollApproval(id), 4000);
+  }, [poll, setApproval]);
+  useEffect(() => { const o = pk ? readDraft<Op>(pk) : null; if (o && !isTerminal(o.status)) poll(o.id); else { const a = ak ? readDraft<any>(ak) : null; if (a && !a.final) pollApproval(a.id); } }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = useCallback(async (type: string, params: Record<string, any> = {}, extra: { nodeId?: string } = {}) => {
     const sig = type + JSON.stringify(params) + (extra.nodeId || '');
@@ -157,7 +173,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
     try {
       const url = clusterId.startsWith('worker:') ? `/api/workers/${encodeURIComponent(clusterId.slice(7))}/operations` : `/api/clusters/${clusterId}/operations`;   // operational machines have their own endpoint
       const r = await api<{ operation: Op; approval?: any }>('POST', url, { type, params, nodeId: extra.nodeId }, { key: keyRef.current.key });
-      if (r.approval) { setOp(null); setBusy(false); keyRef.current = null; revalidate('/api/approvals'); toast('Request sent: another administrator must approve it (Today page).', 'info', 9000); return null; }
+      if (r.approval) { setOp(null); setBusy(false); keyRef.current = null; setApproval(r.approval); revalidate('/api/approvals'); toast('Request sent: another administrator must approve it (Today page).', 'info', 9000); timer.current = setTimeout(() => pollApproval(r.approval.id), 4000); return null; }
       setOp(r.operation); revalidateOps(clusterId);
       if (isTerminal(r.operation.status)) { setBusy(false); keyRef.current = null; onDone?.(r.operation); } else poll(r.operation.id);
       return r.operation;
@@ -165,13 +181,15 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
       // console unreachable: the key is kept, so pressing the same button again can never start the operation twice
       setOp(null); setBusy(false); setError(e.body?.message || e.message); if (e.body?.error === 'conflict' || e.body?.overridable) { setConflict(e.body); keyRef.current = null; } return null;
     }
-  }, [clusterId, poll, onDone, setOp]);
+  }, [clusterId, poll, pollApproval, onDone, setOp, setApproval]);
   /** after an overridable conflict (an HA action while data work runs), the operator confirmed: same request with force */
   const runForced = useCallback(() => { const l = last.current; if (l) return run(l.type, { ...l.params, force: true }, l.extra); return Promise.resolve(null); }, [run]);
 
   const cancel = useCallback(async () => { if (op?.id) { try { await api('POST', `/api/operations/${op.id}/cancel`); } catch (e: any) { setError(e.message); } } }, [op]);
-  const reset = useCallback(() => { setOp(null); setError(null); setConflict(null); setBusy(false); keyRef.current = null; clearTimeout(timer.current); }, [setOp]);
-  return { op, error, busy, run, cancel, reset, conflict, runForced };
+  const reset = useCallback(() => { setOp(null); setError(null); setConflict(null); setBusy(false); setApproval(null); keyRef.current = null; clearTimeout(timer.current); }, [setOp, setApproval]);
+  /** the requester withdraws a request still waiting for approval */
+  const withdraw = useCallback(async () => { if (approval?.id && !approval.final) { try { await api('POST', `/api/approvals/${approval.id}/cancel`); } catch (e: any) { setError(e.message); } clearTimeout(timer.current); pollApproval(approval.id); } }, [approval, pollApproval]);
+  return { op, error, busy, run, cancel, reset, conflict, runForced, approval, withdraw };
 }
 
 /** Role of the logged-in user ('admin' | 'operator' | 'viewer' | null while loading). The server enforces it; this only hides actions that would be refused. */

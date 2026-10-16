@@ -1074,7 +1074,9 @@ def _restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_ls
         if cl:
             # nothing was committed or rolled back between the last transaction and the requested time: that state is the end of the archive, and a
             # time target would make PostgreSQL refuse to start. Stop after the last archived record instead (honours action=pause as well)
-            plan["target_clamped"] = {"requested": target_time, "last_transaction": cl["last_xact"], "lsn": cl["lsn"]}
+            plan["target_clamped"] = {"requested": target_time, "last_transaction": cl["last_xact"], "lsn": cl["lsn"],
+                                      "message": "nothing changed between the last archived transaction (%s) and the requested time: recovered to the end of the "
+                                                 "archive (LSN %s), which is the state at that time" % (cl["last_xact"], cl["lsn"])}
             plan.setdefault("notes", []).append("no transaction in the archive after %s (the last one ended at %s): the copy recovers to the end of the archive "
                                                 "(LSN %s), which is the state at the requested time" % (target_time, cl["last_xact"], cl["lsn"]))
             target_time, target_lsn, inclusive = None, cl["lsn"], True

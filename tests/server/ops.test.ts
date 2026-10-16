@@ -124,4 +124,7 @@ import * as ops from '../../server/ops';
     assert.strictEqual(fs.readdirSync(rdir).length, 0, 'pruned with its operation');
     ops.setResultsDir(null);
   }
+  // a restore queued behind a long backup does not expire after 15 minutes; everything else keeps the short default
+  assert.strictEqual(ops.defaultTtl('restore_database'), 12 * 3600); assert.strictEqual(ops.defaultTtl('restore_instance'), 12 * 3600);
+  assert.strictEqual(ops.defaultTtl('backup_run'), 900); assert.strictEqual(ops.defaultTtl('pg_set_param'), 900);
 })().catch(e=>{console.error(e);process.exit(1)});

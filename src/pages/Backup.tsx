@@ -94,7 +94,7 @@ function RestorePoints({ c, from }: { c: any; from: number }) {
     {r.op?.status === 'succeeded' && r.op.result?.warning ? <Banner kind="warn">{r.op.result.warning}</Banner> : null}
     {list.length ? <div className="tablewrap"><table className="t"><tbody>{(all ? list : list.slice(0, 5)).map(p => { const gone = Date.parse(p.at) < from; return <tr key={p.opId} style={gone ? { opacity: .6 } : undefined}>
       <td><strong>{p.name}</strong></td><td className="small nowrap">{dt(p.at)}</td><td className="small muted">by {p.by}</td><td className="small mono xp">{p.lsn}</td>
-      <td className="num">{gone ? <span className="small faint" title="The oldest backup kept is more recent than this point">No longer restorable</span> : <Button sm icon="restore" onClick={() => openRestoreAt(c.id, p.lsn, `restore point “${p.name}” (${dt(p.at)})`)}>Restore to this point…</Button>}</td></tr>; })}</tbody></table></div>
+      <td className="num">{gone ? <span className="small faint" title="The oldest backup kept is more recent than this point">No longer restorable</span> : <Button sm icon="restore" onClick={() => openRestoreAt(c.id, p.lsn, `restore point “${p.name}” (${dt(p.at)})`, p.timeline)}>Restore to this point…</Button>}</td></tr>; })}</tbody></table></div>
       : <p className="small faint">No restore point yet.</p>}
     {list.length > 5 ? <button className="linkbtn small" onClick={() => setAll(!all)}>{all ? 'Show the latest 5' : `Show all ${list.length}`}</button> : null}
     {ask ? <Modal title="Mark a restore point" onClose={() => setAsk(false)} footer={<><div className="grow" /><Button onClick={() => setAsk(false)}>Cancel</Button>

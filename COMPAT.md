@@ -11,6 +11,12 @@ Principle: **no assumptions about the layout**. The agent reads what is running 
 | Patroni (etcd/consul/k8s DCS) | Partial | Docker+etcd lab; other DCS types not tested |
 | Kubernetes with operators (CloudNativePG, Zalando, Crunchy, StackGres) | **Not supported** | the agent must live on the same host/pod as PGDATA (sidecar with a shared volume): this needs a dedicated design |
 | Managed databases (RDS, Cloud SQL, Azure) | **Not supported** | no filesystem access: SQL-only features |
+| Alpine (musl, busybox), Rocky 8 (Python 3.6), Rocky 9, Ubuntu 24.04 | Matrix written (`tools/lab/os-matrix.sh`), first run on the lab in progress — results not collected yet | the agent's code and restore engine; the installer itself has no apk/OpenRC support (start the agent with your own service) |
+| Python 3.6 – 3.13 | `os-matrix.sh py`: the first run found two Python 3.6 problems (fixed); a clean run is pending | 3.6 = RHEL/Rocky 8 platform python; a guard test refuses newer syntax/APIs in `pg_arca/` |
+| polkit ≥ 0.106 (RHEL 8+, Debian 12+, Ubuntu 24.04) | Lab (systemd) | restart/start of PostgreSQL units through a JavaScript rule |
+| polkit < 0.106 or none (Debian ≤ 11, Ubuntu ≤ 22.04) | Unit tests only | `pg-arca-pgctl` bridge (path unit + root oneshot); not yet run under a real systemd |
+| SELinux enforcing (RHEL family) | **Not verified** | the installer labels the WAL archive `postgresql_db_t`; see INSTALL.md |
+| Several PostgreSQL instances on one host, agents as different OS users | Installer checked in a container (no systemd) | one agent per instance (`PG_ARCA_INSTANCE` + `PG_ARCA_PGDATA`) |
 
 Known remaining assumptions (to remove or verify): the agent runs on the same host as PostgreSQL; local access (socket/peer) as the `pg_user` user; `archive_command` points to `pg-arca-wal`; systemd unit with `ProtectSystem=full`.
 

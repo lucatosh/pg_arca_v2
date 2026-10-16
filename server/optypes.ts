@@ -146,6 +146,7 @@ function targetErr(p: Record<string, any>): string | null {
   if (p.target_xid && !/^\d{1,12}$/.test(String(p.target_xid))) return 'invalid target_xid';
   if (p.target_name && !/^[\w.-]{1,63}$/.test(String(p.target_name))) return 'invalid target_name';
   if (p.set && p.set !== 'latest' && !setId.test(String(p.set))) return 'invalid backup set id';
+  if (p.target_tli !== undefined && p.target_tli !== null && !(Number.isInteger(p.target_tli) && p.target_tli >= 1 && p.target_tli < 2 ** 32 && p.target_lsn)) return 'target_tli: the timeline (number) of target_lsn';
   return null;
 }
 const hbaRulesErr = (p: Record<string, any>): string | null => (!Array.isArray(p.rules) || p.rules.length > 200 || p.rules.some((r: any) => !r || typeof r !== 'object')) ? 'rules must be a list of at most 200 objects' : null;
@@ -228,7 +229,7 @@ Object.assign(OP_SPECS, {
   restored_resume: { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => rstId(p) },
   restored_keep:   { mutating: true, target: 'node', lane: 'control', validate: (p: any) => rstId(p) || (p.hours !== undefined && p.hours !== null && !(Number(p.hours) >= 0 && Number(p.hours) <= 8760) ? 'hours 0..8760 (0 = keep until deleted)' : null) },
   restored_drop:   { mutating: true, target: 'node', lane: 'data', laneKey: 'restored', cancellable: false, validate: (p: any) => rstId(p) || (typeof p.confirm !== 'string' || !p.confirm ? 'confirm must be the name of the copy' : null) },
-  restore_database: { ...dataOp, validate: (p: any) => !pgName(p.database) ? 'database required' : (p.new_name && !dbName.test(String(p.new_name)) ? 'invalid new_name' : (targetErr(p) || intoErr(p)
+  restore_database: { ...dataOp, validate: (p: any) => !pgName(p.database) ? 'database required' : (p.new_name && !dbName.test(String(p.new_name)) && p.new_name !== p.database ? 'invalid new_name'   /* a dropped database comes back under its own name, whatever it is */ : (targetErr(p) || intoErr(p)
                         || (p.replace_original !== undefined && typeof p.replace_original !== 'boolean' ? 'replace_original must be boolean' : null)
                         || (p.replace_original === true && !confirmed(p.confirm, 'REPLACE') ? 'replace_original needs confirm="REPLACE" (the original is renamed and kept, its sessions are ended)' : null))) },
   // finish: the recovered objects go back into the ORIGINAL database at the end of the same operation (promote with the chosen mode, or every row back)

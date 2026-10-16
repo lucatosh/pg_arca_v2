@@ -1090,8 +1090,33 @@ class OperationExecutor:
         return dict(target_time=p.get("target_time") or None, target_lsn=p.get("target_lsn") or None, target_xid=p.get("target_xid") or None,
                     target_name=p.get("target_name") or None, inclusive=bool(p.get("inclusive", True)))
 
+    @staticmethod
+    def _point_on_history(ctx, p):
+        """A restore point is an LSN on the timeline it was made on (target_tli). Recovery follows the LATEST timeline: when that one left the point's
+        timeline BEFORE the point (the server was restored in place to an earlier time since), the same LSN is another state - refused, said why
+        (independent review: the named point was offered and restored to silently)."""
+        tli, lsn = p.get("target_tli"), p.get("target_lsn")
+        if not tli or not lsn:
+            return
+        from pg_arca.engine.util import EngineError, lsn_to_int
+        try:
+            tli = int(tli)
+        except (TypeError, ValueError):
+            return
+        tlis = [int(n[:8], 16) for n in ctx.wal.list_histories() if re.match(r"^[0-9A-Fa-f]{8}\.history$", n)]
+        cands = [t for t in tlis if t > tli and tli in (ctx.wal._history_forks(t) or {})]
+        if not cands:
+            return                                           # the point's timeline is the latest one (or nothing forked from it)
+        latest = max(cands)
+        end = (ctx.wal._history_forks(latest) or {}).get(tli)
+        if end is not None and lsn_to_int(lsn) > end:
+            raise EngineError("PGA-RST-092", "this restore point (LSN %s on timeline %d) is no longer on the server's history: timeline %d left timeline %d at "
+                              "%X/%X, before the point (the server was restored or failed over to an earlier state since)" % (lsn, tli, latest, tli, end >> 32, end & 0xFFFFFFFF),
+                              "restore to a point in time instead, or to a restore point made after that")
+
     def h_restore_plan(self, p):
         ctx = self._ctx_ro()
+        self._point_on_history(ctx, p)
         t = self._targets(p)
         scope = p.get("scope")
         if scope == "instance" and p.get("replace_production"):
@@ -1099,7 +1124,10 @@ class OperationExecutor:
         if scope == "instance":
             from pg_arca.engine.restore import restore_instance
             dest, where = self._instance_dest(ctx, p, t)
-            plan = restore_instance(ctx, p.get("set"), dest, dry_run=True, **{k: v for k, v in t.items()})
+            # the options of the real run: a delta / resumed restore onto a directory that is not empty is exactly what they are for (independent review:
+            # the check refused it as "not empty"), keep_archiving says what the copy will do once started
+            plan = restore_instance(ctx, p.get("set"), dest, dry_run=True, delta=bool(p.get("delta")), resume=bool(p.get("resume")),
+                                    keep_archiving=bool(p.get("keep_archiving")), action=p.get("action", "promote"), **{k: v for k, v in t.items()})
             plan["destinations"] = where
             plan["destination_auto"] = not p.get("destination")
             return plan
@@ -1117,7 +1145,28 @@ class OperationExecutor:
                     plan["replace"] = {"warnings": ["could not look at the original database before the swap: %s" % (getattr(e, "message", None) or e)]}
             return plan
         objs = [str(x) for x in p.get("objects")] if isinstance(p.get("objects"), list) and p.get("objects") else None
+        self._finish_db_check(ctx, p)
         return granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), dry_run=True, stage_db=p.get("stage_db"), objects=objs, into=into, **t)
+
+    def _finish_db_check(self, ctx, p):
+        """Objects put back by the tool at the end (finish) go into the database they come from: when that database no longer exists, the put-back can
+        only fail after the whole recovery (independent review). Refused up front, with the way that works."""
+        if not p.get("finish") or p.get("into"):
+            return
+        from pg_arca.engine.util import EngineError, split_spec, sql_lit
+        from pg_arca.engine.pgsession import PgSession
+        try:
+            db = split_spec(str(p.get("object") or ""))[0]
+        except (ValueError, IndexError):
+            return                                           # malformed: restore_object says so
+        s = PgSession(ctx.conn)
+        try:
+            there = s.scalar("SELECT 1 FROM pg_database WHERE datname = %s" % sql_lit(db)) == "1"
+        finally:
+            s.close()
+        if not there:
+            raise EngineError("PGA-GEN-086", "database %s does not exist any more: its objects cannot be put back into it" % db,
+                              "restore the whole database (it comes back under its own name), or restore the objects as a copy to check")
 
     def _state_dir(self):
         return self.config.get("state_dir", "/var/lib/pgarca/state")
@@ -1194,6 +1243,7 @@ class OperationExecutor:
         return m, warn
 
     def h_restore_instance(self, p):
+        self._point_on_history(self._ctx_ro(), p)
         if p.get("replace_production"):
             return self._replace_production(p)
         from pg_arca.engine.restore import restore_instance
@@ -1307,6 +1357,7 @@ class OperationExecutor:
     def h_restore_database(self, p):
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
+        self._point_on_history(ctx, p)
         res = granular.restore_database(ctx, str(p.get("database")), p.get("set"), into=p.get("into"), new_name=p.get("new_name"),
                                         jobs=int(p.get("jobs", 2)), progress=self._progress, cancel=self._cancelled,
                                         create_missing_roles=bool(p.get("create_missing_roles")), **self._targets(p))
@@ -1325,7 +1376,10 @@ class OperationExecutor:
     def h_restore_object(self, p):
         from pg_arca.engine import granular
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
+        self._point_on_history(ctx, p)
         objs = [str(x) for x in p.get("objects")] if isinstance(p.get("objects"), list) and p.get("objects") else None
+        if not p.get("dry_run"):
+            self._finish_db_check(ctx, p)
         res = granular.restore_object(ctx, str(p.get("object") or ""), p.get("set"), into=p.get("into"), stage_db=p.get("stage_db"), objects=objs,
                                       data_only=bool(p.get("data_only")), dry_run=bool(p.get("dry_run")), progress=self._progress, cancel=self._cancelled, **self._targets(p))
         fin = p.get("finish")

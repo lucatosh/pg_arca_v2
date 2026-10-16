@@ -18,6 +18,9 @@ import path from 'path';
  *    ago while the agent was offline must not fire when it reconnects).
  */
 import { laneOf, OP_SPECS } from './optypes';
+/** How long a queued operation may wait for its agent. A restore waits in the data lane behind a backup that can take hours, and the console tells the
+ *  operator it "starts as soon as the current one ends": 12 hours, not the 15 minutes of everything else (independent review). */
+export const defaultTtl = (type: string): number => (type.startsWith('restore_') && OP_SPECS[type]?.lane === 'data' ? 12 * 3600 : 900);
 import { Store, Operation, OpStatus, AppState, newId, nowIso, loadSecretKey, encrypt, decrypt } from './store';
 
 export const MAX_ATTEMPTS = 5;
@@ -185,7 +188,7 @@ export function submit(store: Store, input: SubmitInput): Promise<{ op: Operatio
     const op: Operation = {
       id: newId('op'), idempotencyKey: key, type: input.type, clusterId: input.clusterId, nodeId: input.nodeId,
       params: sealParams(store.dir, input.params || {}), status: 'queued', createdAt: ts, updatedAt: ts,
-      createdBy: input.createdBy || 'admin', attempts: 0, ttlSeconds: input.ttlSeconds ?? 900,
+      createdBy: input.createdBy || 'admin', attempts: 0, ttlSeconds: input.ttlSeconds ?? defaultTtl(input.type),
       history: [{ at: ts, status: 'queued' }],
     };
     draft.operations.push(op);

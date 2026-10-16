@@ -5,7 +5,7 @@ import { DirectDriver } from '../../server/direct';
 import { mountAgentRoutes, mountOperatorRoutes } from '../../server/agents';
 import { mountClusterRoutes, seedDemoOnFirstRun } from '../../server/clusters';
 import { mountApiTokenRoutes, mountAuthRoutes, requireAdmin, requiredRole } from '../../server/auth';
-import { mountAdvancedRoutes, isRisky } from '../../server/approvals';
+import { mountAdvancedRoutes, isRisky, describeOp } from '../../server/approvals';
 import { audit } from '../../server/ops';
 import { mountHbaRoutes } from '../../server/hba';
 
@@ -25,6 +25,10 @@ import { mountHbaRoutes } from '../../server/hba';
   });
   assert(isRisky('restore_instance', { replace_production: true, confirm: 'SOSTITUISCI' }) && !isRisky('restore_instance', { replace_production: true, dry_run: true }) && !isRisky('restore_instance', {}) && isRisky('restore_kept_drop', {}));
   assert(isRisky('hba_apply') && isRisky('restore_promote', { mode: 'replace' }) && !isRisky('restore_promote', { mode: 'as_new' }) && !isRisky('backup_run'));
+  // the approver sees WHAT will be replaced and to which point, not a raw operation type
+  assert(/database shop .*2026-10-01T10:00/.test(describeOp('restore_database', { database: 'shop', replace_original: true, target_time: '2026-10-01T10:00:00Z' })));
+  assert(/shop\.public\.orders/.test(describeOp('restore_object', { object: 'shop.public.orders', finish: 'rows_all', target_xid: '991' })));
+  assert(/LSN 0\/5000000/.test(describeOp('restore_instance', { replace_production: true, target_lsn: '0/5000000' })));
   // one admin only -> cannot switch four-eyes on (nobody could approve)
   let r = await call('PUT', '/api/advanced', { approvals: { prod: true } }, A); assert.equal(r.status, 409); assert.equal(r.body.error, 'need_two_admins');
   assert.equal((await call('POST', '/api/users', { username: 'admin2', password: 'second-admin-pass', role: 'admin' }, A)).status, 201);
@@ -38,12 +42,14 @@ import { mountHbaRoutes } from '../../server/hba';
   r = await call('POST', '/api/clusters/prod1/operations', setp, O, 'k1'); assert.equal(r.status, 202); assert(r.body.approval && !r.body.operation, JSON.stringify(r.body));
   const id = r.body.approval.id; assert.equal(store.peek().operations.length, 0, 'nothing executed yet');
   assert.equal((await call('POST', '/api/clusters/prod1/operations', setp, O, 'k1')).body.approval.id, id, 'same click twice = same request');
+  assert.equal((await call('POST', '/api/clusters/prod1/operations', { ...setp, params: { ...setp.params, confirm: 'x' } }, O, 'k1-again')).body.approval.id, id, 'the same request submitted again (new key) while the first waits = the same request');
   assert.equal((await call('POST', '/api/clusters/dev1/operations', setp, O, 'k2')).body.operation.type, 'pg_set_param', 'dev is not protected');
   assert.equal((await call('POST', '/api/clusters/prod1/operations', { type: 'backup_run', params: { type: 'incr' } }, O, 'k3')).body.operation.type, 'backup_run', 'non-risky ops are not delayed');
   assert.equal((await call('POST', `/api/approvals/${id}/approve`, {}, O)).status, 403, 'operators cannot approve');
   assert.equal((await call('GET', '/api/approvals', undefined, O)).body.approvals[0].status, 'pending');
   r = await call('POST', `/api/approvals/${id}/approve`, {}, A); assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.operation.createdBy, 'ops', 'runs as the requester'); assert.equal(r.body.operation.type, 'pg_set_param');
+  assert.equal((await call('GET', '/api/approvals', undefined, O)).body.approvals.find((x: any) => x.id === id).operationId, r.body.operation.id, 'the requester can follow the operation the approval started');
   assert.equal((await call('POST', `/api/approvals/${id}/approve`, {}, A2)).status, 409, 'cannot be approved twice');
   const a = store.peek().audit.filter((e: any) => e.action.startsWith('approval.')); assert(a.some((e: any) => e.action === 'approval.requested' && e.actor === 'ops') && a.some((e: any) => e.action === 'approval.approve' && e.actor === 'admin'));
   // an admin cannot approve their own request

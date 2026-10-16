@@ -160,10 +160,6 @@ class PartitionRoots(unittest.TestCase):
         self.assertNotIn(("5", "111"), roots, "detached in the newer catalog: not a partition of sales any more")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class MigrateSibling(unittest.TestCase):
     def test_previous_wal_archive_of_a_geo_pair_is_not_wiped(self):
         """One WAL archive directory serves one database; the two sites of a geo pair (two stanzas, same system identifier) share it: dropping
@@ -214,3 +210,22 @@ class StandbyTimeline(unittest.TestCase):
             self.assertEqual(_standby_tli(C, 2, 0x6000000), 2)
         finally:
             shutil.rmtree(t)
+
+
+class PointOnHistory(unittest.TestCase):
+    """a restore point is an LSN on ITS timeline: refused when the latest timeline left that one before the point (independent review)"""
+
+    def test_point_after_the_fork_is_refused(self):
+        from pg_arca.executor import OperationExecutor as E
+        C = _Ctx({2: {1: 0x4000000}})                         # timeline 2 left timeline 1 at 0/4000000
+        with self.assertRaises(EngineError) as e:
+            E._point_on_history(C, {"target_lsn": "0/5000000", "target_tli": 1})
+        self.assertIn("PGA-RST-092", e.exception.as_text())
+        E._point_on_history(C, {"target_lsn": "0/3000000", "target_tli": 1})      # before the fork: the same on both timelines
+        E._point_on_history(C, {"target_lsn": "0/5000000", "target_tli": 2})      # on the latest timeline
+        E._point_on_history(C, {"target_lsn": "0/5000000"})                       # no timeline known (older console): as before
+        E._point_on_history(_Ctx({}), {"target_lsn": "0/5000000", "target_tli": 1})
+
+
+if __name__ == "__main__":
+    unittest.main()

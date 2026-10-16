@@ -29,12 +29,26 @@ export function isRisky(type: string, params: any = {}): boolean {
 export const advanced = (st: any) => ({ approvals: {} as Record<string, boolean>, ...(st.settings.advanced || {}) });
 export const requiresApproval = (st: any, cluster: any, type: string, params: any) => !!advanced(st).approvals[cluster.environment] && isRisky(type, params);
 
+/** params without what changes between two submissions of the same request (confirmation text, force flag), keys sorted */
+function stableParams(p: any): any {
+  if (Array.isArray(p)) return p.map(stableParams);
+  if (!p || typeof p !== 'object') return p;
+  const o: any = {}; for (const k of Object.keys(p).sort()) if (k !== 'confirm' && k !== 'force') o[k] = stableParams(p[k]);
+  return o;
+}
+
+const pointOf = (p: any) => p.target_time ? ` to ${p.target_time}` : p.target_lsn ? ` to LSN ${p.target_lsn}` : p.target_xid ? ` to just before transaction ${p.target_xid}` : p.target_name ? ` to restore point ${p.target_name}` : ' to the latest point';
+
 export function describeOp(type: string, params: any = {}): string {
   const m: Record<string, string> = { destination_apply: `Backup destination change${params.repo_path ? ' → ' + params.repo_path : ''}`, destination_drop_old: `Deletion of the previous backup location ${params.path ?? ''}`, hba_cluster_apply: 'Access rule (pg_hba) change on the whole cluster', wal_retire_branch: `Retirement of the dead WAL branch of timeline ${params.timeline ?? ''}`, hba_apply: 'Access rule (pg_hba) change', hba_rollback: 'Rollback to the previous access rules', hba_restore: 'Restore of a previous version of the access rules (Patroni DCS)', pg_set_param: `Parameter change ${params.name ?? ''} = ${params.value ?? ''}`,
     patroni_switchover: 'Planned switchover', patroni_failover: 'Forced failover', patroni_restart: 'Restart through Patroni', pg_restart: 'PostgreSQL restart', patroni_reinit: 'Replica reinitialization', archive_enable: 'Enable WAL archiving', patroni_config_patch: 'Patroni configuration change', patroni_pause: 'Patroni maintenance mode',
     restore_promote: 'Replacement of tables with the restored ones', ephemeral_install: `Installation of the PostgreSQL ${params.major ?? ''} binaries for restores`, restore_apply_rows: `Row recovery in ${params.object ?? ''}`,
     restore_kept_drop: `Deletion of kept data ${params.path ?? ''}`, restore_db_swap: `Replacement of database ${params.original ?? ''} with ${params.restored ?? ''}` };
-  if (type === 'restore_instance' && params.replace_production) return 'In-place restore of the production server (PostgreSQL stopped and restarted on the restored data)';
+  if (type === 'restore_instance' && params.replace_production) return `In-place restore of the production server${pointOf(params)} (PostgreSQL stopped and restarted on the restored data)`;
+  if (type === 'restore_instance' && params.keep_archiving) return `Server copy${pointOf(params)} in ${params.destination ?? '?'} that will archive into production's WAL archive (meant to replace the original)`;
+  if (type === 'restore_database' && params.replace_original) return `Replacement of database ${params.database ?? ''} with its restored version${pointOf(params)} (its sessions are ended, the current one is kept)`;
+  if (type === 'restore_object' && params.finish === 'rows_all') return `Every row of ${params.object ?? ''} deleted or updated since${pointOf(params).replace(/^ to/, '')} put back`;
+  if (type === 'restore_object' && params.finish === 'promote') return `Tables ${(params.objects || [params.object]).join(', ')} put back${pointOf(params)} (${params.promote_mode === 'replace' ? 'replacing the current ones, kept renamed' : params.promote_mode || ''})`;
   return m[type] || type;
 }
 
@@ -62,10 +76,13 @@ export function mountAdvancedRoutes(app: any, store: any, audit: (d: any, e: any
 /** Create (or return the existing) pending request for the same user action (same Idempotency-Key). */
 export async function requestApproval(store: any, audit: (d: any, e: any) => void, a: { cluster: any; type: string; params: any; nodeId?: string; ttlSeconds?: number; key: string; actor: string; owner?: string }) {
   const st = store.peek();
-  const dup = (st.settings.approvalRequests || []).find((r: any) => r.status === 'pending' && r.idempotencyKey === a.key);
+  // the same request again (same key, or the same person asking the same thing on the same cluster while the first still waits): one request.
+  // Two approvals of the same in-place restore would rewind production twice (independent review)
+  const fp = crypto.createHash('sha256').update(JSON.stringify([a.cluster.id, a.type, a.nodeId || '', a.actor, stableParams(a.params)])).digest('hex').slice(0, 24);
+  const dup = (st.settings.approvalRequests || []).find((r: any) => r.status === 'pending' && Date.parse(r.expiresAt) > Date.now() && (r.idempotencyKey === a.key || r.fingerprint === fp));
   if (dup) return dup;
   const rec = { id: 'apr_' + crypto.randomBytes(5).toString('hex'), status: 'pending', clusterId: a.cluster.id, clusterName: a.cluster.name, environment: a.cluster.environment, type: a.type, params: sealParams(store.dir, a.params),
-    nodeId: a.nodeId, ttlSeconds: a.ttlSeconds, idempotencyKey: a.key, requestedBy: a.actor, requestedByOwner: a.owner || undefined, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), summary: describeOp(a.type, a.params) };
+    nodeId: a.nodeId, ttlSeconds: a.ttlSeconds, idempotencyKey: a.key, fingerprint: fp, requestedBy: a.actor, requestedByOwner: a.owner || undefined, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), summary: describeOp(a.type, a.params) };
   await store.mutate((d: any) => { const l = (d.settings.approvalRequests ||= []); l.push(rec); if (l.length > 200) l.splice(0, l.length - 200);
     audit(d, { clusterId: a.cluster.id, actor: a.actor, action: 'approval.requested', status: 'OK', details: { id: rec.id, type: a.type, summary: rec.summary } }); });
   return rec;

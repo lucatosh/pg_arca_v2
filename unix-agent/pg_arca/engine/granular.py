@@ -38,6 +38,13 @@ def _check_name(n, what):
         raise EngineError("PGA-GEN-065", "invalid %s %r (letters, digits, _ and $; max 63; must not start with a digit)" % (what, n))
 
 
+def _check_db_name(n, what):
+    """An EXISTING database's own name, which may be any PostgreSQL identifier ('sales-eu', 'Vendite Q1-2026'): quoted everywhere it is used. Refused
+    only what libpq tools would read as a connection string instead of a name (an '=' or a URI prefix), control characters, more than 63 bytes."""
+    if not n or len(n.encode("utf-8")) > 63 or any(ord(ch) < 32 for ch in n) or "=" in n or _re.match(r"^postgres(ql)?://", n):
+        raise EngineError("PGA-GEN-065", "invalid %s %r (1-63 bytes, no control characters, no '=')" % (what, n))
+
+
 RESTORING_MARK = "pg_arca: restore IN PROGRESS"
 
 
@@ -895,7 +902,10 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
         cat = ctx.repo.load_catalog(target)
         entry["base_set"], note = target["id"], None
     new_name = new_name or default_restore_name(db)
-    _check_name(new_name, "destination database name")
+    if new_name == db:
+        _check_db_name(new_name, "destination database name")     # a dropped database back under its OWN name, whatever it is
+    else:
+        _check_name(new_name, "destination database name")
     merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter(({entry["oid"]} if entry["oid"] is not None else set()) | system_db_oids(cat)))
     merged_all, _ = merge_chain(ctx.repo, chain)
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "database": db, "destination_database": new_name,
@@ -1138,7 +1148,7 @@ def swap_database(ctx, restored, original, into=None, dry_run=False, wait_sec=15
         <original>_before_<YYYYmmdd_HHMMSS> (kept, never dropped: the way back) and the restored one gets the original name; connections are allowed again.
     Refused when the restored database is still being filled, is a quarantine database, or the server is a standby."""
     _check_name(restored, "restored database name")
-    _check_name(original, "original database name")
+    _check_db_name(original, "original database name")
     if restored == original:
         raise EngineError("PGA-GEN-097", "the restored database already has the original name")
     if restored.startswith("pgarca_stage_") or original in ("template0", "template1"):
@@ -1156,7 +1166,8 @@ def swap_database(ctx, restored, original, into=None, dry_run=False, wait_sec=15
         if (rows[restored][2] or "").startswith(RESTORING_MARK):
             raise EngineError("PGA-GEN-099", "%s is incomplete (its restore did not finish): it cannot replace %s" % (restored, original), "restore the database again")
         exists = original in rows
-        old = ("%s_before_%s" % (original, now_utc().strftime("%Y%m%d_%H%M%S")))[:63] if exists else None
+        # the NAME is shortened (in bytes, with a hash), never the time: a long or non-ASCII name cut at 63 characters was truncated again by the server
+        old = objmod._short(original, "_before_%s" % now_utc().strftime("%Y%m%d_%H%M%S")) if exists else None
         sessions = [r for r in s.query("SELECT datname, COALESCE(application_name, ''), COALESCE(usename::text, ''), COALESCE(client_addr::text, 'local') FROM pg_stat_activity "
                                        "WHERE datname IN (%s, %s) AND pid <> pg_backend_pid()" % (sql_lit(restored), sql_lit(original)))]
         res = {"restored": restored, "original": original, "original_existed": exists, "old_kept_as": old,

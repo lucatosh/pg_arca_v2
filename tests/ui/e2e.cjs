@@ -142,7 +142,9 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('label.opt.on:has-text("Just before: 48")', { timeout: 10000 }); await shot('09c-rows-when');
   await p.click('label.opt:has-text("The latest saved point") input'); await p.waitForSelector('text=the latest point already contains the mistake'); await p.click('label.opt:has-text("Just before: 48") input');
   await p.click('button:has-text("Next")'); await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 });
-  await p.waitForSelector('label.opt.on:has-text("Put back all rows as they were")'); await p.click('label.opt:has-text("Compare and pick the rows myself") input');
+  // rows: nothing preselected (putting every row back reverts legitimate changes too); comparing is the recommended way
+  assert(await p.locator('label.opt.on').filter({ hasText: 'Put back all rows as they were' }).count() === 0, 'rows_all never preselected'); assert(await p.locator('button.start-restore').isDisabled(), 'start waits for the end choice');
+  await p.waitForSelector('label.opt:has-text("Compare and pick the rows myself") .badge:has-text("Recommended")'); await p.click('label.opt:has-text("Compare and pick the rows myself") input');
   await p.click('button.start-restore'); await p.click('.modal button:has-text("Start")');
   await p.waitForSelector('text=Differences found', { timeout: 15000 });   // the row comparison starts by itself
   await p.click('label:has-text("[200]") input'); await p.click('label:has-text("[1]") input'); await p.click('label:has-text("[900]") input'); await shot('12a-rows');
@@ -151,12 +153,13 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=Other tables would change too', { timeout: 10000 }); await shot('12a2-rows-cascade');
   await p.click('button:has-text("Go ahead, saving them first")'); await p.waitForSelector('text=Rows recovered', { timeout: 10000 });
   await p.waitForSelector('code:has-text("pgarca_rowsafe_20260101_items")');
-  // default end for rows: every deleted / changed row back in the same operation
+  // every deleted / changed row back in the same operation: chosen explicitly, with what is lost said and the typed confirmation
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I deleted or updated rows")');
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
   await p.click('.tree button:has-text("orders") >> nth=0'); await p.click('button:has-text("Next")'); await p.waitForSelector('label.opt.on:has-text("Just before: 48")', { timeout: 10000 });
   await p.click('button:has-text("Next")'); await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 });
-  await p.click('button.start-restore'); await p.click('.modal button:has-text("Start")');
+  await p.click('label.opt:has-text("Put back all rows as they were") input'); await p.waitForSelector('label.opt.on:has-text("Put back all rows as they were") .badge:has-text("Reverts every change")');
+  await p.waitForSelector('text=What is lost:'); await p.click('button.start-restore'); await typeName(); await p.click('.modal button:has-text("Start")');
   await p.waitForSelector('text=/Rows of .* brought back/', { timeout: 15000 }); await p.waitForSelector('code:has-text("pgarca_rowsafe_")'); await shot('12i-rows-fixed');
   // whole server, default end: PRODUCTION itself goes back (stop, swap, start, primary again); the previous data directory is kept and can be given back
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need to rebuild the whole server")');

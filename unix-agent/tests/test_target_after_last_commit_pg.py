@@ -68,6 +68,7 @@ class AfterLastCommit(unittest.TestCase):
         finally:
             T.sh(os.path.join(T.BIN, "pg_ctl"), "-D", dest, "-m", "immediate", "stop")
         self.assertTrue(plan.get("target_clamped"), plan)
+        self.assertIn("end of the archive", plan["target_clamped"]["message"], "the console shows this message: it must exist for a server restore too")
         self.assertIn("end of the archive", plan["start_hint"])
 
     def test_02_database_restore_gives_the_same_rows(self):

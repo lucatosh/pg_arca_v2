@@ -96,7 +96,9 @@ export function OpPanel({ op, error, cancel, label }: { op: Op | null; error?: s
       <span style={{ whiteSpace: 'pre-wrap' }}>{itCheck(op.error || error)}</span>{hintFor(op.error || error) ? <p className="small" style={{ marginTop: 8 }}>{hintFor(op.error || error)}</p> : null}
       <p className="small" style={{ marginTop: 8 }}>The full log (what the agent did, step by step) is behind the “Log” button above.</p></Banner> : null}
     {op.status === 'expired' ? <Banner kind="warn" title="No agent picked up the operation">{node ? <>The agent on <strong>{node.name}</strong> {node.online ? 'was busy' : `is offline (last seen ${ago(node.lastSeen)})`}. </> : 'The node is offline or busy. '}Nothing was executed: you can retry.</Banner> : null}
-    {op.status === 'cancelled' ? <Banner kind="warn" title="Operation cancelled">Any partial data has been removed.</Banner> : null}
+    {op.status === 'cancelled' ? <Banner kind="warn" title="Operation cancelled">{op.type === 'restore_instance' && op.params?.replace_production ? 'Production was put back as it was before the restore wherever it had been touched: the steps above say how far it went; directories kept aside are listed below.'
+      : op.type === 'restore_instance' ? <>The partial copy stays in <code>{op.params?.destination || 'its directory'}</code>: resume it, or delete that directory.</>
+      : 'Any partial data has been removed.'}</Banner> : null}
     {error && op.status !== 'failed' ? <Banner kind="warn">{error}</Banner> : null}
   </div>;
 }

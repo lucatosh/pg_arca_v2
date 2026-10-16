@@ -1448,6 +1448,9 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
             for n in names:
                 args += ["-t", n]
             rc, out, err = run_dump(stage_conn, args) if names else (0, "", "")
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
         finally:
             try:
                 for kind, sch, cur, orig in reversed(renamed):                # leave the quarantine database exactly as we found it (it can be promoted again)
@@ -1455,6 +1458,7 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
             finally:
                 ss.close()
         if rc != 0:
+            shutil.rmtree(tmp, ignore_errors=True)
             raise EngineError("PGA-GEN-084", "pg_dump of the quarantine database failed: %s" % err.strip()[:600])
         args = admin.args() + ["-d", dbname, "--exit-on-error", "-1"]
         if plan["missing_roles"]:
@@ -1466,7 +1470,10 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
         # these temporary tables and removes them - they would otherwise stay forever, looking like an 'as new' result
         _journal_write(journal, dict(journal_info or {}, database=dbname, stage=stage_db, mode=mode, suffix=sfx_new, tables=created_tmp, sequences=created_seq,
                                      started=now_utc().isoformat(timespec="seconds"), pid=os.getpid()))
-        rc, out, err = run_tool(admin, "pg_restore", args + [dumpfile], timeout=None) if names else (0, "", "")
+        try:
+            rc, out, err = run_tool(admin, "pg_restore", args + [dumpfile], timeout=None) if names else (0, "", "")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)      # a dump of whole tables: never left in /tmp (independent finding: one per promotion stayed)
         if rc != 0:
             created_seq = []                                   # -1: the single transaction rolled back, nothing was created
             raise EngineError("PGA-GEN-071", "loading the recovered tables into %s failed: %s" % (dbname, (err.strip() or out.strip())[:900]), "nothing was changed in the live database")

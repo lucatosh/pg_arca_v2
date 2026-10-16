@@ -566,7 +566,8 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (how === 'cancel' && rec.requestedBy !== actor && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only the requester (or an administrator) can cancel it.' });
     const owner = (req as any).tokenOwner;                                     // an API token approves on behalf of the administrator who created it: no four-eyes with one's own token
     if (how === 'approve' && (String(rec.requestedBy).toLowerCase() === String(actor).toLowerCase() || (owner && rec.requestedBy === owner) || (String(rec.requestedBy).startsWith('token:') && rec.requestedByOwner && rec.requestedByOwner === (owner || actor)))) return res.status(403).json({ error: 'self_approval', message: 'You cannot approve your own request: another administrator is needed.' });
-    const done = (status: string) => store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); r.status = status; r.decidedBy = actor; r.decidedAt = nowIso();
+    const done = (status: string, operationId?: string) => store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); r.status = status; r.decidedBy = actor; r.decidedAt = nowIso();
+      if (operationId) r.operationId = operationId;                           // the requester's screen follows the operation the approval started
       ops.audit(d, { clusterId: rec.clusterId, actor, action: 'approval.' + how, status: 'OK', details: { id, type: rec.type, requestedBy: rec.requestedBy } }); });
     if (how !== 'approve') { await done(how === 'reject' ? 'rejected' : 'cancelled'); return res.json({ ok: true }); }
     const cluster = store.peek().clusters.find((c: any) => c.id === rec.clusterId);
@@ -577,7 +578,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       : rec.type === 'destination_apply' ? await applyDestination(store, cluster, 'appr:' + id, rec.requestedBy, rec.params || {})
       : await execute(cluster, rec.type, rec.params, rec.type === 'hba_restore' ? hbaTarget(store.peek(), cluster.id)?.id : rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
     if (r.code >= 400) return res.status(r.code).json(r.body);                    // not consumed: the approver can retry when the node is back
-    await done('approved');
+    await done('approved', r.body?.operation?.id);
     res.json({ ok: true, operation: r.body.operation, operations: r.body.operations });
   };
   app.post('/api/approvals/:id/approve', (req: Request, res: Response) => decide(req, res, 'approve'));

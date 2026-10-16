@@ -25,12 +25,19 @@ def setUpModule():
     q("shop", "CREATE TABLE orders (id int PRIMARY KEY, v text); INSERT INTO orders SELECT g, 'ok' FROM generate_series(1, 100) g")
     q("postgres", "CREATE DATABASE gone")
     q("gone", "CREATE TABLE t (id int); INSERT INTO t SELECT generate_series(1, 7)")
+    # names that are not plain identifiers (independent review: accepted by the console, refused by the swap after hours of recovery)
+    q("postgres", 'CREATE DATABASE "sales-eu"')
+    q("sales-eu", "CREATE TABLE o (id int); INSERT INTO o SELECT generate_series(1, 5)")
+    q("postgres", 'CREATE DATABASE "Vendite Q1"')
+    q("Vendite Q1", "CREATE TABLE v (id int); INSERT INTO v SELECT generate_series(1, 3)")
     run_backup(F.ctx, "full")
     time.sleep(1.2)
     X.t = q("postgres", "SELECT to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD HH24:MI:SS.US') || '+00'")[0][0]
     time.sleep(1.2)
     q("shop", "DELETE FROM orders WHERE id > 10; UPDATE orders SET v = 'bad'")
     q("postgres", "DROP DATABASE gone")
+    q("sales-eu", "DELETE FROM o")
+    q("postgres", 'DROP DATABASE "Vendite Q1"')
     q("postgres", "SELECT pg_switch_wal()")
 
 
@@ -66,6 +73,27 @@ class Swap(unittest.TestCase):
         r = swap_database(F.ctx, "gone_restored", "gone")
         self.assertFalse(r["original_existed"]); self.assertIsNone(r["old_kept_as"])
         self.assertEqual(q("gone", "SELECT count(*) FROM t")[0][0], "7")
+
+    def test_02b_names_that_are_not_identifiers(self):
+        from pg_arca.engine.granular import default_restore_name
+        tmp = default_restore_name("sales-eu")
+        restore_database(F.ctx, "sales-eu", new_name=tmp, target_time=X.t)
+        r = swap_database(F.ctx, tmp, "sales-eu")
+        self.assertTrue(r["replaced"]); self.assertTrue(r["old_kept_as"].startswith("sales-eu_before_"), r)
+        self.assertEqual(q("sales-eu", "SELECT count(*) FROM o")[0][0], "5")
+        self.assertIn(r["old_kept_as"], dbs())
+        restore_database(F.ctx, "Vendite Q1", new_name="Vendite Q1", target_time=X.t)        # dropped: back under its own name
+        self.assertEqual(q("Vendite Q1", "SELECT count(*) FROM v")[0][0], "3")
+        with self.assertRaises(EngineError):
+            swap_database(F.ctx, tmp, "a=b")
+
+    def test_02c_long_name_keeps_the_time(self):
+        from pg_arca.engine.granular import _check_db_name
+        from pg_arca.engine import objects
+        n = "è" * 30                                    # 60 bytes
+        old = objects._short(n, "_before_20261016_120000")
+        self.assertLessEqual(len(old.encode("utf-8")), 63); self.assertTrue(old.endswith("_before_20261016_120000"))
+        _check_db_name(n, "x")
 
     def test_03_refusals(self):
         q("postgres", "CREATE DATABASE half")
