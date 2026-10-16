@@ -41,7 +41,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
   const eff = hw === 'critical' ? 'critical' : hw === 'warning' && c.status === 'healthy' ? 'degraded' : c.status;
   return <>
     <div className="pagehead">
-      <div className="grow"><div className="row wrap"><h1>{c.name}</h1><Badge kind={statusKind(eff)} title={hw === 'critical' || hw === 'warning' ? 'There are open findings for this cluster: see Today, or the banners below' : undefined}>{eff === 'healthy' ? 'Healthy' : eff === 'degraded' ? 'Degraded' : eff === 'critical' ? 'Critical problems' : eff}</Badge>
+      <div className="grow"><div className="row wrap"><h1>{c.name}</h1><Badge kind={statusKind(eff)} title={hw === 'critical' || hw === 'warning' ? 'There are open findings for this cluster: see Today, or the banners below' : undefined}>{eff === 'healthy' ? 'Healthy' : eff === 'degraded' ? (hw === 'warning' ? 'Needs attention' : 'Degraded') : eff === 'critical' ? 'Critical problems' : eff}</Badge>
         {c.isSandbox ? <Badge>Demo</Badge> : c.source === 'direct' ? <Badge>Connection only</Badge> : null}</div>
         <p className="sub">{c.environment} · PostgreSQL {c.pgVersion || '—'}</p>
         {agentic && hc?.protection ? <div style={{ marginTop: 6 }}><ProtectionLine p={hc.protection} long /></div> : null}</div>
