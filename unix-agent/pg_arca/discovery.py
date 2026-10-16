@@ -402,7 +402,7 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
         add("info", "NO_WALDUMP", "pg_waldump not found", "Without pg_waldump, DROP/TRUNCATE cannot be searched in the WAL.", "Install the PostgreSQL server binaries (postgresql-NN).", "host")
     if not tc.get("python_zstandard"):                         # the zstd COMMAND only serves the WAL archive: the backup chunks need the python module
         add("warning", "NO_ZSTD", "zstd compression not available for backups", "Chunks will be compressed with zlib: measured 5 to 10 times slower per core (in the lab a 10 GB backup took 12 minutes at ~14 MB/s).", "Install the python3-zstandard package (Debian/Ubuntu; EPEL on RHEL) or pip install zstandard for the agent's Python.", "host")
-    running = [i for i in scan.get("postgres_instances") or [] if i.get("running")]
+    running = [i for i in scan.get("postgres_instances") or [] if i.get("running") and not i.get("pgarca_owned")]
     if len(running) > 1:
         add("warning", "MULTI_INSTANCE", "Several PostgreSQL instances running on this server",
             "The agent manages ONE of them (%s); the others are neither backed up nor shown as clusters." % ", ".join("%s:%s" % (i.get("data_directory"), i.get("port")) for i in running),
@@ -846,7 +846,11 @@ class ClusterDiscoveryEngine:
                 conf = parse_conf(txt)
                 conf_file = c
                 break
-        auto = parse_conf(_read(os.path.join(pgdata, "postgresql.auto.conf")) or "")
+        auto_txt = _read(os.path.join(pgdata, "postgresql.auto.conf")) or ""
+        auto = parse_conf(auto_txt)
+        # pg_arca's own instances: a recovery instance (scratch marker) or a restored copy (its configuration block). Never served by the agent
+        # in place of production (regression review: a copy running while production was down for an hour took over the binding)
+        info["pgarca_owned"] = os.path.exists(os.path.join(pgdata, ".pgarca-scratch")) or "# ==== pg_arca: restored instance" in auto_txt
         conf.update(auto)
         info["config_file"] = conf_file
         # the report goes to the console: no credential leaves the host (primary_conninfo password=, PGPASSWORD= in a command) - security review

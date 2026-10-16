@@ -53,6 +53,40 @@ class Binding(unittest.TestCase):
         self.assertTrue(any(f["code"] == "INSTANCE_SWITCHED" for f in r.report["findings"]))
 
 
+class OwnInstances(unittest.TestCase):
+    def test_pg_arca_copies_are_never_served(self):
+        from pg_arca import runtime, pgaccess
+        d = tempfile.mkdtemp()
+        sc, ru = ClusterDiscoveryEngine.scan_all, pgaccess.resolve_user
+        try:
+            state = os.path.join(d, "state")
+            os.makedirs(state)
+            json.dump({"data_directory": "/data/prod"}, open(os.path.join(state, "instance.json"), "w"))
+            json.dump({"data_directory": "/data/prod", "since": time.time() - 7200}, open(os.path.join(state, "instance-stopped.json"), "w"))
+            rep = {"postgres_instances": [
+                {"data_directory": "/data/prod", "running": False, "port": 5432, "connect": {"host": "127.0.0.1"}},
+                {"data_directory": "/var/tmp/pg_arca_scratch/eph1", "running": True, "port_listening": True, "port": 55001, "connect": {"host": "127.0.0.1"}, "pgarca_owned": True}],
+                "patroni_clusters": []}
+            ClusterDiscoveryEngine.scan_all = lambda s: json.loads(json.dumps(rep))
+            pgaccess.resolve_user = lambda *a, **k: "postgres"
+            r = runtime.Runtime({"state_dir": state, "node_role": "database"})
+            self.assertEqual(r.instance["data_directory"], "/data/prod", "a recovery instance never takes production's place")
+            os.unlink(os.path.join(state, "instance.json"))
+            r.refresh()
+            self.assertEqual(r.instance["data_directory"], "/data/prod")
+        finally:
+            ClusterDiscoveryEngine.scan_all, pgaccess.resolve_user = sc, ru
+            shutil.rmtree(d)
+
+
+class OffsiteReplaced(unittest.TestCase):
+    def test_metas_and_histories_follow_a_retired_branch(self):
+        from pg_arca import offsite
+        up, _ = offsite.plan({"wal/000000010000000000000005.meta": 120, "wal/00000005.history": 80},
+                             {"wal/000000010000000000000005.meta": 118, "wal/00000005.history": 60})
+        self.assertEqual(sorted(up), ["wal/000000010000000000000005.meta", "wal/00000005.history"])
+
+
 class TablespaceMountPoint(unittest.TestCase):
     def test_only_postgresql_directories_are_walked(self):
         from pg_arca.engine.pgdata import walk_pgdata

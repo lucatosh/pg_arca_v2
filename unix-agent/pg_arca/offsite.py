@@ -142,6 +142,10 @@ def _local_wal_files(wal_dir):
     return out
 
 
+_THREAD_LOCK = threading.Lock()
+_HOLDER = [""]                                                 # what holds it, for the "busy" message
+
+
 def _sig(local):
     import hashlib
     return hashlib.sha1(repr(sorted(local.items())).encode("utf-8")).hexdigest()
@@ -168,7 +172,8 @@ def immutable(key):
         return parts[5] != "meta.json"
     if key.startswith("wal/"):
         n = key[4:]
-        return not n.startswith(".") and n not in ("ARCHIVE_OWNER.json", "ARCHIVE_KEY.json")
+        # .meta and .history are rewritten on purpose ("Retire the dead branch" puts the survivor's copy in place): small, always mirrored
+        return not n.startswith(".") and n not in ("ARCHIVE_OWNER.json", "ARCHIVE_KEY.json") and not n.endswith((".meta", ".history"))
     return False
 
 
@@ -253,9 +258,11 @@ class Mirror(object):
             return {"enabled": False}
         t0 = time.time()
         st = {"enabled": True, "started": t0, "endpoint": cfg["endpoint"], "bucket": cfg["bucket"], "prefix": cfg.get("prefix") or ""}
-        lock = self._lock(block=False)
-        if lock is None:                                         # a rehydrate is writing the repository: no mirror cycle meanwhile
-            return dict(self.status() or {}, skipped=True, busy="rehydrate")
+        lock = self._lock(block=False, who="mirror cycle")
+        if lock is None:                                         # a rehydrate (or another cycle) is running: not now
+            if force or dry_run:                                 # asked by a person: said, not a stale "ok"
+                raise S3Error(0, "Busy", "the offsite copy is busy (%s running): try again when it ends" % (_HOLDER[0] or "another operation"))
+            return dict(self.status() or {}, skipped=True, busy=_HOLDER[0] or "busy")
         try:
             return self._sync(cfg, st, t0, cancel, progress, dry_run, force)
         finally:
@@ -280,6 +287,12 @@ class Mirror(object):
             self._check_bucket_owner(c, remote)
             up, down = plan(local, remote)
             conflicts = [k for k in local if k in remote and remote[k] != local[k] and immutable(k)]
+            # a local copy that proves itself (a segment that decodes to its meta's checksum - the survivor's copy after a retired branch; a pack
+            # whose size is what its index says - healing a copy the bucket got truncated) replaces the bucket's; only an unproven one is held back
+            good = [k for k in conflicts if self._valid_local(k)]
+            if good:
+                up = sorted(set(up) | set(good), key=lambda k: (_order(k), k))
+                conflicts = [k for k in conflicts if k not in good]
             if conflicts:
                 st["conflicts"] = len(conflicts)
                 st["conflicts_sample"] = conflicts[:5]
@@ -363,26 +376,82 @@ class Mirror(object):
         self._write(self.status_path, st)
         return st
 
-    def _lock(self, block):
-        """The mirror and a rehydrate never run at the same time: a half-downloaded repository is not mirrored (independent review: the
-        mirror uploaded a truncated pack over the good copy while a rehydrate ran)."""
-        import fcntl
-        d = os.path.join(self.state_dir, "offsite")
-        os.makedirs(d, exist_ok=True)
-        f = open(os.path.join(d, ".lock"), "a")
+    def _valid_local(self, key):
+        path = self._local_path(key)
+        if not path or not os.path.isfile(path):
+            return False
         try:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX | (0 if block else fcntl.LOCK_NB))
-            return f
-        except OSError:
-            f.close()
-            return None
+            if key.startswith("repo/cas/packs/") and key.endswith((".pack", ".idx")):
+                from pg_arca.engine.packs import read_idx
+                stem = path[:-5] if path.endswith(".pack") else path[:-4]
+                ents = read_idx(stem + ".idx")
+                return bool(ents) and os.path.getsize(stem + ".pack") == max(o + ln for _h, o, ln in ents)
+            if key.startswith("wal/"):
+                import tempfile
+                from pg_arca.engine.crypt import from_settings
+                from pg_arca.wal_manager import WalManager
+                base = key[4:].split(".")[0]
+                wm = WalManager(self.config.get("wal_archive_dir"), "none", crypto=from_settings(self.config.get("encryption_key_file") or None), create=False)
+                d = tempfile.mkdtemp(prefix="pgarca-offchk-")
+                try:
+                    return wm.retrieve_segment(base, os.path.join(d, base), verify=True)[0] == 0
+                finally:
+                    import shutil
+                    shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            return False
+        return False
+
+    def _lock(self, block, cancel=None, who="", progress=None):
+        """The mirror and a rehydrate never run at the same time: a half-downloaded repository is not mirrored (independent review: the
+        mirror uploaded a truncated pack over the good copy while a rehydrate ran). A thread lock (one agent: the mirror thread and an
+        operation - flock alone does not exclude threads of one process on NFS) plus a file lock (other processes). Waiting honours cancel."""
+        import fcntl
+        t0 = time.time()
+        while not _THREAD_LOCK.acquire(False):
+            if not block:
+                return None
+            if cancel and cancel():
+                raise S3Error(0, "Cancelled", "cancelled")
+            if progress and time.time() - t0 > 2:
+                progress({"phase": "waiting", "msg": "waiting for the running %s to finish" % (_HOLDER[0] or "offsite operation")})
+            time.sleep(1)
+        try:
+            d = os.path.join(self.state_dir, "offsite")
+            os.makedirs(d, exist_ok=True)
+            f = open(os.path.join(d, ".lock"), "a")
+            while True:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if not block:
+                        f.close()
+                        _THREAD_LOCK.release()
+                        return None
+                    if cancel and cancel():
+                        f.close()
+                        _THREAD_LOCK.release()
+                        raise S3Error(0, "Cancelled", "cancelled")
+                    time.sleep(1)
+        except S3Error:
+            raise
+        except BaseException:
+            _THREAD_LOCK.release()
+            raise
+        _HOLDER[0] = who
+        return f
 
     @staticmethod
     def _unlock(f):
+        _HOLDER[0] = ""
         try:
             f.close()
-        except Exception:
-            pass
+        finally:
+            try:
+                _THREAD_LOCK.release()
+            except RuntimeError:
+                pass
 
     def _check_bucket_owner(self, c, remote):
         """One database per bucket prefix: two clusters sharing it overwrote each other's wal/<segment> and deleted each other's WAL below their
@@ -464,7 +533,7 @@ class Mirror(object):
         cfg = self.cfg()
         if not cfg:
             raise S3Error(0, "NotConfigured", "no offsite copy is configured on this node")
-        lock = self._lock(block=True)
+        lock = self._lock(block=True, cancel=cancel, who="rehydrate", progress=progress)
         try:
             return self._rehydrate(cfg, what, progress, cancel, include_retained)
         finally:

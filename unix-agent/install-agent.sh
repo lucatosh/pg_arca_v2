@@ -402,8 +402,8 @@ cat > "$LAUNCHER.new" <<LAUNCH
 set -a
 [ -f "$CONF_DIR/enroll.env" ] && . "$CONF_DIR/enroll.env"
 set +a
-PYTHONPATH="$INSTALL_DIR"; PG_ARCA_CONF="$CONF_DIR/agent.conf"; PG_ARCA_CONF_FILE="$CONF_DIR/agent.conf"; LC_ALL="\${LC_ALL:-C.UTF-8}"; PYTHONIOENCODING=utf-8
-export PYTHONPATH PG_ARCA_CONF PG_ARCA_CONF_FILE LC_ALL PYTHONIOENCODING
+PYTHONPATH="$INSTALL_DIR"; PG_ARCA_CONF="$CONF_DIR/agent.conf"; PG_ARCA_CONF_FILE="$CONF_DIR/agent.conf"; PYTHONIOENCODING=utf-8; PYTHONUTF8=1
+export PYTHONPATH PG_ARCA_CONF PG_ARCA_CONF_FILE PYTHONIOENCODING PYTHONUTF8
 exec python3 "$INSTALL_DIR/pg-arca-agent.py"
 LAUNCH
 chown 0:0 "$LAUNCHER.new"; chmod 0755 "$LAUNCHER.new"; mv "$LAUNCHER.new" "$LAUNCHER"
@@ -528,7 +528,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$PGUSER_OS
-Environment=PYTHONPATH=$INSTALL_DIR PG_ARCA_CONF=$CONF_DIR/agent.conf PG_ARCA_CONF_FILE=$CONF_DIR/agent.conf PYTHONIOENCODING=utf-8 LC_ALL=C.UTF-8
+Environment=PYTHONPATH=$INSTALL_DIR PG_ARCA_CONF=$CONF_DIR/agent.conf PG_ARCA_CONF_FILE=$CONF_DIR/agent.conf PYTHONIOENCODING=utf-8 PYTHONUTF8=1
 EnvironmentFile=-$CONF_DIR/enroll.env
 ExecStart=/usr/bin/env python3 $INSTALL_DIR/pg-arca-agent.py
 Restart=always

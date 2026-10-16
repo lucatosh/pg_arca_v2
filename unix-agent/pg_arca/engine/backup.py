@@ -397,8 +397,12 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         if os.path.exists(sj):
             sm = read_json(sj)
             if sm.get("system_identifier") not in (None, sysid):
-                raise EngineError("PGA-CFG-021", "stanza '%s' belongs to system_identifier %s but this cluster has %s" % (ctx.stanza, sm.get("system_identifier"), sysid),
-                                  "configuration copied from another host or PGDATA re-created; use another stanza")
+                upgraded = str(sm.get("version_num") or "")[:2] != str(sess.version_num)[:2] and sm.get("version_num")
+                raise EngineError("PGA-CFG-021", "stanza '%s' belongs to system_identifier %s but this cluster has %s%s" % (
+                                      ctx.stanza, sm.get("system_identifier"), sysid,
+                                      (" (PostgreSQL %s then, %s now: a major upgrade with pg_upgrade creates a new cluster)" % (sm.get("version"), sess.version)) if upgraded else ""),
+                                  "after a major upgrade: a new stanza for the new cluster (the old backups stay restorable under the old one) - set the stanza in the agent settings; "
+                                  "otherwise the configuration was copied from another host or PGDATA re-created: use another stanza")
         else:
             write_json(sj, {"stanza": ctx.stanza, "system_identifier": sysid, "version": sess.version, "version_num": sess.version_num,
                             "created": iso(), "pgdata": ctx.pgdata})
@@ -703,7 +707,11 @@ def _plan_with_summaries(ctx, sess, repo, parent, tli, prev_lsn, start_lsn, file
         return set(), {}, {"used": False, "reason": why} if sess.version_num >= 170000 else None
     if progress:
         progress({"phase": "summaries"})
-    chain = walsummary.summaries_for(sess, tli, parent["start_lsn"], start_lsn, cancel=cancel, log=log)
+    try:
+        chain = walsummary.summaries_for(sess, tli, parent["start_lsn"], start_lsn, cancel=cancel, log=log)
+    except EngineError as e:                                   # not allowed to read them, a summarizer error: every page is scanned instead
+        log("warn", "PGA-INC-015: WAL summaries cannot be listed (%s): this incremental scans every page" % e)
+        return set(), {}, {"used": False, "reason": str(e)}
     if not chain:
         return set(), {}, {"used": False, "reason": "summaries do not cover the range"}
     try:

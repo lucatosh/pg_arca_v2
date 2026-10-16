@@ -315,7 +315,7 @@ class WalManager:
                     os.unlink(tmp)
             cur = self.archive_key() or cur
         if cur != mine:
-            raise WalArchiveError("PGA-WAL-033", "this WAL archive (%s) is %s, and this node %s: its segments could not be read back with one setting. "
+            raise WalArchiveError("PGA-WAL-037", "this WAL archive (%s) is %s, and this node %s: its segments could not be read back with one setting. "
                                   "Configure the same encryption key file on every node that archives here"
                                   % (self.wal_dir, "encrypted with key %s" % cur if cur != "none" else "not encrypted",
                                      "has key %s" % mine if mine != "none" else "has no key"))
@@ -856,8 +856,10 @@ class WalManager:
                     plain = self.crypto.open(f.read(), "wal:" + name)
                 with open(src, "wb") as f:
                     f.write(plain)
-            elif self.crypto and meta is None and not name.endswith(".history") and not BACKUP_LABEL_RE.match(name):
-                # no meta: an encrypted object whose writer died before writing it is still ours - decrypt it; only a really plain object is refused
+            elif self.crypto and not name.endswith(".history") and not BACKUP_LABEL_RE.match(name):
+                # no meta (or a meta without "enc"): an encrypted object whose writer died before its meta is still ours - decrypt it; a really
+                # plain object is refused - the meta is not authenticated, accepting plain WAL on its word would let anyone who can write to the
+                # share inject WAL into a recovery (regression review)
                 try:
                     with open(path, "rb") as f:
                         plain = self.crypto.open(f.read(), "wal:" + name)

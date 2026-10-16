@@ -486,7 +486,7 @@ class OperationExecutor:
         self._require_pg()
         tool = self._wal_tool()
         want = {"archive_mode": "on", "archive_command": "%s%s archive %%p %%f" % (self._archive_env(), shlex.quote(tool)), "archive_timeout": str(int(p.get("archive_timeout") or 60))}
-        cur, err = self.db.query_json("SELECT json_object_agg(name, setting) FROM pg_settings WHERE name IN ('archive_mode','archive_command','archive_timeout','wal_level','wal_log_hints','data_checksums')")
+        cur, err = self.db.query_json("SELECT json_object_agg(name, setting) FROM pg_settings WHERE name IN ('archive_mode','archive_command','archive_library','archive_timeout','wal_level','wal_log_hints','data_checksums')")
         if not isinstance(cur, dict):
             raise OpError("cannot read the current settings: %s" % err)
         if cur.get("wal_level") == "minimal":
@@ -498,6 +498,13 @@ class OperationExecutor:
             existing = ""   # unset / no-op placeholder, not a foreign tool
         if existing and "pg-arca-wal" not in existing and "pg_arca" not in existing and not p.get("replace_foreign"):
             raise OpError("archive_command is already set to another tool (%s). Replacing it would break that tool's archive; confirm with replace_foreign=true if that is intended." % existing[:120])
+        # PostgreSQL 15+: an archive module (archive_library: basic_archive, another tool's module). Setting archive_command next to it makes the archiver
+        # die in a loop ("both archive_command and archive_library set") while pg_stat_archiver shows no failure (independent version review)
+        lib = (cur.get("archive_library") or "").strip()
+        if lib:
+            if not p.get("replace_foreign"):
+                raise OpError("archiving is done by the archive module %s (archive_library). Replacing it would break that tool's archive; confirm with replace_foreign=true if that is intended." % lib[:80])
+            want = dict([("archive_library", "")] + list(want.items()))      # cleared first: never both set, not even between two reloads
         todo = {k: v for k, v in want.items() if str(cur.get(k)) != v}
         if not todo:
             return {"changed": {}, "restart_required": False, "already_enabled": True}
@@ -1579,7 +1586,7 @@ class OperationExecutor:
         from pg_arca import overrides
         ctx = self._ctx_ro()
         src_repo, src_wal = p.get("source_repo"), p.get("source_wal")
-        if src_repo and src_repo not in (ctx.repo.previous or []) and src_repo not in (getattr(ctx.repo, "unreadable_previous", None) or {}):
+        if src_repo and src_repo not in (ctx.repo.previous or []):
             raise OpError("%s is not a previous backup location of this cluster" % src_repo)
         if src_wal and src_wal not in (ctx.wal.previous or []):
             raise OpError("%s is not a previous WAL archive location of this cluster" % src_wal)
@@ -1613,7 +1620,7 @@ class OperationExecutor:
         src_repo, src_wal = p.get("source_repo"), p.get("source_wal")
         if not src_repo and not src_wal:
             raise OpError("say which previous location (source_repo / source_wal)")
-        if src_repo and src_repo not in (ctx.repo.previous or []):
+        if src_repo and src_repo not in (ctx.repo.previous or []) and src_repo not in (getattr(ctx.repo, "unreadable_previous", None) or {}):
             raise OpError("%s is not a previous backup location of this cluster" % src_repo)
         if src_wal and src_wal not in (ctx.wal.previous or []):
             raise OpError("%s is not a previous WAL archive location of this cluster" % src_wal)

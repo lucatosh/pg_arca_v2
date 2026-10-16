@@ -15,7 +15,7 @@ BEGIN = "# >>> pg_arca managed block (edited by the console; changes made by han
 END = "# <<< pg_arca managed block <<<"
 REV_PREFIX = "# rev: "
 TYPES = ("local", "host", "hostssl", "hostnossl", "hostgssenc", "hostnogssenc")
-METHODS = ("peer", "scram-sha-256", "md5", "password", "trust", "reject", "cert", "ident", "ldap", "gss", "pam", "radius", "sspi", "bsd")
+METHODS = ("peer", "scram-sha-256", "md5", "password", "trust", "reject", "cert", "ident", "ldap", "gss", "pam", "radius", "sspi", "bsd", "oauth")   # oauth: PostgreSQL 18
 _TOKEN = re.compile(r'^(?:[A-Za-z0-9_$.+\-]{1,63}|"[^"\x00-\x1f#]{1,63}")$')
 _HOST = re.compile(r"^\.?[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)*$")
 _OPTS = re.compile(r'^[A-Za-z0-9_.=,:/ \-"\'@]{0,300}$')
@@ -287,11 +287,28 @@ def _in_net(ip, addr):
         return None          # host name: cannot be resolved offline
 
 
+def _regex_token(raw, value):
+    """PostgreSQL 16+: an unquoted user/database token starting with '/' is a regular expression. True / False, None when it cannot be evaluated
+    (the simulation used to compare it literally and predicted 'no match' for a reject rule that does match - independent version review)."""
+    try:
+        return re.search(raw[1:], value or "") is not None
+    except re.error:
+        return None
+
+
 def _list_match(tokens, value, extra=None):
     """True / False / None(unknown)."""
     unknown = False
     for t in tokens.split(","):
-        t = t.strip().strip('"')
+        raw = t.strip()
+        if raw.startswith("/"):
+            m = _regex_token(raw, value)
+            if m:
+                return True
+            if m is None:
+                unknown = True
+            continue
+        t = raw.strip('"')
         if t == "all":
             return True if extra != "replication" else None
         if t == value:
@@ -339,7 +356,15 @@ def decide(rules, probe):
         else:
             dbm = False
             for t in r["database"].split(","):
-                t = t.strip().strip('"')
+                raw = t.strip()
+                if raw.startswith("/"):
+                    m = _regex_token(raw, probe["database"])
+                    if m:
+                        dbm = True
+                    elif m is None:
+                        uncertain = True
+                    continue
+                t = raw.strip('"')
                 if t == "all" or t == probe["database"] or (t == "sameuser" and probe["database"] == probe["user"]):
                     dbm = True
                 if t == "samerole":

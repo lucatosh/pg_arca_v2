@@ -168,7 +168,7 @@ class Runtime(object):
         if prev:
             pick = next((i for i in insts if same(i.get("data_directory"), prev)), None)
             if pick is not None:
-                other = [i for i in insts if i is not pick and i.get("running")]
+                other = [i for i in insts if i is not pick and i.get("running") and not i.get("pgarca_owned")]
                 stopped_since = self._stopped_since(prev, pick.get("running"))
                 if not pick.get("running") and len(other) == 1 and stopped_since and time.time() - stopped_since > 3600:
                     # stopped for more than an hour while exactly ONE other instance runs (a major upgrade, a move): that one is served from now on
@@ -185,7 +185,8 @@ class Runtime(object):
                         "detail": "The agent keeps serving %s (stopped) and does not switch to %s on its own." % (prev, ", ".join(str(i.get("data_directory")) for i in other)),
                         "fix": "If %s replaced it (major upgrade, move), set pg_data to it in the agent settings." % other[0].get("data_directory"), "target": prev})
                 return pick
-        return next((i for i in insts if i.get("running") and i.get("port_listening")), None) or next((i for i in insts if i.get("running")), None) or (insts[0] if insts else None)
+        own = [i for i in insts if not i.get("pgarca_owned")]          # never pg_arca's own recovery instances / restored copies
+        return next((i for i in own if i.get("running") and i.get("port_listening")), None) or next((i for i in own if i.get("running")), None) or (own[0] if own else None)
 
     def _stopped_since(self, data_dir, running):
         """Since when the bound instance is seen stopped (persisted: an agent restart does not reset it); None while it runs."""

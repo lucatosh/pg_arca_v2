@@ -126,6 +126,8 @@ def quarantine_config(scratch, pgcontrol, port, sockdir, restore_cmd, sparse=Fal
         # a recovery that ends (no target) promotes the instance: subscriptions in its catalog would start applying from the REAL publisher and
         # advance the real subscriber's slot. No apply worker ever runs in an ephemeral instance
         forced["max_logical_replication_workers"] = "0"
+    if profile is not None and profile.num >= 180000:
+        forced["io_method"] = "worker"                 # production's io_uring may not exist here (container seccomp, older kernel, build without liburing)
     if profile is not None and profile.recovery_conf_file:
         forced.pop("restore_command")                  # before 12 restore_command is a recovery.conf setting: as a GUC it would stop the server from starting
     if sparse:

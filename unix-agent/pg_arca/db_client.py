@@ -16,7 +16,7 @@ import subprocess
 logger = logging.getLogger("pg_arca.db_client")
 
 SNAPSHOT_SETTINGS = (
-    "port", "listen_addresses", "wal_level", "archive_mode", "archive_command", "archive_timeout", "max_wal_senders",
+    "port", "listen_addresses", "wal_level", "archive_mode", "archive_command", "archive_library", "archive_timeout", "max_wal_senders",
     "max_connections", "wal_log_hints", "data_checksums", "shared_preload_libraries", "hot_standby", "max_wal_size",
     "shared_buffers", "work_mem", "maintenance_work_mem", "effective_cache_size", "checkpoint_timeout",
     "checkpoint_completion_target", "synchronous_standby_names", "synchronous_commit", "wal_compression",
@@ -44,8 +44,11 @@ SELECT json_build_object(
                                                   last_failed_wal, last_failed_time FROM pg_stat_archiver) a),
   'settings', (SELECT json_object_agg(name, setting) FROM pg_settings WHERE name = ANY(string_to_array(:'keys', ','))),
   'slots', (SELECT COALESCE(json_agg(json_build_object('name', slot_name, 'type', slot_type, 'active', active,
-              'retained_bytes', CASE WHEN pg_is_in_recovery() OR restart_lsn IS NULL THEN NULL ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint END)), '[]'::json)
-              FROM pg_replication_slots),
+              'retained_bytes', CASE WHEN pg_is_in_recovery() OR restart_lsn IS NULL THEN NULL ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint END,
+              -- through to_jsonb: columns of some majors only (wal_status 13+, conflicting 16, invalidation_reason 17+): an invalidated slot has
+              -- no restart_lsn any more and used to be silent (version review)
+              'wal_status', to_jsonb(s)->>'wal_status', 'invalidation_reason', to_jsonb(s)->>'invalidation_reason', 'conflicting', to_jsonb(s)->>'conflicting')), '[]'::json)
+              FROM pg_replication_slots s),
   'pending_restart', (SELECT COALESCE(json_agg(name), '[]'::json) FROM pg_settings WHERE pending_restart),
   'receive_lsn', CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn()::text END,
   'replay_ts', CASE WHEN pg_is_in_recovery() THEN pg_last_xact_replay_timestamp() END,

@@ -289,7 +289,9 @@ def _conf_block(it):
              "huge_pages = 'try'", "shared_buffers = '%dMB'" % it.get("shared_buffers_mb", 256), "hba_file = '%s'" % os.path.join(it["dest"], "pg_hba.conf").replace("'", "''"),
              "ident_file = '%s'" % os.path.join(it["dest"], "pg_ident.conf").replace("'", "''")]
     if it.get("major", 16) < 15:
-        lines.append("stats_temp_directory = 'pg_stat_tmp'")       # Debian points it at /var/run/postgresql/<ver>-<name>.pg_stat_tmp: shared with production
+        lines.append("stats_temp_directory = 'pg_stat_tmp'")
+    if it.get("major", 16) >= 18:
+        lines.append("io_method = 'worker'")                         # production's io_uring may not be available on this host       # Debian points it at /var/run/postgresql/<ver>-<name>.pg_stat_tmp: shared with production
     for k, v in (it.get("conf_fixes") or {}).items():
         lines.append("%s = %s" % (k, v))
     return "\n# ==== pg_arca: restored instance %s (%s) - own port, private socket, own log; rewritten at every start by the agent ====\n%s\n# ==== end pg_arca restored instance ====\n" % (
@@ -471,7 +473,7 @@ def _wait_ready(it, progress, cancel, wait, notes):
                     it["state"] = "running"
                     return {"state": "running", "notes": notes}
                 lsn = s.scalar("SELECT COALESCE(pg_last_wal_replay_lsn()::text,'-')")
-                paused = s.scalar("SELECT pg_get_wal_replay_pause_state() = 'paused'") == "t"
+                paused = s.scalar(s.profile.replay_paused_sql()) == "1"           # 14+: pause state; 12/13: pg_is_wal_replay_paused()
             except EngineError as e:
                 if "not in progress" in (e.message or ""):
                     continue

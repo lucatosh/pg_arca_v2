@@ -307,6 +307,17 @@ def _apply_db_props(admin, name, props, warnings):
         s.close()
 
 
+def _major_of_session(conn):
+    try:
+        s = PgSession(conn, read_only=True)
+        try:
+            return int(s.scalar("SHOW server_version_num")) // 10000
+        finally:
+            s.close()
+    except (EngineError, ValueError, TypeError):
+        return 0
+
+
 def _create_db(admin, name, entry, props=None):
     s = PgSession(admin.with_db("postgres"))
     try:
@@ -319,6 +330,12 @@ def _create_db(admin, name, entry, props=None):
         if entry.get("collate") and entry.get("ctype"):
             loc = " LC_COLLATE %s LC_CTYPE %s" % (sql_lit(entry["collate"]), sql_lit(entry["ctype"]))
         dmajor = int(s.scalar("SHOW server_version_num")) // 10000
+        smajor = int(props.get("_src_major") or 0)
+        if smajor and dmajor < smajor:
+            # a dump of a newer major into an older server fails late and obscurely (MAINTAIN grants, builtin locales, new syntax, the dump format):
+            # said before anything is created (independent version review)
+            raise EngineError("PGA-VER-011", "the backup is PostgreSQL %d and the destination server is PostgreSQL %d: a database cannot be restored into an older major" % (smajor, dmajor),
+                              "restore into a server of PostgreSQL %d or newer (or as a new instance from the backup)" % smajor)
         ts = props.get("tablespace")
         tsx = ""
         if ts and ts != "pg_default":                    # the database lived in its own default tablespace: same here when it exists
@@ -327,12 +344,22 @@ def _create_db(admin, name, entry, props=None):
             else:
                 props.setdefault("_warnings", []).append("database %s: created in pg_default, the original default tablespace %s does not exist on this server" % (name, ts))
         prov = props.get("provider")
+        kept = False
         if prov == "i" and props.get("locale") and dmajor >= 15:         # ICU: same provider and locale (sorting / unique indexes on text behave the same)
             loc += " LOCALE_PROVIDER icu ICU_LOCALE %s" % sql_lit(props["locale"])
+            kept = True
             if props.get("rules") and dmajor >= 16:
                 loc += " ICU_RULES %s" % sql_lit(props["rules"])
         elif prov == "b" and props.get("locale") and dmajor >= 17:
             loc += " LOCALE_PROVIDER builtin BUILTIN_LOCALE %s" % sql_lit(props["locale"])
+            kept = True
+        if not kept and dmajor >= 15:
+            # libc, or a backup of PostgreSQL 14 (no provider column): said explicitly - without it the copy inherits template0's provider, ICU or
+            # builtin on a cluster initialised that way, and sorts / unique text indexes behave differently (independent version review)
+            loc += " LOCALE_PROVIDER libc"
+        if prov in ("i", "b") and not kept:
+            props.setdefault("_warnings", []).append("database %s: its %s collation could not be recreated on PostgreSQL %d%s: created with libc (sorting may differ)"
+                                                     % (name, "ICU" if prov == "i" else "builtin", dmajor, "" if props.get("locale") else " (no locale recorded)"))
         base = "CREATE DATABASE %s TEMPLATE template0 ENCODING %s" % (quote_ident(name), sql_lit(enc))
         # the original locale and tablespace first; when that fails, what can be kept is kept and what had to go is SAID (independent review:
         # the fallback used to drop the locale and the tablespace silently, and later blamed the locale for any failure)
@@ -1045,6 +1072,7 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
                 warns.append("tablespaces missing on this server (%s): every object was created in the database's default tablespace" % ", ".join(gone_ts))
         if props is None:
             props = {}                                     # _create_db reports what it could not keep in it (locale, tablespace)
+        props["_src_major"] = _major_of_session(eph.conn(src_db))
         _create_db(admin, new_name, entry, props)
         created = True
         _mark_db(admin, new_name, "%s since %s (from %s at %s): incomplete until this comment is gone - do not use" % (RESTORING_MARK, now_utc().isoformat(timespec="seconds"), db, plan.get("target")))

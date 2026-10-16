@@ -93,10 +93,14 @@ class Mirror(unittest.TestCase):
         shutil.rmtree(self.d, ignore_errors=True)
 
     def test_the_mirror_waits_for_a_rehydrate(self):
-        lk = self.m._lock(block=True)
+        lk = self.m._lock(block=True, who="rehydrate")
         try:
-            st = self.m.sync(force=True)
+            st = self.m.sync()
             self.assertTrue(st.get("skipped") and st.get("busy") == "rehydrate", st)
+            with self.assertRaises(s3.S3Error):
+                self.m.sync(force=True)                  # asked by a person: said, never a stale "ok"
+            with self.assertRaises(s3.S3Error):
+                self.m._lock(block=True, cancel=lambda: True)      # a waiting rehydrate can be cancelled
         finally:
             self.m._unlock(lk)
         self.assertTrue(self.m.sync(force=True).get("ok"))
@@ -127,7 +131,7 @@ class ArchiveKey(unittest.TestCase):
         for other in (None, self.k2):
             with self.assertRaises(WalArchiveError) as e:
                 WalManager(self.wal, "none", crypto=other).archive_segment(segment(os.path.join(self.pgwal, "000000010000000000000002")), "000000010000000000000002")
-            self.assertIn("PGA-WAL-033", str(e.exception))
+            self.assertIn("PGA-WAL-037", str(e.exception))
         self.assertEqual(WalManager(self.wal, "none").archive_key(), self.k1.key_id)
 
     def test_an_existing_archive_is_recognised_by_its_segments(self):

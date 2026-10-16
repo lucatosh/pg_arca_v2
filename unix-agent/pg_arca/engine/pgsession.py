@@ -115,6 +115,7 @@ class PgSession(object):
             self.one("DO $$ BEGIN "
                      "BEGIN PERFORM set_config('idle_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
                      "BEGIN PERFORM set_config('idle_in_transaction_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
+                     "BEGIN PERFORM set_config('transaction_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
                      "BEGIN PERFORM set_config('lc_messages','C',false); EXCEPTION WHEN OTHERS THEN NULL; END; END $$")
             v = self.one("SHOW server_version_num")
             if v is None or not str(v).strip().isdigit():
@@ -270,6 +271,57 @@ def dump_size(path):
     return os.path.getsize(path)
 
 
+_SERVER_MAJOR = {}
+
+
+def _server_major(conn):
+    """Major version of the server `conn` points at, None when it cannot be asked. Cached for a minute per address (an in-place major upgrade
+    reuses the port; a failed probe is never cached)."""
+    key = (conn.host, conn.port)
+    hit = _SERVER_MAJOR.get(key)
+    if hit and time.time() - hit[1] < 60:
+        return hit[0]
+    if True:
+        try:
+            r = subprocess.run([conn.exe("psql"), "-X", "-A", "-t", "-c", "SHOW server_version_num"] + conn.args() + ["-d", conn.dbname or "postgres"],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8", errors="replace",
+                               env=conn.env(), timeout=30)
+            v = (r.stdout or "").strip()
+            if r.returncode == 0 and v.isdigit():
+                _SERVER_MAJOR[key] = (int(v) // 10000, time.time())
+                return int(v) // 10000
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        return None
+
+
+def _restore_exe(conn, exe):
+    """pg_restore 17+ always sends SET transaction_timeout, which a server of 16 or older refuses: with --exit-on-error / -1 every restore
+    failed when the tools were newer than the destination (a recovery host with PostgreSQL 18 restoring into 16 - independent version review).
+    Then the pg_restore of the destination's major, when installed; else a clear refusal."""
+    from pg_arca.pgcompat import binary_profile
+    prof = binary_profile(exe)
+    if prof is None or prof.major < 17:
+        return exe
+    dest = _server_major(conn)
+    if dest is None or dest >= 17:
+        return exe
+    # any directory with a pg_restore of that major: a client-only package (postgresql-client-16, postgresql16) has no server binary, which
+    # the installation scan needs - looked up by the tool itself (regression review)
+    import glob
+    from pg_arca import pgaccess
+    from pg_arca.engine import ephcfg
+    dirs = [d for pat in tuple(pgaccess.VENDOR_GLOBS) + tuple(ephcfg.SYSTEM_GLOBS) for d in glob.glob(pat)]
+    for d in dirs:
+        cand = os.path.join(d, "pg_restore")
+        if os.path.isfile(cand):
+            p2 = binary_profile(cand)
+            if p2 is not None and int(p2.major) == int(dest):
+                return cand
+    raise EngineError("PGA-VER-010", "pg_restore %s cannot load into PostgreSQL %d (it sets transaction_timeout, unknown before 17) and no pg_restore of %d is installed here"
+                      % (prof.label, dest, dest), "install the PostgreSQL %d client tools on this host (or set pg_bin_dir to them)" % dest)
+
+
 def run_tool(conn, prog, args, timeout=None, input_text=None, extra_env=None, cancel=None):
     """Run a PostgreSQL client tool. Returns (rc, stdout, stderr). With `cancel` (a callable) the tool is killed as soon as it returns True and
     Cancelled is raised: a long pg_dump / pg_restore must stop when the operator presses Annulla, not minutes later."""
@@ -285,10 +337,13 @@ def run_tool(conn, prog, args, timeout=None, input_text=None, extra_env=None, ca
     # text in and out as UTF-8 whatever the agent's locale (a service started with LANG unset is ASCII on Python 3.6); bytes that are not
     # UTF-8 (a SQL_ASCII database, a LATIN1 dump's listing) survive as surrogates instead of failing the whole tool
     txt = {"universal_newlines": True, "encoding": "utf-8", "errors": "surrogateescape"}
+    exe = conn.exe(prog) if conn else prog
+    if prog == "pg_restore" and conn is not None and "--version" not in args and "-l" not in args:
+        exe = _restore_exe(conn, exe)
     if cancel is not None:
         from pg_arca.engine.util import Cancelled
         try:
-            p = subprocess.Popen([conn.exe(prog) if conn else prog] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            p = subprocess.Popen([exe] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL, env=env, **txt)
         except OSError as e:
             raise EngineError("PGA-CFG-004", "cannot execute %s: %s" % (prog, e), "install the PostgreSQL server/client packages or set pg_bin_dir")
@@ -308,7 +363,7 @@ def run_tool(conn, prog, args, timeout=None, input_text=None, extra_env=None, ca
                     p.communicate()
                     return 124, "", "%s timed out after %ss" % (prog, timeout)
     try:
-        p = subprocess.run([conn.exe(prog) if conn else prog] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        p = subprocess.run([exe] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            timeout=timeout, env=env, input=input_text, **txt)
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:

@@ -384,7 +384,11 @@ def drop_previous(ctx, src_repo=None, src_wal=None, abandon=False):
         if os.path.isdir(sd):
             out["sets_removed"] = len([x for x in os.listdir(os.path.join(sd, "backup")) if not x.startswith(".")]) if os.path.isdir(os.path.join(sd, "backup")) else 0
             shutil.rmtree(sd)
-        if os.path.isdir(os.path.join(src_repo, "cas")) and os.path.isdir(os.path.join(src_repo, "stanza")):
+        from pg_arca.engine.repo import _crypto_mismatch
+        why = _crypto_mismatch(src_repo, ctx.crypto)
+        if why:                                             # written with another key: its chunks cannot be told apart here - left in place, said
+            out["chunks_kept"] = "the previous location is %s: its chunks were not collected (delete the directory yourself if nothing else uses it)" % why
+        elif os.path.isdir(os.path.join(src_repo, "cas")) and os.path.isdir(os.path.join(src_repo, "stanza")):
             freed, removed = _gc_cas(Repo(src_repo, ctx.stanza, crypto=ctx.crypto)) or (0, 0)
             out["chunks_removed"], out["bytes_freed"] = removed, freed
     busy = _wal_still_used(ctx, src_repo, src_wal, check_recent=False) if src_wal and os.path.isdir(src_wal) else None

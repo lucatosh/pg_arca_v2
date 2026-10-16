@@ -219,9 +219,14 @@ def tool_problems(server, bindir_versions):
         if p is None:
             continue
         same_major = same_major_version(p, server)
-        if tool in ("postgres", "pg_waldump", "pg_controldata", "pg_ctl", "pg_resetwal") and not same_major:
+        if tool in ("postgres", "pg_waldump", "pg_controldata", "pg_ctl", "pg_resetwal", "pg_rewind") and not same_major:
             out.append(("critical", "tool_major", "%s is version %s but the server is %s: it cannot read this cluster's files/WAL. Set pg_bin_dir to the server's own bin directory." % (tool, p.label, server.label)))
-        elif tool in ("psql", "pg_dump", "pg_basebackup", "pg_amcheck") and p.num < server.num and int(p.major) != int(server.major):
+        elif tool in ("pg_dump", "pg_basebackup") and p.num < server.num and int(p.major) != int(server.major):
+            # these refuse to run against a newer server ("server version mismatch"): not a warning (independent version review)
+            out.append(("critical", "tool_old", "%s is version %s, older than the server (%s): it refuses to run against it. Use the server's own client tools." % (tool, p.label, server.label)))
+        elif tool == "pg_restore" and int(p.major) >= 17 and int(server.major) <= 16:
+            out.append(("warning", "tool_new", "pg_restore %s sets transaction_timeout, which PostgreSQL %s does not know: restores into it use the pg_restore of %s when installed, else they are refused. Install the PostgreSQL %s client tools." % (p.label, server.label, server.label, server.label)))
+        elif tool in ("psql", "pg_amcheck") and p.num < server.num and int(p.major) != int(server.major):
             out.append(("warning", "tool_old", "%s is version %s, older than the server (%s): some features may not work. Use the server's own client tools." % (tool, p.label, server.label)))
     return out
 
@@ -265,7 +270,7 @@ def binary_profile(path):
     return _binary_cache[key]
 
 
-def check_tools(server, bindir, tools=("postgres", "psql", "pg_waldump", "pg_controldata", "pg_ctl")):
+def check_tools(server, bindir, tools=("postgres", "psql", "pg_waldump", "pg_controldata", "pg_ctl", "pg_dump", "pg_restore", "pg_basebackup", "pg_rewind")):
     found = {}
     for t in tools:
         p = os.path.join(bindir, t) if bindir else None

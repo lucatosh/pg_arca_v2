@@ -291,7 +291,7 @@ SELECT jsonb_build_object('oid', t.oid::int, 'kind', t.typtype, 'schema', n.nspn
               FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END,
   'relkind', CASE WHEN t.typtype = 'c' THEN (SELECT rc.relkind FROM pg_class rc WHERE rc.oid = t.typrelid) END, 'relid', t.typrelid::int,
   'range', CASE WHEN t.typtype = 'r' THEN (SELECT jsonb_build_object('sub', format_type(r.rngsubtype, NULL), 'o', r.rngsubtype::int) FROM pg_range r WHERE r.rngtypid = t.oid) END,
-  'checks', CASE WHEN t.typtype = 'd' THEN (SELECT jsonb_agg(jsonb_build_object('n', k.conname, 'd', pg_get_constraintdef(k.oid))) FROM pg_constraint k WHERE k.contypid = t.oid) END,
+  'checks', CASE WHEN t.typtype = 'd' THEN (SELECT jsonb_agg(jsonb_build_object('n', k.conname, 'd', pg_get_constraintdef(k.oid))) FROM pg_constraint k WHERE k.contypid = t.oid AND k.contype = 'c') END,
   'comment', obj_description(t.oid, 'pg_type'))::text
 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.oid = %d""" % t)
         seen[t] = row
