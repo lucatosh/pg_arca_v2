@@ -124,5 +124,20 @@ class LogicalCopy(unittest.TestCase):
             time.sleep(0.5)
         self.assertEqual(q("replica_db", "SELECT count(*) FROM orders")[0][0], "61", "the real subscriber still replicates")
 
+    def test_04_swap_of_a_subscriber_stops_the_kept_copy_consuming(self):
+        # the swap renames the databases, the subscription follows the OID: left enabled, the kept copy would go on applying the publisher's
+        # changes and the restored production would get none, silently (independent review)
+        from pg_arca.engine.granular import restore_database, swap_database
+        restore_database(F.ctx, "replica_db", new_name="replica_new")
+        plan = swap_database(F.ctx, "replica_new", "replica_db", dry_run=True)
+        self.assertEqual(plan["replication"]["subscriptions"], ["sub_orders"], plan)
+        r = swap_database(F.ctx, "replica_new", "replica_db")
+        old = r["old_kept_as"]
+        self.assertTrue(any("subscriber" in w for w in r["warnings"]), r)
+        rows = q("postgres", "SELECT d.datname, s.subenabled, coalesce(s.subslotname, '-') FROM pg_subscription s JOIN pg_database d ON d.oid = s.subdbid ORDER BY 1")
+        self.assertIn([old, "f", "sub_orders"], rows, "the kept copy no longer consumes, the slot association is kept for the way back")
+        self.assertEqual(pub("SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'sub_orders'", "shop")[0][0], "1", "the publisher keeps the changes")
+
+
 if __name__ == "__main__":
     unittest.main()

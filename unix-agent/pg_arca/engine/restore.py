@@ -783,6 +783,11 @@ def _check_target_after_set(s, target_time, target_lsn):
         if t and st and t < st:
             raise EngineError("PGA-PITR-003", "target %s is before the end of backup %s (%s)" % (target_time, s["id"], s["stop_time"]),
                               "pick an earlier backup or omit --set to choose automatically")
+        # the same margin as the automatic choice (independent review): an incremental's stop_time is truncated to the second, its real end can lie
+        # after a target in that second - recovery would stop short of the incremental's own pages with the full's label (a torn cluster)
+        if t and st and s.get("type") != "full" and (t - st).total_seconds() < 2:
+            raise EngineError("PGA-PITR-003", "target %s is within 2 seconds of the end of incremental backup %s (%s): its exact end may be after the target"
+                              % (target_time, s["id"], s["stop_time"]), "pick a point at least 2 seconds later, the backup before it, or omit the backup to choose automatically")
     if target_lsn and lsn_to_int(target_lsn) < lsn_to_int(s["stop_lsn"]):
         raise EngineError("PGA-PITR-003", "target LSN %s is before the end of backup %s (%s)" % (target_lsn, s["id"], s["stop_lsn"]))
 

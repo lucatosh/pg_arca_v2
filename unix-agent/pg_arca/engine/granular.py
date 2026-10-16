@@ -1007,6 +1007,26 @@ def swap_database(ctx, restored, original, into=None, dry_run=False, wait_sec=15
                                        "WHERE datname IN (%s, %s) AND pid <> pg_backend_pid()" % (sql_lit(restored), sql_lit(original)))]
         res = {"restored": restored, "original": original, "original_existed": exists, "old_kept_as": old,
                "sessions": [{"database": r[0], "application": r[1], "user": r[2], "client": r[3]} for r in sessions][:50], "dry_run": bool(dry_run)}
+        # logical replication follows the database's OID, not its name (independent review): the original's subscriptions would keep applying the
+        # publisher's changes into the copy kept aside, and logical slots of a publisher stay with the kept copy too
+        subs, slots, warnings = [], [], []
+        if exists:
+            subs = [r for r in s.query("SELECT subname, COALESCE(subslotname::text, '') FROM pg_subscription WHERE subenabled AND subdbid = (SELECT oid FROM pg_database WHERE datname = %s)"
+                                       % sql_lit(original)) if r and r[0]]
+            slots = [r[0] for r in s.query("SELECT slot_name FROM pg_replication_slots WHERE slot_type = 'logical' AND database = %s" % sql_lit(original)) if r and r[0]]
+            if subs:
+                warnings.append("%s is a logical replication subscriber (%s): its subscriptions are disabled on the copy kept as %s so that it no longer "
+                                "consumes the publisher's changes; the publisher keeps them in slot(s) %s until the subscription is attached to the restored "
+                                "database (in %s: ALTER SUBSCRIPTION <name> SET (slot_name = '<slot>'); ALTER SUBSCRIPTION <name> ENABLE - the changes since the "
+                                "slot's position are then applied over the restored data) or the slot is dropped"
+                                % (original, ", ".join(r[0] for r in subs), old, ", ".join(r[1] for r in subs if r[1]) or "-", original))
+            if slots:
+                warnings.append("%s is a logical replication publisher: slot(s) %s belong to the copy kept as %s, not to the restored database - subscribers "
+                                "connecting to %s will fail until their slot is recreated there (CREATE PUBLICATION is restored; recreate the slot and "
+                                "resynchronise the subscribers)" % (original, ", ".join(slots), old, original))
+        if warnings:
+            res["warnings"] = warnings
+            res["replication"] = {"subscriptions": [r[0] for r in subs], "slots": slots}
         if dry_run:
             return res
         names = [n for n in (original, restored) if n in rows]
@@ -1051,6 +1071,17 @@ def swap_database(ctx, restored, original, into=None, dry_run=False, wait_sec=15
                     pass
         if old:
             s.query("COMMENT ON DATABASE %s IS %s" % (quote_ident(old), sql_lit("pg_arca: replaced by a restore on %s; kept as the way back - drop it when no longer needed" % now_utc().isoformat(timespec="seconds"))))
+        if old and subs:
+            k = PgSession(admin.with_db(old))
+            try:
+                for name_, _slot in subs:
+                    try:
+                        k.query("ALTER SUBSCRIPTION %s DISABLE" % quote_ident(name_))
+                    except EngineError as e:
+                        res.setdefault("warnings", []).append("subscription %s on %s could NOT be disabled (%s): it still applies the publisher's changes "
+                                                              "into the kept copy - disable it by hand" % (name_, old, e.message[:160]))
+            finally:
+                k.close()
         res["replaced"] = True
         return res
     finally:
@@ -1609,16 +1640,93 @@ def diff_object(ctx, stage_db, spec, into=None, limit=200):
 
 
 APPLY_ROWS_MAX = 200000
+FK_CASCADE_DEPTH = 4
+_FK_DEL = {"c": "deleted with them", "n": "set to NULL", "d": "set to their default", "a": "blocking", "r": "blocking"}
+_FK_UPD = {"c": "updated with them", "n": "set to NULL", "d": "set to their default", "a": "blocking", "r": "blocking"}
 
 
-def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, dry_run=False, restore_all=(), delete_all_added=False):
+def _inbound_fks(sess, fq):
+    """Foreign keys of other tables (or of this one) that point AT fq: what deleting or re-keying its rows does to them (top-level constraints:
+    the clones PostgreSQL makes on each partition act through their parent)."""
+    out = []
+    for r in sess.query("""SELECT c.conname, n.nspname, cl.relname, c.confdeltype, c.confupdtype,
+       (SELECT json_agg(a.attname ORDER BY k.o) FROM unnest(c.conkey) WITH ORDINALITY k(n, o) JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.n)::text,
+       (SELECT json_agg(a.attname ORDER BY k.o) FROM unnest(c.confkey) WITH ORDINALITY k(n, o) JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.n)::text,
+       c.conrelid = c.confrelid
+FROM pg_constraint c JOIN pg_class cl ON cl.oid = c.conrelid JOIN pg_namespace n ON n.oid = cl.relnamespace
+WHERE c.contype = 'f' AND c.confrelid = %s::regclass AND NOT EXISTS (SELECT 1 FROM pg_constraint p WHERE p.oid = c.conparentid)
+ORDER BY 2, 3, 1""" % sql_lit(fq)):
+        out.append({"name": r[0], "schema": r[1], "table": r[2], "on_delete": r[3], "on_update": r[4], "cols": json.loads(r[5]), "ref": json.loads(r[6]), "self": r[7] == "t"})
+    return out
+
+
+def _fk_effects(sess, fq, pk, del_rows, chg_rows):
+    """What the foreign keys pointing at fq do when the rows of del_rows (SQL selecting live rows of fq that will be deleted) are deleted and
+    the referenced columns of the rows chg_rows(fk) selects are changed: rows of other tables deleted / set to NULL or default (ON DELETE /
+    ON UPDATE actions, followed through cascades up to FK_CASCADE_DEPTH levels), or the change refused (NO ACTION / RESTRICT).
+    Each effect carries the SQL that selects the affected rows (for their safety copy, inside the same transaction)."""
+    effects, deeper = [], [False]
+
+    def child_rows(fk, parent_sql, parent_fq, parent_pk, exclude_sql):
+        child = "%s.%s" % (quote_ident(fk["schema"]), quote_ident(fk["table"]))
+        sel = "SELECT c.* FROM %s c WHERE (%s) IN (SELECT %s FROM (%s) p)" % (
+            child, ",".join("c.%s" % quote_ident(x) for x in fk["cols"]), ",".join("p.%s" % quote_ident(x) for x in fk["ref"]), parent_sql)
+        if fk["self"] and exclude_sql and parent_pk:
+            # a table pointing at itself (a tree): the rows already being deleted are not victims of their own cascade
+            sel += " AND jsonb_build_array(%s)::text NOT IN (SELECT jsonb_build_array(%s)::text FROM (%s) x)" % (
+                ",".join("c.%s" % quote_ident(x) for x in parent_pk), ",".join("x.%s" % quote_ident(x) for x in parent_pk), exclude_sql)
+        return child, sel
+
+    def walk(parent_sql, parent_fq, parent_pk, depth, kind, root_sql):
+        for fk in _inbound_fks(sess, parent_fq):
+            act = fk["on_delete"] if kind == "delete" else fk["on_update"]
+            child, sel = child_rows(fk, parent_sql, parent_fq, parent_pk, root_sql)
+            n = int(sess.scalar("SELECT count(*) FROM (%s) z" % sel) or 0)
+            if not n:
+                continue
+            effects.append({"table": "%s.%s" % (fk["schema"], fk["table"]), "schema": fk["schema"], "name": fk["table"], "constraint": fk["name"], "rows": n,
+                            "because": kind, "action": (_FK_DEL if kind == "delete" else _FK_UPD).get(act, act), "level": depth + 1, "select": sel,
+                            "blocking": act in ("a", "r")})
+            if kind == "delete" and act == "c":
+                if depth + 1 >= FK_CASCADE_DEPTH:
+                    deeper[0] = True
+                    continue
+                cpk = _table_info(sess, child)
+                walk(sel, child, (cpk or {}).get("pk") or [], depth + 1, "delete", sel if fk["self"] else None)
+
+    if del_rows:
+        walk(del_rows, fq, pk, 0, "delete", del_rows)
+    for fk in _inbound_fks(sess, fq):
+        sel = chg_rows(fk)
+        if not sel:
+            continue
+        act = fk["on_update"]
+        child, csel = child_rows(fk, sel, fq, pk, None)
+        n = int(sess.scalar("SELECT count(*) FROM (%s) z" % csel) or 0)
+        if n:
+            effects.append({"table": "%s.%s" % (fk["schema"], fk["table"]), "schema": fk["schema"], "name": fk["table"], "constraint": fk["name"], "rows": n,
+                            "because": "update", "action": _FK_UPD.get(act, act), "level": 1, "select": csel, "blocking": act in ("a", "r")})
+    return effects, deeper[0]
+
+
+def _effects_text(effects):
+    return "; ".join("%d row(s) of %s %s (foreign key %s, %s)" % (e["rows"], e["table"], "would block it" if e["blocking"] else "would be " + e["action"],
+                                                                  e["constraint"], "ON DELETE" if e["because"] == "delete" else "ON UPDATE") for e in effects[:8]) + \
+        ("; and %d more" % (len(effects) - 8) if len(effects) > 8 else "")
+
+
+def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, dry_run=False, restore_all=(), delete_all_added=False, allow_cascade=False):
     """Put selected rows from the quarantine copy back into the live table, in ONE transaction.
       restore_keys : primary keys (JSON arrays) to insert if missing or overwrite with the recovered version
       delete_keys  : primary keys (JSON arrays) of rows added after the restore point that should be removed
       restore_all  : whole categories computed here, whatever their size - "missing" (deleted since the restore point), "changed"
       delete_all_added : every row added since the restore point is removed
     Before touching anything the current version of every affected row is saved in pgarca_rowsafe_<ts>_<table>.
-    Nothing is applied if any key cannot be found or the table definitions differ in a way that makes the copy unsafe."""
+    Nothing is applied if any key cannot be found or the table definitions differ in a way that makes the copy unsafe.
+    Foreign keys of OTHER tables pointing at these rows (independent review: an ON DELETE CASCADE silently removed order lines that no safety
+    copy held): what they would do is computed first and returned (foreign_key_effects). A NO ACTION / RESTRICT key that still has rows
+    refuses the whole operation; rows that would be deleted / set to NULL / re-keyed by a CASCADE / SET NULL / SET DEFAULT action are only
+    touched with allow_cascade, after their own safety copy in the same transaction."""
     import json
     parts = _spec3(spec)
     if len(parts) != 3:
@@ -1687,8 +1795,39 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
                "ignored_delete_keys": len(delete_keys) - len(will_delete), "dry_run": bool(dry_run)}
         if res_note:
             res["note"] = res_note
+        effects, deeper = [], False
+        fks = _inbound_fks(tg, fq) if (will_delete or will_update) else []
+        if fks:
+            tg.query("CREATE TEMP TABLE IF NOT EXISTS pgarca_k (grp text, k text)")
+            tg.query("TRUNCATE pg_temp.pgarca_k")
+
+            def put(grp, keys):
+                for i in range(0, len(keys), 500):
+                    tg.query("INSERT INTO pg_temp.pgarca_k VALUES %s" % ",".join("(%s,%s)" % (sql_lit(grp), sql_lit(k)) for k in keys[i:i + 500]))
+                return "SELECT t.* FROM %s t WHERE %s IN (SELECT k FROM pg_temp.pgarca_k WHERE grp = %s)" % (fq, keyexpr, sql_lit(grp))
+            del_sql = put("del", will_delete) if will_delete else None
+            jcur = dict((k, json.loads(cur[k])) for k in will_update)
+            jnew = dict((k, json.loads(rows[k])) for k in will_update)
+            chg = {}
+            for fk in fks:
+                moved = [k for k in will_update if any(jcur[k].get(c) != jnew[k].get(c) for c in fk["ref"])]
+                if moved:
+                    chg[fk["name"]] = put("upd:" + fk["name"], moved)
+            effects, deeper = _fk_effects(tg, fq, li["pk"], del_sql, lambda fk: chg.get(fk["name"]))
+        if effects:
+            res["foreign_key_effects"] = [dict((k, v) for k, v in e.items() if k != "select") for e in effects]
+        if deeper:
+            res["foreign_key_effects_deeper"] = True
         if dry_run:
             return res
+        blocking = [e for e in effects if e["blocking"]]
+        if blocking:
+            raise EngineError("PGA-GEN-094", "nothing applied: rows of other tables still point at the rows to delete or change - " + _effects_text(blocking),
+                              "put back or remove the referencing rows first (or restore the related tables together)")
+        cascade = [e for e in effects if not e["blocking"]]
+        if cascade and not allow_cascade:
+            raise EngineError("PGA-GEN-093", "nothing applied: this would also change other tables - " + _effects_text(cascade),
+                              "confirm to go ahead: the affected rows of those tables are first copied into pgarca_rowsafe_... tables, in the same transaction")
         ts = now_utc().strftime("%Y%m%d%H%M%S")
         safe = ("pgarca_rowsafe_%s_%s" % (ts, name))[:63]
         collist = ",".join(quote_ident(c) for c in writable)
@@ -1701,6 +1840,18 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
             if touched:
                 tg.query("CREATE TABLE %s.%s AS SELECT t.* FROM %s t WHERE %s = ANY(ARRAY[%s])" % (quote_ident(schema), quote_ident(safe), fq, keyexpr, ",".join(sql_lit(k) for k in touched)))
                 res["safety_copy"] = "%s.%s" % (schema, safe)
+            used = {(schema, safe)}
+            for e in cascade:                                   # the rows the foreign keys' actions will delete / modify, saved first
+                base_n = ("pgarca_rowsafe_%s_%s" % (ts, e["name"]))[:60]
+                nm, i = base_n, 1
+                while (e["schema"], nm) in used:
+                    i += 1
+                    nm = "%s_%d" % (base_n[:57], i)
+                used.add((e["schema"], nm))
+                tg.query("CREATE TABLE %s.%s AS %s" % (quote_ident(e["schema"]), quote_ident(nm), e["select"]))
+                res.setdefault("cascade_safety_copies", []).append("%s.%s" % (e["schema"], nm))
+            if deeper and cascade:
+                res["note"] = ((res.get("note") or "") + " foreign key cascades deeper than %d levels were not saved" % FK_CASCADE_DEPTH).strip()
             for i in range(0, len(restore_keys), 500):
                 part = restore_keys[i:i + 500]
                 doc = "[" + ",".join(rows[k] for k in part) + "]"      # rows[k] is already JSON text from to_jsonb(): re-encoding via Python floats would round numeric(38,x)

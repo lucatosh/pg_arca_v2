@@ -169,6 +169,7 @@ const keysErr = (p: any) => {
   }
   if (p.restore_all !== undefined && !(Array.isArray(p.restore_all) && p.restore_all.every((x: any) => ['missing', 'changed'].includes(x)))) return 'restore_all must list missing and/or changed';
   if (p.delete_all_added !== undefined && typeof p.delete_all_added !== 'boolean') return 'delete_all_added must be boolean';
+  if (p.allow_cascade !== undefined && typeof p.allow_cascade !== 'boolean') return 'allow_cascade must be boolean';
   // a whole category ("every deleted row") is computed by the agent: thousands of rows need no key list
   return (p.restore_keys?.length || p.delete_keys?.length || p.restore_all?.length || p.delete_all_added) ? null : 'select at least one row';
 };

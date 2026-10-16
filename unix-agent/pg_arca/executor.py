@@ -1244,6 +1244,8 @@ class OperationExecutor:
             try:
                 res["swap"] = granular.swap_database(ctx, res["result_database"], str(p.get("database")), into=p.get("into"))
                 res["result_database"] = str(p.get("database"))
+                if res["swap"].get("warnings"):
+                    res["warnings"] = list(res.get("warnings") or []) + list(res["swap"]["warnings"])     # logical replication after the swap: said with the result
             except EngineError as e:
                 res["swap_error"] = e.as_text()            # the recovered copy stays, complete, under its own name: the UI offers the swap again
         return res
@@ -1423,7 +1425,7 @@ class OperationExecutor:
         ctx = self._ctx() if not p.get("into") else self._ctx_ro()
         return granular.apply_rows(ctx, str(p.get("stage_db")), str(p.get("object")), restore_keys=p.get("restore_keys") or [], delete_keys=p.get("delete_keys") or [],
                                    into=p.get("into"), dry_run=bool(p.get("dry_run")), restore_all=[x for x in (p.get("restore_all") or []) if x in ("missing", "changed")],
-                                   delete_all_added=bool(p.get("delete_all_added")))
+                                   delete_all_added=bool(p.get("delete_all_added")), allow_cascade=bool(p.get("allow_cascade")))
 
     def h_forensics(self, p):
         from pg_arca.engine import walscan

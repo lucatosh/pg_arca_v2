@@ -113,6 +113,14 @@ class TimeTargetMargin(unittest.TestCase):
         self.assertEqual(R.choose_set(Repo(), target_time="2026-10-16 10:05:00+00")["id"], "F")
         self.assertEqual(R.choose_set(Repo(), target_time="2026-10-16 10:05:03+00")["id"], "I")
         self.assertEqual(R.choose_set(Repo(), target_time="2026-10-16 10:00:00+00")["id"], "F", "a full needs no margin")
+        # chosen explicitly: the same margin (independent review)
+        sets[1].update(id="I", status="COMPLETE")
+        Repo.resolve_set = lambda self, spec: [x for x in sets if x["id"] == spec][0]
+        with self.assertRaises(R.EngineError) as e:
+            R.choose_set(Repo(), spec="I", target_time="2026-10-16 10:05:01+00")
+        self.assertIn("within 2 seconds", e.exception.message)
+        self.assertEqual(R.choose_set(Repo(), spec="I", target_time="2026-10-16 10:05:02+00")["id"], "I")
+        self.assertEqual(R.choose_set(Repo(), spec="F", target_time="2026-10-16 10:00:00+00")["id"], "F")
 
 
 class Swap(unittest.TestCase):
