@@ -27,11 +27,11 @@ const node = (id: string, name: string, version: string, extra: any = {}) => ({ 
   postgres: { is_in_recovery: id !== 'a', version, connections: { used: 1, max: 100 }, settings: {}, ...extra }, wal: { gap_count: 0, conflicts: 0 }, system: { disks: {} },
   backup: { configured: true, recent_sets: [{ status: 'COMPLETE', type: 'full', start_time: iso(now - 3600_000) }] } } });
 const st: any = { clusters: [{ id: 'c', name: 'old-db', environment: 'dev', source: 'agent' }], operations: [], settings: {}, nodes: { a: node('a', 'pg1', '13.21 (Debian)'), b: node('b', 'pg2', '13.21 (Debian)') } };
-let codes = evaluate(st, now).map(i => i.code).sort();
+let codes = evaluate(st, now).map(i => i.code).filter(c => c !== 'no_schedule').sort();   // fixture without a policy: manual backups are another finding
 assert.deepStrictEqual(codes, ['pg_eol'], 'two nodes on the same EOL major raise ONE issue: ' + codes);
-st.nodes.a = node('a', 'pg1', '9.6.24'); codes = evaluate(st, now).map(i => i.code);
+st.nodes.a = node('a', 'pg1', '9.6.24'); codes = evaluate(st, now).map(i => i.code).filter(c => c !== 'no_schedule');
 assert.ok(codes.includes('pg_unsupported')); assert.strictEqual(evaluate(st, now).find(i => i.code === 'pg_unsupported')!.severity, 'critical');
 st.nodes.a = node('a', 'pg1', '16.4', { compat: { label: '16', problems: [], tool_problems: [{ severity: 'critical', code: 'tool_major', text: 'pg_waldump is version 14' }] } });
 st.nodes.b = node('b', 'pg2', '16.4');
-const issues = evaluate(st, now); assert.deepStrictEqual(issues.map(i => i.code), ['pg_tool_major']); assert.strictEqual(issues[0].nodeName, 'pg1');
+const issues = evaluate(st, now).filter(i => i.code !== 'no_schedule'); assert.deepStrictEqual(issues.map(i => i.code), ['pg_tool_major']); assert.strictEqual(issues[0].nodeName, 'pg1');
 console.log('pgcompat.test OK');
