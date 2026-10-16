@@ -113,7 +113,13 @@ class PgSession(object):
                      "BEGIN PERFORM set_config('idle_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
                      "BEGIN PERFORM set_config('idle_in_transaction_session_timeout','0',false); EXCEPTION WHEN OTHERS THEN NULL; END; "
                      "BEGIN PERFORM set_config('lc_messages','C',false); EXCEPTION WHEN OTHERS THEN NULL; END; END $$")
-            self.version_num = int(self.one("SHOW server_version_num"))
+            v = self.one("SHOW server_version_num")
+            if v is None or not str(v).strip().isdigit():
+                # the server went away between the first answer and this one (shutdown, a crash of another process, the end of a
+                # recovery that failed): a lost session, said as such - not a TypeError (seen in the matrix on PG 14, 17, 18)
+                raise EngineError("PGA-CFG-003", "PostgreSQL session closed unexpectedly: " + self._why("no answer to SHOW server_version_num"),
+                                  "the server closed the connection: restart, crash, failover or switchover while the operation was running")
+            self.version_num = int(v)
             self.version = self.one("SHOW server_version")
             from pg_arca.pgcompat import Profile
             self.profile = Profile(self.version_num)          # every version difference is answered by this profile

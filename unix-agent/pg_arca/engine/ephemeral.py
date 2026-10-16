@@ -358,27 +358,33 @@ class Ephemeral(object):
                 _check_cancel(cancel)
                 if self.proc is not None and self.proc.poll() is not None:
                     raise death_error(os.path.join(self.dir, "pg_arca-ephemeral.log"), "while recovering")
+                # every query of a round can meet a lost session (a crash of another process, or the postmaster shutting down because
+                # recovery ended before the target - PostgreSQL 18 says it to the sessions as "crash of another server process"):
+                # reconnect, and a postmaster that is gone is reported by what its log says (death_error), not as a lost session
                 try:
                     inrec = s.scalar("SELECT pg_is_in_recovery()")
+                    lsn = s.scalar("SELECT COALESCE(pg_last_wal_replay_lsn()::text,'-')")
+                    try:
+                        paused = inrec != "f" and s.scalar(s.profile.replay_paused_sql()) == "1"
+                    except EngineError as e:
+                        # with no target the instance finishes recovery and promotes ITSELF between the two queries above: the pause-state function then
+                        # raises "recovery is not in progress". That is the success path, not an error: look again.
+                        if "not in progress" in (e.message or ""):
+                            continue
+                        raise
                 except EngineError as e:
-                    if not any(t in (e.message or "") for t in self._TRANSIENT):
+                    if not any(t in (e.message or "") for t in self._TRANSIENT) and e.code != "PGA-CFG-003":
                         raise
                     try:
                         s.close()
                     except Exception:
                         pass
+                    time.sleep(1)
+                    if self.proc is not None and self.proc.poll() is not None:
+                        raise death_error(os.path.join(self.dir, "pg_arca-ephemeral.log"), "while recovering")
                     self._log_transient(e)
                     s = self._reconnect(time.time() + 120, cancel)
                     continue
-                lsn = s.scalar("SELECT COALESCE(pg_last_wal_replay_lsn()::text,'-')")
-                try:
-                    paused = inrec != "f" and s.scalar(s.profile.replay_paused_sql()) == "1"
-                except EngineError as e:
-                    # with no target the instance finishes recovery and promotes ITSELF between the two queries above: the pause-state function then
-                    # raises "recovery is not in progress". That is the success path, not an error: look again.
-                    if "not in progress" in (e.message or ""):
-                        continue
-                    raise
                 if progress:
                     pr = self._replay_progress(lsn_to_int(lsn) if lsn and lsn != "-" else None, "WAL applied up to %s" % lsn)
                     pr["replay_lsn"] = lsn

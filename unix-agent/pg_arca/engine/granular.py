@@ -396,8 +396,11 @@ def _recover(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inc
         except Exception:
             bad = False
         if bad:
+            # the archive moved on meanwhile (archive_timeout, flush): it now holds a transaction AFTER the request - the request is reachable
+            # after all, so it is retried as asked, once (raising here failed a restore whose target had just become available; matrix PG 15/16)
             eph.cleanup()
-            raise e
+            ctx.log("info", "the archive now reaches past %s: recovering to the requested target again" % requested)
+            return _recover_once(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel, name, immediate)
         info["target_clamped"] = {"requested": requested, "reached_lsn": info["reached_lsn"], "last_replayed_xact_time": info.get("last_replayed_xact_time"),
                                   "message": "the requested point is after the last archived WAL: recovered up to the end of the archive (%s)" % (info.get("last_replayed_xact_time") or info["reached_lsn"])}
         return eph, info

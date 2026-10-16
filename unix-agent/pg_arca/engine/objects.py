@@ -442,13 +442,24 @@ def _acl_stmts(kind, ident, acl):
     return out
 
 
+def _reg_exists(sess, sql):
+    try:
+        return sess.scalar(sql) == "t"
+    except EngineError as e:
+        if "does not exist" in (e.message or ""):
+            return False
+        raise
+
+
 def prereq_exists(sess, kind, item):
     if kind == "schema":
         return sess.scalar("SELECT to_regnamespace(%s) IS NOT NULL" % sql_lit(quote_ident(item["name"]))) == "t"
+    # before PostgreSQL 16 to_regtype / to_regprocedure RAISE when a type named in the text does not exist (from 16 they answer NULL):
+    # a function whose argument type is missing cannot exist either (matrix PG 14/15: 'type "app.prod" does not exist' failed the restore)
     if kind == "type":
-        return sess.scalar("SELECT to_regtype(%s) IS NOT NULL" % sql_lit(qi(item["schema"], item["name"]))) == "t"
+        return _reg_exists(sess, "SELECT to_regtype(%s) IS NOT NULL" % sql_lit(qi(item["schema"], item["name"])))
     if kind == "function":
-        return sess.scalar("SELECT to_regprocedure(%s) IS NOT NULL" % sql_lit(item["sig"])) == "t"
+        return _reg_exists(sess, "SELECT to_regprocedure(%s) IS NOT NULL" % sql_lit(item["sig"]))
     if kind == "extension":
         return sess.scalar("SELECT 1 FROM pg_extension WHERE extname = %s" % sql_lit(item)) == "1"
     if kind == "collation":
