@@ -273,7 +273,8 @@ class ConsoleClient(threading.Thread):
         now = time.time()
         full_discovery = None
         # PostgreSQL not visible yet (replica still being cloned, Patroni bootstrapping, instance stopped): look again soon, not after 10 minutes
-        blind = not self.rt.worker and (not self.rt.instance or not self.rt.instance.get("running"))
+        # also while the instance does not answer: after a restart on another port / socket directory the old binding never connects again
+        blind = not self.rt.worker and (not self.rt.instance or not self.rt.instance.get("running") or getattr(self.rt, "db_alive", None) is False)
         wait_s = min(self.config.get("discovery_interval_seconds", 600), 15 if not self.rt.instance else 30) if blind else self.config.get("discovery_interval_seconds", 600)
         if now - self.last_discovery > wait_s:
             full_discovery = self.rt.refresh()

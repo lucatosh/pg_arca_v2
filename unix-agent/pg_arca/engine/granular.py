@@ -499,7 +499,8 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
         return n if ctx.wal.has_segment(n) else None
     lo = wal_segno(lsn_to_int(first["start_lsn"]), seg_size)
     hi = wal_segno(lsn_to_int(reached_lsn), seg_size)
-    exe = ctx.conn.exe("pg_waldump")
+    from pg_arca.engine.ctx import waldump_exe
+    exe = None
     tmp = tempfile.mkdtemp(prefix="pgarca-drop-")
     lsn_re = _re.compile(r"lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")
     try:
@@ -515,6 +516,7 @@ def find_drop_database_lsn(ctx, chain, dboid, reached_lsn):
             names[seg] = name
             if found:
                 continue
+            exe = exe or waldump_exe(ctx, os.path.join(tmp, name)) or ctx.conn.exe("pg_waldump")     # the major that wrote this WAL
             for line in _waldump(exe, tmp, name, "-r", "Database"):
                 if "DROP" in line and any(int(m.group(2)) == int(dboid) for m in _re.finditer(r"(\d+)/(\d+)", line.split("desc:", 1)[-1])):
                     m, x = lsn_re.search(line), _re.search(r"tx:\s*(\d+)", line)

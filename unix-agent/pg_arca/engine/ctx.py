@@ -40,6 +40,36 @@ class Ctx(object):
             self.scratch_dir = self.eph["scratch_dir"]
         return self
 
+    def waldump(self, segment_file=None):
+        """The pg_waldump to read `segment_file` with: pg_waldump reads only the WAL of its own major, so the installation of the major that wrote the
+        segment (page magic) - the instance's own binaries when they match, else any complete installation of that major - then the instance's, then
+        the PATH / vendor directories (independent review: without a configured bin directory a bare 'pg_waldump' from the PATH, another major or none,
+        made every WAL analysis 'unknown')."""
+        from pg_arca import pgaccess
+        from pg_arca.pgcompat import wal_major
+        major = wal_major(segment_file) if segment_file else None
+        cache = getattr(self, "_waldump", None)
+        if cache is None:
+            cache = self._waldump = {}
+        if major in cache:
+            return cache[major]
+        exe = None
+        if major:
+            try:
+                from pg_arca.engine import ephcfg
+                bindir, _src = ephcfg.pick_bindir(major, self.eph, self.conn.bindir)
+                if bindir and os.path.isfile(os.path.join(bindir, "pg_waldump")):
+                    exe = os.path.join(bindir, "pg_waldump")
+            except Exception:
+                exe = None
+        if exe is None:
+            exe = self.conn.exe("pg_waldump")
+            if os.path.sep not in exe or not os.path.exists(exe):
+                found = pgaccess.find_tool("pg_waldump", {"pg_bin_dir": self.conn.bindir})
+                exe = found if os.path.isabs(found) else exe
+        cache[major] = exe
+        return exe
+
     def log(self, level, msg):
         if self._log:
             self._log(level, msg)
@@ -109,6 +139,17 @@ class Ctx(object):
                   repo_previous=config.get("repo_previous") or None, wal_previous=config.get("wal_previous") or None)
         ctx.has_offsite = bool(config.get("offsite"))                  # restore pre-flight: a missing chunk may be one download away
         return ctx
+
+
+def waldump_exe(ctx, segment_file=None):
+    """pg_waldump for this segment (the major that wrote it: Ctx.waldump), or None when there is none to run."""
+    import shutil
+    exe = ctx.waldump(segment_file) if hasattr(ctx, "waldump") else ctx.conn.exe("pg_waldump")
+    if os.path.sep in exe and not os.path.exists(exe):
+        return None
+    if os.path.sep not in exe and not shutil.which(exe):
+        return None
+    return exe
 
 
 def default_process_max():

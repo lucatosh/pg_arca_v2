@@ -52,6 +52,13 @@ EXTRA_CONFIG_GLOBS = [
     "/etc/pgbackrest.conf", "/etc/etcd/etcd.conf*", "/etc/default/etcd",
 ]
 
+# the PostgreSQL server binary under its names (EDB Postgres Advanced Server: edb-postgres)
+POSTMASTER_EXES = ("postgres", "postmaster", "edb-postgres")
+
+# where data directories live when nothing runs: PGDG/RHEL, Debian/Ubuntu, source builds, EDB (RHEL / Debian), FreeBSD, SUSE / Alpine / Arch
+DATA_GLOBS = ("/var/lib/pgsql/*/data", "/var/lib/pgsql/data", "/var/lib/postgresql/*/*", "/var/lib/postgresql/data", "/usr/local/pgsql/data",
+              "/var/lib/edb/as*/data", "/var/lib/edb-as/*/*", "/var/db/postgres/data*", "/var/lib/postgres/data")
+
 SERVICE_PATTERN = re.compile(r"(postgres|patroni|etcd|pgbouncer|haproxy|pgbackrest|pg-arca|pgpool|repmgr|keepalived)", re.I)
 
 
@@ -75,10 +82,29 @@ def _run(cmd: List[str], timeout: float = 4.0, env: Optional[Dict[str, str]] = N
         return False, ""
 
 
-def _http_json(url: str, timeout: float = 1.5, headers: Optional[Dict[str, str]] = None) -> Tuple[int, Any]:
+def _tls_context(cafiles=(), certfile=None, keyfile=None):
+    """Verification for a Patroni REST API over https: the system store plus Patroni's own CA (ctl.cacert / restapi.cafile) - an internal PKI is the
+    rule - and the client certificate patronictl uses when the API requires one (restapi.verify_client)."""
+    import ssl
+    ctx = ssl.create_default_context()
+    for ca in cafiles:
+        if ca:
+            try:
+                ctx.load_verify_locations(cafile=ca)
+            except (OSError, ssl.SSLError):
+                pass
+    if certfile:
+        try:
+            ctx.load_cert_chain(certfile, keyfile or None)
+        except (OSError, ssl.SSLError):
+            pass
+    return ctx
+
+
+def _http_json(url: str, timeout: float = 1.5, headers: Optional[Dict[str, str]] = None, context=None) -> Tuple[int, Any]:
     req = urllib.request.Request(url, headers=dict({"User-Agent": "pg_arca-agent"}, **(headers or {})))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             raw = resp.read().decode("utf-8", "replace")
             return resp.status, (json.loads(raw) if raw.strip() else {})
     except urllib.error.HTTPError as e:  # Patroni answers 503 for non-leader health endpoints, body is still JSON
@@ -137,10 +163,77 @@ def _flow_split(s):
     return out
 
 
+def _strip_comment(v):
+    """The value without a trailing comment: '#' starts a comment only outside quotes and after a blank (YAML), so 'pa#ss' and "a #b" are values."""
+    q = None
+    i = 0
+    while i < len(v):
+        ch = v[i]
+        if q == '"' and ch == "\\":
+            i += 2
+            continue
+        if q:
+            if ch == q:
+                q = None
+        elif ch in "'\"" and (i == 0 or v[i - 1] in " \t[{,:"):
+            q = ch
+        elif ch == "#" and (i == 0 or v[i - 1] in " \t"):
+            return v[:i].rstrip()
+        i += 1
+    return v.rstrip()
+
+
+def _yaml_scalar(v):
+    v = _strip_comment(v).strip()
+    if len(v) >= 2 and v[0] == v[-1] == '"':
+        try:
+            return json.loads(v)
+        except ValueError:
+            return v[1:-1]
+    if len(v) >= 2 and v[0] == v[-1] == "'":
+        return v[1:-1].replace("''", "'")
+    if v.startswith("[") and v.endswith("]"):
+        return [_yaml_scalar(x) for x in _flow_split(v[1:-1]) if x.strip()]
+    if v.startswith("{") and v.endswith("}"):
+        # inline maps ({username: rewinder, password: "rw"}) - common in patroni.yml; without PyYAML (python:3.6 platform-python, slim
+        # images) they used to come back as one string and the geo rewind crashed reading its credentials (multi-OS matrix, 16/10)
+        out = {}
+        for part in _flow_split(v[1:-1]):
+            if ":" in part:
+                kk, vv = part.split(":", 1)
+                out[kk.strip().strip("'\"")] = _yaml_scalar(vv)
+        return out
+    low = v.lower()
+    if low in ("true", "yes", "on"):                          # YAML 1.1, as PyYAML (and so Patroni) reads it
+        return True
+    if low in ("false", "no", "off"):
+        return False
+    if low in ("~", "null", ""):
+        return None if v else ""
+    if re.match(r"^-?\d+$", v):
+        return int(v)
+    return v
+
+
+def _yaml_key(s):
+    """(key, rest) of a 'key: value' line, or None. A quoted key may contain ':'; an unquoted one ends at the first ': ' (so 'listen: 10.0.0.5:8008' works)."""
+    if s[:1] in "'\"":
+        end = s.find(s[0], 1)
+        if end > 0 and s[end + 1:].lstrip().startswith(":"):
+            rest = s[end + 1:].lstrip()[1:]
+            if rest == "" or rest[0] in " \t":
+                return s[1:end], rest.strip()
+        return None
+    m = re.match(r"^([^:#][^:]*?)\s*:(?:[ \t]+(.*)|)$", s)
+    return (m.group(1), (m.group(2) or "").strip()) if m else None
+
+
 def parse_simple_yaml(text: str) -> Dict[str, Any]:
     """
-    Minimal YAML reader sufficient for patroni.yml (maps, nested maps, scalars,
-    '- item' lists, inline [a, b] lists). Falls back to PyYAML when installed.
+    YAML reader sufficient for patroni.yml without PyYAML (python 3.6 platform-python, slim images): block maps and lists (also lists of maps and
+    lists at the parent's indentation), quoted scalars ('#' inside quotes is not a comment), flow [..] / {..}, block scalars (| and >), anchors,
+    aliases and '<<' merges (independent review: `authentication: *restauth` came back as the string '*restauth', a `post_init: |` script leaked its lines
+    as keys of the section). Uses PyYAML when installed.
     """
     try:
         import yaml  # type: ignore
@@ -149,63 +242,123 @@ def parse_simple_yaml(text: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    def scalar(v: str) -> Any:
-        v = v.strip()
-        if " #" in v:
-            v = v.split(" #", 1)[0].strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
-            return v[1:-1]
-        if v.startswith("[") and v.endswith("]"):
-            return [scalar(x) for x in _flow_split(v[1:-1]) if x.strip()]
-        if v.startswith("{") and v.endswith("}"):
-            # inline maps ({username: rewinder, password: "rw"}) - common in patroni.yml; without PyYAML (python:3.6 platform-python, slim
-            # images) they used to come back as one string and the geo rewind crashed reading its credentials (multi-OS matrix, 16/10)
-            out = {}
-            for part in _flow_split(v[1:-1]):
-                if ":" in part:
-                    kk, vv = part.split(":", 1)
-                    out[kk.strip().strip("'\"")] = scalar(vv)
-            return out
-        low = v.lower()
-        if low in ("true", "yes"):
-            return True
-        if low in ("false", "no"):
-            return False
-        if re.match(r"^-?\d+$", v):
-            return int(v)
-        return v
-
+    lines = text.splitlines()
     root = {}  # type: Dict[str, Any]
-    stack = [(-1, root)]  # (indent, container)
-    last_key = {}  # id(container) -> key awaiting value
-    for raw in text.splitlines():
-        if not raw.strip() or raw.lstrip().startswith("#"):
+    stack = [(-1, root)]          # (indent, container)
+    last_key = {}                 # id(container) -> last key set in it
+    owner = {}                    # id(placeholder dict) -> (parent, key): an empty value may turn out to be a list
+    anchors = {}                  # name -> (container, key) | ("value", v)
+
+    def resolve(name):
+        ref = anchors.get(name)
+        if ref is None:
+            return None
+        if ref[0] == "value":
+            return ref[1]
+        return ref[0].get(ref[1])
+
+    def block(i, indent, style):
+        """Lines of a block scalar after line i-1 (more indented than its key). Returns (text, next index)."""
+        body = []
+        while i < len(lines):
+            ln = lines[i]
+            if ln.strip() and (len(ln) - len(ln.lstrip(" "))) <= indent:
+                break
+            body.append(ln)
+            i += 1
+        while body and not body[-1].strip():
+            body.pop()
+        ind = min([len(x) - len(x.lstrip(" ")) for x in body if x.strip()] or [0])
+        body = [x[ind:] for x in body]
+        if style.startswith(">"):
+            out, para = [], []
+            for x in body:
+                if x.strip():
+                    para.append(x.strip())
+                else:
+                    out.append(" ".join(para))
+                    para = []
+            out.append(" ".join(para))
+            txt = "\n".join(out)
+        else:
+            txt = "\n".join(body)
+        return (txt if "-" in style else txt + "\n"), i
+
+    def put(container, indent, s, i):
+        kv = _yaml_key(s)
+        if kv is None:
+            return i
+        k, v = kv
+        v = _strip_comment(v)
+        anchor = None
+        if v.startswith("&"):
+            parts = v.split(None, 1)
+            anchor, v = parts[0][1:], (parts[1] if len(parts) > 1 else "")
+        if k == "<<" and v.startswith("*"):
+            src = resolve(v[1:].strip())
+            if isinstance(src, dict):
+                for kk, vv in src.items():
+                    container.setdefault(kk, vv)
+            return i
+        if v == "":
+            child = {}  # type: Dict[str, Any]
+            container[k] = child
+            owner[id(child)] = (container, k)
+            stack.append((indent, child))
+        elif re.match(r"^[|>][-+0-9]*$", v):
+            container[k], i = block(i, indent, v)
+        elif v.startswith("*"):
+            container[k] = resolve(v[1:].strip())
+        else:
+            container[k] = _yaml_scalar(v)
+        last_key[id(container)] = k
+        if anchor:
+            anchors[anchor] = (container, k)
+        return i
+
+    def list_of(container):
+        if id(container) in owner:
+            parent, key = owner[id(container)]
+            if isinstance(parent.get(key), list):
+                return parent[key]
+            if parent.get(key) is container and not container:
+                parent[key] = []
+                return parent[key]
+        key = last_key.get(id(container))
+        if key is None:
+            return None
+        if not isinstance(container.get(key), list):
+            container[key] = []
+        return container[key]
+
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        i += 1
+        s = raw.strip()
+        if not s or s.startswith("#") or s in ("---", "..."):
             continue
         indent = len(raw) - len(raw.lstrip(" "))
-        line = raw.strip()
         while len(stack) > 1 and indent <= stack[-1][0]:
             stack.pop()
         container = stack[-1][1]
-        if line.startswith("- "):
-            key = last_key.get(id(container))
-            if key is not None:
-                if not isinstance(container.get(key), list):
-                    container[key] = []
-                container[key].append(scalar(line[2:]))
+        if s == "-" or s.startswith("- "):
+            lst = list_of(container)
+            if lst is None:
+                continue
+            item = s[1:].strip()
+            kv = _yaml_key(item) if item and item[0] not in "[{" else None
+            if kv is not None and not item.startswith(("'", '"')) or (kv is not None and kv[1] != ""):
+                d = {}  # type: Dict[str, Any]
+                lst.append(d)
+                stack.append((indent, d))
+                i = put(d, indent + 2, item, i)
+            elif item.startswith("*"):
+                lst.append(resolve(item[1:].strip()))
+            else:
+                lst.append(_yaml_scalar(item))
             continue
-        if ":" not in line:
-            continue
-        k, v = line.split(":", 1)
-        k = k.strip().strip("'\"")
-        v = v.strip()
-        if v == "" or v.startswith("#"):
-            child = {}  # type: Dict[str, Any]
-            container[k] = child
-            last_key[id(container)] = k
-            stack.append((indent, child))
-        else:
-            container[k] = scalar(v)
-            last_key[id(container)] = k
+        i = put(container, indent, s, i)
     return root
 
 
@@ -282,7 +435,7 @@ def advise(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
         if (st.get("fsync") or "on") == "off" or (st.get("full_page_writes") or "on") == "off":
             add("critical", "UNSAFE_DURABILITY", "fsync / full_page_writes disabled", "A crash can corrupt the data and physical backups are not consistent.", "Turn fsync and full_page_writes back on.", tgt)
     for pc in scan.get("patroni_clusters") or []:
-        if not pc.get("rest_accessible", True) and pc.get("rest_url"):
+        if not pc.get("rest_reachable", True) and pc.get("restapi_url"):
             add("warning", "PATRONI_REST", "Patroni REST API unreachable", "Switchover, failover and HA changes are not possible from here.", "Check restapi.listen / credentials.", pc.get("scope", ""))
     for ec in scan.get("etcd_clusters") or []:
         n = len(ec.get("members") or [])
@@ -309,8 +462,8 @@ class ClusterDiscoveryEngine:
         listeners = self._scan_listeners(procs)
         systemd = self._scan_systemd()
 
-        instances = self._discover_postgres(procs, listeners)
-        patroni = self._discover_patroni(procs, listeners, instances)
+        patroni = self._discover_patroni(procs, listeners)
+        instances = self._discover_postgres(procs, listeners, [pc.get("data_dir") for pc in patroni if isinstance(pc.get("data_dir"), str)])
         etcd = self._discover_etcd(procs, listeners)
         pgb = self._discover_pgbouncer(procs, listeners)
         backrest = self._discover_pgbackrest()
@@ -352,11 +505,13 @@ class ClusterDiscoveryEngine:
                  "pg_ctl", "patronictl", "pgbackrest", "zstd", "systemctl"]
         found = {n: shutil.which(n) for n in names}
         # RHEL / PGDG keep binaries out of PATH: /usr/pgsql-NN/bin, Debian: /usr/lib/postgresql/NN/bin
-        for pat in ("/usr/pgsql-*/bin", "/usr/lib/postgresql/*/bin", "/opt/pgsql*/bin", "/usr/local/pgsql*/bin"):
-            for d in sorted(glob.glob(pat), reverse=True):
-                for n in names:
-                    if not found.get(n) and os.path.exists(os.path.join(d, n)):
-                        found[n] = os.path.join(d, n)
+        # newest major first by NUMBER (a text sort put /usr/pgsql-9.6 before /usr/pgsql-16)
+        from pg_arca import pgaccess
+        dirs = sorted({d for pat in pgaccess.VENDOR_GLOBS for d in glob.glob(pat)}, key=lambda d: (pgaccess._major_key(d), d), reverse=True)
+        for d in dirs:
+            for n in names:
+                if not found.get(n) and os.path.exists(os.path.join(d, n)):
+                    found[n] = os.path.join(d, n)
         try:
             import zstandard  # noqa: F401
             found["python_zstandard"] = "installed"
@@ -376,9 +531,44 @@ class ClusterDiscoveryEngine:
         return self._toolchain().get(name)
 
     # ---- processes -----------------------------------------------------
+    @staticmethod
+    def _classify(argv: List[str]) -> Optional[str]:
+        """What a process is, from its command line. A Python program is named by its script or `-m` module after the interpreter's own options
+        (`python3 -s /usr/bin/patroni`, `platform-python /usr/bin/patroni`, `python3 -m patroni`); PostgreSQL by the exact names of its server binary
+        (postgres, postmaster, EDB's edb-postgres) or a server process title ('postgres: checkpointer') - not by a prefix, so postgres_exporter or
+        postgresql-check scripts are not taken for a server (independent review)."""
+        exe_name = os.path.basename(argv[0].split()[0]) if argv[0].split() else ""
+        if exe_name in POSTMASTER_EXES or any(exe_name == t + ":" for t in POSTMASTER_EXES):
+            return "postgres"
+        script = ""
+        if re.match(r"^(python[\d.]*|platform-python[\d.]*)$", exe_name):
+            i = 1
+            while i < len(argv):
+                a = argv[i]
+                if a == "-m" and i + 1 < len(argv):
+                    script = argv[i + 1]
+                    break
+                if a.startswith("-m") and len(a) > 2:
+                    script = a[2:]
+                    break
+                if a in ("-c",):
+                    break
+                if a in ("-W", "-X", "-Q"):
+                    i += 2
+                    continue
+                if a.startswith("-"):
+                    i += 1
+                    continue
+                script = os.path.basename(a)
+                break
+        for t in ("patroni", "etcd", "pgbouncer", "haproxy", "pgbackrest", "pg_arca", "pg-arca"):
+            for n in (exe_name, script):
+                if n and (n == t or n.startswith(t) or n.startswith(t.replace("_", "-"))):
+                    return t
+        return None
+
     def _scan_processes(self) -> List[Dict[str, Any]]:
         out = []
-        interesting = ("postgres", "postmaster", "patroni", "etcd", "pgbouncer", "haproxy", "pgbackrest", "pg_arca", "pg-arca")
         for pid_s in os.listdir("/proc") if os.path.isdir("/proc") else []:
             if not pid_s.isdigit():
                 continue
@@ -390,16 +580,10 @@ class ClusterDiscoveryEngine:
                 continue
             if not argv:
                 continue
-            exe_name = os.path.basename(argv[0].split()[0]) if argv[0] else ""
-            joined = " ".join(argv)
-            name = None
-            for t in interesting:
-                script = os.path.basename(argv[1]) if (exe_name.startswith("python") and len(argv) > 1) else ""
-                if exe_name == t or exe_name.startswith(t) or script.startswith(t) or script.startswith(t.replace("_", "-")):
-                    name = "postgres" if t == "postmaster" else t
-                    break
+            name = self._classify(argv)
             if name is None:
                 continue
+            joined = " ".join(argv)
             uid = -1
             status = _read(base + "/status", 4096) or ""
             m = re.search(r"^Uid:\s+(\d+)", status, re.M)
@@ -471,20 +655,53 @@ class ClusterDiscoveryEngine:
         return out
 
     # ---- PostgreSQL ----------------------------------------------------
+    @staticmethod
+    def _is_pgdata(d: Optional[str]) -> bool:
+        return bool(d) and os.path.isfile(os.path.join(d, "PG_VERSION"))
+
     def _postmaster_pgdata(self, p: Dict[str, Any]) -> Optional[str]:
-        argv = p["argv"]
+        """The data directory of a running postmaster. Its working directory is the authority (the postmaster chdir()s into the data directory); then
+        data_directory given on the command line (-c data_directory=, --data-directory=: -D is then only the configuration directory, Gentoo and
+        Debian-like layouts); then -D / --pgdata, resolved against the process's own directory when relative - never the agent's (independent review:
+        `pg_ctl -D data start` was reported as <agent cwd>/data). A -D that is a configuration directory leads to its postgresql.conf data_directory."""
+        argv, cwd = p["argv"], p.get("cwd")
+        if self._is_pgdata(cwd):
+            return cwd
+
+        def absolute(x):
+            if os.path.isabs(x):
+                return os.path.normpath(x)
+            return os.path.normpath(os.path.join(cwd, x)) if cwd else None
+
+        ddir, dopt = None, None
         for i, a in enumerate(argv):
-            if a == "-D" and i + 1 < len(argv):
-                return os.path.abspath(argv[i + 1])
-            if a.startswith("-D") and len(a) > 2:
-                return os.path.abspath(a[2:])
-            if a.startswith("--pgdata="):
-                return os.path.abspath(a.split("=", 1)[1])
-        if p["cwd"] and os.path.exists(os.path.join(p["cwd"], "PG_VERSION")):
-            return p["cwd"]  # postmaster chdir()s into PGDATA
+            nxt = argv[i + 1] if i + 1 < len(argv) else ""
+            if a == "-c" and re.match(r"^data[_-]directory=", nxt):
+                ddir = nxt.split("=", 1)[1]
+            elif re.match(r"^-cdata[_-]directory=", a):
+                ddir = a.split("=", 1)[1]
+            elif re.match(r"^--data[_-]directory=", a):
+                ddir = a.split("=", 1)[1]
+            elif a == "-D" and nxt:
+                dopt = nxt
+            elif a.startswith("-D") and len(a) > 2:
+                dopt = a[2:]
+            elif a.startswith("--pgdata="):
+                dopt = a.split("=", 1)[1]
+        for cand in (ddir, dopt):
+            d = absolute(cand.strip("'\"")) if cand else None
+            if not d:
+                continue
+            if self._is_pgdata(d):
+                return d
+            conf = parse_conf(_read(os.path.join(d, "postgresql.conf")) or "")
+            if conf.get("data_directory") and self._is_pgdata(conf["data_directory"]):
+                return os.path.normpath(conf["data_directory"])
+            if os.path.isdir(d) and not os.access(d, os.R_OK | os.X_OK):
+                return d                           # a directory the agent may not look into (not root, 0700): the command line is all there is
         return None
 
-    def _discover_postgres(self, procs: List[Dict[str, Any]], listeners: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _discover_postgres(self, procs: List[Dict[str, Any]], listeners: List[Dict[str, Any]], extra: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         pgdatas = {}  # type: Dict[str, Dict[str, Any]]
         pids = {p["pid"] for p in procs if p["name"] == "postgres"}
         for p in procs:
@@ -493,20 +710,24 @@ class ClusterDiscoveryEngine:
             if p["ppid"] in pids:      # backend / worker, not the postmaster
                 continue
             base = os.path.basename(p["argv"][0].split()[0])
-            if base not in ("postgres", "postmaster", "postgres:"):
+            if base not in POSTMASTER_EXES:
                 continue
             d = self._postmaster_pgdata(p)
             if d:
-                pgdatas[d] = {"pid": p["pid"], "running": True, "uid": p["uid"], "cmdline": p["cmdline"]}
+                pgdatas[os.path.realpath(d)] = {"pid": p["pid"], "running": True, "uid": p["uid"], "cmdline": p["cmdline"]}
 
-        # Patroni `data_dir` and well-known locations: also report *stopped* clusters
-        for pat in ("/var/lib/pgsql/*/data", "/var/lib/pgsql/data", "/var/lib/postgresql/*/*", "/var/lib/postgresql/data"):
-            for d in glob.glob(pat):
-                if os.path.exists(os.path.join(d, "PG_VERSION")) and d not in pgdatas:
-                    pgdatas[d] = {"pid": None, "running": self._pid_alive_from_file(d), "uid": None, "cmdline": None}
-        for d in self.extra_paths:
-            if os.path.exists(os.path.join(d, "PG_VERSION")):
-                pgdatas.setdefault(d, {"pid": None, "running": self._pid_alive_from_file(d), "uid": None, "cmdline": None})
+        # well-known locations, Patroni's data_dir and the configured one: also report *stopped* clusters (and running ones the agent cannot see in /proc:
+        # another PID namespace, hidepid)
+        cands = []  # type: List[str]
+        for pat in DATA_GLOBS:
+            cands += sorted(glob.glob(pat))
+        cands += [d for d in (extra or []) + self.extra_paths if d]
+        for d in cands:
+            if not self._is_pgdata(d):
+                continue
+            r = os.path.realpath(d)
+            if r not in pgdatas:
+                pgdatas[r] = {"pid": None, "running": self._pid_alive_from_file(r), "uid": None, "cmdline": None}
 
         out = []
         for d, ev in sorted(pgdatas.items()):
@@ -515,13 +736,49 @@ class ClusterDiscoveryEngine:
 
     @staticmethod
     def _pid_alive_from_file(pgdata: str) -> bool:
-        txt = _read(os.path.join(pgdata, "postmaster.pid"), 2048)
+        """Is the postmaster that wrote postmaster.pid alive? A pid file survives a crash or a kill -9 and its pid is reused by any process after a reboot:
+        the pid must be a PostgreSQL server working in THIS data directory. A pid outside our PID namespace (the server runs in a container, the agent on
+        the host) is answered by its socket instead."""
+        txt = _read(os.path.join(pgdata, "postmaster.pid"), 4096)
         if not txt:
             return False
+        ls = txt.splitlines()
         try:
-            return os.path.exists("/proc/%d" % int(txt.splitlines()[0]))
-        except Exception:
+            pid = int(ls[0])
+        except (ValueError, IndexError):
             return False
+        cmd = None
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                cmd = [a for a in f.read().decode("utf-8", "replace").split("\x00") if a]
+        except (OSError, IOError):
+            cmd = None
+        if cmd:
+            exe = os.path.basename(cmd[0].split()[0]) if cmd[0].split() else ""
+            if exe in POSTMASTER_EXES:
+                try:
+                    cwd = os.readlink("/proc/%d/cwd" % pid)
+                except OSError:
+                    return True                    # a postgres server we may not inspect further: take the pid file's word
+                if os.path.realpath(cwd) == os.path.realpath(pgdata):
+                    return True
+        # not our postmaster (or not visible): does a server answer on the socket the pid file names?
+        try:
+            port = int(ls[3])
+            sockdir = ls[4].strip() if len(ls) > 4 else ""
+        except (ValueError, IndexError):
+            return False
+        if sockdir and os.path.isdir(sockdir):
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            try:
+                s.connect(os.path.join(sockdir, ".s.PGSQL.%d" % port))
+                return True
+            except (OSError, socket.error):
+                return False
+            finally:
+                s.close()
+        return False
 
     def _inspect_pgdata(self, pgdata: str, ev: Dict[str, Any], listeners: List[Dict[str, Any]]) -> Dict[str, Any]:
         warn = []  # type: List[str]
@@ -627,8 +884,22 @@ class ClusterDiscoveryEngine:
 
         # Postgres version from binary directory
         info["warnings"] = warn
-        info["connect"] = {"host": sockdir or "127.0.0.1", "port": port, "user": self.pg_user}
+        info["connect"] = {"host": self._connect_host(sockdir, info.get("listen_address") or conf.get("listen_addresses")), "port": port, "user": self.pg_user}
         return info
+
+    @staticmethod
+    def _connect_host(sockdir: Optional[str], listen: Optional[str]) -> str:
+        """How the agent reaches this instance: its Unix socket when it has one the agent can see, else TCP on the address it listens on
+        (unix_socket_directories = '' or a socket directory in another mount namespace: psql without -h looked for the default socket and never
+        connected - independent review). A wildcard listen means the loopback of the same family."""
+        if sockdir and os.path.isdir(sockdir):
+            return sockdir
+        first = (listen or "").split(",")[0].strip().strip("'\"")
+        if first in ("", "*", "0.0.0.0"):
+            return "127.0.0.1"
+        if first in ("::", "[::]"):
+            return "::1"
+        return first
 
     @staticmethod
     def _bin_dir(ev: Dict[str, Any], major: str) -> Optional[str]:
@@ -656,10 +927,18 @@ class ClusterDiscoveryEngine:
             return None
 
     def _controldata(self, pgdata: str, major: str, bin_dir: Optional[str] = None) -> Dict[str, Any]:
-        bins = ([bin_dir] if bin_dir else []) + ["/usr/pgsql-%s/bin" % major, "/usr/lib/postgresql/%s/bin" % major]
+        bins = ([bin_dir] if bin_dir else []) + ["/usr/pgsql-%s/bin" % major, "/usr/lib/postgresql/%s/bin" % major, "/usr/edb/as%s/bin" % major,
+                                                  "/usr/lib/edb-as/%s/bin" % major]
         exe = self._find_bin("pg_controldata", bins)
         if not exe:
             return {"available": False, "reason": "pg_controldata not found"}
+        try:                                             # a pg_controldata of another major misreads pg_control (or refuses it): only the matching one
+            from pg_arca.pgcompat import binary_profile
+            prof = binary_profile(exe)
+            if prof is not None and major and prof.label != str(major).strip():
+                return {"available": False, "reason": "no pg_controldata of PostgreSQL %s (found %s, version %s)" % (major, exe, prof.label)}
+        except Exception:
+            pass
         ok, txt = _run([exe, "-D", pgdata], timeout=5, env=dict(os.environ, LC_ALL="C"))
         if not ok:
             return {"available": False, "reason": "pg_controldata failed (permissions?)"}
@@ -684,7 +963,7 @@ class ClusterDiscoveryEngine:
         }
 
     # ---- Patroni -------------------------------------------------------
-    def _discover_patroni(self, procs, listeners, instances) -> List[Dict[str, Any]]:
+    def _discover_patroni(self, procs, listeners, instances=None) -> List[Dict[str, Any]]:
         yml_paths = []  # type: List[str]
         running = [p for p in procs if p["name"] == "patroni"]
         for p in running:
@@ -711,15 +990,39 @@ class ClusterDiscoveryEngine:
             pg = cfg.get("postgresql", {}) if isinstance(cfg.get("postgresql"), dict) else {}
             listen = str(rest.get("listen") or self._patroni_env(running, "PATRONI_RESTAPI_LISTEN") or self._patroni_listener(running, listeners) or "0.0.0.0:8008")
             rport = int(listen.rsplit(":", 1)[-1]) if listen.rsplit(":", 1)[-1].isdigit() else 8008
-            connect = str(rest.get("connect_address", "")) or "127.0.0.1:%d" % rport
             scheme = "https" if (rest.get("certfile") or self._patroni_env(running, "PATRONI_RESTAPI_CERTFILE")) else "http"
-            base = "%s://%s:%d" % (scheme, self._rest_host(listen), rport)
             auth_hdr = {}  # type: Dict[str, str]
             ra = rest.get("authentication")
+            if not (isinstance(ra, dict) and ra.get("username")) and self._patroni_env(running, "PATRONI_RESTAPI_USERNAME"):
+                ra = {"username": self._patroni_env(running, "PATRONI_RESTAPI_USERNAME"), "password": self._patroni_env(running, "PATRONI_RESTAPI_PASSWORD") or ""}
             if isinstance(ra, dict) and ra.get("username"):
                 import base64
                 auth_hdr["Authorization"] = "Basic " + base64.b64encode(
                     ("%s:%s" % (ra.get("username"), ra.get("password", ""))).encode()).decode()
+            tls = None
+            if scheme == "https":
+                ctl = cfg.get("ctl") if isinstance(cfg.get("ctl"), dict) else {}
+                tls = _tls_context([str(x).strip() for x in (ctl.get("cacert"), rest.get("cafile"), self._patroni_env(running, "PATRONI_RESTAPI_CAFILE")) if x],
+                                   str(ctl.get("certfile") or "").strip() or None, str(ctl.get("keyfile") or "").strip() or None)
+            # where to reach it: over https the certificate names connect_address (what the other members use), rarely 127.0.0.1 - try it first then;
+            # over http the listen address (a wildcard: loopback) first. The first one that answers like Patroni is the URL the agent keeps.
+            hosts = [self._rest_host(listen)]
+            ca_host = self._rest_host(str(rest.get("connect_address") or "")) if rest.get("connect_address") else None
+            if ca_host and ca_host != hosts[0]:
+                hosts = [ca_host] + hosts if scheme == "https" else hosts + [ca_host]
+            cport = str(rest.get("connect_address") or "").rsplit(":", 1)[-1]
+            bases = []
+            for h in hosts:
+                prt = int(cport) if (h == ca_host and cport.isdigit()) else rport
+                bases.append("%s://%s:%d" % (scheme, h, prt))
+            base, code, nd = bases[0], 0, None
+            for b in bases:
+                c2, n2 = _http_json(b + "/patroni", headers=auth_hdr, context=tls)
+                if c2 in (200, 503) and isinstance(n2, dict):
+                    base, code, nd = b, c2, n2
+                    break
+                if b == bases[0]:
+                    code, nd = c2, n2
 
             dcs = None
             dcs_hosts = None
@@ -733,21 +1036,20 @@ class ClusterDiscoveryEngine:
 
             node = {}  # type: Dict[str, Any]
             members = []  # type: List[Dict[str, Any]]
-            code, nd = _http_json(base + "/patroni", headers=auth_hdr)
             if isinstance(nd, dict):
                 node = {"role": nd.get("role"), "state": nd.get("state"), "timeline": nd.get("timeline"),
                         "patroni_version": (nd.get("patroni") or {}).get("version"),
                         "server_version": nd.get("server_version"), "pending_restart": nd.get("pending_restart"),
                         "replication_state": nd.get("replication_state"),
                         "xlog": nd.get("xlog"), "tags": nd.get("tags")}
-            ccode, cd = _http_json(base + "/cluster", headers=auth_hdr)
+            ccode, cd = _http_json(base + "/cluster", headers=auth_hdr, context=tls)
             if isinstance(cd, dict):
                 members = [{"name": m.get("name"), "role": m.get("role"), "state": m.get("state"),
                             "host": m.get("host"), "port": m.get("port"), "timeline": m.get("timeline"),
                             "lag": m.get("lag"), "api_url": m.get("api_url")} for m in cd.get("members", [])]
             leader = next((m["name"] for m in members if m["role"] in ("leader", "master", "primary")), None)
             dcfg = {}
-            dcode, dd = _http_json(base + "/config", headers=auth_hdr)
+            dcode, dd = _http_json(base + "/config", headers=auth_hdr, context=tls)
             if isinstance(dd, dict):
                 dcfg = {"ttl": dd.get("ttl"), "loop_wait": dd.get("loop_wait"), "retry_timeout": dd.get("retry_timeout"),
                         "maximum_lag_on_failover": dd.get("maximum_lag_on_failover"),
@@ -768,8 +1070,8 @@ class ClusterDiscoveryEngine:
                 "restapi_authenticated": bool(auth_hdr),
                 "rest_reachable": code in (200, 503) and isinstance(nd, dict),
                 "dcs_type": dcs, "dcs_hosts": dcs_hosts,
-                "data_dir": pg.get("data_dir"),
-                "bin_dir": pg.get("bin_dir"),
+                "data_dir": (str(pg.get("data_dir")).strip() or None) if pg.get("data_dir") else self._patroni_env(running, "PATRONI_POSTGRESQL_DATA_DIR"),
+                "bin_dir": (str(pg.get("bin_dir")).strip() or None) if pg.get("bin_dir") else self._patroni_env(running, "PATRONI_POSTGRESQL_BIN_DIR"),
                 "pg_connect_address": pg.get("connect_address"),
                 "local_node": node, "members": members, "leader": leader,
                 "dynamic_config": dcfg,

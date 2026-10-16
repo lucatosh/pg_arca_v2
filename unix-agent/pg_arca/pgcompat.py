@@ -226,6 +226,20 @@ def tool_problems(server, bindir_versions):
     return out
 
 
+# XLOG_PAGE_MAGIC (src/include/access/xlog_internal.h): the first two bytes of every WAL page say which major wrote it. pg_waldump reads only its own.
+WAL_PAGE_MAGIC = {0xD101: 12, 0xD106: 13, 0xD10D: 14, 0xD110: 15, 0xD113: 16, 0xD116: 17, 0xD118: 18}
+
+
+def wal_major(path):
+    """Major version that wrote a WAL segment (from its page magic), or None when unknown / unreadable."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(2)
+        return WAL_PAGE_MAGIC.get(int.from_bytes(raw, "little")) if len(raw) == 2 else None
+    except (OSError, IOError):
+        return None
+
+
 _binary_cache = {}
 
 
@@ -233,12 +247,19 @@ def binary_profile(path):
     """Cached Profile of a binary (None when it cannot be run or parsed)."""
     if not path:
         return None
-    if path not in _binary_cache:
+    try:                                     # keyed by the file itself: a package upgrade replaces the binary in place (same path, new version) while the agent runs
+        st = os.stat(path)
+        key = (path, st.st_ino, st.st_mtime, st.st_size)
+    except OSError:
+        return None
+    if key not in _binary_cache:
+        if len(_binary_cache) > 256:
+            _binary_cache.clear()
         try:
-            _binary_cache[path] = Profile.from_binary(path)
+            _binary_cache[key] = Profile.from_binary(path)
         except Exception:
-            _binary_cache[path] = None
-    return _binary_cache[path]
+            _binary_cache[key] = None
+    return _binary_cache[key]
 
 
 def check_tools(server, bindir, tools=("postgres", "psql", "pg_waldump", "pg_controldata", "pg_ctl")):

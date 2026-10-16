@@ -63,7 +63,10 @@ def _note_instance(state_dir, pick):
 class Runtime(object):
     def __init__(self, config):
         self.config = config
-        self.engine = ClusterDiscoveryEngine(pg_user=config.get("pg_user") or "postgres")
+        # the configured data directory is looked at even where no glob reaches it (stopped, unusual path): explicit first, the PGDATA hint second
+        self.engine = ClusterDiscoveryEngine(search_paths=[x for x in (config.get("pg_data"), config.get("pg_data_hint")) if x], pg_user=config.get("pg_user") or "postgres")
+        self.refreshed_at = 0.0
+        self.db_alive = None
         self.report = {}
         self.instance = None
         self.patroni_info = None
@@ -93,31 +96,25 @@ class Runtime(object):
             return self.report
         rep = self.engine.scan_all()
         self.report = rep
+        self.refreshed_at = time.time()
         insts = rep.get("postgres_instances", [])
-        pick = None
-        if c.get("pg_data"):
-            pick = next((i for i in insts if os.path.realpath(i["data_directory"]) == os.path.realpath(c["pg_data"])), None)
-        if pick is None and c.get("pg_port"):
-            pick = next((i for i in insts if int(i.get("port") or 0) == int(c["pg_port"])), None)
-        if pick is None:
-            pick = next((i for i in insts if i.get("running") and i.get("port_listening")), None) or next((i for i in insts if i.get("running")), None) or (insts[0] if insts else None)
+        pick = self._pick(insts, rep)
         self.instance = pick
         _note_instance(c.get("state_dir"), pick)
         if pick:
             sock = pick.get("socket_directory")
+            sock = sock if sock and os.path.isdir(sock) else None
+            # no Unix socket the agent can use (unix_socket_directories = '', a container's socket directory): TCP to the address the instance listens on
+            tcp = (pick.get("connect") or {}).get("host") if not sock else ""
+            tcp = tcp if tcp and not tcp.startswith("/") else ""
             self.db = PostgresClient(user=getattr(self.db, "user", None) or c.get("pg_user") or "postgres", port=c.get("pg_port") or pick.get("port") or 5432,
-                                     host=c.get("pg_host") or "", socket_dir=None if c.get("pg_host") else (sock if sock and os.path.isdir(sock) else None),
+                                     host=c.get("pg_host") or tcp or "", socket_dir=None if c.get("pg_host") else sock,
                                      psql_path=pgaccess.find_tool("psql", c, pick if pick.get("running") else None))      # a stopped instance's directory is only a guess: the PATH comes first then
             if not c.get("pg_user"):                              # no role configured: the owner of PGDATA / the agent's OS user / postgres, whichever really connects
                 pgaccess.resolve_user(self.db, c, pick)
         # Patroni: configured URL wins, else discovered local REST port
         url = c.get("patroni_url")
-        pinfo = None
-        for pc in rep.get("patroni_clusters", []):
-            if pick and pc.get("data_dir") and os.path.realpath(pc["data_dir"]) == os.path.realpath(pick["data_directory"]):
-                pinfo = pc
-                break
-        pinfo = pinfo or (rep.get("patroni_clusters") or [None])[0]
+        pinfo = self._pick_patroni(pick, rep.get("patroni_clusters") or [], len(insts), c.get("pg_data"))
         self.patroni_info = pinfo
         if not url and pinfo:
             url = pinfo.get("restapi_url") or "http://127.0.0.1:%d" % pinfo["restapi_port"]
@@ -135,6 +132,59 @@ class Runtime(object):
         ca = os.pathsep.join(x for x in (ca, c.get("tls_ca_file") or "") if x)
         self.patroni = PatroniBridge(url or "", user, pw, ca, c.get("tls_insecure_skip_verify", False))
         return rep
+
+    def _pick(self, insts, rep):
+        """The instance this agent serves. An explicit pg_data is final: when it is not there (stopped and unreadable, mount missing) the agent
+        serves nothing rather than ANOTHER instance of the host (independent review: backups of the wrong cluster into this agent's stanza). Without it, the
+        instance served so far (state/instance.json) stays the one, also while it is stopped; only a first start chooses (port, then the running one)."""
+        c = self.config
+        same = lambda a, b: bool(a) and bool(b) and os.path.realpath(a) == os.path.realpath(b)
+        if c.get("pg_data"):
+            pick = next((i for i in insts if same(i.get("data_directory"), c["pg_data"])), None)
+            if pick is None:
+                rep.setdefault("warnings", []).append("The configured data directory %s was not found (not a PostgreSQL data directory, or not readable by the agent): "
+                                                      "no other instance is used in its place." % c["pg_data"])
+            return pick
+        if c.get("pg_port"):
+            pick = next((i for i in insts if int(i.get("port") or 0) == int(c["pg_port"])), None)
+            if pick is not None:
+                return pick
+        prev = None
+        try:
+            with open(os.path.join(c.get("state_dir") or "", "instance.json")) as f:
+                prev = (json.load(f) or {}).get("data_directory")
+        except (OSError, ValueError, AttributeError, TypeError):
+            prev = None
+        if prev:
+            pick = next((i for i in insts if same(i.get("data_directory"), prev)), None)
+            if pick is not None:
+                other = [i for i in insts if i is not pick and i.get("running")]
+                if not pick.get("running") and other:
+                    rep.setdefault("findings", []).insert(0, {
+                        "severity": "warning", "code": "BOUND_STOPPED", "title": "The instance this agent serves is stopped while another one runs",
+                        "detail": "The agent keeps serving %s (stopped) and does not switch to %s on its own." % (prev, ", ".join(str(i.get("data_directory")) for i in other)),
+                        "fix": "If %s replaced it (major upgrade, move), set pg_data to it in the agent settings." % other[0].get("data_directory"), "target": prev})
+                return pick
+        return next((i for i in insts if i.get("running") and i.get("port_listening")), None) or next((i for i in insts if i.get("running")), None) or (insts[0] if insts else None)
+
+    @staticmethod
+    def _pick_patroni(pick, clusters, n_instances, pg_data=None):
+        """The Patroni that manages the chosen instance: the one whose data_dir is it. Only when nothing can be compared (a single instance, or a Patroni whose
+        configuration could not be read) is a lone Patroni taken; never the Patroni of another instance (switchovers of the wrong cluster)."""
+        if pick:
+            for pc in clusters:
+                if pc.get("data_dir") and os.path.realpath(pc["data_dir"]) == os.path.realpath(pick["data_directory"]):
+                    return pc
+        if len(clusters) != 1:
+            return None
+        pc = clusters[0]
+        if not pick:                                    # nothing found yet (a replica being cloned): the lone Patroni, unless it serves another directory
+            if pg_data and pc.get("data_dir") and os.path.realpath(pc["data_dir"]) != os.path.realpath(pg_data):
+                return None
+            return pc
+        if not pc.get("data_dir"):
+            return pc if n_instances <= 1 else None
+        return None
 
     # ------------------------------------------------------------------ telemetry
     def system_metrics(self, paths):
@@ -278,6 +328,7 @@ class Runtime(object):
                     "storage": {"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))}}
         inst = self.instance or {}
         pg = self.db.get_snapshot() if inst else {"alive": False, "error": "no PostgreSQL instance found on this host"}
+        self.db_alive = bool(pg.get("alive")) if inst else None       # unreachable: the agent looks again soon (port / socket changed after a restart)
         pg["data_directory"] = inst.get("data_directory")
         pg["tablespaces"] = inst.get("tablespaces", [])
         pg["checksums"] = (inst.get("control") or {}).get("data_checksums")

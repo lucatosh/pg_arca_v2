@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 WRITE_WINDOW = 128                       # chunks fetched together while a file is rebuilt (8 MiB of 64 KiB chunks)
 
 from pg_arca.engine.backup import _check_cancel, build_chain
+from pg_arca.engine.ctx import waldump_exe as _wd
 from pg_arca.pgcompat import Profile, require_supported, set_profile
 from pg_arca.engine.pgdata import list_directories
 from pg_arca.engine.safety import assert_writable_target, audit_symlinks
@@ -566,8 +567,7 @@ def _last_record_start(ctx, tli, segno, seg):
     """Start LSN of the last record of one archived WAL segment, found with pg_waldump on a temporary copy. None when pg_waldump is unavailable."""
     import subprocess
     import tempfile
-    exe = ctx.conn.exe("pg_waldump")
-    if os.path.sep in exe and not os.path.exists(exe):
+    if _wd(ctx) is None:
         return None
     name = wal_name(tli, segno, seg)
     tmp = tempfile.mkdtemp(prefix="pgarca-wd-", dir=ctx.scratch_dir if os.path.isdir(ctx.scratch_dir) else None)
@@ -576,6 +576,9 @@ def _last_record_start(ctx, tli, segno, seg):
         rc, msg = ctx.wal.retrieve_segment(name, f)
         if rc != 0:
             raise EngineError("PGA-WAL-022", "segment %s not available: %s" % (name, msg))
+        exe = _wd(ctx, f)
+        if exe is None:
+            return None
         p = subprocess.Popen([exe, f], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         last = None
         for line in p.stdout:
@@ -646,13 +649,13 @@ def _commit_after(ctx, name, want_ts):
     import subprocess
     import tempfile
     from pg_arca.engine.walscan import TS_RE, _ENV, _parse_iso
-    exe = ctx.conn.exe("pg_waldump")
-    if os.path.sep in exe and not os.path.exists(exe):
-        return None
     tmp = tempfile.mkdtemp(prefix="pgarca-hole-", dir=ctx.scratch_dir if os.path.isdir(ctx.scratch_dir) else None)
     try:
         f = os.path.join(tmp, name)
         if ctx.wal.retrieve_segment(name, f)[0] != 0:
+            return None
+        exe = _wd(ctx, f)
+        if exe is None:
             return None
         with tempfile.TemporaryFile() as errf:
             p = subprocess.Popen([exe, f], stdout=subprocess.PIPE, stderr=errf, env=_ENV)
@@ -688,9 +691,6 @@ def clamp_time_target(ctx, chain, target_time, timeline="latest", max_segments=6
         want = target_time_to_dt(parse_target_time(target_time)).timestamp()
     except Exception:
         return None
-    exe = ctx.conn.exe("pg_waldump")
-    if os.path.sep in exe and not os.path.exists(exe):
-        return None
     seg = int(chain[-1].get("wal_segment_size") or ctx.seg_size)
     try:
         path = _recovery_path(ctx, int(chain[-1]["timeline"]), timeline)
@@ -712,6 +712,9 @@ def clamp_time_target(ctx, chain, target_time, timeline="latest", max_segments=6
         for _segno, nm, end in todo[:max_segments]:
             f = os.path.join(tmp, nm)
             if ctx.wal.retrieve_segment(nm, f)[0] != 0:
+                return None
+            exe = _wd(ctx, f)
+            if exe is None:
                 return None
             args = [exe, f] + (["-e", "%X/%X" % (end >> 32, end & 0xFFFFFFFF)] if end else [])
             with tempfile.TemporaryFile() as errf:

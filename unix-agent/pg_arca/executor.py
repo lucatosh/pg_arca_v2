@@ -942,7 +942,15 @@ class OperationExecutor:
             me = self.runtime.patroni_info or {}
             try:
                 user, pw = geo_rewind.patroni_auth(me.get("config_path") or "", ("replication", "superuser"))
-                rebuilt = geo_rewind.rebuild_from(me.get("data_dir") or (self.runtime.instance or {}).get("data_directory"), me.get("bin_dir") or "", host, port, user, pw,
+                # the binaries of THIS instance: configured, then the running postmaster's own directory, then Patroni's bin_dir (independent review: with
+                # only Patroni's, often unset, a bare pg_basebackup from the PATH - another major on a host with two versions - cloned the site)
+                inst = self.runtime.instance or {}
+                bindir = self.config.get("pg_bin_dir") or inst.get("bin_dir") or me.get("bin_dir") or ""
+                if not bindir:
+                    from pg_arca import pgaccess
+                    t = pgaccess.find_tool("pg_basebackup", self.config, inst)
+                    bindir = os.path.dirname(t) if os.path.isabs(t) else ""
+                rebuilt = geo_rewind.rebuild_from(me.get("data_dir") or inst.get("data_directory"), bindir, host, port, user, pw,
                                                   self.config.get("state_dir"), self._progress) or "(nothing to keep)"
                 try:
                     atomic_write_json(mark, {"kept": rebuilt, "at": time.time()})
@@ -1101,7 +1109,11 @@ class OperationExecutor:
         from pg_arca.engine.ctx import Ctx
         if not self.runtime:
             raise OpError("backup/restore are not available: executor has no runtime binding")
-        self.runtime.refresh() if not self.runtime.instance else None
+        # a backup or restore works on what the host is NOW: re-discover when the binding may be stale (instance stopped or unreachable at the last look,
+        # or the last discovery is older than 5 minutes - a restart moved the port, a switchover changed the role)
+        rt = self.runtime
+        if not rt.instance or not rt.instance.get("running") or getattr(rt, "db_alive", None) is False or time.time() - (getattr(rt, "refreshed_at", 0) or 0) > 300:
+            rt.refresh()
         if not self.runtime.instance:
             raise OpError("no PostgreSQL instance found on this host")
         if not self.runtime.instance.get("running"):

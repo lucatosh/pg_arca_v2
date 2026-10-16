@@ -223,20 +223,24 @@ def _plan(names, seg_size, per_chunk):
     return plan
 
 
-def _detect_seg_size(ctx, name, tmp_root):
-    """WAL segment size really used by the cluster: the size of one decompressed segment (initdb --wal-segsize can change it; the agent configuration may not know)."""
+def _detect_seg_size(ctx, name, tmp_root, want_exe=False):
+    """WAL segment size really used by the cluster: the size of one decompressed segment (initdb --wal-segsize can change it; the agent configuration may not know).
+    With want_exe: (size, the pg_waldump of the major that wrote that segment or None)."""
     tmp = tempfile.mkdtemp(prefix="pgarca-seg-", dir=tmp_root)
+    size, exe = ctx.seg_size, None
     try:
         dest = os.path.join(tmp, name)
         if ctx.wal.retrieve_segment(name, dest, verify=False)[0] == 0:
             sz = os.path.getsize(dest)
             if sz >= 1 << 20 and (sz & (sz - 1)) == 0:
-                return sz
+                size = sz
+            if want_exe and hasattr(ctx, "waldump"):
+                exe = ctx.waldump(dest)
     except OSError:
         pass
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    return ctx.seg_size
+    return (size, exe) if want_exe else size
 
 
 def _scan_window(ctx, exe, multi, tli, names, extra, rmgrs, tmp_root, seg_size, cancel):
@@ -526,7 +530,7 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
     if mode not in KINDS:
         raise EngineError("PGA-GEN-010", "unknown analysis mode '%s'" % mode)
     t0 = time.time()
-    exe = ctx.conn.exe("pg_waldump")
+    exe = ctx.waldump() if hasattr(ctx, "waldump") else ctx.conn.exe("pg_waldump")
     if os.path.sep in exe and not os.path.exists(exe):
         raise EngineError("PGA-WAL-061", "pg_waldump not found (%s)" % exe, "install the PostgreSQL server binaries or set the path in Nodes → Paths and discovery")
     allsegs = ctx.wal.list_segments()
@@ -545,7 +549,9 @@ def scan(ctx, mode="events", hours=24, since_backup=False, since_iso=None, since
     tmp_root = ctx.scratch_dir if ctx.scratch_dir and (os.path.isdir(ctx.scratch_dir) or _mk(ctx.scratch_dir)) else tempfile.gettempdir()
     tmp_root = tempfile.mkdtemp(prefix="pgarca-wal-", dir=tmp_root)
     try:
-        seg_size = _detect_seg_size(ctx, segs[-1], tmp_root)
+        seg_size, exe2 = _detect_seg_size(ctx, segs[-1], tmp_root, want_exe=True)
+        if exe2 and (os.path.sep not in exe2 or os.path.exists(exe2)):
+            exe = exe2                                     # the pg_waldump of the major that wrote the archive (several installed: not the PATH's)
         major = _major_of(exe)
         multi = major >= 16
         rmgrs, code = KINDS[mode], CODE[mode]
