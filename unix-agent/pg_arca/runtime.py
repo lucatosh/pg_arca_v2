@@ -249,6 +249,11 @@ class Runtime(object):
         pg["checksums"] = (inst.get("control") or {}).get("data_checksums")
         pg["archiving"] = inst.get("archiving")
         pg["compat"] = self.compat(pg, inst)
+        if pg.get("alive") and not pg.get("is_in_recovery") and wal is not None:
+            try:                                              # oid -> name, for restores of databases no backup knows (see WalManager.note_databases)
+                wal.note_databases(pg.get("databases") or [])
+            except Exception:
+                pass
         if pg.get("alive") and (self.patroni_info or {}).get("scope"):
             now = time.time()                                    # every 5 minutes: is the local replication connection Patroni needs allowed by pg_hba?
             if now - getattr(self, "_hba_check_at", 0) > 300:

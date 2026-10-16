@@ -128,5 +128,29 @@ class Swap(unittest.TestCase):
             shutil.rmtree(t)
 
 
+class PartitionRoots(unittest.TestCase):
+    def test_detached_partition_is_not_mapped_to_its_old_root(self):
+        from pg_arca.engine import walscan
+        old = {"databases": {"app": {"oid": 5, "relations": [{"oid": 10, "schema": "public", "name": "sales", "kind": "p", "relfilenode": 0, "parent": 0},
+                                                            {"oid": 11, "schema": "public", "name": "sales_2024", "kind": "r", "relfilenode": 111, "parent": 10},
+                                                            {"oid": 12, "schema": "public", "name": "sales_2025", "kind": "r", "relfilenode": 112, "parent": 10}]}}}
+        new = {"databases": {"app": {"oid": 5, "relations": [{"oid": 10, "schema": "public", "name": "sales", "kind": "p", "relfilenode": 0, "parent": 0},
+                                                            {"oid": 11, "schema": "public", "name": "sales_2024", "kind": "r", "relfilenode": 111, "parent": 0},   # detached
+                                                            {"oid": 12, "schema": "public", "name": "sales_2025", "kind": "r", "relfilenode": 112, "parent": 10}]}}}
+
+        class Repo:
+            def complete_sets(self):
+                return [{"id": "A"}, {"id": "B"}]
+
+            def load_catalog(self, st):
+                return old if st["id"] == "A" else new
+
+        class C:
+            repo = Repo()
+        roots = walscan._partition_roots(C())
+        self.assertEqual(roots.get(("5", "112")), "app.public.sales")
+        self.assertNotIn(("5", "111"), roots, "detached in the newer catalog: not a partition of sales any more")
+
+
 if __name__ == "__main__":
     unittest.main()

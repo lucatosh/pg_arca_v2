@@ -387,12 +387,14 @@ def _recover(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inc
         eph, info = _recover_once(ctx, chain, keep_oids, None, None, None, None, inclusive, progress, cancel, name, False)
         bad = False
         try:                                  # the end must really be BEFORE the request, otherwise the first failure had another cause
+            # PostgreSQL stops at a commit LATER than an inclusive time (at or later than an exclusive one), and at a record that STARTS at or
+            # after an LSN (the reached LSN is the END of the last record): only a strictly later point proves the target reachable now
             if tt and info.get("last_replayed_xact_time"):
                 got = target_time_to_dt(info["last_replayed_xact_time"])
                 want = target_time_to_dt(tt)
-                bad = bool(got and want and got >= want)
+                bad = bool(got and want and (got > want if inclusive else got >= want))
             elif target_lsn:
-                bad = lsn_to_int(info["reached_lsn"]) >= lsn_to_int(target_lsn)
+                bad = lsn_to_int(info["reached_lsn"]) > lsn_to_int(target_lsn)
         except Exception:
             bad = False
         if bad:
@@ -400,7 +402,11 @@ def _recover(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inc
             # after all, so it is retried as asked, once (raising here failed a restore whose target had just become available; matrix PG 15/16)
             eph.cleanup()
             ctx.log("info", "the archive now reaches past %s: recovering to the requested target again" % requested)
-            return _recover_once(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel, name, immediate)
+            try:
+                return _recover_once(ctx, chain, keep_oids, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel, name, immediate)
+            except TargetNotReached:
+                # still not reachable after all: the end of the archive, said (never a third answer)
+                eph, info = _recover_once(ctx, chain, keep_oids, None, None, None, None, inclusive, progress, cancel, name, False)
         info["target_clamped"] = {"requested": requested, "reached_lsn": info["reached_lsn"], "last_replayed_xact_time": info.get("last_replayed_xact_time"),
                                   "message": "the requested point is after the last archived WAL: recovered up to the end of the archive (%s)" % (info.get("last_replayed_xact_time") or info["reached_lsn"])}
         return eph, info
@@ -565,9 +571,11 @@ def _later_incarnation(ctx, db, entry, chain, tt, target_lsn, target_xid, target
         ctx.log("warning", "database '%s' has another oid now (%s, the backup knows %s) and the WAL could not be read to tell which one is meant: %s"
                 % (db, live, entry["oid"], getattr(e, "message", e)))
         return None
-    if not drop:
-        return None
+    if not drop or r.get("complete") is False:
+        return None                                      # unknown: the recovered instance decides (see _recover_db)
     d = drop[-1]
+    if tt and not target_lsn and d.get("time_exact") is False:
+        return None
     if target_lsn:
         after = lsn_to_int(target_lsn) > lsn_to_int(d["lsn"])
     elif tt:
@@ -619,23 +627,7 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
     if entry.get("oid") is None:                          # created after the base backup: only the WAL knows it
         # CREATE DATABASE with the FILE_COPY strategy (the only one up to PostgreSQL 14, optional later) is replayed by COPYING the template's files:
         # template1 is always extracted, template0 must be too (CREATE DATABASE ... TEMPLATE template0 is common for a specific encoding/locale)
-        keep = set()
-        try:
-            cat = ctx.repo.load_catalog(chain[-1])
-            t0 = cat["databases"].get("template0")
-            if t0 and t0.get("oid"):
-                keep.add(int(t0["oid"]))
-            # a USER database used as template (CREATE DATABASE b TEMPLATE a, FILE_COPY): its files are copied by the replay -> extract it too.
-            # Found in the WAL since the backup (Database records only: cheap, cached)
-            from pg_arca.engine import walscan
-            known = set(int(d["oid"]) for d in cat["databases"].values() if d.get("oid"))
-            r = walscan.scan(ctx, mode="databases", since_backup=True, limit=200, cache_dir=getattr(ctx, "forensics_cache", None), budget_sec=300, keep_creates=True)
-            for e in r.get("creates") or []:
-                src = int(e["rels"][0][0])
-                if src in known:
-                    keep.add(src)
-        except EngineError as e:
-            ctx.log("warning", "templates of databases created after the backup not determined: %s" % e.message)
+        keep = _late_keep(ctx, chain)
         eph, info = _recover(ctx, chain, keep, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
         s = PgSession(eph.conn("postgres"), read_only=True)
         try:
@@ -664,13 +656,117 @@ def _recover_db(ctx, chain, entry, tt, target_lsn, target_xid, target_name, incl
     if _db_usable(eph, entry):
         return eph, info
     reached = info.get("reached_lsn")
+    # the recovered instance itself says which database has that name AT THE POINT: another oid = a later database of the same name (dropped
+    # and created again after the backup) - rebuilt from the WAL, never the earlier one "as it was before its drop" (independent review:
+    # deciding from the live server failed when the later one was dropped too, or the live server was not reachable)
+    later = None
+    try:
+        s = PgSession(eph.conn("postgres"), read_only=True)
+        try:
+            later = s.scalar("SELECT oid::text FROM pg_database WHERE datname = %s" % sql_lit(entry["name"]))
+        finally:
+            s.close()
+    except EngineError:
+        later = None
     eph.cleanup()
+    if later and str(later) != str(entry["oid"]) and not entry.get("_later"):
+        placeholder = {"name": entry["name"], "oid": None, "size": 0, "relations": [], "late": True, "base_set": entry.get("base_set") or chain[-1]["id"], "_later": True,
+                       "note": "database '%s' was dropped and created again after the backup (oid %s, the backup holds oid %s): the database of that name at the "
+                               "requested point is the later one, rebuilt from the archived WAL" % (entry["name"], later, entry["oid"])}
+        eph, info = _recover_db(ctx, chain, placeholder, tt, target_lsn, target_xid, target_name, inclusive, progress, cancel)
+        info["note"] = placeholder["note"]
+        entry.update(oid=placeholder["oid"], late=True, note=placeholder["note"])
+        return eph, info
+    if not later and not entry.get("_later"):
+        got = _later_dropped(ctx, chain, entry, reached, progress, cancel)
+        if got:
+            return got
     hit = find_drop_database_lsn(ctx, chain, entry["oid"], reached) if reached else None
     if not hit:
         raise EngineError("PGA-PITR-015", "database '%s' does not exist at the requested point (it is damaged or gone at %s and no DROP DATABASE was found in the WAL)" % (entry["name"], reached or "?"),
                           "choose an earlier time (the WAL scan in the console shows when it was dropped); after a failover, check that the new "
                           "timeline's history file is in the archive")
     return _stop_before_drop(ctx, chain, entry, hit, {entry["oid"]}, progress, cancel)
+
+
+def _late_keep(ctx, chain):
+    """Database oids to extract for a recovery that must REBUILD a database created after the backup: template0 and user databases used as templates
+    (CREATE DATABASE with the FILE_COPY strategy - the only one up to PostgreSQL 14 - is replayed by copying the template's files)."""
+    keep = set()
+    try:
+        cat = ctx.repo.load_catalog(chain[-1])
+        t0 = cat["databases"].get("template0")
+        if t0 and t0.get("oid"):
+            keep.add(int(t0["oid"]))
+        # a USER database used as template (CREATE DATABASE b TEMPLATE a, FILE_COPY): its files are copied by the replay -> extract it too.
+        # Found in the WAL since the backup (Database records only: cheap, cached)
+        from pg_arca.engine import walscan
+        known = set(int(d["oid"]) for d in cat["databases"].values() if d.get("oid"))
+        r = walscan.scan(ctx, mode="databases", since_backup=True, limit=200, cache_dir=getattr(ctx, "forensics_cache", None), budget_sec=300, keep_creates=True)
+        for e in r.get("creates") or []:
+            src = int(e["rels"][0][0])
+            if src in known:
+                keep.add(src)
+    except EngineError as e:
+        ctx.log("warning", "templates of databases created after the backup not determined: %s" % e.message)
+    return keep
+
+
+def _later_dropped(ctx, chain, entry, reached, progress, cancel):
+    """At the point there is no database of that name, and the backup's one was dropped: was a LATER database of that name (created after the
+    backup, e.g. restored under its own name) dropped too? Candidates: DROP DATABASE records of oids no backup knows, after the earlier one's
+    DROP, newest first; each is recovered up to just before its DROP and accepted only if it really carries that name. None: the earlier one."""
+    from pg_arca.engine import walscan
+    try:
+        r = walscan.scan(ctx, mode="databases", hours=0, since_iso=chain[0].get("start_time"), limit=500, budget_sec=300, cache_dir=getattr(ctx, "forensics_cache", None))
+    except Exception as e:
+        ctx.log("warning", "later databases named '%s' not looked for: %s" % (entry["name"], getattr(e, "message", e)))
+        return None
+    drops = r.get("dropped") or []
+    known = set()
+    for st in ctx.repo.complete_sets()[-12:]:
+        try:
+            known |= set(str(d.get("oid")) for d in ctx.repo.load_catalog(st)["databases"].values())
+        except EngineError:
+            pass
+    mine = [d for d in drops if str(d.get("oid")) == str(entry["oid"])]
+    if not mine:
+        return None
+    # the names the agent saw (WalManager.note_databases): a candidate recorded under ANOTHER name is not it (the restore's own staging databases
+    # are created and dropped all the time); one recorded under this name goes first; unknown ones are tried only when nothing is recorded
+    names = ctx.wal.database_names() if hasattr(ctx.wal, "database_names") else {}
+    lo, hi = lsn_to_int(mine[-1]["lsn"]), (lsn_to_int(reached) if reached else None)
+    pool = [d for d in drops if str(d.get("oid")) not in known and lsn_to_int(d["lsn"]) > lo and (hi is None or lsn_to_int(d["lsn"]) <= hi)]
+    named = [d for d in pool if names.get(str(d.get("oid"))) == entry["name"]]
+    unknown = sorted((d for d in pool if str(d.get("oid")) not in names), key=lambda d: lsn_to_int(d["lsn"]), reverse=True)[:1]
+    cands = sorted(named, key=lambda d: lsn_to_int(d["lsn"]), reverse=True)[:2] or unknown
+    for d in cands:
+        oid = int(d["oid"])
+        hit = find_drop_database_lsn(ctx, chain, oid, reached)
+        if not hit:
+            continue
+        e2 = {"name": entry["name"], "oid": oid, "size": 0, "relations": [], "late": True}
+        try:
+            eph, info = _stop_before_drop(ctx, chain, e2, hit, _late_keep(ctx, chain) | {oid}, progress, cancel)
+        except EngineError:
+            continue
+        try:
+            s = PgSession(eph.conn("postgres"), read_only=True)
+            try:
+                nm = s.scalar("SELECT datname FROM pg_database WHERE oid = %d" % oid)
+            finally:
+                s.close()
+        except EngineError:
+            nm = None
+        if nm != entry["name"]:
+            eph.cleanup()
+            continue
+        note = ("database '%s' was dropped, created again after the backup (oid %s) and dropped again: recovered up to just before that last DROP"
+                % (entry["name"], oid))
+        info["note"] = note
+        entry.update(oid=oid, late=True, note=note)
+        return eph, info
+    return None
 
 
 def _stop_before_drop(ctx, chain, entry, hit, keep_oids, progress, cancel):
@@ -698,6 +794,11 @@ def restore_database(ctx, db, set_spec=None, target_time=None, target_lsn=None, 
     target, chain, tt, note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
     entry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name, chain)
+    if entry.get("note") and note:
+        # the later database of that name is meant: the older-set fallback ("up to just before it was dropped") is about the earlier one
+        target, chain, tt = _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name)
+        cat = ctx.repo.load_catalog(target)
+        entry["base_set"], note = target["id"], None
     new_name = new_name or default_restore_name(db)
     _check_name(new_name, "destination database name")
     merged_sel, _ = merge_chain(ctx.repo, chain, sparse_filter(({entry["oid"]} if entry["oid"] is not None else set()) | system_db_oids(cat)))
@@ -965,6 +1066,10 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     target, chain, tt, _note = _plan_for_db(ctx, db, set_spec, target_time, target_lsn, target_xid, target_name)
     cat = ctx.repo.load_catalog(target)
     dbentry = _late_entry(ctx, cat, db, target, tt, target_lsn, target_xid, target_name, chain)
+    if dbentry.get("note") and _note:
+        target, chain, tt = _plan(ctx, set_spec, target_time, target_lsn, target_xid, target_name)
+        cat = ctx.repo.load_catalog(target)
+        dbentry["base_set"], _note = target["id"], None
     late_objs, late_live = None, False
     try:
         nrel = objmod.selection_in_catalog(dbentry, sel) if not dbentry.get("late") else None
@@ -986,6 +1091,8 @@ def restore_object(ctx, spec, set_spec=None, target_time=None, target_lsn=None, 
     plan = {"set": target["id"], "chain": [c["id"] for c in chain], "object": label, "selection": sel, "relations_in_backup": nrel, "size_in_backup": size_in_backup,
             "quarantine_database": stage, "extract_bytes": estimate(merged_sel), "cluster_bytes": estimate(merged_all),
             "target": tt or target_lsn or target_xid or target_name or "end of archive"}
+    if dbentry.get("note") or _note:
+        plan["note"] = dbentry.get("note") or _note
     plan["saved_pct"] = round(100.0 * (1 - plan["extract_bytes"] / float(max(plan["cluster_bytes"], 1))), 1)
     taken = None
     dest_err = None

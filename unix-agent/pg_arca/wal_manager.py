@@ -613,6 +613,53 @@ class WalManager:
             if os.path.exists(mtmp):
                 os.unlink(mtmp)
 
+    # ------------------------------------------------------------------ database names seen (oid -> name)
+    DBNAMES = ".pgarca-database-names"
+
+    def note_databases(self, dbs):
+        """Remember which oid carried which database name, as seen by the agent on the primary (the WAL records DROP DATABASE by oid only).
+        A database created AFTER the last backup and dropped since is known to no backup catalog: this registry is how a restore tells it apart
+        from other short-lived databases. Kept with the archive (shared by every node), written only when something new is seen, bounded."""
+        seen = getattr(self, "_dbn_seen", None)
+        if seen is None:
+            seen = self._dbn_seen = dict(self.database_names())
+        new = dict((str(d.get("oid")), str(d.get("name"))) for d in dbs or [] if d.get("oid") and d.get("name"))
+        if all(seen.get(k) == v for k, v in new.items()):
+            return False
+        seen.update(new)
+        if len(seen) > 5000:
+            for k in sorted(seen, key=lambda x: int(x) if x.isdigit() else 0)[:len(seen) - 5000]:
+                seen.pop(k, None)
+        data = json.dumps({"v": 1, "names": seen}).encode("utf-8")
+        if self.crypto:
+            data = self.crypto.seal(data, "dbnames")
+        tmp = os.path.join(self.wal_dir, "%s.tmp.%d.%d" % (self.DBNAMES, os.getpid(), threading.get_ident()))
+        try:
+            os.makedirs(self.wal_dir, exist_ok=True)
+            with open(tmp, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(tmp, os.path.join(self.wal_dir, self.DBNAMES))
+            return True
+        except OSError as e:
+            logger.warning("database names not recorded: %s", e)
+            return False
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+    def database_names(self):
+        """{oid (str): name} recorded by note_databases ({} when none or unreadable)."""
+        try:
+            with open(os.path.join(self.wal_dir, self.DBNAMES), "rb") as f:
+                data = f.read()
+            if self.crypto:
+                data = self.crypto.open(data, "dbnames")
+            return dict(json.loads(data.decode("utf-8")).get("names") or {})
+        except Exception:
+            return {}
+
     # ------------------------------------------------------------------ retrieve
     def retrieve_segment(self, name, dest_path, verify=True):
         """restore_command %f %p. Returns (exit_code, message). 0=ok, 1=not found, 126=corrupt (abort recovery).

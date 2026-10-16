@@ -23,7 +23,8 @@ from datetime import datetime, timezone
 
 from pg_arca.engine.util import EngineError, lsn_to_int, parse_wal_name, spec_path, wal_name
 
-CACHE_VERSION = 7                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
+CACHE_VERSION = 8                     # 4: Storage TRUNCATE (in-place / VACUUM) no longer reported
+# 8: the per-segment DML floor applies to a transaction (all its tables together): partitions of one table are no longer dropped one by one
 LSN_RE = re.compile(rb"lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")
 XID_RE = re.compile(rb"tx:\s*(\d+)")
 TS_RE = re.compile(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)? [A-Za-z0-9+:-]+)")
@@ -296,8 +297,13 @@ def _scan_window(ctx, exe, multi, tli, names, extra, rmgrs, tmp_root, seg_size, 
                         break
                 p.stdout.close()
                 p.wait()
+                # the floor applies to a transaction's changes in the segment, all tables together: a DELETE on a table with 64 hash partitions
+                # changes ~15 rows per partition - every partition alone is below it, the table is not (independent review)
+                per_x = {}
                 for (n, xid, db, rel), (lsn, nd, nu) in agg.items():
-                    if nd + nu >= DML_KEEP:
+                    per_x[(n, xid)] = per_x.get((n, xid), 0) + nd + nu
+                for (n, xid, db, rel), (lsn, nd, nu) in agg.items():
+                    if per_x[(n, xid)] >= DML_KEEP:
                         res[n].append({"kind": "DML", "xid": xid, "lsn": lsn, "rels": [[db, rel]], "del": nd, "upd": nu, "time": None})
                 if p.returncode not in (0, None):
                     errf.seek(0)
@@ -436,7 +442,11 @@ def _partition_roots(ctx, sets=4):
             for dbname, d in cat["databases"].items():
                 by_oid = dict((r.get("oid"), r) for r in d["relations"] if r.get("oid"))
                 for r in d["relations"]:
-                    if not r.get("parent") or not r.get("relfilenode"):
+                    if not r.get("relfilenode"):
+                        continue
+                    if not r.get("parent"):
+                        # not (or no longer) a partition in this newer catalog: older catalogs must not map it to a root (DETACH keeps the file)
+                        roots.setdefault((str(d["oid"]), str(r["relfilenode"])), None)
                         continue
                     top, seen = r, set()
                     while top.get("parent") and top["parent"] in by_oid and top["oid"] not in seen:
@@ -446,7 +456,7 @@ def _partition_roots(ctx, sets=4):
                         roots.setdefault((str(d["oid"]), str(r["relfilenode"])), spec_path(dbname, top["schema"], top["name"]))
     except EngineError:
         pass
-    return roots
+    return dict((k, v) for k, v in roots.items() if v)
 
 
 def _live_names(ctx, pairs, rel, dbs):

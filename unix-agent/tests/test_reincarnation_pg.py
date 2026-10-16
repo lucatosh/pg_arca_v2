@@ -80,5 +80,28 @@ class Reincarnation(unittest.TestCase):
         self.assertEqual(q("pgarca_stage_inc", "SELECT count(*) FROM public.t")[0][0], "150", r)
 
 
+    def test_z_the_later_one_dropped_too(self):
+        """Independent review: the later database of the name is dropped by mistake as well. As it was before THAT drop (not the earlier one's
+        state before ITS drop); a short-lived staging database dropped in between is not mistaken for it (the agent's record of names)."""
+        q("postgres", "CREATE DATABASE twice")
+        q("twice", "CREATE TABLE t(x int); INSERT INTO t SELECT generate_series(1, 10)")
+        run_backup(F.ctx, "full")
+        q("postgres", "DROP DATABASE twice")
+        archived()
+        restore_database(F.ctx, "twice", new_name="twice")                      # the later one (another oid)
+        q("twice", "INSERT INTO t SELECT generate_series(11, 40)")
+        q("postgres", "CREATE DATABASE pgarca_stage_noise")                       # a staging database, created and dropped meanwhile
+        F.ctx.wal.note_databases([{"oid": int(r[0]), "name": r[1]} for r in q("postgres", "SELECT oid, datname FROM pg_database WHERE NOT datistemplate")])
+        q("postgres", "DROP DATABASE pgarca_stage_noise")
+        time.sleep(1.2); t_mid = now(); time.sleep(1.2)
+        q("postgres", "DROP DATABASE twice")                                      # the mistake, again
+        archived()
+        r = restore_database(F.ctx, "twice", new_name="twice_back")
+        self.assertEqual(q("twice_back", "SELECT count(*) FROM t")[0][0], "40", r)
+        self.assertIn("dropped again", r.get("note") or "", r)
+        r = restore_database(F.ctx, "twice", target_time=t_mid, new_name="twice_mid")
+        self.assertEqual(q("twice_mid", "SELECT count(*) FROM t")[0][0], "40", r)
+
+
 if __name__ == "__main__":
     unittest.main()
