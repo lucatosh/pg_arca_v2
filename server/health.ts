@@ -68,11 +68,15 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Node ${n.name} is not responding`, cause: n.lastSeen ? `Last seen ${new Date(n.lastSeen).toISOString()}. Agent stopped, server down or network interrupted.` : 'This node has never sent data.' });
     }
     // agents that talk to the console in clear or without checking its certificate: their token (which commands the node) and everything they send are readable on the network
-    for (const n of online.filter(x => x.tlsInsecure)) {
-      const plain = /^http:\/\//.test(String(n.consoleUrl || ''));
-      add({ severity: isProd ? 'warning' : 'info', code: 'agent_insecure_transport', detail: n.id, nodeId: n.id, nodeName: n.name, title: plain ? `Agent of ${n.name} talks to the console without TLS` : `Agent of ${n.name} does not verify the console certificate`,
-        cause: plain ? `It reaches the console at ${n.consoleUrl}: its token (which can run operations on the node) and what it reports travel in clear. Give the console a certificate (PG_ARCA_TLS_CERT / PG_ARCA_TLS_KEY, or a reverse proxy) and point the agent at https:// (reinstall with the install command, or web_server_url in agent.conf).`
-          : 'tls_insecure_skip_verify is on in its agent.conf: anyone on the path can impersonate the console and command the node. Install the console certificate chain on the node (tls_ca_file) and remove the flag.',
+    // one finding per cluster and kind (a lab with 14 agents in clear filled Today with 14 identical lines), naming the nodes
+    for (const plain of [true, false]) {
+      const ns = online.filter(x => x.tlsInsecure && /^http:\/\//.test(String(x.consoleUrl || '')) === plain);
+      if (!ns.length) continue;
+      const names = ns.map(n => n.name).join(', '); const one = ns.length === 1;
+      add({ severity: isProd ? 'warning' : 'info', code: 'agent_insecure_transport', detail: plain ? 'plain' : 'noverify', nodeId: one ? ns[0].id : undefined, nodeName: one ? ns[0].name : undefined,
+        title: plain ? (one ? `Agent of ${names} talks to the console without TLS` : `${ns.length} agents talk to the console without TLS (${names})`) : (one ? `Agent of ${names} does not verify the console certificate` : `${ns.length} agents do not verify the console certificate (${names})`),
+        cause: plain ? `${one ? 'It reaches' : 'They reach'} the console at ${ns[0].consoleUrl}: the agent token (which can run operations on the node) and what it reports travel in clear. Give the console a certificate (PG_ARCA_TLS_CERT / PG_ARCA_TLS_KEY, or a reverse proxy) and point the agents at https:// (reinstall with the install command shown for the node).`
+          : 'tls_insecure_skip_verify is on in their agent.conf: anyone on the path can impersonate the console and command the node. Install the console certificate chain on the node (tls_ca_file) and remove the flag.',
         action: { label: 'Open the nodes', page: 'nodes' } });
     }
     // Patroni members with no agent: if the nodes WITH an agent fail, nothing can run backups/restores/HBA changes there.
