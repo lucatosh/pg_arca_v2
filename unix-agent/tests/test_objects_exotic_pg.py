@@ -160,6 +160,8 @@ class Exotic(unittest.TestCase):
         old = q(DB, "SELECT c.relname, c.relispartition FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '%s' AND c.relname ~ '^orders_2025_eu_old_'" % SCH)
         self.assertEqual(len(old), 1, old)                  # (test_04 removed the copies kept by the earlier tests)
         self.assertEqual(old[0][1], "f", "the replaced partition is kept, detached")
+        # the bound was proved before the swap with a helper CHECK (no scan under the locks) and the helper is gone
+        self.assertEqual(q(DB, "SELECT count(*) FROM pg_constraint WHERE conname = 'pgarca_bound'")[0][0], "0")
 
     def test_06_inheritance_child_with_rows_deleted(self):
         q(DB, 'DELETE FROM %s."Child" WHERE extra > 25' % QS)

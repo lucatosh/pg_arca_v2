@@ -1532,6 +1532,21 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                                   "table cannot be left NOT VALID before PostgreSQL 18" % ", ".join("%s (%s)" % (o["child"], o["constraint"]) for o in hard),
                                   "restore the related tables too (same instant), or put the recovered tables next to the originals (as new) and recover rows")
             plan["warnings"].append("orphaned rows accepted: " + "; ".join("%d %s of %s point to %s rows that no longer exist (the foreign key stays NOT VALID, i.e. not enforced, until you fix them)" % (o["rows"], "row" if o["rows"] == 1 else "rows", o["child"], o["parent"]) for o in orph))
+        # ---- partitions: their bound is checked NOW, on the recovered table nobody uses, as a CHECK constraint PostgreSQL trusts at ATTACH time - the
+        # attach inside the swap then does not scan the partition while the application's tables are locked (independent review)
+        bound_chk = []
+        for a in plan["attach"]:
+            if not (a.get("part") and a.get("detach_old")):
+                continue
+            cdef = live.scalar("SELECT pg_get_partition_constraintdef(%s::regclass)" % sql_lit(qi(a["schema"], a["name"])))
+            if not cdef:
+                continue
+            try:
+                live.query("ALTER TABLE %s ADD CONSTRAINT pgarca_bound CHECK (%s)" % (qi(a["schema"], _short(a["name"], sfx_new)), cdef))
+                bound_chk.append(a)
+            except EngineError as e:
+                raise EngineError("PGA-GEN-088", "promotion not done, nothing was changed: the recovered %s.%s has rows outside its partition bound (%s)"
+                                  % (a["schema"], a["name"], e.message[:200]), "the partitioning changed since the point: put the recovered table next to the original (as new)")
         # ---- phase 2: the swap, atomically
         if progress:
             progress({"phase": "swap"})
@@ -1659,6 +1674,8 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
                         live.query("ALTER TABLE %s INHERIT %s" % (qi(a["schema"], a["name"]), qi(a["parent_schema"], a["parent"])))
                 except EngineError as e:
                     raise EngineError(e.code, "%s.%s cannot be attached to %s.%s again: %s" % (a["schema"], a["name"], a["parent_schema"], a["parent"], e.message[:300]))
+            for a in bound_chk:                               # its work is done: the partition bound itself holds from now on
+                live.query("ALTER TABLE %s DROP CONSTRAINT pgarca_bound" % qi(a["schema"], a["name"]))
             for x in plan["statistics"]:                      # extended statistics (pg_dump -t does not carry them)
                 live.query("SAVEPOINT pgarca_st")
                 try:
