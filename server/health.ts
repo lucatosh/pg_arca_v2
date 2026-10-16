@@ -69,6 +69,11 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       if (!primary && online.length === 0 && !standbySite) break;                 // every node silent: one finding (no_primary) says it, not one per node
       add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Node ${n.name} is not responding`, cause: n.lastSeen ? `Last seen ${new Date(n.lastSeen).toISOString()}. Agent stopped, server down or network interrupted.` : 'This node has never sent data.' });
     }
+    // two agent processes with the same identity (a manual run next to the service, a cloned VM): each would run the node's operations
+    for (const n of nodes) if (n.duplicateAgentAt && now - Date.parse(n.duplicateAgentAt) < 15 * 60_000)
+      add({ severity: 'critical', code: 'agent_duplicate', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Two agents use the identity of ${n.name}`,
+        cause: 'Heartbeats come from two agent processes with the same credentials: a second copy started by hand next to the service, or a cloned virtual machine. Both can receive this node\'s operations. Stop the extra process; on a cloned machine remove its credentials (/etc/pg-arca or the state directory) and enroll it as a new node.',
+        action: { label: 'Open the nodes', page: 'nodes' } });
     // agents that talk to the console in clear or without checking its certificate: their token (which commands the node) and everything they send are readable on the network
     // one finding per cluster and kind (a lab with 14 agents in clear filled Today with 14 identical lines), naming the nodes
     for (const plain of [true, false]) {

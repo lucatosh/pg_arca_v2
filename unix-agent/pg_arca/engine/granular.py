@@ -1254,6 +1254,9 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
                 idx, seq = dependents(schema, name)
                 tg.query("BEGIN")
                 try:
+                    # the rename waits for every session that touched the table; while it waits, every NEW query on the table queues behind
+                    # it - an application outage. Bounded: after 10 s nothing is changed and the operator is told why
+                    tg.query("SET LOCAL lock_timeout = '10s'")
                     tg.query("ALTER TABLE %s RENAME TO %s" % (fq, quote_ident(keep_as)))
                     for i in idx:
                         tg.query("ALTER INDEX %s.%s RENAME TO %s" % (quote_ident(schema), quote_ident(i), quote_ident(short(i, sfx))))
@@ -1278,6 +1281,7 @@ def promote_object(ctx, stage_db, spec, mode="as_new", drop_stage=True, into=Non
                 idx, seq = ([], []) if comes_back else dependents(work, name)
                 tg.query("BEGIN")
                 try:
+                    tg.query("SET LOCAL lock_timeout = '10s'")
                     for i in idx:
                         tg.query("ALTER INDEX %s.%s RENAME TO %s" % (quote_ident(work), quote_ident(i), quote_ident(short(i, sfx))))
                     for s_ in seq:
@@ -1516,6 +1520,7 @@ def apply_rows(ctx, stage_db, spec, restore_keys=(), delete_keys=(), into=None, 
         ovr = " OVERRIDING SYSTEM VALUE" if li["identity_always"] else ""
         tg.query("BEGIN")
         try:
+            tg.query("SET LOCAL lock_timeout = '10s'")             # never an unbounded wait behind the application's sessions
             touched = [k for k in restore_keys + delete_keys if k in cur]
             if touched:
                 tg.query("CREATE TABLE %s.%s AS SELECT t.* FROM %s t WHERE %s = ANY(ARRAY[%s])" % (quote_ident(schema), quote_ident(safe), fq, keyexpr, ",".join(sql_lit(k) for k in touched)))

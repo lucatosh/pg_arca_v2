@@ -27,6 +27,26 @@ logging.basicConfig(level=os.environ.get("PG_ARCA_LOG_LEVEL", "INFO"), format="%
 logger = logging.getLogger("pg_arca_agent")
 
 
+def _single_instance(state_dir):
+    """flock on <state_dir>/agent.lock, held for the life of the process. None when another agent holds it. A directory that cannot be used
+    (read-only, missing permissions) does not stop the agent: the console still detects two processes sharing one identity."""
+    import fcntl
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        fd = os.open(os.path.join(state_dir, "agent.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as e:
+        logger.warning("single-instance lock not available (%s): continuing", e)
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    os.ftruncate(fd, 0)
+    os.write(fd, ("%d\n" % os.getpid()).encode())
+    return fd
+
+
 def main():
     config = load_config(os.environ.get("PG_ARCA_CONF_FILE"))
     problems = validate(config)
@@ -35,6 +55,11 @@ def main():
             logger.error("configuration: %s", p)
         return 2
 
+    # one agent per identity: a second copy (started by hand next to the service) would receive and run the same operations
+    lock = _single_instance(config.get("state_dir") or os.path.dirname(config.get("credentials_file") or "/var/lib/pgarca/state/x"))
+    if lock is None:
+        logger.error("another pg_arca agent is already running with this state directory: not starting a second one (stop the other one first)")
+        return 3
     logger.info("pg_arca agent %s starting on %s (mode=%s)", AGENT_VERSION, config["node_name"], config["connection_mode"])
     rt = Runtime(config)
     inst = rt.instance

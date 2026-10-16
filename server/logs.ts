@@ -30,6 +30,9 @@ export function attachLogSocket(server: http.Server, authenticate: (req: any) =>
   wss.on('connection', (ws: WebSocket, req: any) => onConnection(ws, req, authenticate));
   // a session that ends (logout, user disabled or removed, expiry) also ends its live log stream
   setInterval(() => { for (const s of activeSubscriptions) if (s.req && !authenticate(s.req)) { try { s.ws.close(4401, 'session ended'); } catch { /* gone */ } } }, 15_000).unref();
+  // half-open sockets (a laptop asleep, a NAT entry dropped) stay OPEN for hours and keep their cluster's agents shipping every log line:
+  // a protocol ping every 30 s, and a socket that did not answer the previous one is terminated
+  setInterval(() => { for (const s of activeSubscriptions) { const w: any = s.ws; if (w.__pgaDead) { try { s.ws.terminate(); } catch { /* gone */ } continue; } w.__pgaDead = true; try { s.ws.ping(); } catch { /* gone */ } } }, 30_000).unref();
 }
 
 function shouldEmitLogToSub(sub: WsSubscription, entry: LiveLogEntry): boolean {
@@ -143,6 +146,8 @@ function onConnection(ws: WebSocket, req: any, authenticate: (req: any) => strin
     }
   });
 
+  ws.on('pong', () => { (ws as any).__pgaDead = false; });
+  ws.on('message', () => { (ws as any).__pgaDead = false; });
   const gone = () => { activeSubscriptions.delete(sub); sub.queue = []; recompute(); };
   ws.on('close', gone);
   ws.on('error', gone);

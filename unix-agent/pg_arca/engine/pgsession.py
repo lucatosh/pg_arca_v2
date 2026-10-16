@@ -89,7 +89,12 @@ class PgSession(object):
             opts += " -c default_transaction_read_only=on"
         env = conn.env()
         env["PGOPTIONS"] = (env.get("PGOPTIONS", "") + " " + opts).strip()
-        cmd = [conn.exe("psql"), "-X", "-q", "-A", "-t", "-F", self.SEP, "-P", "pager=off", "-v", "ON_ERROR_STOP=0"] + conn.args() + ["-d", self.dbname]
+        # over TCP (a remote 'into' server, a recovery host): keepalives after 60 s of silence - a firewall that silently drops an idle
+        # connection otherwise left the session waiting on a dead socket for the OS default (hours)
+        dbarg = self.dbname
+        if conn.host and not conn.host.startswith("/"):
+            dbarg = "dbname='%s' keepalives=1 keepalives_idle=60 keepalives_interval=10 keepalives_count=6" % self.dbname.replace("\\", "\\\\").replace("'", "\\'")
+        cmd = [conn.exe("psql"), "-X", "-q", "-A", "-t", "-F", self.SEP, "-P", "pager=off", "-v", "ON_ERROR_STOP=0"] + conn.args() + ["-d", dbarg]
         try:
             self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                       universal_newlines=True, bufsize=1, env=env, close_fds=True)

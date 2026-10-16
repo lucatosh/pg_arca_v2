@@ -56,6 +56,7 @@ export interface NodeRecord {
   consoleUrl?: string;        // the console address this agent uses (upgrade command)
   tlsInsecure?: boolean;      // the agent talks to the console in clear (http://) or without verifying its certificate
   agentStarted?: number;     // start time of the agent process (a change = restart: what the old process had leased is handed back)
+  duplicateAgentAt?: string; // a heartbeat with an OLDER start time than the last one: two agent processes share these credentials
   remoteIp?: string;
   /** inbound URL, only if the operator chose inbound mode */
   inboundUrl?: string;

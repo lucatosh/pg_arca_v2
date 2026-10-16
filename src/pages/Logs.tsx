@@ -22,11 +22,12 @@ export function LogsTab({ c }: { c: any }) {
   const send = (m: any) => { try { if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(m)); } catch { /* reconnecting */ } };
 
   useEffect(() => {
-    let ws: WebSocket | null = null; let dead = false; let retry: any;
+    let ws: WebSocket | null = null; let dead = false; let retry: any; let lastMsg = Date.now();
     const open = () => {
       ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/logs`); wsRef.current = ws;
       ws.onopen = () => { setState('live'); ws!.send(JSON.stringify({ type: 'subscribe', clusterId: c.id, minLevel: live.current.level === 'DEBUG' ? 'all' : live.current.level, isPaused: live.current.paused || document.hidden })); };
       ws.onmessage = ev => {
+        lastMsg = Date.now();
         let m: any; try { m = JSON.parse(ev.data); } catch { return; }
         if (m.type === 'init') setLines((m.logs || []).filter((l: any) => l.clusterId === c.id).slice(-KEEP));
         else if (m.type === 'batch' && !live.current.paused) {
@@ -38,10 +39,13 @@ export function LogsTab({ c }: { c: any }) {
       ws.onclose = () => { if (dead) return; setState('closed'); retry = setTimeout(open, 3000); };
     };
     open();
+    // a stream that went silent may be a dead connection the browser has not noticed (sleep, network change): ask, and reconnect without an answer
+    const hb = setInterval(() => { if (!ws || ws.readyState !== WebSocket.OPEN) return; if (Date.now() - lastMsg > 40_000) { try { ws.close(); } catch { /* reconnects */ } return; }
+      if (Date.now() - lastMsg > 25_000) send({ type: 'ping' }); }, 5_000);
     // A hidden tab is not watching: stop the full stream (the agents go back to warnings only after a minute), resume with a fresh backlog when it comes back.
     const vis = () => { if (document.hidden) send({ type: 'pause' }); else if (!live.current.paused) { send({ type: 'resume' }); send({ type: 'subscribe', clusterId: c.id }); } };
     document.addEventListener('visibilitychange', vis);
-    return () => { dead = true; clearTimeout(retry); document.removeEventListener('visibilitychange', vis); ws?.close(); wsRef.current = null; };
+    return () => { dead = true; clearTimeout(retry); clearInterval(hb); document.removeEventListener('visibilitychange', vis); ws?.close(); wsRef.current = null; };
   }, [c.id]);
 
   useEffect(() => { const b = box.current; if (b && stick.current) b.scrollTop = b.scrollHeight; }, [lines, level, search]);

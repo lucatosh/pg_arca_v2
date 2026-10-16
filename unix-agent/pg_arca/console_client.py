@@ -77,6 +77,31 @@ class ConsoleClient(threading.Thread):
                 body = raw[:300]
             raise ConsoleError(e.code, body)
 
+    REPORT_MAX = 3 * 1024 * 1024                  # the console takes request bodies up to 4 MB
+
+    def _report(self, op_id, status, result=None, error=None, progress=None):
+        """One report. A refusal that will never change (400/404/409/413/422: the operation is unknown, belongs to another node, is already over,
+        or the body is too big) is final: logged and dropped. Before, it was retried forever AHEAD of the heartbeat - the node went 'offline' and
+        received no more work until someone restarted the agent. Network errors and 5xx raise: the report is kept and sent again."""
+        body = {"status": status} if status == "running" else {"status": status, "result": result, "error": error}
+        if progress is not None:
+            body["progress"] = progress
+        if status != "running":
+            try:
+                n = len(json.dumps(result))
+            except (TypeError, ValueError):
+                n = self.REPORT_MAX + 1
+            if n > self.REPORT_MAX:
+                logger.warning("result of %s is %d bytes: sent without its detail", op_id, n)
+                body["result"] = {"result_too_large": n, "note": "the result was too large to send to the console (%d bytes); the outcome is %s" % (n, status)}
+        try:
+            return self._post("/api/agent/ops/%s/report" % op_id, body)
+        except ConsoleError as e:
+            if e.status in (400, 404, 409, 413, 422):
+                logger.warning("console refused the %s report of operation %s for good (%s %s): dropped", status, op_id, e.status, str(e.body)[:200])
+                return {}
+            raise
+
     # ------------------------------------------------------------------ status for the installer / the administrator on the server
     def _status(self, state, **kw):
         """state_dir/console_status.json: what the agent knows about its registration (the installer waits on it and tells the user)."""
@@ -175,14 +200,20 @@ class ConsoleClient(threading.Thread):
                 self._status("connected", node_id=(self.creds or {}).get("node_id"), cluster_id=(self.creds or {}).get("cluster_id"))
                 backoff = 1.0
                 self._rejected = 0
+                self._rejected_since = None
                 self.stop_ev.wait(interval)
             except ConsoleError as e:
                 if e.status == 401 and self.creds:
-                    # node/cluster deleted or revoked in the console: after a few consecutive rejections (not a blip) forget the stale credentials
-                    # and announce ourselves again, so an administrator can simply approve the server anew (no manual reset on the node)
+                    # 'node_deleted': an administrator removed this node - announce ourselves again at once, an administrator approves the server
+                    # anew (no manual reset on the node). 'node_unknown' or a plain 401 can also be a console started on an empty or wrong data
+                    # directory, or something in the path (a gateway): giving up the credentials of the whole fleet on that would need every node
+                    # approved again. Only a rejection that lasts (30 min by default) does it, and the credentials are set aside, not deleted.
                     self._rejected = getattr(self, "_rejected", 0) + 1
-                    unknown = "node_unknown" in str(e.body)       # the console says this node id no longer exists: definitive, no need to wait
-                    if (unknown or self._rejected >= 3) and not self.config.get("enrollment_token"):
+                    if not getattr(self, "_rejected_since", None):
+                        self._rejected_since = time.time()
+                    deleted = "node_deleted" in str(e.body)
+                    lasting = time.time() - self._rejected_since >= float(self.config.get("credentials_forget_after_seconds", 1800))
+                    if (deleted or lasting) and not self.config.get("enrollment_token"):
                         logger.warning("console keeps rejecting our credentials (node deleted/revoked): dropping them and announcing again for approval")
                         self.forget_credentials()
                     else:
@@ -214,15 +245,18 @@ class ConsoleClient(threading.Thread):
                 backoff = min(backoff * 2, 60)
 
     def forget_credentials(self):
+        """Set the credentials aside (<file>.rejected-<time>: an administrator can put them back) and announce this server again. Operations
+        still running finish; their reports, refused under the old identity, are dropped (see _report)."""
         d = os.path.dirname(self.config["credentials_file"])
+        stamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
         for f in (self.config["credentials_file"], os.path.join(d, "join.json")):
             try:
-                os.unlink(f)
+                os.rename(f, "%s.rejected-%s" % (f, stamp))
             except OSError:
                 pass
         self.creds = None
         self._rejected = 0
-        self.inflight.clear()
+        self._rejected_since = None
 
     def stop(self):
         self.stop_ev.set()
@@ -237,23 +271,29 @@ class ConsoleClient(threading.Thread):
         if now - self.last_discovery > wait_s:
             full_discovery = self.rt.refresh()
             self.last_discovery = now
-        snapshot = self.rt.build_snapshot(self.wal, self.cas)
-
-        # results first: the console must learn outcomes before we ask for more work
+        # results and lease keep-alives FIRST, before the telemetry (which can take a minute while PostgreSQL is slow or restarting: the leases
+        # lapsed meanwhile and the console handed running operations back)
         for op_id, (status, result, error) in list(self.unreported.items()):
-            self._post("/api/agent/ops/%s/report" % op_id, {"status": status, "result": result, "error": error})
+            self._report(op_id, status, result, error)
             del self.unreported[op_id]
         for op_id, fut in list(self.inflight.items()):
             if fut.done():
                 status, result, error = fut.result()
                 del self.inflight[op_id]
                 self.unreported[op_id] = (status, result, error)
-                self._post("/api/agent/ops/%s/report" % op_id, {"status": status, "result": result, "error": error})
+                self._report(op_id, status, result, error)
                 del self.unreported[op_id]
             else:
-                r = self._post("/api/agent/ops/%s/report" % op_id, {"status": "running", "progress": self.executor.progress_of(op_id)})   # lease keep-alive + live progress
+                r = self._report(op_id, "running", progress=self.executor.progress_of(op_id))   # lease keep-alive + live progress
                 if r.get("cancel"):
                     self.executor.request_cancel(op_id)
+        # while operations run the loop turns every second for their progress: the full snapshot (psql sessions on production, up to a MB on
+        # the wire) goes at the normal pace only
+        if not self.inflight or now - getattr(self, "_snap_at", 0) >= float(self.config.get("heartbeat_interval_seconds", 10)) or full_discovery:
+            snapshot = self.rt.build_snapshot(self.wal, self.cas)
+            self._snap_at = now
+        else:
+            snapshot = None
 
         free_slots = max(0, WORKERS - len(self.inflight))
         wait = 0 if self.inflight or not free_slots else min(8, int(self.config.get("heartbeat_interval_seconds", 10)))

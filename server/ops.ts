@@ -198,6 +198,23 @@ export function requeueOnRestart(draft: any, nodeId: string): number {
   return n;
 }
 
+/** Remember a node removed by an administrator (bounded): its agent is told 'node_deleted' and announces itself again right away. */
+export function tombstone(d: any, id: string) {
+  const t = ((d.settings as any).revokedNodes ||= {}); t[id] = new Date().toISOString();
+  const keys = Object.keys(t); if (keys.length > 500) for (const k of keys.sort((a, b) => t[a].localeCompare(t[b])).slice(0, keys.length - 500)) delete t[k];
+}
+
+/** At console start: the leases were persisted with the clock of before the stop. Without a grace period the first heartbeat after a restart (or
+ *  a long outage) found every running operation of the fleet 'lease expired' and handed it back while its agent was still running it.
+ *  Every lease gets a fresh period from now: agents still at work renew it with their next keep-alive. */
+export function graceLeasesOnBoot(store: Store, leaseSeconds = 120, now = Date.now()): Promise<number> {
+  return store.mutate(draft => {
+    let n = 0;
+    for (const op of draft.operations) if ((op.status === 'leased' || op.status === 'running') && op.leaseUntil) { op.leaseUntil = new Date(now + leaseSeconds * 1000).toISOString(); n++; }
+    return n;
+  });
+}
+
 /** Agent poll: hand out runnable operations for a node. */
 export function lease(store: Store, nodeId: string, max = 1, leaseSeconds = 120, now = Date.now()): Promise<Operation[]> {
   return store.mutate(draft => {
@@ -205,8 +222,10 @@ export function lease(store: Store, nodeId: string, max = 1, leaseSeconds = 120,
     // 1. expire / redeliver
     for (const op of draft.operations) {
       if (isTerminal(op.status)) continue;
-      if (op.status === 'queued' && now - Date.parse(op.createdAt) > op.ttlSeconds * 1000) {
-        push(op, 'expired', 'not started within ttl'); continue;
+      // the TTL is for work that never STARTED: an operation handed back after a lapsed lease (console restart, network cut, agent restart)
+      // was already running somewhere - measured from when it was handed back, so the agent that comes back can still report its outcome
+      if (op.status === 'queued' && now - Date.parse(op.attempts ? op.updatedAt : op.createdAt) > op.ttlSeconds * 1000) {
+        push(op, 'expired', op.attempts ? 'not picked up again within ttl after the agent went away' : 'not started within ttl'); continue;
       }
       if ((op.status === 'leased' || op.status === 'running') && op.leaseUntil && Date.parse(op.leaseUntil) < now) {
         if (op.attempts >= MAX_ATTEMPTS) { push(op, 'failed', 'lease expired; max attempts reached'); op.error = 'agent did not report a result'; }
@@ -237,9 +256,17 @@ export function report(store: Store, nodeId: string, opId: string, status: 'runn
     const op = draft.operations.find(o => o.id === opId);
     if (!op) return { ok: false, reason: 'unknown operation' };
     if (op.nodeId !== nodeId) return { ok: false, reason: 'operation belongs to another node' };
-    if (isTerminal(op.status)) {
-      // a late duplicate of the same terminal outcome is fine; a conflicting one is rejected
-      return op.status === status ? { ok: true, op } : { ok: false, op, reason: `already ${op.status}` };
+    // the console gave up on it while the owning agent was cut off (lease lapsed, then max attempts or ttl): the agent's real outcome wins
+    const gaveUp = op.status === 'expired' && op.attempts > 0 || op.status === 'failed' && op.error === 'agent did not report a result';
+    if (isTerminal(op.status) && !gaveUp) {
+      // a late duplicate of the same terminal outcome is fine (a re-sent 'failed' after a cancel is the same outcome); a conflicting one is rejected
+      return op.status === status || (op.status === 'cancelled' && status === 'failed') ? { ok: true, op } : { ok: false, op, reason: `already ${op.status}` };
+    }
+    if (gaveUp || (op.status === 'queued' && op.attempts > 0)) {
+      // adopted again: the agent never stopped working on it (a keep-alive) or finished it (an outcome) - nobody else may get it now
+      if (status === 'running') push(op, 'running', 'the agent that runs it is back: adopted again');
+      else op.history.push({ at: nowIso(), status: op.status, note: 'the agent that ran it is back with its outcome' });
+      op.error = undefined;
     }
     if (status === 'running') {
       if (op.status === 'queued') return { ok: false, op, reason: 'not leased' };

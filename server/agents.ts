@@ -47,7 +47,11 @@ export function authNode(store: Store, req: Request): NodeRecord | null {
 function deny(store: Store, req: Request, res: Response) {
   const id = String(req.headers['x-arca-node'] || '');
   const known = Object.prototype.hasOwnProperty.call(store.peek().nodes, id);
-  return res.status(401).json({ error: id && !known ? 'node_unknown' : 'unauthorized' });
+  // 'node_deleted': an administrator removed this node (a tombstone is kept) - the agent announces itself again at once. 'node_unknown': never
+  // heard of it - also what a console started on an empty or wrong data directory says to the WHOLE fleet: the agent waits a long time before
+  // giving up its credentials (a restored console accepts them again)
+  const tomb = !!id && !known && Object.prototype.hasOwnProperty.call((store.peek().settings as any).revokedNodes || {}, id);
+  return res.status(401).json({ error: id && !known ? (tomb ? 'node_deleted' : 'node_unknown') : 'unauthorized' });
 }
 
 /** Recompute the persisted cluster view from the nodes that belong to it (called inside a mutate). */
@@ -223,7 +227,12 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       // the CA file the agent trusts the console with (a private / self-signed certificate): the upgrade command must use the same one
       if (typeof b.tls_ca_file === 'string' && /^\/[^\s'"`$;|&<>]{1,200}$/.test(b.tls_ca_file)) n.tlsCaFile = b.tls_ca_file; else if (b.tls_ca_file === null) delete n.tlsCaFile;
       const started = Number(b.agent_started);
-      if (Number.isFinite(started) && started > 0 && n.agentStarted !== started) { if (n.agentStarted) ops.requeueOnRestart(d, n.id); n.agentStarted = started; }
+      // only a NEWER start time is a restart: two processes with the same credentials (a manual run next to the service, a cloned VM) would
+      // alternate and hand each other's running operations back at every heartbeat. An older one is said, not acted on.
+      if (Number.isFinite(started) && started > 0 && n.agentStarted !== started) {
+        if (!n.agentStarted || started > n.agentStarted) { if (n.agentStarted) ops.requeueOnRestart(d, n.id); n.agentStarted = started; }
+        else n.duplicateAgentAt = new Date(nowMs).toISOString();
+      }
       if (snap) {
         n.snapshot = snap;
         const total = Number(snap.postgres?.xact_total);
@@ -245,7 +254,7 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       const plan = geoStanzaPlan(store.peek(), cid);
       if (plan) await store.mutate(d => { for (const id of plan.ids) { const c = d.clusters.find((x: any) => x.id === id); if (c && !c.geoStanza) { c.geoStanza = plan.stanza; ops.audit(d, { clusterId: id, actor: 'console', action: 'geo.stanza', status: 'OK', details: { stanza: plan.stanza } }); } } });
     }                                    // telemetry: recomputed at every heartbeat, written within seconds (store.ts LAZY_MS)
-    const max = Math.max(0, Math.min(Number(b.max_ops ?? 1) || 1, 5));
+    const mo = Number(b.max_ops ?? 1); const max = Math.max(0, Math.min(Number.isFinite(mo) ? mo : 1, 5));       // 0 = every slot busy: nothing more for now
     // Long-poll: hold the request (<= wait_seconds) until an operation is runnable for this node, so operator
     // actions reach NAT'ed agents in ~a second without any inbound port.
     const waitMs = Math.max(0, Math.min(Number(b.wait_seconds ?? 0) || 0, 20)) * 1000;
@@ -386,6 +395,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       const n = d.nodes[req.params.id];
       if (!n) return null;
       delete d.nodes[req.params.id];
+      ops.tombstone(d, req.params.id);
       ops.audit(d, { clusterId: n.clusterId, actor: actorOf(req), action: 'node.revoke', status: 'OK', details: { name: n.name } });
       for (const o of d.operations) if (o.nodeId === n.id && (o.status === 'queued')) { o.status = 'cancelled'; o.history.push({ at: nowIso(), status: 'cancelled', note: 'node revoked' }); }
       if (n.clusterId) refreshCluster(d, n.clusterId);

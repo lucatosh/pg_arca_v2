@@ -114,6 +114,7 @@ export function hintFor(msg?: string | null): string {
   if (/stale request/.test(m)) return 'The primary has changed in the meantime. Refresh the page and try again.';
   if (/Patroni is not configured|not reachable|unreachable/.test(m)) return 'The agent on this node cannot reach the Patroni REST API. Check the URL under Nodes → Paths and discovery (usually http://127.0.0.1:8008) and that Patroni is running.';
   if (/PGA-GEN-096/.test(m)) return 'After the swap some rows would reference rows that do not exist (foreign key): nothing was changed. Restore the related tables to the same point in time too, or restore them “next to the originals” and recover the rows you need. If you know this is fine you can proceed: those foreign keys will stay NOT VALID.';
+  if (/lock timeout/i.test(m)) return 'Another session kept the table busy for more than 10 seconds (a long transaction, or a session left idle inside a transaction): nothing was changed, so the application was never blocked. Find it in pg_stat_activity (state “idle in transaction” or an old xact_start), let it finish or end it, then put back again.';
   if (/NOT confirmed/.test(m)) return 'Patroni accepted the request but the change was not confirmed in time: check the member states and the Patroni logs.';
   return '';
 }

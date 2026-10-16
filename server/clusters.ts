@@ -8,7 +8,7 @@ import { agentOutdated } from './agentbuild';
 import { geoOf } from './geo';
 import type { Request, Response } from 'express';
 import { Store, nowIso } from './store';
-import { audit } from './ops';
+import { audit, tombstone } from './ops';
 import { DirectDriver, validateConnInput } from './direct';
 import { normFolder, validFolder } from './policies';
 
@@ -117,7 +117,7 @@ export function mountClusterRoutes(app: any, store: Store, direct: DirectDriver,
       d.clusters = d.clusters.filter((x: any) => x.id !== c.id);
       delete d.directConnections[c.id];
       const revoked: string[] = [];
-      for (const [id, n] of Object.entries(d.nodes)) if ((n as any).clusterId === c.id) { revoked.push((n as any).name); delete d.nodes[id]; }
+      for (const [id, n] of Object.entries(d.nodes)) if ((n as any).clusterId === c.id) { revoked.push((n as any).name); delete d.nodes[id]; tombstone(d, id); }
       for (const o of d.operations) if (o.clusterId === c.id && !['succeeded', 'failed', 'expired', 'cancelled'].includes(o.status)) {
         o.status = 'cancelled'; o.updatedAt = nowIso(); o.history.push({ at: o.updatedAt, status: 'cancelled', note: 'cluster detached' });
       }
