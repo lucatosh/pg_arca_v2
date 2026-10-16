@@ -26,7 +26,13 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def find_bin():
-    for d in sorted(glob.glob("/usr/lib/postgresql/*/bin"), reverse=True) + sorted(glob.glob("/usr/pgsql-*/bin"), reverse=True):
+    # PG_ARCA_TEST_BIN, then the Debian / PGDG-RPM layouts, then whatever initdb is on the PATH (source builds, Alpine: /usr/local/bin)
+    import shutil as _sh
+    cands = ([os.environ["PG_ARCA_TEST_BIN"]] if os.environ.get("PG_ARCA_TEST_BIN") else []) + \
+        sorted(glob.glob("/usr/lib/postgresql/*/bin"), reverse=True) + sorted(glob.glob("/usr/pgsql-*/bin"), reverse=True)
+    if _sh.which("initdb"):
+        cands.append(os.path.dirname(os.path.realpath(_sh.which("initdb"))))
+    for d in cands:
         if os.path.exists(os.path.join(d, "initdb")):
             return d
     return None
