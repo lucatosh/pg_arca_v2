@@ -118,6 +118,7 @@ def changed_chunks(sess, tli, chain, files, seg_blocks, default_spc_oid=1663, gl
             if rel.startswith("pg_tblspc/%s/" % oid):
                 out[rel] = ALL
     pages_per_chunk = CHUNK_SIZE // 8192
+    limited = set()
     for s, e in chain:
         sql = ("SELECT relfilenode, reltablespace, reldatabase, relforknumber, relblocknumber, is_limit_block "
                "FROM pg_wal_summary_contents(%d, '%X/%08X', '%X/%08X')" % (int(tli), s >> 32, s & 0xFFFFFFFF, e >> 32, e & 0xFFFFFFFF))
@@ -136,6 +137,7 @@ def changed_chunks(sess, tli, chain, files, seg_blocks, default_spc_oid=1663, gl
                 base = "%s/%d/%d" % (p, db, relfilenode)
             if limit:                                          # truncated: every segment of the relation is examined in full
                 out[base] = ALL
+                limited.add(base)
                 for k in list(out):
                     if k.startswith(base + "."):
                         out[k] = ALL
@@ -143,7 +145,12 @@ def changed_chunks(sess, tli, chain, files, seg_blocks, default_spc_oid=1663, gl
             seg = block // seg_blocks
             path = base if seg == 0 else "%s.%d" % (base, seg)
             cur = out.get(path)
-            if cur is ALL or (out.get(base) is ALL and seg > 0):
+            if cur is ALL:
+                continue
+            if base in limited:
+                # a segment of a truncated relation met AFTER its limit block: in full too (it used to be left out, then skipped as unchanged
+                # when its size matched the parent's - independent engine review)
+                out[path] = ALL
                 continue
             if cur is None:
                 cur = out[path] = set()

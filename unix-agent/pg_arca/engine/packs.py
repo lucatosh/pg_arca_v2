@@ -22,10 +22,12 @@ first and are folded into the sorted lists every FOLD_AT entries.
 import array
 import bisect
 import os
+import re
 import socket
 import struct
 import threading
 import time
+import uuid
 
 from pg_arca.engine.util import EngineError, fsync_dir
 
@@ -35,7 +37,7 @@ FORMAT = 2
 HDR_LEN = 16                         # magic(8) + u32 format + u32 reserved
 REC_HDR = struct.Struct("<32sI")     # hash, blob length
 IDX_REC = struct.Struct("<32sQI")    # hash, offset, blob length
-CACHE_LAYOUT = 2                     # index.cache = keys (32 B each) + locations (int64, pack number relative to the root) + lengths (uint32)
+CACHE_LAYOUT = 3                     # index.cache = keys (32 B each) + locations (int64, pack number relative to the root) + lengths (uint32) + token (32 B, = .json)
 PACK_MAX = int(os.environ.get("PG_ARCA_PACK_MAX_MB", "256")) * 1048576
 FOLD_AT = 262144                     # recent entries folded into the sorted index (about 64 packs of 64 KiB chunks)
 OFF_BITS = 40                        # pack number << 40 | offset (packs of up to 1 TiB)
@@ -109,8 +111,10 @@ def new_pack_id():
     with _seq_lock:
         _seq[0] += 1
         n = _seq[0]
-    host = socket.gethostname().split(".")[0][:24] or "host"
-    return "%s-%s-%d-%d" % (time.strftime("%Y%m%dT%H%M%S", time.gmtime()), host, os.getpid(), n)
+    host = re.sub(r"[^A-Za-z0-9_]", "_", socket.gethostname().split(".")[0][:24]) or "host"
+    # + a random part: two agents with the same short host name (db1.dc1 / db1.dc2, containers with a fixed host name and PID 1) starting in the
+    # same second had the same id and overwrote each other's pack in a shared repository (independent engine review)
+    return "%s-%s-%d-%d-%s" % (time.strftime("%Y%m%dT%H%M%S", time.gmtime()), host, os.getpid(), n, uuid.uuid4().hex[:8])
 
 
 class PackWriter(object):
@@ -123,7 +127,7 @@ class PackWriter(object):
         self.final = os.path.join(d, self.id + ".pack")
         self.idx = os.path.join(d, self.id + ".idx")
         self.open_path = self.final + ".open"
-        self.f = open(self.open_path, "wb")
+        self.f = open(self.open_path, "xb")                     # never truncate someone else's pack
         self.f.write(_hdr(PACK_MAGIC))
         self.size = HDR_LEN
         self.entries = []
@@ -262,12 +266,14 @@ class ChunkIndex(object):
                 meta = json.load(f)
             names = list(meta.get("packs") or [])
             cnt = int(meta.get("count") or 0)
-            if names and meta.get("layout") == CACHE_LAYOUT and all(n in idx_names for n in names):
+            tok = str(meta.get("token") or "").encode("ascii")
+            if names and meta.get("layout") == CACHE_LAYOUT and len(tok) == 32 and all(n in idx_names for n in names):
                 with open(cp, "rb") as f:
                     blob = f.read()
-                if len(blob) == cnt * 44:
+                # the blob ends with the token of the .json written with it: a blob and a .json of two different writers never pair up
+                if len(blob) == cnt * 44 + 32 and blob[-32:] == tok:
                     cached_names = names
-                    cached = (blob, cnt)
+                    cached = (blob[:-32], cnt)
         except (IOError, OSError, ValueError):
             cached = None
         for n in cached_names:
@@ -305,16 +311,18 @@ class ChunkIndex(object):
     def _write_cache(self, d, tab, base, pack_paths):
         """index.cache in the table's own layout (keys, locations with pack numbers RELATIVE to this root, lengths) + .json listing the packs; best effort."""
         import json
-        tmp = os.path.join(d, CACHE_NAME + ".tmp.%d" % os.getpid())
+        token = uuid.uuid4().hex
+        tmp = os.path.join(d, CACHE_NAME + ".tmp.%d.%s" % (os.getpid(), token[:8]))
         try:
             locs = tab.locs if not base else array.array("q", (v - (base << OFF_BITS) for v in tab.locs))
             with open(tmp, "wb") as f:
                 f.write(tab.keys)
                 f.write(locs.tobytes())
                 f.write(tab.lens.tobytes())
+                f.write(token.encode("ascii"))
             os.rename(tmp, os.path.join(d, CACHE_NAME))
             with open(tmp, "w") as f:
-                json.dump({"layout": CACHE_LAYOUT, "packs": [os.path.basename(p)[:-5] + ".idx" for p in pack_paths], "count": tab.n}, f)
+                json.dump({"layout": CACHE_LAYOUT, "packs": [os.path.basename(p)[:-5] + ".idx" for p in pack_paths], "count": tab.n, "token": token}, f)
             os.rename(tmp, os.path.join(d, CACHE_NAME + ".json"))
         except OSError:
             try:

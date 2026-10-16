@@ -28,7 +28,9 @@ class DeltaHoleTests(unittest.TestCase):
                 for i in range(9, 24): fh.write(ZEROPAGE)
             e_inc, _ = backup_file(repo, "base/5/16384", f, os.stat(f), 0x1000, True)
             repo.flush()
-            self.assertEqual(sorted(c[0] for c in e_inc["chunks"]), [CHUNK_SIZE], "only chunk 1 kept; chunk 2 (all zero) dropped")
+            # chunk 1 changed; chunk 2 is all zero and is kept too since the engine review of 16/10 (a zeroed range replaces what the parent had there;
+            # deduplicated, it costs no space)
+            self.assertEqual(sorted(c[0] for c in e_inc["chunks"]), [CHUNK_SIZE, 2 * CHUNK_SIZE])
             merged = {"size": e_inc["size"], "mode": 0o600, "kind": "pages", "chunks": {}}  # rel below is the relation path
             for off, ln, h in e_full["chunks"] + e_inc["chunks"]:
                 merged["chunks"][off] = (ln, h)

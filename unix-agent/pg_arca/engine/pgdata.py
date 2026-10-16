@@ -1,11 +1,12 @@
 """PGDATA walking (incl. tablespaces), file classification and page helpers."""
 
+import errno
 import os
 import re
 import stat
 import struct
 
-from pg_arca.engine.util import BLCKSZ
+from pg_arca.engine.util import BLCKSZ, EngineError
 
 ZEROPAGE = b"\x00" * BLCKSZ
 
@@ -72,8 +73,19 @@ def skipped_links(pgdata, limit=20):
     return out
 
 
+def _walk_error(e):
+    """A directory that cannot be listed is data that would silently be missing from a 'COMPLETE' backup (EACCES on base/<oid>, EIO, ESTALE on a
+    network mount, EMFILE): the backup fails instead (independent engine review). A directory that vanished while walking (a dropped database,
+    pgsql_tmp) is not an error."""
+    if getattr(e, "errno", None) == errno.ENOENT:
+        return
+    raise EngineError("PGA-GEN-044", "cannot read the directory %s: %s" % (getattr(e, "filename", "?"), e.strerror or e),
+                      "the agent user must be able to read the whole data directory and every tablespace (owner postgres, or run the agent as that user); "
+                      "check the storage if the error is an I/O one")
+
+
 def _walk_tree(root, rel_prefix, exclude_top=True):
-    for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    for cur, dirs, files in os.walk(root, topdown=True, followlinks=False, onerror=_walk_error):
         rel_root = os.path.relpath(cur, root)
         rel_root = "" if rel_root == "." else rel_root
         keep = []
@@ -121,6 +133,18 @@ def walk_pgdata(pgdata):
     for item in _walk_tree(pgdata, ""):
         yield item
     for oid, target in tablespace_links(pgdata).items():
-        if os.path.isdir(target):
-            for item in _walk_tree(target, "pg_tblspc/%s/" % oid, exclude_top=False):
-                yield item
+        # a tablespace whose directory is missing, or a mount point without its filesystem (no PG_<version>_<catalog> inside), is not an empty
+        # tablespace: it is data the backup cannot see - fail instead of storing a set without it
+        if not os.path.isdir(target):
+            raise EngineError("PGA-GEN-045", "tablespace %s points to %s, which is not a readable directory" % (oid, target),
+                              "mount the tablespace's filesystem (or fix the pg_tblspc/%s link) and run the backup again" % oid)
+        try:
+            names = os.listdir(target)
+        except OSError as e:
+            _walk_error(e)
+            names = []
+        if not any(n.startswith("PG_") for n in names):
+            raise EngineError("PGA-GEN-045", "tablespace %s (%s) holds no PostgreSQL directory (PG_<version>_...): is its filesystem mounted?" % (oid, target),
+                              "mount the tablespace's filesystem and run the backup again")
+        for item in _walk_tree(target, "pg_tblspc/%s/" % oid, exclude_top=False):
+            yield item

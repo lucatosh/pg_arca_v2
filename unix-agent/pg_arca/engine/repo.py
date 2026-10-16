@@ -681,4 +681,22 @@ class Repo(object):
         raise EngineError("PGA-REPO-021", "backup set not found or not complete: %s" % spec)
 
     def sync(self):
-        os.sync()
+        """Flush the repository's filesystem only (syncfs), and report its write-back errors: os.sync() flushed every filesystem of the database
+        host, the data volume included, in the middle of production, and said nothing when the flush failed (independent engine review)."""
+        try:
+            import ctypes
+            import ctypes.util
+            libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+            fn = libc.syncfs
+        except (OSError, AttributeError, ImportError):
+            fn = None
+        if fn is None:
+            os.sync()                                         # no syncfs (not Linux): the global one
+            return
+        fd = os.open(self.path, os.O_RDONLY)
+        try:
+            if fn(fd) != 0:
+                e = ctypes.get_errno()
+                raise OSError(e, "syncfs of the backup repository failed: %s" % os.strerror(e))
+        finally:
+            os.close(fd)

@@ -163,7 +163,7 @@ class PgSession(object):
             self._cleared = cleared                # keep it: on a failed connection this IS the reason (FATAL: database ... does not exist), it arrives before the first query
         try:
             self.p.stdin.write(sql.rstrip().rstrip(";") + ";\n")
-            self.p.stdin.write("\\echo %s\n" % marker)
+            self.p.stdin.write("\\echo %s :ERROR :SQLSTATE\n" % marker)     # psql 11+: whether THIS statement failed, whatever the server's language
             if self._has_warn:
                 self.p.stdin.write("\\warn %s\n" % marker)
             self.p.stdin.flush()
@@ -175,7 +175,10 @@ class PgSession(object):
             if line == "":
                 raise EngineError("PGA-CFG-003", "PostgreSQL session closed unexpectedly: " + (self._why("no error text from the server")), "the server closed the connection: restart, crash, failover or switchover while the operation was running. Check the cluster state, then run it again")
             line = line.rstrip("\n")
-            if line == marker:
+            if line == marker or line.startswith(marker + " "):
+                flags = line[len(marker):].split()
+                failed = flags[0] == "true" if flags and flags[0] in ("true", "false") else None
+                state = flags[1] if failed and len(flags) > 1 and re.match(r"^[0-9A-Z]{5}$", flags[1]) else ""
                 break
             if line == "":
                 continue
@@ -188,8 +191,10 @@ class PgSession(object):
                 self._cond.wait(0.3)
             self._marks.discard(marker)
         err = self.take_errors()
-        if "ERROR" in err or "FATAL" in err:
-            raise EngineError("PGA-SQL-001", err[:600])
+        # the server's own word for the failure: a non-superuser on a localized server writes "FEHLER:" / "ERREUR:" (lc_messages=C needs
+        # superuser), which the text test missed - failed statements came back as empty results (independent engine review)
+        if failed or "ERROR" in err or "FATAL" in err:
+            raise EngineError("PGA-SQL-001", (err or "statement failed")[:600] + ((" (SQLSTATE %s)" % state) if state and state not in err else ""))
         return rows
 
     def one(self, sql):

@@ -173,7 +173,8 @@ def _sibling_floors(repo, keep):
                 m = read_json(os.path.join(d, sid, "meta.json"))
             except (IOError, OSError, ValueError):
                 continue
-            if m.get("status") in ("COMPLETE", "RUNNING", "PENDING_WAL") and str(m.get("system_identifier")) == str(sysid) and m.get("start_lsn"):
+            if (m.get("status") in ("COMPLETE", "RUNNING", "PENDING_WAL") or (m.get("status") == "UNRECOVERABLE" and m.get("wal_timeout"))) \
+                    and str(m.get("system_identifier")) == str(sysid) and m.get("start_lsn"):
                 out.append(lsn_to_int(m["start_lsn"]))
     return out
 
@@ -221,6 +222,10 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         grace = lambda s: ((s.get("status") == "UNRECOVERABLE" and s.get("wal_timeout")) or s.get("status") == "PENDING_WAL") and \
             time.time() - (s.get("started_ts") or 0) < 7 * 86400
         junk = [s for s in sets if s.get("status") in ("FAILED", "UNRECOVERABLE", "RUNNING", "PENDING_WAL", "EXPIRING") and s not in doomed and not grace(s)]
+        # incrementals whose full is gone or going (an expire interrupted after marking the full, a meta deleted by hand): not restorable, and
+        # kept they pinned the WAL floor at their start forever - the archive was never trimmed again (independent engine review)
+        good_fulls = set(f["id"] for f in fulls)
+        junk += [s for s in done if s["type"] != "full" and s["id"].split("_")[0] not in good_fulls and s not in doomed and s not in junk]
         doomed_ids = set(s["id"] for s in doomed) | set(s["id"] for s in junk)
         pins = repo.pins()                                         # running restores: their sets and the WAL they may still fetch stay
         pinned = set(x for p in pins for x in (p.get("sets") or []))
@@ -240,7 +245,9 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
         if dry_run:
             plan["dry_run"] = True
             return plan
-        for s in [x for x in doomed + junk if x["id"] in doomed_ids]:      # mark first (never a pinned set): a crash mid-delete leaves a recognisable EXPIRING set
+        # mark first (never a pinned set): a crash mid-delete leaves a recognisable EXPIRING set. Dependents before their full: a crash in between
+        # never leaves COMPLETE incrementals on top of an EXPIRING full
+        for s in sorted([x for x in doomed + junk if x["id"] in doomed_ids], key=lambda x: x.get("type") == "full"):
             m = repo.set_meta(s["id"])
             if m:
                 m["status"] = "EXPIRING"

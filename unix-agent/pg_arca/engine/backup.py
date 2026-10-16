@@ -17,7 +17,7 @@ from pg_arca.engine.pgdata import ZEROPAGE, is_main_fork, page_lsn, skipped_link
 from pg_arca.pgcompat import check_tools, require_supported
 from pg_arca.engine.pgsession import PgSession
 from pg_arca.engine.util import (BLCKSZ, CHUNK_SIZE, Cancelled, EngineError, human, iso, lsn_to_int, now_utc, read_json, sql_lit,
-                                 wal_name, wal_segno, last_wal_segno, write_file_atomic, write_json)
+                                 wal_name, wal_segno, last_wal_segno, parse_wal_name, write_file_atomic, write_json)
 
 READ_BLOCK = 4 * 1024 * 1024
 TYPE_LETTER = {"full": "F", "diff": "D", "incr": "I"}
@@ -89,7 +89,7 @@ def unread_entry(st):
     return {"size": st.st_size, "mode": stat.S_IMODE(st.st_mode), "mtime": int(st.st_mtime), "kind": "pages", "chunks": []}, stats
 
 
-def backup_file_sparse(repo, rel, full, st, prev_lsn, chunk_idx, fadvise=True, limiter=_NO_LIMIT):
+def backup_file_sparse(repo, rel, full, st, prev_lsn, chunk_idx, fadvise=False, limiter=_NO_LIMIT):
     """Store only the chunks of a relation file the WAL summaries flag (chunk_idx: set of chunk indexes); the page-LSN test still applies."""
     stats = _empty_stats()
     try:
@@ -120,7 +120,7 @@ def backup_file_sparse(repo, rel, full, st, prev_lsn, chunk_idx, fadvise=True, l
                 if not keep:
                     for j in range(0, len(buf), BLCKSZ):
                         pg = buf[j:j + BLCKSZ]
-                        if pg != ZEROPAGE and page_lsn(pg) >= prev_lsn:
+                        if pg == ZEROPAGE or page_lsn(pg) >= prev_lsn:          # a zeroed page replaces what the parent had there
                             keep = True
                             break
                 if keep:
@@ -141,7 +141,7 @@ def backup_file_sparse(repo, rel, full, st, prev_lsn, chunk_idx, fadvise=True, l
     return {"size": size, "mode": stat.S_IMODE(st.st_mode), "mtime": int(st.st_mtime), "kind": "pages", "chunks": chunks}, stats
 
 
-def backup_file(repo, rel, full, st, prev_lsn, incremental, fadvise=True, limiter=_NO_LIMIT):
+def backup_file(repo, rel, full, st, prev_lsn, incremental, fadvise=False, limiter=_NO_LIMIT):
     """Store one file. Returns (entry or None, stats dict)."""
     stats = _empty_stats()
     try:
@@ -175,7 +175,7 @@ def backup_file(repo, rel, full, st, prev_lsn, incremental, fadvise=True, limite
                             if not keep:
                                 for j in range(0, len(buf), BLCKSZ):
                                     pg = buf[j:j + BLCKSZ]
-                                    if pg != ZEROPAGE and page_lsn(pg) >= prev_lsn:
+                                    if pg == ZEROPAGE or page_lsn(pg) >= prev_lsn:          # a zeroed page replaces what the parent had there
                                         keep = True
                                         break
                         if keep:
@@ -237,6 +237,34 @@ def _start_backup(ctx, sess, start_sql, fast_on, progress, cancel):
     if cancelled:
         raise Cancelled()
     return box.get("lsn")
+
+
+def _base_differs(repo, cand, checksums, seg_size):
+    """True when the chain's full was taken with other data checksums or another WAL segment size than the server has now."""
+    base = _chain_base(repo, cand)
+    for k, now in (("data_checksums", checksums), ("wal_segment_size", seg_size)):
+        was = base.get(k)
+        if was is not None and now is not None and (bool(was) != bool(now) if k == "data_checksums" else int(was) != int(now)):
+            return True
+    return False
+
+
+def _chain_wal_holes(ctx, chain, upto=None):
+    """WAL segment numbers missing from the archive between the chain's full start and `upto` (default: the newest archived segment of the
+    chain's timelines). One directory listing, not a lookup per segment (a week of WAL is 100 000 names on a network share)."""
+    seg = int(chain[-1].get("wal_segment_size") or 16 * 1024 * 1024)
+    tls = set(int(x.get("timeline") or 0) for x in chain)
+    lo = wal_segno(lsn_to_int(chain[0]["start_lsn"]), seg)
+    present = set()
+    for nm in ctx.wal.list_segments(anywhere=True):
+        p = parse_wal_name(nm, seg)
+        if p and p[0] in tls:
+            present.add(p[1])
+    if not present:
+        return []                                            # nothing listed (archive unreadable this instant): not a proof of a hole
+    if upto is None:
+        upto = max(present)
+    return [wal_name(min(tls), n, seg) for n in range(lo, upto + 1) if n not in present][:1000]
 
 
 def _chain_base(repo, s):
@@ -417,6 +445,18 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                 log("warn", "the parent chain was taken on a %s and this backup runs on a %s: promoting %s to full"
                     % ("standby" if not in_recovery else "primary", "standby" if in_recovery else "primary", btype))
                 btype = "full"
+            elif _base_differs(repo, cand, checksums, seg_size):
+                # pg_checksums --enable rewrites every page WITHOUT changing its LSN (no WAL): the page filter keeps none of them, and the restore
+                # put the full's pages without checksums next to a control file that demands them - every page "invalid" (independent engine review)
+                log("warn", "data checksums or the WAL segment size changed since the chain's full backup: promoting %s to full" % btype)
+                btype = "full"
+            elif _chain_wal_holes(ctx, build_chain(repo, cand)):
+                # an incremental is only restorable with EVERY segment from its full's start: a hole after the parent (segment lost, archiving
+                # switched off for a while, a retired branch) made every following incremental COMPLETE and unrestorable (independent engine review)
+                holes = _chain_wal_holes(ctx, build_chain(repo, cand))
+                log("warn", "the WAL archive has a hole since the chain's full backup (%d segment(s) missing, first %s): promoting %s to full"
+                    % (len(holes), holes[0], btype))
+                btype = "full"
             elif int(cand.get("timeline") or 0) != tli:
                 # after a failover/PITR the new timeline's LSNs can be LOWER than the parent's start LSN (promoted replica that lagged): the LSN page filter
                 # would silently skip pages changed since the switch. A full backup is the only safe answer.
@@ -465,6 +505,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             raise EngineError("PGA-GEN-040", "pg_backup_start failed", "the backup role needs pg_backup_start privileges (superuser or pg_write_all_data/EXECUTE grants)")
         started_backup = True
         meta["start_lsn"] = start_lsn
+        repo.write_meta(meta)               # at once: the WAL this backup needs is protected from another stanza's retention while it copies (shared archive)
         links = skipped_links(ctx.pgdata)
         if links:
             meta["skipped_links"] = [{"path": a, "target": b} for a, b in links]
@@ -489,6 +530,15 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             if ws_info:
                 meta["wal_summaries"] = ws_info
 
+        # what the parent had: a file it did not have (CREATE DATABASE ... STRATEGY FILE_COPY copies pages with their OLD LSNs, the only way on PG14)
+        # or had larger (truncated since) is stored whole, never through the page-LSN filter (independent engine review: 0 bytes of a new database)
+        known = {}
+        if parent is not None:
+            try:
+                known = dict((k, int(v.get("size") or 0)) for k, v in repo.load_manifest(parent)["files"].items())
+            except (EngineError, KeyError, ValueError, TypeError, AttributeError):
+                known = None                                   # unknown: every file whole (safe)
+
         def one(item):
             rel, full, st = item
             _check_cancel(cancel)
@@ -496,7 +546,8 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                 return rel, unread_entry(st)
             if rel in partial:
                 return rel, backup_file_sparse(repo, rel, full, st, prev_lsn, partial[rel], limiter=limiter)
-            return rel, backup_file(repo, rel, full, st, prev_lsn, parent is not None, limiter=limiter)
+            incremental = parent is not None and known is not None and rel in known and st.st_size >= known[rel]
+            return rel, backup_file(repo, rel, full, st, prev_lsn, incremental, limiter=limiter)
 
         def absorb(rel, entry, st):
             totals["files"] += 1
@@ -583,7 +634,17 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
                                    if in_recovery else "check archive_command / pg_stat_archiver") + "; the set is marked UNRECOVERABLE")
         # present by NAME is not enough: when another server wrote these names (split brain, a promotion without the archive) the copies in the
         # archive are its WAL, not ours - this set would be COMPLETE and fail at restore time (independent review: only the late-WAL path checked)
-        why = _late_wal_doubt(ctx, {"timeline": tli, "stop_lsn": stop_lsn}, _wal_needed(tli, start_lsn, stop_lsn, seg_size, in_recovery))
+        try:
+            why = _late_wal_doubt(ctx, {"timeline": tli, "stop_lsn": stop_lsn}, _wal_needed(tli, start_lsn, stop_lsn, seg_size, in_recovery))
+        except OSError as e:
+            # the archive could not be read just now (network mount, I/O): not a proof against this set - checked again at the next run
+            meta.update(status="UNRECOVERABLE", wal_timeout=True, reason="the WAL archive could not be read to confirm this backup (%s): checked again at the next run" % e)
+            repo.write_meta(meta)
+            raise EngineError("PGA-WAL-025", meta["reason"], "check the WAL archive's storage; the set completes by itself once it can be read")
+        if not why and parent is not None:
+            holes = _chain_wal_holes(ctx, build_chain(repo, parent) + [dict(meta, stop_lsn=stop_lsn, timeline=tli)], upto=last_wal_segno({"stop_lsn": stop_lsn, "from_standby": in_recovery}, seg_size))
+            if holes:
+                why = "the WAL archive misses %d segment(s) between the chain's full backup and this one (first %s): a restore needs every one" % (len(holes), holes[0])
         if why:
             meta.update(status="UNRECOVERABLE", reason=why, late_wal_doubt=why)
             repo.write_meta(meta)
@@ -606,7 +667,16 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
             repo.flush()                                               # chunks of a failed attempt stay usable (deduplicated by the next one)
         except Exception:
             pass
-        if meta is not None and meta.get("status") in ("RUNNING", "PENDING_WAL"):
+        if meta is not None and meta.get("status") == "PENDING_WAL":
+            # data and manifest are durable, only the WAL check did not finish (cancel, an archive read error): kept, completed by a later run when its WAL is there
+            meta["status"] = "UNRECOVERABLE"
+            meta["wal_timeout"] = True
+            meta["reason"] = "WAL check not finished (%s): completed by a later run once its WAL is in the archive" % (e.as_text() if isinstance(e, EngineError) else (str(e) or type(e).__name__))
+            try:
+                repo.write_meta(meta)
+            except Exception:
+                pass
+        elif meta is not None and meta.get("status") == "RUNNING":
             meta["status"] = "FAILED"
             meta["reason"] = e.as_text() if isinstance(e, EngineError) else str(e)
             try:
@@ -667,6 +737,17 @@ def _storage_error(e, ctx):
     """A raw OSError from the repository volume becomes an actionable error instead of 'OSError: [Errno 28]'."""
     import errno as _e
     where = ctx.repo.path
+    fn = getattr(e, "filename", None)
+    if fn and isinstance(fn, str):
+        try:
+            inside = os.path.realpath(fn).startswith(os.path.realpath(where).rstrip("/") + "/")
+        except (OSError, ValueError):
+            inside = True
+        if not inside:
+            # not the repository: the data directory, a configuration file outside it, the WAL archive (independent engine review: an unreadable
+            # pg_hba.conf was reported as "no permission to write in the backup repository")
+            return EngineError("PGA-GEN-046", "cannot access %s: %s" % (fn, e.strerror or e),
+                               "the agent user must be able to read the data directory and PostgreSQL's configuration files; check the storage if it is an I/O error")
     if e.errno in (_e.ENOSPC, getattr(_e, "EDQUOT", -1)):
         return EngineError("PGA-REPO-060", "the backup repository is full (%s): %s" % (where, e.strerror or e),
                            "free space or enlarge the volume, or run 'expire' to apply retention; the failed set is discarded and chunks already stored are reused by the next attempt")
@@ -818,7 +899,11 @@ def _wait_for_wal(ctx, sess, tli, start_lsn, stop_lsn, seg_size, in_recovery, ti
     last_note = 0.0
     missing = need
     while True:
-        missing = [n for n in need if not ctx.wal.has_segment(n, anywhere=False)]
+        try:
+            missing = [n for n in need if not ctx.wal.has_segment(n, anywhere=False)]
+        except OSError as e:                                  # a passing archive read error (ESTALE, EIO on a share): keep waiting, never FAILED for it
+            ctx.log("warn", "WAL archive not readable while waiting (%s): retrying" % e)
+            missing = need
         if not missing:
             return True, [], ""
         waited = time.time() - t0
