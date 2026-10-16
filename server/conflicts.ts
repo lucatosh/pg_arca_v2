@@ -56,7 +56,7 @@ export function conflictFor(operations: Operation[], clusterId: string, type: st
       return hit(o, `Quarantine database ${params.stage_db} is already used by ${it(o.type)} (started ${who(o)}): choose another name.`);
     if (type === 'restore_database' && o.type === 'restore_database' && params?.new_name && o.params?.new_name === params.new_name)
       return hit(o, `Another restore is already creating database ${params.new_name} (started ${who(o)}).`);
-    if (HA_DISRUPTIVE.includes(type) && DATA_WORK.includes(o.type) && o.status !== 'queued' && !params?.force)
+    if (HA_DISRUPTIVE.includes(type) && DATA_WORK.includes(o.type) && !(o.status === 'queued' && !o.attempts) && !params?.force)
       return hit(o, `${cap(it(o.type))} is running on the cluster (started ${who(o)}): ${it(type)} would interrupt it. Wait until it finishes, or confirm that you want to proceed anyway.`, true);
     if (DATA_WORK.includes(type) && HA_DISRUPTIVE.includes(o.type))
       return hit(o, `${cap(it(o.type))} is queued or running (started ${who(o)}): the cluster will change primary or be restarted. Start ${it(type)} afterwards.`);

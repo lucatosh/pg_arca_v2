@@ -85,6 +85,13 @@ import { requiredRole } from '../../server/auth';
     assert.deepStrictEqual(f({ enabled: true, pending: 2, alive: true, last_error: { segment: '0000000100000000000000AA', error: 'PGA-WAL-031 divergent' } }).map(i => i.code), ['wal_spool_failing']);
     assert.deepStrictEqual(f({ enabled: true, pending: 2, alive: false, oldest_age_sec: 10 }).map(i => [i.code, i.severity]), [['wal_spool_behind', 'warning']]);
   }
+  { // a node whose clock is ahead dates its backups in the future: said, and no meaningless "last backup -48 hours ago"
+    const base = store.peek(); const g1: any = base.nodes.n3;
+    const mk: any = { ...base, clusters: [...base.clusters, { id: 'ck', name: 'ck-db', environment: 'prod', source: 'agent' }],
+      nodes: { ...base.nodes, k1: { ...g1, id: 'k1', name: 'k1', clusterId: 'ck', snapshot: { ...g1.snapshot, backup: { configured: true, sets: 1, recent_sets: [{ id: 'x', type: 'full', status: 'COMPLETE', start_time: iso(now + 2 * 86400_000) }] } } } } };
+    const got = evaluate(mk, now).filter(i => i.clusterId === 'ck').map(i => i.code);
+    assert(got.includes('clock_ahead') && !got.includes('backup_stale'), JSON.stringify(got));
+  }
   { // archiver lag: current LSN far ahead of the last archived segment -> warning at 16 segments, critical at 128; caught up -> nothing
     const base = store.peek(); const g1: any = base.nodes.n3;
     const mk = (lsn: string, last: string): any => ({ ...base, clusters: [...base.clusters, { id: 'al', name: 'al-db', environment: 'dev', source: 'agent' }],

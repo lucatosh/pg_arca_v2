@@ -49,6 +49,10 @@ import { mountHbaRoutes } from '../../server/hba';
   // an admin cannot approve their own request
   r = await call('POST', '/api/clusters/prod1/operations', { type: 'hba_rollback', params: {} }, A2, 'k4'); assert.equal(r.status, 202); const id2 = r.body.approval.id;
   r = await call('POST', `/api/approvals/${id2}/approve`, {}, A2); assert.equal(r.status, 403); assert.equal(r.body.error, 'self_approval');
+  // ...nor by signing in with another capitalisation of the same name (one person, one account)
+  { const A2u = await login('ADMIN2', 'second-admin-pass');
+    r = await call('POST', `/api/approvals/${id2}/approve`, {}, A2u); assert.equal(r.status, 403); assert.equal(r.body.error, 'self_approval');
+    assert(!Object.keys(store.peek().settings.users || {}).includes('ADMIN2'), 'no second account'); }
   // ...nor with an API token of their own (the token acts for its creator), in either direction
   { const tk = (await call('POST', '/api/api-tokens', { label: 'ci', role: 'admin' }, A2)).body.token; const T = { authorization: 'Bearer ' + tk };
     r = await app.call('POST', `/api/approvals/${id2}/approve`, { body: {}, headers: T }); assert.equal(r.status, 403); assert.equal(r.body.error, 'self_approval');
@@ -71,5 +75,16 @@ import { mountHbaRoutes } from '../../server/hba';
   await call('PUT', '/api/advanced', { approvals: {} }, A);
   assert.equal((await call('POST', '/api/clusters/prod1/operations', setp, O, 'k6')).body.operation.type, 'pg_set_param');
   assert.equal(requiredRole('POST', '/api/approvals/x/cancel'), 'operator'); assert.equal(requiredRole('POST', '/api/approvals/x/approve'), 'admin');
+  // geo: a standby site is never promoted as a plain operation (only through Geo-redundancy, which checks the primary site)
+  assert.equal((await call('POST', '/api/clusters/prod1/operations', { type: 'geo_promote', params: { confirm: 'PROMOTE' } }, O, 'kg1')).body.error, 'use_geo_promote');
+  // a DR promotion approved after the primary site came back is refused (requested while it was down)
+  { const now = () => new Date().toISOString();
+    const P = { postgres: { alive: true, is_in_recovery: false, current_lsn: '0/5000000', system_identifier: '8888', timeline: 1 }, patroni: { accessible: true, scope: 'g1', local_node: { role: 'leader', state: 'running' }, standby_cluster: null } };
+    const S = { postgres: { alive: true, is_in_recovery: true, current_lsn: '0/5000000', system_identifier: '8888', timeline: 1, replay_ts: now(), wal_receiver: { status: 'streaming', sender_host: 'g1-haproxy', sender_port: 5000, silent_sec: 1 } }, patroni: { accessible: true, scope: 'g2', local_node: { role: 'standby_leader', state: 'streaming' }, standby_cluster: { host: 'g1-haproxy', port: 5000 } } };
+    await store.mutate(d => { d.clusters.push({ id: 'g1', name: 'g1', environment: 'prod', source: 'agent' } as any, { id: 'g2', name: 'g2', environment: 'prod', source: 'agent' } as any);
+      d.nodes.ng1 = { id: 'ng1', name: 'ng1', clusterId: 'g1', lastSeen: now(), snapshot: P } as any; d.nodes.ng2 = { id: 'ng2', name: 'ng2', clusterId: 'g2', lastSeen: now(), snapshot: S } as any;
+      (d.settings.approvalRequests ||= []).push({ id: 'apr-geo', type: 'geo_failover', clusterId: 'g2', status: 'pending', requestedBy: 'admin2', createdAt: now(), expiresAt: new Date(Date.now() + 3600e3).toISOString(),
+        params: { from: 'g1', to: 'g2', key: '8888', primaryWasAlive: false } }); });
+    r = await call('POST', '/api/approvals/apr-geo/approve', {}, A); assert.equal(r.status, 409, JSON.stringify(r.body)); assert.equal(r.body.error, 'primary_site_back'); }
   console.log('approvals tests OK');
 })().catch(e => { console.error(e); process.exit(1); });

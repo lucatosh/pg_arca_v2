@@ -56,6 +56,7 @@ export interface NodeRecord {
   consoleUrl?: string;        // the console address this agent uses (upgrade command)
   tlsInsecure?: boolean;      // the agent talks to the console in clear (http://) or without verifying its certificate
   agentStarted?: number;     // start time of the agent process (a change = restart: what the old process had leased is handed back)
+  agentStartedSeenAt?: number; // last heartbeat (console clock) that carried agentStarted: an older start time after a long silence is a restart, not a duplicate
   duplicateAgentAt?: string; // a heartbeat with an OLDER start time than the last one: two agent processes share these credentials
   remoteIp?: string;
   /** inbound URL, only if the operator chose inbound mode */
@@ -188,6 +189,7 @@ export class Store {
   private dirty = false;
   private writing: Promise<void> | null = null;
   private waiters: { resolve: () => void; reject: (e: any) => void }[] = [];
+  private uncommitted: Tx[] = [];                   // changes in memory not yet on disk, oldest first: undone if their write fails
   /** test hook / metrics: how many times the state file was written */
   writes = 0;
   static LAZY_MS = 5000;
@@ -196,6 +198,8 @@ export class Store {
   constructor(readonly dir: string) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.file = path.join(dir, 'state.json');
+    // partial writes left by an earlier process (crash, disk full): never read, only taking space
+    try { for (const f of fs.readdirSync(dir)) if (/^state\.json\..*\.tmp$/.test(f)) { try { fs.unlinkSync(path.join(dir, f)); } catch { /* in use? leave it */ } } } catch { /* unreadable dir: load() says */ }
     this.state = this.load();
   }
 
@@ -241,6 +245,7 @@ export class Store {
     }
     if (!tx.undo.length) return Promise.resolve(out);
     this.dirty = true;
+    this.uncommitted.push(tx);
     if (opts.lazy) {                                 // telemetry (heartbeat snapshot, progress counters): losing the last seconds of it in a crash is harmless; written within LAZY_MS
       if (!this.lazyTimer) { this.lazyTimer = setTimeout(() => { this.lazyTimer = null; if (this.dirty) this.flush().catch(() => undefined); }, Store.LAZY_MS); this.lazyTimer.unref?.(); }
       return Promise.resolve(out);
@@ -262,9 +267,19 @@ export class Store {
     const batch = this.waiters; this.waiters = [];
     this.dirty = false;
     const data = JSON.stringify(this.state);         // the snapshot of this batch: everything committed up to now
+    const n = this.uncommitted.length;
     this.writing = this.persist(data).then(
-      () => { this.writes++; for (const w of batch) w.resolve(); },
-      (e) => { this.dirty = true; console.error('[store] cannot write the state:', e?.message || e); for (const w of batch) w.reject(e); },
+      () => { this.writes++; this.uncommitted.splice(0, n); for (const w of batch) w.resolve(); },
+      (e) => {
+        // the write failed (disk full, I/O error): what it carried must not stay live in memory - a caller told "error" would retry and the
+        // first attempt, still queued in memory, would run too (independent review). Every change not on disk is undone, newest first (the ones
+        // made during the failed write built on it), and every caller still waiting is told
+        console.error('[store] cannot write the state, changes not saved are undone:', e?.message || e);
+        for (let i = this.uncommitted.length - 1; i >= 0; i--) this.uncommitted[i].rollback();
+        this.uncommitted = []; this.dirty = false;
+        const late = this.waiters; this.waiters = [];
+        for (const w of [...batch, ...late]) w.reject(e);
+      },
     ).finally(() => {
       this.writing = null;
       if (this.waiters.length) this.kick();          // group commit: everything that arrived meanwhile goes in one write
@@ -305,9 +320,12 @@ export class Store {
     try {
       await fh.writeFile(data);
       await fh.sync();
-    } finally {
-      await fh.close();
+    } catch (e) {
+      await fh.close().catch(() => undefined);
+      await fs.promises.unlink(tmp).catch(() => undefined);      // a partial file would eat the space just freed, at every retry
+      throw e;
     }
+    await fh.close();
     try { await fs.promises.rename(this.file, this.file + '.bak'); } catch { /* first write */ }   // the previous generation (a crash right here leaves only .bak: load() uses it)
     await fs.promises.rename(tmp, this.file);
     try {                                   // make the renames themselves durable

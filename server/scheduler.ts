@@ -45,7 +45,9 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     // the telemetry lags behind: a backup that has just succeeded may not be in the agent's snapshot yet. Without counting it the next tick saw "no full this
     // week" again and took a second full 10 s later, which with retention 2 left only today's two fulls (seen on the lab: the PITR window was lost)
     const okRuns = myOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').map(o => ({ type: String(o.result?.type || o.params?.type || 'incr'), at: ts(o.createdAt) }));
-    const newest = (xs: number[]) => { const f = xs.filter(Number.isFinite); return f.length ? Math.max(...f) : NaN; };
+    // a node whose clock is AHEAD dates its sets in the future: such a date would hold back every scheduled backup until the clock catches up
+    // (independent review: 2 days ahead = 2 days without backups and no alert) - only dates up to the console's 'now' count
+    const newest = (xs: number[]) => { const f = xs.filter(x => Number.isFinite(x) && x <= now + 300_000); return f.length ? Math.max(...f) : NaN; };
     const lastAny = newest([sets.length ? ts(sets[sets.length - 1].start_time) : NaN, ...okRuns.map(r => r.at)]);
     const lastFull = newest([(() => { const f = sets.filter(s => s.type === 'full'); return f.length ? ts(f[f.length - 1].start_time) : NaN; })(), ...okRuns.filter(r => r.type === 'full').map(r => r.at)]);
     const h = 3600_000;
@@ -136,13 +138,15 @@ export async function hbaExpiryTick(store: Store, now = Date.now()): Promise<str
     const latestDue = Math.max(...due);
     // Patroni: the temporary rules live in the DCS list, one member edits it for everyone
     const tgt = c.haState?.managedByPatroni ? hbaTarget(st, cid) : null;
-    const nodes = c.haState?.managedByPatroni ? (tgt ? [tgt] : []) : Object.values(st.nodes).filter(n => n.clusterId === cid && online(n, now));
+    // every node of the cluster must have removed the expired rules - also one that is offline at the expiry: its entry stays until it is back and
+    // done (independent review: a node rebooting at that moment kept the expired vendor-access rule for good)
+    const nodes = c.haState?.managedByPatroni ? (tgt ? [tgt] : []) : Object.values(st.nodes).filter(n => n.clusterId === cid);
     const mine = st.operations.filter(o => o.clusterId === cid && o.type === 'hba_expire');
     const okAfter = (n: NodeRecord) => mine.some(o => (c.haState?.managedByPatroni || o.nodeId === n.id) && o.status === 'succeeded' && ts(o.createdAt) >= latestDue);
     const pending = nodes.filter(n => !okAfter(n));
     if (!pending.length && nodes.length) { await store.mutate(d => { const m = d.settings.hbaExpiry; m[cid] = (m[cid] || []).filter((t: number) => t > now); if (!m[cid].length) delete m[cid]; }); continue; }
     if (conflictFor(st.operations, cid, 'hba_expire', {})) continue;        // someone is changing pg_hba right now: retried at the next tick
-    for (const n of pending) {
+    for (const n of pending.filter(x => online(x, now))) {
       const bucket = Math.floor(now / 600_000);
       const r = await ops.submit(store, { type: 'hba_expire', clusterId: cid, nodeId: n.id, params: {}, idempotencyKey: `sched:${cid}:hbaexp:${n.id}:${bucket}`, createdBy: 'scheduler', ttlSeconds: 600 });
       if (r.created) submitted.push(`${cid}:${n.id}`);

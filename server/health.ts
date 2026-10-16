@@ -121,6 +121,8 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       // never reported yet: whether it has backups is unknown, not 'none' (the first report says)
     } else if (!sets.length) {
       add({ severity: isProd || pol?.enabled ? 'critical' : 'warning', code: 'no_backup', title: 'No backup yet', cause: pol?.enabled ? 'The policy is active but there is no successful backup yet: the data is not protected.' : isProd ? 'The cluster has neither a backup policy nor any backups: the data is not protected.' : 'Not a production cluster, so this is not urgent, but it has neither a backup policy nor any backups: its data is not protected.', action: { label: pol?.enabled ? 'See the backups' : 'Assign a policy', page: pol?.enabled ? 'backup' : 'strategy' } });
+    } else if (Number.isFinite(lastMs) && lastMs > now + 600_000) {
+      add({ severity: 'warning', code: 'clock_ahead', title: `Backup times are ${hrs((lastMs - now) / 3600_000)} in the future`, cause: 'The clock of the node that takes the backups is ahead of the console’s: backup ages and point-in-time targets based on it cannot be trusted. Synchronise the clocks (NTP) of the database nodes.', action: { label: 'See the backups', page: 'backup' } });
     } else if (expectH && Number.isFinite(lastMs) && now - lastMs > expectH * 3600_000 * 2) {
       const age = (now - lastMs) / 3600_000;
       add({ severity: age > expectH * 4 ? 'critical' : 'warning', code: 'backup_stale', title: `Last backup ${hrs(age)} ago`, cause: `The policy expects a backup every ${hrs(expectH)}: at least one is missing. Check the last error or whether the agent is offline.`, action: { label: 'See the backups', page: 'backup' } });

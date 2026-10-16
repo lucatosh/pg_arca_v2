@@ -96,5 +96,16 @@ import { validateOp } from '../../server/optypes';
   assert.equal(ap.status, 200, JSON.stringify(ap.body)); assert.equal(ap.body.operations.length, 2);
   assert.equal(ap.body.operations[0].operation.params.set.repo_path, '/mnt/other/pgarca');
   assert.equal(store.peek().settings.destinationApplied.c1.repo_path, '/mnt/other/pgarca');
+  // the request approves the destination it shows: changed (and checked) meanwhile, the approval is refused instead of applying the other one
+  await call('PUT', '/api/scoped/destination/assignments', { scope: 'cluster', key: 'c1', value: { repoPath: '/mnt/third/pgarca' } });
+  r = await call('POST', '/api/clusters/c1/destination/check', {}, 'k4'); for (const o of r.body.operations) await finish(o.operation.id, true);
+  r = await call('POST', '/api/clusters/c1/destination/apply', {}, 'ap7'); assert.equal(r.status, 202);
+  const shown = r.body.approval.id;
+  await store.mutate(d => { d.settings.approvalRequests.find((x: any) => x.id === shown).requestedBy = 'someone-else'; });
+  await call('PUT', '/api/scoped/destination/assignments', { scope: 'cluster', key: 'c1', value: { repoPath: '/mnt/fourth/pgarca' } });
+  r = await call('POST', '/api/clusters/c1/destination/check', {}, 'k5'); for (const o of r.body.operations) await finish(o.operation.id, true);
+  const ap2 = await call('POST', `/api/approvals/${shown}/approve`, {});
+  assert.equal(ap2.status, 409, JSON.stringify(ap2.body)); assert.equal(ap2.body.error, 'destination_changed');
+  assert.equal(store.peek().settings.destinationApplied.c1.repo_path, '/mnt/other/pgarca', 'nothing applied');
   console.log('destination tests OK');
 })().catch(e => { console.error(e); process.exit(1); });

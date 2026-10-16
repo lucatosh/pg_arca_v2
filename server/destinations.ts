@@ -128,11 +128,15 @@ export function precheckApply(st: any, c: any): { code: number; body: any } | nu
  * repository / WAL archive as a read-only previous location (restores and PITR keep working across the change) and, on the primary, proves that the
  * next WAL segment lands in the new archive - or goes back to the old one by itself. Existing backups are not moved (destination_migrate does that).
  */
-export async function applyDestination(store: Store, c: any, key: string, by: string): Promise<{ code: number; body: any }> {
+export async function applyDestination(store: Store, c: any, key: string, by: string, approved?: { repo_path?: string; wal_path?: string }): Promise<{ code: number; body: any }> {
   const st = store.peek();
   const pre = precheckApply(st, c);
   if (pre) return pre;
   const { dest } = destinationFor(st, c);
+  // a four-eyes request approves THE destination it shows: if the configured one changed meanwhile, approving must not apply the other one
+  // (independent review: the approver saw /mnt/nfs/A, the nodes were moved to B)
+  if (approved && ((approved.repo_path || '') !== (dest?.repo_path || '') || (approved.wal_path || '') !== (dest?.wal_path || '')))
+    return { code: 409, body: { error: 'destination_changed', message: `The destination was changed after this request (requested: ${approved.repo_path || '-'} / ${approved.wal_path || '-'}, now: ${dest?.repo_path || '-'} / ${dest?.wal_path || '-'}): reject it and request the change again.` } };
   const out = [];
   for (const n of nodesOf(st, c.id).filter(online)) {
     const set: Record<string, string> = {};

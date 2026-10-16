@@ -56,10 +56,19 @@ import { hbaExpiryTick } from '../../server/scheduler';
   const sub = await hbaExpiryTick(store, later); assert.strictEqual(sub.length, 2, JSON.stringify(sub));
   assert.deepStrictEqual(await hbaExpiryTick(store, later), [], 'same bucket: idempotent');
   assert.strictEqual(store.peek().operations.filter(o => o.type === 'hba_expire').length, 2);
-  // both nodes confirm -> the entry is pruned
-  for (const o of store.peek().operations.filter(o => o.type === 'hba_expire')) await store.mutate(d => { const x = d.operations.find(y => y.id === o.id)!; x.status = 'succeeded'; x.createdAt = new Date(later + 1000).toISOString(); });
-  await store.mutate(d => { for (const n of Object.values(d.nodes)) (n as any).lastSeen = new Date(later + 1000).toISOString(); });
-  await hbaExpiryTick(store, later + 1000); assert.strictEqual(store.peek().settings.hbaExpiry?.k1, undefined);
+  // one node confirms while the other is offline (rebooting): the entry stays until that one is back and done
+  const exp = store.peek().operations.filter(o => o.type === 'hba_expire');
+  const offNode = exp[1].nodeId;
+  await store.mutate(d => { const x = d.operations.find(y => y.id === exp[0].id)!; x.status = 'succeeded'; x.createdAt = new Date(later + 1000).toISOString();
+    const y = d.operations.find(z => z.id === exp[1].id)!; y.status = 'expired';
+    for (const n of Object.values(d.nodes)) (n as any).lastSeen = new Date((n as any).id === offNode ? later - 3600_000 : later + 1000).toISOString(); });
+  await hbaExpiryTick(store, later + 1000); assert.strictEqual(store.peek().settings.hbaExpiry?.k1?.length, 1, 'kept: a node has not removed the rule yet');
+  await store.mutate(d => { for (const n of Object.values(d.nodes)) (n as any).lastSeen = new Date(later + 700_000).toISOString(); });
+  const back = await hbaExpiryTick(store, later + 700_000); assert.deepStrictEqual(back, [`k1:${offNode}`], 'sent to the node that came back');
+  // both nodes done -> the entry is pruned
+  for (const o of store.peek().operations.filter(o => o.type === 'hba_expire' && o.status !== 'expired')) await store.mutate(d => { const x = d.operations.find(y => y.id === o.id)!; x.status = 'succeeded'; x.createdAt = new Date(later + 701_000).toISOString(); });
+  await store.mutate(d => { for (const n of Object.values(d.nodes)) (n as any).lastSeen = new Date(later + 701_000).toISOString(); });
+  await hbaExpiryTick(store, later + 701_000); assert.strictEqual(store.peek().settings.hbaExpiry?.k1, undefined);
   // Patroni: history of DCS lists kept by the console, restore goes to the DCS editor node, temporary rules expired by ONE member
   await store.mutate(d => { for (const n of Object.values(d.nodes)) (n as any).lastSeen = new Date().toISOString(); (d.nodes as any).c.snapshot = { patroni: { accessible: true, local_node: { role: 'leader' } }, postgres: { alive: true } }; });
   assert.strictEqual(hbaTarget(store.peek(), 'k2').id, 'c', 'leader preferred');

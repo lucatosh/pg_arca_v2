@@ -15,7 +15,7 @@ import * as ops from './ops';
 import { lsnToBig } from './view';
 import { conflictFor } from './conflicts';
 import { requiresApproval, requestApproval } from './approvals';
-import { startFailover, policyOf, watchOf, snooze, GEO_POLICY_DEFAULT } from './geodr';
+import { startFailover, policyOf, watchOf, snooze, GEO_POLICY_DEFAULT, pruneGeoJobs } from './geodr';
 
 const ONLINE_MS = 45_000;
 const MB = 1024 * 1024;
@@ -429,7 +429,7 @@ export async function startSwitchover(store: Store, from: string, to: string, ac
   if (!target.geoEndpoint) return { code: 409, body: { error: 'endpoint_required', message: `First set how ${src.name} reaches ${target.name} (address and port of its leader, for example the site’s HAProxy or VIP).` } };
   if (Object.values(st.settings.geoJobs || {}).some((j: any) => j.status === 'running')) return { code: 409, body: { error: 'busy', message: 'A switchover between sites is already running.' } };
   const id = newId('geo');
-  await store.mutate(d => { (d.settings.geoJobs ||= {})[id] = { id, type: 'switchover', from, to, fromName: src.name, toName: target.name, createdBy: actor, createdAt: nowIso(), status: 'running', steps: [] }; });
+  await store.mutate(d => { pruneGeoJobs(d); (d.settings.geoJobs ||= {})[id] = { id, type: 'switchover', from, to, fromName: src.name, toName: target.name, createdBy: actor, createdAt: nowIso(), status: 'running', steps: [] }; });
   runSwitchover(store, { id, from, to, toEndpoint: target.geoEndpoint, actor }).catch(() => undefined);
   return { code: 202, body: { job: store.peek().settings.geoJobs[id] } };
 }
@@ -509,7 +509,7 @@ export function mountGeoRoutes(app: any, store: Store) {
     const grp = geoGroups(st).find(g => g.sites.some(s => s.clusterId === clusterId));
     const lostId = me.peers.find(p => p.role === 'primary')?.clusterId || (grp ? (st.settings.geoLastPrimary || {})[grp.sysid]?.clusterId : null) || me.peers[0]?.clusterId;
     if (!grp || !lostId) return res.status(409).json({ error: 'no_peer', message: 'Unknown which site it replicated from: declare the relationship in Geo-redundancy.' });
-    const params = { from: lostId, to: clusterId, key: grp.sysid };
+    const params = { from: lostId, to: clusterId, key: grp.sysid, primaryWasAlive: !!alive };      // decided again at approval time (agents.ts approvedFailover)
     if (requiresApproval(st, cluster, 'geo_promote', params)) {
       const r = await requestApproval(store, ops.audit, { cluster, type: 'geo_failover', params, key, actor: actor(req) } as any);
       return res.status(202).json({ approval: r, message: 'Risky operation in a protected environment: another administrator must approve it.' });

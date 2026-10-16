@@ -105,5 +105,14 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   assert.strictEqual((await k4(t + 61 * 60_000)).length, 0, 'three failures in a row: 120 min, not 30');
   assert.strictEqual((await k4(t + 125 * 60_000)).length, 1, 'then it tries again');
 }
+{ // a node whose clock is two days AHEAD dates its last full in the future: that date must not hold back the schedule
+  const st5 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'sch5-'))); const t = Date.now();
+  const pol5 = (validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 168, incrEveryHours: 24 }) as any).policy;
+  await st5.mutate(d => {
+    d.clusters.push({ id: 'z', name: 'z', environment: 'prod', source: 'agent', backupPolicy: pol5 } as any);
+    d.nodes['zn'] = { id: 'zn', name: 'z1', clusterId: 'z', lastSeen: new Date(t).toISOString(), snapshot: { postgres: { is_in_recovery: false }, backup: { recent_sets: [{ id: 'f', type: 'full', status: 'COMPLETE', start_time: new Date(t + 2 * 86400_000).toISOString() }] } } } as any;
+  });
+  const s5 = await schedulerTick(st5, t); assert(s5.length === 1 && s5[0].includes(':full:'), JSON.stringify(s5));
+}
 console.log('ALL SCHEDULER TESTS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

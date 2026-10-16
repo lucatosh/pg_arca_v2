@@ -229,8 +229,12 @@ export function mountAgentRoutes(app: any, store: Store, hooks: AgentHooks = {})
       const started = Number(b.agent_started);
       // only a NEWER start time is a restart: two processes with the same credentials (a manual run next to the service, a cloned VM) would
       // alternate and hand each other's running operations back at every heartbeat. An older one is said, not acted on.
-      if (Number.isFinite(started) && started > 0 && n.agentStarted !== started) {
-        if (!n.agentStarted || started > n.agentStarted) { if (n.agentStarted) ops.requeueOnRestart(d, n.id); n.agentStarted = started; }
+      if (Number.isFinite(started) && started > 0 && n.agentStarted === started) n.agentStartedSeenAt = nowMs;
+      else if (Number.isFinite(started) && started > 0) {
+        // an OLDER start time is a second process only while the newer one is still heard from; when the newer one has been silent for a while
+        // this is the same agent restarted after its clock was stepped back (NTP): a restart, not a duplicate (independent review)
+        const silent = nowMs - Number(n.agentStartedSeenAt || 0) > 90_000;
+        if (!n.agentStarted || started > n.agentStarted || silent) { if (n.agentStarted) ops.requeueOnRestart(d, n.id); n.agentStarted = started; n.agentStartedSeenAt = nowMs; }
         else n.duplicateAgentAt = new Date(nowMs).toISOString();
       }
       if (snap) {
@@ -420,6 +424,9 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     // sends one; the console fills it in for a central recovery host)
     if (params?.into !== undefined && params?.into !== null && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can deliver a restore to an explicit address (into).' });
     if (type === 'hba_apply' || type === 'hba_restore') { const open = hbaOpenRule(params?.rules); if (open && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: `Only an administrator can open the server to the network without a password or with a clear-text one: ${open}` }); }
+    // a standby site becomes writable only through Geo-redundancy (/api/geo/promote: administrators, refused while the primary site is alive,
+    // recorded so that the old primary is fenced and rejoined): never as a plain operation (independent review: an operator could promote it here)
+    if (type === 'geo_promote') return res.status(403).json({ error: 'use_geo_promote', message: 'A standby site is promoted from Geo-redundancy (“Promote this site”), which checks that the primary site is really lost.' });
     if (type === 'geo_demote') {                                              // the site may only follow a registered peer site: the agent connects there with the cluster's replication credentials
       const eps = knownPeerEndpoints(st, cluster.id);
       if (!eps.some((e: any) => e.host === String(params.host) && Number(e.port) === Number(params.port))) return res.status(409).json({ error: 'not_a_peer', message: 'A site can only be demoted under a registered peer site (Geo-redundancy → “Address of …”): the address given is not one.' });
@@ -540,6 +547,15 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     return list.map(r => ops.redactOp(r.status === 'pending' && Date.parse(r.expiresAt) < now ? { ...r, status: 'expired' } : r)).slice(-50).reverse();
   };
   app.get('/api/approvals', (_req: Request, res: Response) => res.json({ approvals: pendingView() }));
+  /** A DR promotion approved hours after it was asked: the primary site may be back meanwhile. Unless the requester stated it lost while it was still
+   *  visible, a primary site that is alive NOW refuses the promotion (independent review: approving at 08:00 a request of 02:00 promoted the standby
+   *  site while the primary had been taking writes again since 02:10, and the rejoin then rewound those writes away). */
+  async function approvedFailover(rec: any): Promise<{ code: number; body: any }> {
+    const st = store.peek(); const me = geoOf(st, rec.params.to);
+    const alive = me?.peers.find((p: any) => p.role === 'primary' && p.online);
+    if (alive && !rec.params.primaryWasAlive) return { code: 409, body: { error: 'primary_site_back', message: `The primary site ${alive.name} is running again since this promotion was requested: promoting now would create two primaries. Reject the request; if ${alive.name} must really be replaced, use the planned switchover.` } };
+    return startFailover(store, { key: rec.params.key, from: rec.params.from, to: rec.params.to, auto: false, actor: rec.requestedBy });
+  }
   const decide = async (req: Request, res: Response, how: 'approve' | 'reject' | 'cancel') => {
     const actor = actorOf(req); const id = req.params.id;
     const rec = (store.peek().settings.approvalRequests || []).find((r: any) => r.id === id);
@@ -548,7 +564,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (Date.parse(rec.expiresAt) < Date.now()) { await store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); if (r) r.status = 'expired'; }); return res.status(409).json({ error: 'expired', message: 'The request has expired: submit it again.' }); }
     if (how === 'cancel' && rec.requestedBy !== actor && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only the requester (or an administrator) can cancel it.' });
     const owner = (req as any).tokenOwner;                                     // an API token approves on behalf of the administrator who created it: no four-eyes with one's own token
-    if (how === 'approve' && (rec.requestedBy === actor || (owner && rec.requestedBy === owner) || (String(rec.requestedBy).startsWith('token:') && rec.requestedByOwner && rec.requestedByOwner === (owner || actor)))) return res.status(403).json({ error: 'self_approval', message: 'You cannot approve your own request: another administrator is needed.' });
+    if (how === 'approve' && (String(rec.requestedBy).toLowerCase() === String(actor).toLowerCase() || (owner && rec.requestedBy === owner) || (String(rec.requestedBy).startsWith('token:') && rec.requestedByOwner && rec.requestedByOwner === (owner || actor)))) return res.status(403).json({ error: 'self_approval', message: 'You cannot approve your own request: another administrator is needed.' });
     const done = (status: string) => store.mutate(d => { const r = d.settings.approvalRequests.find((x: any) => x.id === id); r.status = status; r.decidedBy = actor; r.decidedAt = nowIso();
       ops.audit(d, { clusterId: rec.clusterId, actor, action: 'approval.' + how, status: 'OK', details: { id, type: rec.type, requestedBy: rec.requestedBy } }); });
     if (how !== 'approve') { await done(how === 'reject' ? 'rejected' : 'cancelled'); return res.json({ ok: true }); }
@@ -556,8 +572,8 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (!cluster) return res.status(404).json({ error: 'cluster_not_found' });
     const r = rec.type === 'hba_cluster_apply' ? await hbaFanout(store, cluster, rec.params, 'appr:' + id, rec.requestedBy)
       : rec.type === 'geo_switchover' ? await startSwitchover(store, rec.params.from, rec.params.to, rec.requestedBy)
-      : rec.type === 'geo_failover' ? await startFailover(store, { key: rec.params.key, from: rec.params.from, to: rec.params.to, auto: false, actor: rec.requestedBy })
-      : rec.type === 'destination_apply' ? await applyDestination(store, cluster, 'appr:' + id, rec.requestedBy)
+      : rec.type === 'geo_failover' ? await approvedFailover(rec)
+      : rec.type === 'destination_apply' ? await applyDestination(store, cluster, 'appr:' + id, rec.requestedBy, rec.params || {})
       : await execute(cluster, rec.type, rec.params, rec.type === 'hba_restore' ? hbaTarget(store.peek(), cluster.id)?.id : rec.nodeId, rec.ttlSeconds, 'appr:' + id, rec.requestedBy);
     if (r.code >= 400) return res.status(r.code).json(r.body);                    // not consumed: the approver can retry when the node is back
     await done('approved');

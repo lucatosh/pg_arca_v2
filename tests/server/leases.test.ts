@@ -40,6 +40,27 @@ import * as ops from '../../server/ops';
   const d0 = await ops.submit(st, { type: 'wal_switch', clusterId: 'c4', nodeId: 'n4', idempotencyKey: 'ws', ttlSeconds: 10 });
   await ops.lease(st, 'nobody', 1, 60, Date.now() + 60_000);
   assert.strictEqual(st.peek().operations.find(x => x.id === d0.op.id)!.status, 'expired');
+  // 6b. cut off while running: handed back, it keeps its lane (no second restore starts), a cancel is passed on when the agent returns
+  { const r1 = await ops.submit(st, { type: 'restore_instance', clusterId: 'c5', nodeId: 'n5', idempotencyKey: 'r51' });
+    await ops.lease(st, 'n5', 1); await ops.report(st, 'n5', r1.op.id, 'running');
+    await ops.lease(st, 'n5', 0, 60, Date.now() + 300_000);                                  // the lease lapses: handed back
+    assert.strictEqual(st.peek().operations.find(x => x.id === r1.op.id)!.status, 'queued');
+    const r2 = await ops.submit(st, { type: 'restore_database', clusterId: 'c5', nodeId: 'n5b', idempotencyKey: 'r52' });
+    assert.strictEqual((await ops.lease(st, 'n5b', 1, 60, Date.now() + 301_000)).length, 0, 'the lane stays taken while the first may still run');
+    const cx = await ops.cancel(st, r1.op.id, 'dba');
+    assert(cx.ok && /passed on/.test(cx.reason || ''), JSON.stringify(cx));
+    assert.strictEqual(st.peek().operations.find(x => x.id === r1.op.id)!.status, 'queued', 'not marked cancelled while it may run');
+    const k = await ops.report(st, 'n5', r1.op.id, 'running');                                // the agent is back: adopted, told to cancel
+    assert(k.ok && k.cancel, JSON.stringify(k));
+    await ops.report(st, 'n5', r1.op.id, 'failed', undefined, 'cancelled');
+    assert.strictEqual(st.peek().operations.find(x => x.id === r1.op.id)!.status, 'cancelled');
+    assert.strictEqual((await ops.lease(st, 'n5b', 1)).length, 1, 'then the lane is free');
+    void r2; }
+  // 6c. an agentless (direct) operation running when the console stopped: failed at the next boot, not 'running' for ever
+  { await st.mutate(d => { d.operations.push({ id: 'dir1', type: 'patroni_switchover', clusterId: 'c6', status: 'running', attempts: 1, idempotencyKey: 'd1', createdBy: 'x',
+      params: {}, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), history: [], ttlSeconds: 600 } as any); });
+    await ops.graceLeasesOnBoot(st);
+    const o = st.peek().operations.find(x => x.id === 'dir1')!; assert.strictEqual(o.status, 'failed'); assert(/outcome unknown/.test(o.error || '')); }
   // 7. tombstones are bounded
   await st.mutate(d => { for (let i = 0; i < 520; i++) ops.tombstone(d, 'node-' + i); });
   assert.strictEqual(Object.keys((st.peek().settings as any).revokedNodes).length, 500);

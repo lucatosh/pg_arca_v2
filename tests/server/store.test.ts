@@ -72,4 +72,17 @@ console.log(`store: small mutation on a ${(fs.statSync(path.join(big.dir, 'state
   const left = fs2.readdirSync(path2.join(dir, 'snapshots')).filter(x => x.endsWith('.json.gz'));
   assert.strictEqual(left.length, 2, 'retention keeps the newest 2'); assert.strictEqual(s2.lastSnapshot()!.file, f3);
 }
+{ // a write that fails (disk full): the change is undone in memory, the caller is told, nothing half-written stays behind
+  const stF = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'stf-')));
+  await stF.mutate(d => { d.clusters.push({ id: 'keep', name: 'keep' } as any); });
+  const before = JSON.stringify(stF.peek());
+  const real = (stF as any).persist.bind(stF);
+  (stF as any).persist = async () => { throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }); };
+  await assert.rejects(stF.mutate(d => { d.operations.push({ id: 'op-lost', type: 'restore_database' } as any); }), /ENOSPC/);
+  assert.strictEqual(JSON.stringify(stF.peek()), before, 'the operation is not left queued in memory');
+  (stF as any).persist = real;
+  await stF.mutate(d => { d.clusters.push({ id: 'after', name: 'after' } as any); });
+  assert(!stF.peek().operations.some((o: any) => o.id === 'op-lost') && stF.peek().clusters.some((c: any) => c.id === 'after'));
+  assert(!fs.readdirSync(stF.dir).some(f => f.endsWith('.tmp')), 'no partial file left');
+}
 console.log('store tests OK');

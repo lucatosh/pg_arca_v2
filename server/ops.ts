@@ -220,6 +220,12 @@ export function graceLeasesOnBoot(store: Store, leaseSeconds = 120, now = Date.n
   return store.mutate(draft => {
     let n = 0;
     for (const op of draft.operations) if ((op.status === 'leased' || op.status === 'running') && op.leaseUntil) { op.leaseUntil = new Date(now + leaseSeconds * 1000).toISOString(); n++; }
+    // an operation the CONSOLE itself was running (agentless / direct mode: no node, no lease) died with the console: left 'running' it blocked
+    // every later direct operation of that cluster for good (independent review). Its outcome is unknown - said, the cluster must be checked
+    for (const op of draft.operations) if (op.status === 'running' && !op.nodeId && !op.leaseUntil) {
+      push(op, 'failed', 'the console stopped while it was running this operation');
+      op.error = 'outcome unknown: the console restarted while running it - check the cluster before running it again';
+    }
     return n;
   });
 }
@@ -242,16 +248,20 @@ export function lease(store: Store, nodeId: string, max = 1, leaseSeconds = 120,
       }
     }
     // 2. pick, one in-flight per cluster
-    const busy = new Set(draft.operations.filter(o => o.status === 'leased' || o.status === 'running').map(o => `${o.clusterId}:${laneOf(o.type)}`));
+    // an operation handed back after a lapsed lease may still be running on its agent (cut off, not dead): it keeps its lane until it is adopted
+    // again, ends or expires - nothing else of that lane starts meanwhile (independent review: a second restore or an expire could start)
+    const busy = new Map<string, string>();
+    for (const o of draft.operations) if (o.status === 'leased' || o.status === 'running' || (o.status === 'queued' && o.attempts > 0)) busy.set(`${o.clusterId}:${laneOf(o.type)}`, o.id);
     for (const op of draft.operations) {
       if (out.length >= max) break;
       if (op.status !== 'queued' || op.nodeId !== nodeId) continue;
       const laneKey = `${op.clusterId}:${laneOf(op.type)}`;
-      if (busy.has(laneKey)) continue;
+      if (op.cancelRequested) { push(op, 'cancelled', 'cancelled while its agent was away: not started again'); busy.delete(laneKey); continue; }
+      if (busy.has(laneKey) && busy.get(laneKey) !== op.id) continue;
       op.attempts += 1;
       op.leaseUntil = new Date(now + leaseSeconds * 1000).toISOString();
       push(op, 'leased', `attempt ${op.attempts}`);
-      busy.add(laneKey);
+      busy.set(laneKey, op.id);
       out.push(JSON.parse(JSON.stringify(op)));   // a detached copy for the wire (op is a live proxy here)
     }
     return out;
@@ -311,6 +321,14 @@ export function cancel(store: Store, opId: string, actor = 'admin'): Promise<{ o
       return { ok: true, op, reason: 'cancel requested' };
     }
     if (op.status !== 'queued') return { ok: false, op, reason: `cannot cancel a ${op.status} operation` };
+    if (op.attempts > 0) {
+      // handed back after its lease lapsed: its agent may still be running it. Marking it cancelled here freed the cluster for other work while it
+      // ran on, and its real outcome was then refused (independent review). The cancel is passed on when the agent comes back.
+      if (!OP_SPECS[op.type]?.cancellable) return { ok: false, op, reason: 'its agent may still be running it (cut off from the console): it cannot be cancelled now - wait until the agent is back or the operation expires' };
+      op.cancelRequested = true; op.updatedAt = nowIso();
+      audit(draft, { clusterId: op.clusterId, actor, action: `op.cancel-requested:${op.type}`, status: 'requested', details: { opId, note: 'handed back, the agent is told when it returns' } });
+      return { ok: true, op, reason: 'cancel requested: passed on to the agent when it is back' };
+    }
     push(op, 'cancelled', `by ${actor}`);
     audit(draft, { clusterId: op.clusterId, actor, action: `op.cancel:${op.type}`, status: 'cancelled', details: { opId } });
     return { ok: true, op };

@@ -7,10 +7,16 @@ import { sameTimelineDiverged, parseHistory, followsPrimary } from '../../server
 import { knownPeerEndpoints } from '../../server/geo';
 import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, stanzaOf, geoReadiness } from '../../server/geo';
 import { evaluate } from '../../server/health';
-import { GEO_DR_TIMING, geoMonitorTick, watchOf, recoverInterruptedGeoJobs } from '../../server/geodr';
+import { GEO_DR_TIMING, geoMonitorTick, watchOf, recoverInterruptedGeoJobs, pruneGeoJobs } from '../../server/geodr';
 import { deriveCluster } from '../../server/view';
 
 (async () => {
+  { // finished site-role jobs are bounded, running ones kept
+    const d: any = { settings: { geoJobs: {} } };
+    for (let i = 0; i < 250; i++) d.settings.geoJobs['j' + i] = { id: 'j' + i, status: 'failed', createdAt: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString() };
+    d.settings.geoJobs.run = { id: 'run', status: 'running', createdAt: '2025-01-01T00:00:00Z' };
+    pruneGeoJobs(d); assert.strictEqual(Object.keys(d.settings.geoJobs).length, 201); assert(d.settings.geoJobs.run && d.settings.geoJobs.j249 && !d.settings.geoJobs.j0);
+  }
   Object.assign(GEO_DR_TIMING, { stableMs: 300, pollMs: 50, maxCatchupMs: 3000, rejoinPollMs: 50, rejoinStreamMs: 1500 });
   const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'geo-'))); const app = new MiniApp();
   app.use((req: any, _r: any, next: any) => { req.actor = 'mario'; req.role = 'admin'; return next(); });

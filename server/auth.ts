@@ -261,7 +261,14 @@ export function mountAuthRoutes(app: any, store: Store) {
   app.post('/api/auth/login', async (req: Request, res: Response) => {
     const ip = req.ip || req.socket.remoteAddress || '?';
     const now = Date.now(); pruneFailures(now);
-    const { username, password } = req.body || {};
+    const { username: typed, password } = req.body || {};
+    // one person, one account: a directory answers 'alice' and 'ALICE' alike, so the console must too - the stored spelling of an existing
+    // account is used, a new directory account is stored in lower case (independent review: 'ALICE' became a second admin record and approved
+    // the request of 'alice')
+    const users0 = store.peek().settings.users || {};
+    const adm0 = store.peek().settings.admin;
+    const username = typeof typed !== 'string' ? typed : (adm0 && adm0.user.toLowerCase() === typed.toLowerCase() ? adm0.user
+      : Object.keys(users0).find(k => k.toLowerCase() === typed.toLowerCase()) || typed);
     const uname = typeof username === 'string' ? username.slice(0, 64) : '?';
     const fk = ip + '\u0000' + uname.toLowerCase();
     const f = failures.get(fk); const w = ipWindow.get(ip); const uw = userWindow.get(uname.toLowerCase());
@@ -288,7 +295,7 @@ export function mountAuthRoutes(app: any, store: Store) {
     if (!ok && !rec && ldapCfg && typeof username === 'string' && pw) {                 // not a local account: ask the directory
       if (local?.disabled) { /* disabled here wins over the directory */ } else {
         charge(); viaLdapTried = true;                                                  // counted BEFORE asking the directory: parallel attempts cannot multiply the bind calls
-        const r = await authenticateLdap(ldapCfg, username, pw);
+        const r = await authenticateLdap(ldapCfg, typed, pw);
         if (r.ok && r.role && r.dn) { viaLdap = { dn: r.dn, role: r.role, groups: r.groups || [] }; ok = true; }
         else if (r.error === 'directory_unavailable' || r.error === 'no_role') {
           await store.mutate(d => audit(d, { actor: uname, action: 'auth.login', status: 'FAILED', details: { ip, ldap: r.error, detail: r.detail } }));   // the detail (host names, certificate errors) stays in the audit log, for administrators
@@ -302,17 +309,19 @@ export function mountAuthRoutes(app: any, store: Store) {
       return res.status(401).json({ error: 'invalid_credentials' });
     }
     failures.delete(fk);
+    let account: string = username;
     if (viaLdap) {                                                                     // the directory's answer of today is the user's role of today
       const v = viaLdap;
+      if (!own(store.peek().settings.users, account)) account = account.toLowerCase();
       await store.mutate(d => {
-        const cur = own(d.settings.users, username);
+        const cur = own(d.settings.users, account);
         d.settings.users ||= {};
-        d.settings.users[username] = { ...(cur || { createdAt: nowIso() }), user: username, salt: '', hash: '', role: v.role, source: 'ldap', dn: v.dn, lastLoginAt: nowIso(), disabled: false };
-        audit(d, { actor: username, action: 'auth.login', status: 'OK', details: { ip, ldap: true, role: v.role, dn: v.dn } });
+        d.settings.users[account] = { ...(cur || { createdAt: nowIso() }), user: account, salt: '', hash: '', role: v.role, source: 'ldap', dn: v.dn, lastLoginAt: nowIso(), disabled: false };
+        audit(d, { actor: account, action: 'auth.login', status: 'OK', details: { ip, ldap: true, role: v.role, dn: v.dn } });
       });
-    } else await store.mutate(d => audit(d, { actor: username, action: 'auth.login', status: 'OK', details: { ip } }));
-    startSession(req, res, username);
-    res.json({ ok: true, user: username, role: roleOf(store, username) });
+    } else await store.mutate(d => audit(d, { actor: account, action: 'auth.login', status: 'OK', details: { ip } }));
+    startSession(req, res, account);
+    res.json({ ok: true, user: account, role: roleOf(store, account) });
   });
 
   // ---- LDAP / Active Directory settings (admin): stored with the bind password encrypted; a test endpoint says what a sign-in would do

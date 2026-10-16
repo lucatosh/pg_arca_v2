@@ -102,6 +102,15 @@ import { mountAuthRoutes, requireAdmin } from '../../server/auth';
   }
   const rid = hb2.body.ops[0].id;
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'succeeded', result: { segment: 'x' } }, A())).status, 200);
+  { // an older start time while the newer process is still heard from = two processes; after a silence = the clock was stepped back
+    const node = () => Object.values(store.peek().nodes).find((n: any) => n.agentStarted)! as any;
+    await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 0, agent_started: 2000 }, A());
+    await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 0, agent_started: 1500 }, A());
+    assert(node().duplicateAgentAt, 'both heard within seconds: a duplicate');
+    await store.mutate(d => { const n: any = Object.values(d.nodes).find((x: any) => x.id === node().id); delete n.duplicateAgentAt; n.agentStartedSeenAt = Date.now() - 300_000; });
+    await call('POST', '/api/agent/heartbeat', { snapshot: snap, max_ops: 0, agent_started: 1200 }, A());
+    assert(!node().duplicateAgentAt && node().agentStarted === 1200, 'the only process restarted with its clock stepped back');
+  }
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'succeeded', result: { segment: 'x' } }, A())).status, 200);  // duplicate report ok
   assert.strictEqual((await call('POST', `/api/agent/ops/${rid}/report`, { status: 'failed', error: 'x' }, A())).status, 409);
   { // credentials inside operation parameters (offsite keys) are sealed at rest and in every API view, and reach the agent in clear, once

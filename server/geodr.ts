@@ -91,6 +91,14 @@ export async function geoMonitorTick(store: Store, now = Date.now()) {
   }
 }
 
+/** Finished site-role jobs are history: the newest 200 are kept (a rejoin that keeps failing added one every 5 minutes, for ever, to a state
+ *  rewritten at every change - independent review). Running jobs are never touched. */
+export function pruneGeoJobs(d: any, keep = 200) {
+  const jobs = d.settings.geoJobs || {};
+  const done = Object.values(jobs).filter((j: any) => j.status !== 'running').sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  for (const j of done.slice(keep) as any[]) delete jobs[j.id];
+}
+
 /** Starts a DR failover (automatic or asked by an operator). */
 export async function startFailover(store: Store, a: { key: string; from: string; to: string; auto: boolean; actor: string }): Promise<{ code: number; body: any }> {
   const st = store.peek();
@@ -98,7 +106,7 @@ export async function startFailover(store: Store, a: { key: string; from: string
   const from = st.clusters.find((c: any) => c.id === a.from), to = st.clusters.find((c: any) => c.id === a.to);
   if (!from || !to) return { code: 404, body: { error: 'cluster_not_found' } };
   const id = newId('geo');
-  await store.mutate(d => { (d.settings.geoJobs ||= {})[id] = { id, type: a.auto ? 'failover_auto' : 'failover', from: a.from, to: a.to, fromName: from.name, toName: to.name, createdBy: a.actor, createdAt: nowIso(), status: 'running', steps: [] };
+  await store.mutate(d => { pruneGeoJobs(d); (d.settings.geoJobs ||= {})[id] = { id, type: a.auto ? 'failover_auto' : 'failover', from: a.from, to: a.to, fromName: from.name, toName: to.name, createdBy: a.actor, createdAt: nowIso(), status: 'running', steps: [] };
     ops.audit(d, { clusterId: a.to, actor: a.actor, action: a.auto ? 'geo.failover.auto' : 'geo.failover', status: 'STARTED', details: { from: from.name, to: to.name } }); });
   runFailover(store, id, a).catch(() => undefined);
   return { code: 202, body: { job: store.peek().settings.geoJobs[id] } };
@@ -191,7 +199,7 @@ async function rejoinIfBack(store: Store, g: GeoGroup, pol: GeoPolicy, now = Dat
   const ep = st.clusters.find((c: any) => c.id === f.to)?.geoEndpoint || neu.endpoint;
   const id = newId('geo');
   await store.mutate(d => { const x = (d.settings.geoFailovers || {})[groupKey(g)]; if (x) x.rejoinJob = id;
-    (d.settings.geoJobs ||= {})[id] = { id, type: 'rejoin', from: f.from, to: f.to, fromName: old.name, toName: neu.name, createdBy: 'pg_arca (automatic rejoin)', createdAt: nowIso(), status: 'running', steps: [] }; });
+    pruneGeoJobs(d); (d.settings.geoJobs ||= {})[id] = { id, type: 'rejoin', from: f.from, to: f.to, fromName: old.name, toName: neu.name, createdBy: 'pg_arca (automatic rejoin)', createdAt: nowIso(), status: 'running', steps: [] }; });
   runRejoin(store, g, id, f, old, neu, ep).catch(() => undefined);           // in the background: the monitor keeps watching the other pairs meanwhile
 }
 
