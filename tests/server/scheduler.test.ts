@@ -92,5 +92,18 @@ import { schedulerTick, validatePolicy, DEFAULT_POLICY } from '../../server/sche
   await st3.mutate(d => { d.operations = []; d.clusters[0].backupPolicy = mk(closed); d.nodes['w'].snapshot.backup.recent_sets = []; });
   k = await schedulerTick(st3, t + 2000); assert(k.length === 1 && k[0].includes(':full:'), 'no full at all: protected now, window or not');
 }
+{ // the same scheduled backup failing again and again: the wait doubles (30 min, 60, 120…, at most 6 h); a success resets it
+  const st4 = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'sch4-'))); const t = Date.now();
+  const pol4 = (validatePolicy({ ...DEFAULT_POLICY, enabled: true, fullEveryHours: 168, incrEveryHours: 24, retryAfterMinutes: 30 }) as any).policy;
+  await st4.mutate(d => {
+    d.clusters.push({ id: 'b', name: 'b', environment: 'prod', source: 'agent', backupPolicy: pol4 } as any);
+    d.nodes['bn'] = { id: 'bn', name: 'b1', clusterId: 'b', lastSeen: new Date(t).toISOString(), snapshot: { postgres: { is_in_recovery: false }, backup: { recent_sets: [] } } } as any;
+    for (let i = 0; i < 3; i++) d.operations.push({ id: 'f' + i, type: 'backup_run', clusterId: 'b', nodeId: 'bn', status: 'failed', idempotencyKey: 'sched:b:full:' + i, createdBy: 'scheduler',
+      params: { type: 'full' }, createdAt: new Date(t - (3 - i) * 60_000).toISOString(), updatedAt: new Date(t - (3 - i) * 60_000).toISOString(), history: [] } as any);
+  });
+  const k4 = (x: number) => { st4.peek().nodes['bn'].lastSeen = new Date(x).toISOString(); return schedulerTick(st4, x); };
+  assert.strictEqual((await k4(t + 61 * 60_000)).length, 0, 'three failures in a row: 120 min, not 30');
+  assert.strictEqual((await k4(t + 125 * 60_000)).length, 1, 'then it tries again');
+}
 console.log('ALL SCHEDULER TESTS PASSED');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -51,8 +51,13 @@ export async function schedulerTick(store: Store, now = Date.now()): Promise<str
     const h = 3600_000;
 
     // back-off after a failed scheduled backup
-    const lastFail = myOps.filter(o => o.type === 'backup_run' && o.status === 'failed' && o.idempotencyKey.startsWith('sched:')).map(o => ts(o.updatedAt)).sort().pop();
-    if (lastFail && now - lastFail < pol.retryAfterMinutes * 60_000) continue;
+    // consecutive failures with no success in between double the wait (retry, ×2, ×4… capped at 6 h): the same broken destination used to
+    // be hit every 30 minutes all day (the lab counted 78 failed operations in 24 h, the same NFS error each time)
+    const lastRunOk = Math.max(0, ...myOps.filter(o => o.type === 'backup_run' && o.status === 'succeeded').map(o => ts(o.updatedAt)).filter(Number.isFinite));   // a manual success ends the streak too
+    const fails = myOps.filter(o => o.type === 'backup_run' && o.status === 'failed' && o.idempotencyKey.startsWith('sched:') && ts(o.updatedAt) > lastRunOk).map(o => ts(o.updatedAt)).filter(Number.isFinite);
+    const streak = fails.length; const lastFail = streak ? Math.max(...fails) : NaN;
+    const wait = Math.min(pol.retryAfterMinutes * 60_000 * 2 ** Math.max(0, streak - 1), 6 * 3600_000);
+    if (streak && now - lastFail < wait) continue;
 
     const limit = pol.readLimitMBs ? { read_limit_mb_s: pol.readLimitMBs } : {};
     const submit = async (type: string, params: any, key: string) => {
