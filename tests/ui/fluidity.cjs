@@ -16,7 +16,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   // 1. restore wizard: choices survive a tab switch
   await tab('Protection', 'Restore'); await p.click('button.choice:has-text("I need a database")');
   await p.click('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button:has-text("Next")'); await p.waitForSelector('text=To which point in time?');
-  await p.click('label.opt:has-text("A specific point in time") input'); await p.click('button:has-text("4 hours ago")'); const when = await p.locator('input[aria-label^="Date and time"]').inputValue();
+  await p.click('label.opt:has-text("A specific point in time") input'); await p.click('button:has-text("4 hours ago")'); await p.waitForTimeout(400); const when = await p.locator('input[aria-label^="Date and time"]').inputValue();
   await tab('Protection', 'Backup'); await p.waitForSelector('text=Run a backup');
   await tab('Protection', 'Restore'); await p.waitForSelector('text=To which point in time?', { timeout: 5000 });
   assert.equal(await p.locator('input[aria-label^="Date and time"]').inputValue(), when, 'the chosen time is still there');
