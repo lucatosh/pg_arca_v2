@@ -22,7 +22,8 @@ import { requiredRole } from '../../server/auth';
   });
   const codes = (cid: string) => evaluate(store.peek(), now).filter(i => i.clusterId === cid).map(i => i.code).sort();
   assert.deepStrictEqual(codes('p'), ['archiver_failing', 'backup_failed', 'backup_stale', 'connections', 'disk', 'drill_stale', 'node_offline', 'pending_restart', 'repl_lag', 'slot_stale', 'wal_gap'], JSON.stringify(codes('p')));
-  assert.deepStrictEqual(codes('ok'), [], 'a healthy cluster raises nothing');
+  assert.deepStrictEqual(codes('ok'), ['no_schedule'], 'a healthy cluster raises nothing but: its backups are manual (no policy for dev)');
+  assert.strictEqual(evaluate(store.peek(), now).find(i => i.clusterId === 'ok' && i.code === 'no_schedule')!.severity, 'info', 'outside production it is information');
   // Patroni readiness for failover: pg_rewind off / unusable, local replication connection refused by pg_hba (one finding per cluster)
   {
     const st: any = JSON.parse(JSON.stringify(store.peek()));
@@ -51,9 +52,9 @@ import { requiredRole } from '../../server/auth';
     const base = store.peek(); const g1: any = base.nodes.n3;
     const mk = (idA: string, idB: string): any => ({ ...base, clusters: [...base.clusters, { id: 's', name: 's-db', environment: 'dev', source: 'agent' }],
       nodes: { ...base.nodes, s1: { ...g1, id: 's1', name: 's1', clusterId: 's', snapshot: { ...g1.snapshot, storage: { wal_id: idA, repo_id: 'R' } } }, s2: { ...g1, id: 's2', name: 's2', clusterId: 's', snapshot: { ...g1.snapshot, postgres: { ...g1.snapshot.postgres, is_in_recovery: true }, storage: { wal_id: idB, repo_id: 'R' } } } } });
-    const split = evaluate(mk('A', 'B'), now).filter(i => i.clusterId === 's').map(i => i.code);
+    const split = evaluate(mk('A', 'B'), now).filter(i => i.clusterId === 's' && i.code !== 'no_schedule').map(i => i.code);
     assert.deepStrictEqual(split, ['wal_not_shared'], JSON.stringify(split));
-    assert.deepStrictEqual(evaluate(mk('A', 'A'), now).filter(i => i.clusterId === 's').map(i => i.code), []);
+    assert.deepStrictEqual(evaluate(mk('A', 'A'), now).filter(i => i.clusterId === 's' && i.code !== 'no_schedule').map(i => i.code), []);
   }
   { // no python zstandard on a node -> backups use zlib: warning when a policy is active, info otherwise; present (or an old agent that does not report it) -> nothing
     const base = store.peek(); const g1: any = base.nodes.n3;
@@ -175,7 +176,7 @@ import { requiredRole } from '../../server/auth';
   assert(evaluate(store.peek(), now).every(i => i.clusterId !== 'demo'), 'demo cluster is not monitored');
   const slot = evaluate(store.peek(), now).find(i => i.code === 'slot_stale')!; assert.strictEqual(slot.severity, 'critical'); assert(/old_slot/.test(slot.title)); assert(!evaluate(store.peek(), now).some(i => /live/.test(i.title)), 'active slots are fine');
   const b = briefing(store.peek(), now); assert.strictEqual(b.status, 'critical'); assert(b.counts.critical >= 3); assert.strictEqual(b.issues[0].severity, 'critical');
-  assert.strictEqual(b.clusters.find(c => c.id === 'p')!.worst, 'critical'); assert.strictEqual(b.clusters.find(c => c.id === 'ok')!.worst, 'ok');
+  assert.strictEqual(b.clusters.find(c => c.id === 'p')!.worst, 'critical'); assert.strictEqual(b.clusters.find(c => c.id === 'ok')!.worst, 'info');   // manual backups only (dev): information, never a problem
 
   // a measured drill clears the reminder and shows the recovery time
   await store.mutate(d => { d.operations.push({ id: 'dr1', type: 'restore_drill', clusterId: 'p', status: 'succeeded', updatedAt: new Date(now).toISOString(), createdAt: new Date(now).toISOString(), result: { rto_seconds: 754, data_bytes: 5 * GB } } as any); });

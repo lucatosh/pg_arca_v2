@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { Icon, Button, Progress, ago } from './ui';
-import { Op, OPS_SLIM_KEY, isTerminal, revalidateOps, toast, useQuery, useRole } from './hooks';
+import { Op, OPS_SLIM_KEY, isTerminal, revalidateOps, toast, useQuery, useRole, dismissToastsTagged, isOnScreen } from './hooks';
 import { go } from './router';
 import { openOpLog } from './OpLog';
 import { OP_LABEL, PHASE, STATUS_LABEL, pctOf, hintFor } from './pages/shared';
@@ -48,7 +48,9 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
   const finished = all.filter(o => isTerminal(o.status) && Date.parse(o.updatedAt || o.createdAt) >= now - hours * 3_600_000 && !gset.has(o.id));
   const failedAll = finished.filter(o => o.status === 'failed' || o.status === 'expired');
   const recent = finished.filter(o => filt === 'all' || (filt === 'failed' ? o.status === 'failed' || o.status === 'expired' : o.status === 'succeeded')).slice(0, 40);
-  const failedNew = all.filter(o => o.status === 'failed' && !gset.has(o.id) && Date.parse(o.updatedAt) > seenAt && Date.now() - Date.parse(o.updatedAt) < 10 * 60_000);
+  // a failure followed by a success of the same operation on the same cluster is history, not an alarm on every page
+  const superseded = (o: SlimOp) => all.some(x => x.status === 'succeeded' && x.type === o.type && x.clusterId === o.clusterId && Date.parse(x.updatedAt) > Date.parse(o.updatedAt));
+  const failedNew = all.filter(o => o.status === 'failed' && !gset.has(o.id) && Date.parse(o.updatedAt) > seenAt && Date.now() - Date.parse(o.updatedAt) < 10 * 60_000 && !superseded(o));
   useEffect(() => { setFast(running.length > 0); }, [running.length]);
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 60_000); return () => clearInterval(t); }, []);
@@ -62,12 +64,16 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
     const cur: Record<string, string> = {}; for (const o of q.data.operations) cur[o.id] = o.status;
     if (prev.current) for (const o of q.data.operations) {
       const was = prev.current[o.id];
-      if (!was || isTerminal(was) || !isTerminal(o.status) || o.createdBy !== me || QUIET.includes(o.type) || o.background || o.readonly || (o.params?.dry_run && o.status === 'succeeded')) continue;
+      if (!was || isTerminal(was) || !isTerminal(o.status)) continue;
+      const tag = `${o.clusterId || ''}:${o.type}`;
+      if (o.status === 'succeeded') dismissToastsTagged(tag);                 // a retry that worked: the earlier failure toast is stale
+      if (o.createdBy !== me || QUIET.includes(o.type) || o.background || o.readonly || (o.params?.dry_run && o.status === 'succeeded')) continue;
+      if (isOnScreen(o.id)) continue;                                          // the page that started it shows the outcome itself
       // successes: the page that started it shows the outcome and the chip says it; only what needs attention pops up
       if (o.status === 'failed') { const first = itCheck((o.error || '').split('\n')[0]); const hint = hintFor(o.error); const code = (/PGA-[A-Z]+-\d+/.exec(first) || [])[0];
         // a toast is a pointer, not the report: the first sentence of the explanation, the whole of it is on the page and in Activity
         const one = (t: string) => { const x = t.split(/(?<=\.)\s/)[0]; return x.length > 150 ? x.slice(0, 147) + '…' : x; };
-        toast(`${label(o)} failed: ${one(hint || first)}${code ? ` (${code})` : ''} Details in Activity.`, 'bad', 9000); }
+        toast(`${label(o)} failed: ${one(hint || first)}${code ? ` (${code})` : ''} Details in Activity.`, 'bad', 9000, tag); }
       else if (o.status === 'cancelled') toast(`${label(o)}: cancelled`, 'info');
     }
     prev.current = cur;

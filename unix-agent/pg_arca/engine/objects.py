@@ -1437,12 +1437,12 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
         if orph:
             result["orphans"] = orph
             if not allow_orphans:
-                desc = "; ".join("%d row(s) of %s (%s) would reference %s rows that %s" % (o["rows"], o["child"], o["columns"], o["parent"],
+                desc = "; ".join("%d %s of %s (%s) would reference %s rows that %s" % (o["rows"], "row" if o["rows"] == 1 else "rows", o["child"], o["columns"], o["parent"],
                                  "are not in the restored copy" if o["direction"] == "in" else "no longer exist") for o in orph[:6])
                 raise EngineError("PGA-GEN-096", "promotion not done, nothing was changed: %s" % desc,
                                   "restore the related tables too (same instant), or put the recovered tables next to the originals (as new) and recover rows; "
                                   "allow_orphans=true goes ahead and leaves those foreign keys NOT VALID")
-            plan["warnings"].append("foreign keys left NOT VALID on purpose (allow_orphans): " + "; ".join("%s -> %s: %d row(s)" % (o["child"], o["parent"], o["rows"]) for o in orph))
+            plan["warnings"].append("orphaned rows accepted: " + "; ".join("%d %s of %s point to %s rows that no longer exist (the foreign key stays NOT VALID, i.e. not enforced, until you fix them)" % (o["rows"], "row" if o["rows"] == 1 else "rows", o["child"], o["parent"]) for o in orph))
         # ---- phase 2: the swap, atomically
         if progress:
             progress({"phase": "swap"})

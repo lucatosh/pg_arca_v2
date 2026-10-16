@@ -136,7 +136,7 @@ function LinkPicker({ all, onClose }: { all: any[]; onClose: () => void }) {
 /** "If the primary site is lost now, does the DR site take over cleanly, and how much is lost?": the conditions a geo pair silently depends on. */
 /** The state in words that say what to do: "Ready, 2 things to fix" / "Not ready: 1 problem" (never "ready with reservations" while the link is down). */
 const readyLabel = (r: Ready) => { const bad = r.checks.filter(c => c.level === 'bad').length, warn = r.checks.filter(c => c.level === 'warn').length;
-  return r.status === 'ready' ? 'Ready for disaster recovery' : r.status === 'degraded' ? `Ready for disaster recovery, ${nof(warn, 'thing')} to fix` : `Not ready for disaster recovery: ${nof(bad, 'problem')}`; };
+  return r.status === 'ready' ? 'Ready for disaster recovery' : r.status === 'degraded' ? `Disaster recovery works, with ${nof(warn, 'weakness', 'weaknesses')} to fix` : `Not ready for disaster recovery: ${nof(bad, 'problem')}`; };
 function Readiness({ r, role }: { r: Ready; role: string }) {
   const [open, setOpen] = useState(r.status !== 'ready'); const [edit, setEdit] = useState(false); const [rpo, setRpo] = useState(String(r.rpoTargetSec)); const [busy, setBusy] = useState(false);
   const issues = r.checks.filter(c => c.level !== 'ok'); const tone = r.status === 'ready' ? 'ok' : r.status === 'degraded' ? 'warn' : 'bad';

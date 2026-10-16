@@ -56,7 +56,7 @@ class Orphans(unittest.TestCase):
         with self.assertRaises(EngineError) as cm:
             self.promote(["customers"], "pgarca_stage_o1")
         self.assertEqual(cm.exception.code, "PGA-GEN-096")
-        self.assertIn("1 row(s) of public.orders (customer_id) would reference public.customers rows that are not in the restored copy", cm.exception.message)
+        self.assertIn("1 row of public.orders (customer_id) would reference public.customers rows that are not in the restored copy", cm.exception.message)
         self.assertEqual(q(DB, FP), before, "nothing changed")
         self.assertEqual(q(DB, "SELECT count(*) FROM pg_class WHERE relname LIKE '%_pitr_%' OR relname LIKE '%_old_%'")[0][0], "0", "no temporary table left")
         q("postgres", "DROP DATABASE pgarca_stage_o1")
@@ -79,7 +79,7 @@ class Orphans(unittest.TestCase):
         time.sleep(2)
         r = self.promote(["customers"], "pgarca_stage_o4", allow_orphans=True)
         self.assertTrue(r["orphans"])
-        self.assertTrue(any("NOT VALID on purpose" in w for w in r["plan"]["warnings"]), r["plan"]["warnings"])
+        self.assertTrue(any("orphaned rows accepted" in w and "NOT VALID" in w for w in r["plan"]["warnings"]), r["plan"]["warnings"])
         q("postgres", "DROP DATABASE pgarca_stage_o4")
 
 

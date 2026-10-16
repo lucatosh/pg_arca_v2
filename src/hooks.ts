@@ -50,13 +50,18 @@ export function useQuery<T = any>(key: string | null, opts: { interval?: number 
 }
 
 /* ---------------- toasts ---------------- */
-type Toast = { id: number; kind: 'ok' | 'bad' | 'info'; text: string };
+type Toast = { id: number; kind: 'ok' | 'bad' | 'info'; text: string; tag?: string };
 let toasts: Toast[] = []; const tsubs = new Set<() => void>(); let tid = 1;
-export function toast(text: string, kind: Toast['kind'] = 'info', ms = 4500) {
+export function toast(text: string, kind: Toast['kind'] = 'info', ms = 4500, tag?: string) {
   if (toasts.some(x => x.text === text && x.kind === kind)) return;                        // the same message twice (page + activity) is shown once
-  const t = { id: tid++, kind, text }; toasts = [...toasts, t].slice(-2); tsubs.forEach(f => f());   // at most two at a time: they must never hide the page
+  const t = { id: tid++, kind, text, tag }; toasts = [...toasts, t].slice(-2); tsubs.forEach(f => f());   // at most two at a time: they must never hide the page
   setTimeout(() => { toasts = toasts.filter(x => x.id !== t.id); tsubs.forEach(f => f()); }, ms);
 }
+/** A later success makes an earlier failure toast of the same thing stale (a red "failed" next to a green "saved"): it goes. */
+export function dismissToastsTagged(tag: string) { const n = toasts.filter(x => (x as any).tag !== tag); if (n.length !== toasts.length) { toasts = n; tsubs.forEach(f => f()); } }
+/** Operations a mounted page is showing right now: their outcome is on the page, a toast would only repeat it (and cover it). */
+const onScreen = new Map<string, number>();
+export const isOnScreen = (id: string) => (onScreen.get(id) || 0) > 0;
 export function dismissToast(id: number) { toasts = toasts.filter(x => x.id !== id); tsubs.forEach(f => f()); }
 export function useToasts() { return useSyncExternalStore(cb => { tsubs.add(cb); return () => { tsubs.delete(cb); }; }, () => toasts); }
 
@@ -128,6 +133,7 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
   const timer = useRef<any>(null);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; clearTimeout(timer.current); }; }, []);
+  useEffect(() => { const id = op?.id; if (!id) return; onScreen.set(id, (onScreen.get(id) || 0) + 1); return () => { const n = (onScreen.get(id) || 1) - 1; if (n > 0) onScreen.set(id, n); else onScreen.delete(id); }; }, [op?.id]);
 
   const poll = useCallback(async (id: string) => {
     try {

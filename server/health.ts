@@ -108,6 +108,10 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       const age = (now - lastMs) / 3600_000;
       add({ severity: age > expectH * 4 ? 'critical' : 'warning', code: 'backup_stale', title: `Last backup ${hrs(age)} ago`, cause: `The policy expects a backup every ${hrs(expectH)}: at least one is missing. Check the last error or whether the agent is offline.`, action: { label: 'See the backups', page: 'backup' } });
     }
+    // backups exist but nothing schedules them: protection depends on someone remembering. Said where everyone looks (the badge, the list,
+    // Today), not only inside the Backup tab (an independent review found a production cluster "Healthy" in that state)
+    if (sets.length && !standbySite && !pol?.enabled) add({ severity: isProd ? 'warning' : 'info', code: 'no_schedule', title: 'Backups are not scheduled',
+      cause: `Only manual backups run (the last one ${hrs((now - lastMs) / 3600_000)} ago): assign a backup policy so protection does not depend on someone remembering.`, action: { label: 'Schedule backups', page: 'backup' } });
     const failedSince = (bk?.last_failure && (!last || ts(bk.last_failure.start_time) > lastMs)) ? bk.last_failure : null;
     if (failedSince) add({ severity: 'warning', code: 'backup_failed', title: 'The last backup attempt failed', cause: String(failedSince.reason || 'Reason not reported.').slice(0, 300), action: { label: 'See the backups', page: 'backup' } });
     const lastVerify = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'backup_verify' && o.status === 'succeeded').map(o => ts(o.updatedAt)).sort().pop();
@@ -327,7 +331,7 @@ export function protectionOf(st: any, clusterId: string, issues: Issue[], now = 
   const offs = nodes.map(n => n.snapshot?.offsite).filter((o: any) => o?.configured && o.enabled);
   const offLast = Math.max(0, ...offs.map((o: any) => Number(o.last_ok) || 0));
   const mine = issues.filter(i => i.clusterId === clusterId);
-  const KEY = new Set(['no_backup', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
+  const KEY = new Set(['no_backup', 'no_schedule', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
   const relevant = mine.filter(i => KEY.has(i.code));
   const standbySite = !sets.length && nodes.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader');
   const state = standbySite ? 'none' as const

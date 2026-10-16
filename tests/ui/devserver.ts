@@ -112,8 +112,8 @@ const withAgent = process.env.NO_AGENT !== '1';
           inbound_fks: [{ name: 'items_order_fk', schema: 'public', table: 'items', ref_schema: 'public', ref_table: 'orders' }], outbound_fks: [], views: [{ schema: 'public', name: 'v_totals', kind: 'v' }], warnings: [], missing_prereq: { extensions: [], schemas: [], types: [], functions: [] } };
         if (p.dry_run) return report(op.id, { status: 'succeeded', result: { ...plan, dry_run: true } });
         // replace: the check before the swap finds rows that would be orphaned (refused, nothing changed) until the operator accepts them
-        if (p.mode === 'replace' && !p.allow_orphans) return report(op.id, { status: 'failed', error: 'PGA-GEN-096: promotion not done, nothing was changed: 3 row(s) of public.items (order_id) would reference public.orders rows that are not in the restored copy' });
-        if (p.allow_orphans) plan.warnings = ['foreign keys left NOT VALID on purpose (allow_orphans): public.items -> public.orders: 3 row(s)'] as any;
+        if (p.mode === 'replace' && !p.allow_orphans) return report(op.id, { status: 'failed', error: 'PGA-GEN-096: promotion not done, nothing was changed: 3 rows of public.items (order_id) would reference public.orders rows that are not in the restored copy' });
+        if (p.allow_orphans) plan.warnings = ['orphaned rows accepted: 3 rows of public.items point to public.orders rows that no longer exist (the foreign key stays NOT VALID, i.e. not enforced, until you fix them)'] as any;
         return report(op.id, { status: 'succeeded', result: { mode: p.mode, promoted: ['public.orders'], promoted_as: 'public.orders', old_kept: [`public.orders_old_${stamp()}`], old_kept_as: `public.orders_old_${stamp()}`, foreign_keys_reattached: 1, views_recreated: 1, plan, stage_dropped: !!p.drop_stage } });
       }
       if (op.type === 'hba_read') {
@@ -161,7 +161,7 @@ const withAgent = process.env.NO_AGENT !== '1';
       if (op.type === 'restore_database' || op.type === 'restore_object' || op.type === 'restore_instance') {
         for (let i = 1; i <= 3; i++) { await sleep(500); await report(op.id, { status: 'running', progress: { phase: 'extract', files: i * 40, files_total: 120, bytes: i * 1e8, bytes_total: 3e8 } }); }
         // the end chosen before starting: the recovered objects / rows / database go back into the ORIGINAL by the same operation
-        const fin = op.type === 'restore_object' && p.finish === 'promote' ? (p.promote_mode === 'replace' && !p.allow_orphans ? { finish_error: 'PGA-GEN-096: promotion not done, nothing was changed: 3 row(s) of public.items (order_id) would reference public.orders rows that are not in the restored copy' }
+        const fin = op.type === 'restore_object' && p.finish === 'promote' ? (p.promote_mode === 'replace' && !p.allow_orphans ? { finish_error: 'PGA-GEN-096: promotion not done, nothing was changed: 3 rows of public.items (order_id) would reference public.orders rows that are not in the restored copy' }
               : { finished: 'promote', finish: { mode: p.promote_mode, promoted: ['public.orders'], old_kept: p.promote_mode === 'replace' ? [`public.orders_old_${stamp()}`] : [], stage_dropped: true } })
           : op.type === 'restore_object' && p.finish === 'rows_all' ? { finished: 'rows_all', finish: { inserted: 48210, updated: 0, deleted: 0, safety_copy: `public.pgarca_rowsafe_${stamp()}_orders`, stage_dropped: true } }
           : op.type === 'restore_database' && p.replace_original ? { swap: { replaced: true, original: p.database, old_kept_as: p.database + '_before_20260101_000000', sessions_ended: 2 } } : {};

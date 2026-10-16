@@ -8,7 +8,7 @@ import { itCheck } from '../i18n';
 import { untilLabel } from '../hbaLogic';
 
 const SEV: Record<string, { label: string; kind: 'bad' | 'warn' | 'info' }> = { critical: { label: 'Urgent', kind: 'bad' }, warning: { label: 'Needs attention', kind: 'warn' }, info: { label: 'Information', kind: 'info' } };
-const TYPE: Record<string, string> = { backup_run: 'Backup', backup_verify: 'Verification', backup_expire: 'Cleanup', restore_instance: 'Restore', restore_database: 'Restore', restore_object: 'Restore', restore_promote: 'Bring back table', hba_apply: 'Access rules', pg_set_param: 'Parameter' };
+const TYPE: Record<string, string> = { backup_run: 'Backup', backup_verify: 'Verification', backup_expire: 'Cleanup', restore_instance: 'Restore', restore_database: 'Restore', restore_object: 'Restore', restore_promote: 'Put back the table', hba_apply: 'Access rules', pg_set_param: 'Parameter' };
 
 export function useHealth(interval = 20000) { return useQuery<any>('/api/briefing', { interval }); }
 
