@@ -1643,18 +1643,23 @@ def promote(admin, stage_db, mode="replace", dry_run=False, progress=None, targe
         moved = _seq_forward(live, seq_live, pos_of)
         # ---- after the swap: validate the re-attached keys, refresh statistics, verify
         invalid = []
+        # the swap is committed: what follows is housekeeping and must not hang behind the application (a DDL of theirs, an anti-wraparound
+        # vacuum, which is not cancelled for us): bounded waits, a step that cannot get its lock is reported, never waited for forever
+        live.query("SET lock_timeout = '30s'")
         for f in validate_later:
             try:
                 live.query("ALTER TABLE %s VALIDATE CONSTRAINT %s" % (qi(f["schema"], f["table"]), quote_ident(f["name"])))
             except EngineError as e:
                 invalid.append("%s on %s.%s (%s)" % (f["name"], f["schema"], f["table"], e.message[:120]))
         if invalid:
-            plan["warnings"].append("foreign keys re-attached but NOT validated (some rows do not match the restored table): " + "; ".join(invalid))
+            plan["warnings"].append("foreign keys re-attached but NOT validated (rows that do not match the restored table, or the table stayed locked by "
+                                    "another session; VALIDATE CONSTRAINT can be run later): " + "; ".join(invalid))
         for r in todo:
             try:
                 live.query("ANALYZE %s" % qi(r["schema"], r["name"]))
             except EngineError:
-                pass
+                pass                                         # statistics come with the next autovacuum
+        live.query("SET lock_timeout = 0")
         # after the swap: each name must now be the very table that was loaded and counted above. Counting rows again here was wrong: the
         # applications write into the restored table from the moment of the commit, and a busy table failed the check of a swap that had
         # succeeded (and was committed) - found by the fault suite with an application writing during the promotion

@@ -311,6 +311,8 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
             if copied["wal"] % 100 == 0:
                 tick("wal", {"wal_done": copied["wal"], "wal_total": p["wal_files"]})
         _fsync_dir(ctx.wal_dir)
+        if hasattr(ctx.wal, "adopt_database_names"):                # the oid->name registry (hidden file) moves with the archive
+            copied["database_names"] = ctx.wal.adopt_database_names(src_wal)
     copied["bytes"] = done_b
     # ---- verify: nothing of this stanza is left only in the previous location
     rest = _inventory(ctx, src_repo, src_wal)

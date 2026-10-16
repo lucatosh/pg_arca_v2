@@ -33,6 +33,8 @@ def setUpModule():
     q("postgres", "CREATE DATABASE mig")
     q("mig", "CREATE TABLE t AS SELECT g AS id, md5(g::text) AS v FROM generate_series(1, 20000) g")
     run_backup(F.ctx, "full")
+    S["mig_oid"] = q("postgres", "SELECT oid FROM pg_database WHERE datname = 'mig'")[0][0]
+    F.ctx.wal.note_databases([{"oid": S["mig_oid"], "name": "mig"}])        # what the agent's snapshot records next to the archive
     q("mig", "UPDATE t SET v = 'second' WHERE id <= 100")
     run_backup(F.ctx, "incr")
     time.sleep(1.2)
@@ -78,6 +80,7 @@ class Migrate(unittest.TestCase):
 
     def test_03_restores_work_without_the_previous_location(self):
         ctx = mk(previous=False)
+        self.assertEqual(ctx.wal.database_names().get(S["mig_oid"]), "mig", "the oid->name registry moved with the archive")
         restore_database(ctx, "mig", target_time=S["t_old"], new_name="mig_old")
         self.assertEqual(q("mig_old", "SELECT count(*), count(*) FILTER (WHERE v = 'second') FROM t")[0], ["20000", "100"])
 

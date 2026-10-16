@@ -116,6 +116,11 @@ class CryptoTests(unittest.TestCase):
         other = WalManager(wal, compression="zlib", segment_size=MB, crypto=crypt.Crypto(self.key2))
         self.assertEqual(other.retrieve_segment(name, out + "3")[0], 126)
         self.assertFalse(os.path.exists(out + "2") or os.path.exists(out + "3"))
+        # the oid->name registry next to the archive is sealed too, and unreadable (empty, never wrong) with another key
+        wm.note_databases([{"oid": 16384, "name": "secret_db"}])
+        self.assertNotIn(b"secret_db", open(os.path.join(wal, WalManager.DBNAMES), "rb").read())
+        self.assertEqual(WalManager(wal, crypto=self.c).database_names(), {"16384": "secret_db"})
+        self.assertEqual(other.database_names(), {})
 
     def test_encrypted_wal_without_meta_is_recovered_not_split_brain(self):
         """The writer died between publishing the encrypted object and writing its meta (independent review): the retry must recognise the same

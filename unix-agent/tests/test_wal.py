@@ -280,3 +280,26 @@ class WalTests(unittest.TestCase):
 
 
 if __name__ == "__main__": unittest.main()
+
+
+class DatabaseNamesTests(unittest.TestCase):
+    """The oid->name registry kept next to the archive: written only on news, sealed when encrypted, read across previous locations,
+    adopted when the archive moves."""
+
+    def test_registry(self):
+        root = tempfile.mkdtemp()
+        old, new = os.path.join(root, "old"), os.path.join(root, "new")
+        a = WalManager(old)
+        self.assertTrue(a.note_databases([{"oid": 16384, "name": "shop"}, {"oid": 5, "name": "postgres"}]))
+        self.assertFalse(a.note_databases([{"oid": 16384, "name": "shop"}]), "nothing new: no write")
+        b = WalManager(new, previous=[old])
+        self.assertEqual(b.database_names().get("16384"), "shop", "the previous location is read")
+        b.note_databases([{"oid": 16384, "name": "shop2"}])
+        self.assertEqual(b.database_names()["16384"], "shop2", "this location wins")
+        self.assertEqual(WalManager(new).database_names(), {"16384": "shop2", "5": "postgres"}, "a write here carries what was read")
+        other = os.path.join(root, "other")
+        c = WalManager(other)
+        c.note_databases([{"oid": 16384, "name": "shop3"}])
+        self.assertEqual(c.adopt_database_names(old), 1, "only what is missing here is adopted")
+        self.assertEqual(WalManager(other).database_names(), {"16384": "shop3", "5": "postgres"})
+        self.assertFalse([n for n in os.listdir(new) if ".tmp." in n])

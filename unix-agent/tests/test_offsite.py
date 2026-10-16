@@ -175,7 +175,14 @@ class OffsiteTests(unittest.TestCase):
         self.repo.flush()
         self._set("20260104-000000F", hs)
         self._wal("000000010000000000000004.zst")
+        from pg_arca.wal_manager import WalManager
+        reg = os.path.join(self.wal, WalManager.DBNAMES)
+        with open(reg, "w") as f:                                # the database-name registry travels with the archive
+            f.write('{"v": 1, "names": {"16384": "shop"}}')
+        with open(reg + ".tmp.1.2", "w") as f:                   # a registry being written is not mirrored
+            f.write("x")
         self.assertTrue(self.m.sync()["ok"])
+        self.assertNotIn("wal/" + WalManager.DBNAMES + ".tmp.1.2", offsite.client_for(self.m.cfg()).list(""))
         # the site burns down: new empty directories, same configuration
         shutil.rmtree(self.repo_path)
         shutil.rmtree(self.wal)
@@ -189,6 +196,8 @@ class OffsiteTests(unittest.TestCase):
             self.assertEqual(back.get_chunk(h), b"%06d" % i * 300)
         self.assertEqual(back.sets()[0]["id"], "20260104-000000F")
         self.assertTrue(os.path.exists(os.path.join(self.wal, "000000010000000000000004.zst.meta")))
+        with open(reg) as f:
+            self.assertIn("shop", f.read())
         self.assertEqual(self.m.rehydrate()["downloaded"], 0, "nothing left to fetch")
 
     def test_rehydrate_does_not_bring_back_what_retention_removed(self):

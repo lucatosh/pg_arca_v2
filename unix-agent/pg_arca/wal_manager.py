@@ -627,6 +627,22 @@ class WalManager:
         if all(seen.get(k) == v for k, v in new.items()):
             return False
         seen.update(new)
+        return self._write_database_names(seen)
+
+    def adopt_database_names(self, src_dir):
+        """The archive moved (destination changed): the registry of the previous location joins this one, entries already here win.
+        Returns how many names were adopted."""
+        theirs = self._read_database_names(src_dir)
+        seen = getattr(self, "_dbn_seen", None)
+        if seen is None:
+            seen = self._dbn_seen = dict(self._read_database_names(self.wal_dir))
+        add = dict((k, v) for k, v in theirs.items() if k not in seen)
+        if not add:
+            return 0
+        seen.update(add)
+        return len(add) if self._write_database_names(seen) else 0
+
+    def _write_database_names(self, seen):
         if len(seen) > 5000:
             for k in sorted(seen, key=lambda x: int(x) if x.isdigit() else 0)[:len(seen) - 5000]:
                 seen.pop(k, None)
@@ -649,16 +665,22 @@ class WalManager:
             if os.path.exists(tmp):
                 os.unlink(tmp)
 
-    def database_names(self):
-        """{oid (str): name} recorded by note_databases ({} when none or unreadable)."""
+    def _read_database_names(self, d):
         try:
-            with open(os.path.join(self.wal_dir, self.DBNAMES), "rb") as f:
+            with open(os.path.join(d, self.DBNAMES), "rb") as f:
                 data = f.read()
             if self.crypto:
                 data = self.crypto.open(data, "dbnames")
             return dict(json.loads(data.decode("utf-8")).get("names") or {})
         except Exception:
             return {}
+
+    def database_names(self):
+        """{oid (str): name} recorded by note_databases ({} when none or unreadable); the archive's previous locations are read too (this one wins)."""
+        out = {}
+        for d in list(reversed(self.previous)) + [self.wal_dir]:
+            out.update(self._read_database_names(d))
+        return out
 
     # ------------------------------------------------------------------ retrieve
     def retrieve_segment(self, name, dest_path, verify=True):

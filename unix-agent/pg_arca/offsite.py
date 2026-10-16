@@ -105,14 +105,15 @@ def _local_repo_files(repo_path):
 
 
 def _local_wal_files(wal_dir):
-    """{file name: size} of the archive: segments, .meta, .history, retention/floor markers; not the quarantine, not temporary files."""
+    """{file name: size} of the archive: segments, .meta, .history, the retention floor and the database-name registry (a restore from the
+    offsite copy alone needs it to recognise a database dropped after the last backup); not the quarantine, not temporary files."""
     out = {}
     if not wal_dir or not os.path.isdir(wal_dir):
         return out
     for n in os.listdir(wal_dir):
-        if n.startswith(".") and n not in (".retention_floor.json",):
+        if n.startswith(".") and n not in (".retention_floor.json", ".pgarca-database-names"):
             continue
-        if n.endswith((".tmp", ".part")) or n == "conflicts":
+        if n.endswith((".tmp", ".part")) or ".tmp." in n or n == "conflicts":
             continue
         p = os.path.join(wal_dir, n)
         if os.path.isfile(p):
