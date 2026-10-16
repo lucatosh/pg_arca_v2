@@ -161,7 +161,16 @@ export function useOpRunner(clusterId: string, onDone?: (op: Op) => void, persis
     } catch { /* console briefly unreachable: try again */ }
     timer.current = setTimeout(() => pollApproval(id), 4000);
   }, [poll, setApproval]);
-  useEffect(() => { const o = pk ? readDraft<Op>(pk) : null; if (o && !isTerminal(o.status)) poll(o.id); else { const a = ak ? readDraft<any>(ak) : null; if (a && !a.final) pollApproval(a.id); } }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+  // the same component reused for ANOTHER key (another cluster): that key's own operation, never the previous one's (independent review)
+  const pkSeen = useRef<string | null>(pk);
+  useEffect(() => {
+    if (pkSeen.current !== pk) {
+      pkSeen.current = pk; clearTimeout(timer.current); keyRef.current = null; setError(null); setConflict(null);
+      const o = pk ? readDraft<Op>(pk) ?? null : null; setOp0(o); setBusy(!!(o && !isTerminal(o.status)));
+      setApproval0(ak ? readDraft<any>(ak) ?? null : null);
+    }
+    const o = pk ? readDraft<Op>(pk) : null; if (o && !isTerminal(o.status)) poll(o.id); else { const a = ak ? readDraft<any>(ak) : null; if (a && !a.final) pollApproval(a.id); }
+  }, [pk]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = useCallback(async (type: string, params: Record<string, any> = {}, extra: { nodeId?: string } = {}) => {
     const sig = type + JSON.stringify(params) + (extra.nodeId || '');

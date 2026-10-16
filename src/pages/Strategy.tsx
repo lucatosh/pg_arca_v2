@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, nof } from '../ui';
-import { revalidate, toast, useQuery, clearDrafts, useDraft, revalidateMatching } from '../hooks';
+import { revalidate, toast, useQuery, clearDrafts, useDraft, revalidateMatching, useRole } from '../hooks';
 import { go } from '../router';
 
 interface Policy { enabled: boolean; fullEveryHours: number; incrEveryHours: number; retentionFull: number; verifyEveryHours: number; verifyDeep: boolean; retryAfterMinutes: number; retentionDays?: number; preferStandby?: boolean; readLimitMBs?: number; windowStart?: number; windowEnd?: number; rpoTargetMinutes?: number; rtoTargetMinutes?: number; drillEveryDays?: number }
@@ -115,12 +115,13 @@ export function useRecommended(c: any, onSaved: () => void) {
 export function StrategyCard({ c, policy, source, onSaved }: { c: any; policy: Policy | null; source?: Source; onSaved: () => void }) {
   const q = useQuery<PView>('/api/policies'); const [open, setOpen] = useDraft(`strategycard:${c.id}`, false);
   const sug = q.data?.templates.find(t => t.id === q.data?.suggested[c.environment]);
-  return <Card title="Backup policy" actions={<Button sm icon="settings" onClick={() => setOpen(true)} disabled={!q.data}>Change</Button>}>
+  const admin = useRole() === 'admin';                     // assigning a policy is for administrators (the server refuses the others)
+  return <Card title="Backup policy" actions={admin ? <Button sm icon="settings" onClick={() => setOpen(true)} disabled={!q.data}>Change</Button> : undefined}>
     <div className="stack">
       {policy ? <><div className="row wrap gap-s"><Badge kind="ok">Active</Badge>{source?.templateName ? <Badge kind="accent">{source.templateName}</Badge> : null}</div><p style={{ margin: 0 }}>{summarize(policy)}</p><p className="small muted" style={{ margin: 0 }}>{rpoText(policy)}</p></>
         : <div><strong>No automatic backups</strong><p className="small muted" style={{ margin: '4px 0 0' }}>{source?.disabled ? 'Scheduling is disabled at this level.' : 'No policy is assigned to this cluster, its folder or its environment.'}{sug ? ` For ${ENV_LABEL[c.environment] || c.environment}, “${sug.name}” is recommended.` : ''}</p></div>}
       {policy ? <div className="small muted">{sourceText(source)}</div> : null}
-      <div className="row">{!policy ? <Button sm onClick={() => setOpen(true)} disabled={!q.data}>Choose a policy…</Button> : null}<Button sm kind="ghost" onClick={() => go('strategy')}>All policies</Button></div></div>
+      <div className="row">{!policy && admin ? <Button sm onClick={() => setOpen(true)} disabled={!q.data}>Choose a policy…</Button> : null}<Button sm kind="ghost" onClick={() => go('strategy')}>All policies</Button></div></div>
     {open && q.data ? <AssignDialog scope="cluster" k={c.id} label={c.name} env={c.environment} view={q.data} onClose={() => setOpen(false)} onSaved={onSaved} /> : null}
   </Card>;
 }
@@ -191,7 +192,7 @@ function TemplateDialog({ t, onClose }: { t: Tpl | null; onClose: () => void }) 
   const id = t?.id || name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
   const save = async () => {
     setBusy(true); setErr(null);
-    try { await api('PUT', `/api/policies/templates/${id}`, { name, description: desc, policy: pol }); revalidatePolicies(); toast('Template saved', 'ok'); close(); }
+    try { await api('PUT', `/api/policies/templates/${id}`, { name, description: desc, policy: pol, ...(t?.id ? {} : { create: true }) }); revalidatePolicies(); toast('Template saved', 'ok'); close(); }
     catch (e: any) { setErr(e.body?.message || e.message); } finally { setBusy(false); }
   };
   return <Modal title={t?.id ? 'Edit template' : 'New template'} onClose={close} footer={<><Button onClick={close}>Cancel</Button><Button kind="primary" busy={busy} disabled={!name.trim() || id.length < 2} onClick={save}>Save</Button></>}>

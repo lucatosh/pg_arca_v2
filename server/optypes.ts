@@ -23,7 +23,8 @@ const noCtl = (v: string) => !/[\u0000-\u001f]/.test(v) && v.length <= 4096;
 export const DANGEROUS_GUCS = new Set(['archive_command', 'archive_cleanup_command', 'restore_command', 'recovery_end_command', 'ssl_passphrase_command', 'shared_preload_libraries',
   'local_preload_libraries', 'session_preload_libraries', 'dynamic_library_path', 'hba_file', 'ident_file', 'data_directory', 'config_file', 'external_pid_file', 'unix_socket_directories',
   'log_directory', 'krb_server_keyfile', 'ssl_cert_file', 'ssl_key_file', 'ssl_ca_file', 'ssl_crl_file', 'stats_temp_directory', 'archive_library', 'ssl_crl_dir', 'event_source']);
-const CFG_KEYS = ['pg_data', 'pg_bin_dir', 'pg_port', 'pg_host', 'pg_user', 'repo_path', 'wal_archive_dir', 'scratch_dir', 'patroni_url'];
+// every setting the agent offers as editable (overrides.py SPEC): the agent validates the values against the real server
+const CFG_KEYS = ['pg_data', 'pg_bin_dir', 'pg_port', 'pg_host', 'pg_user', 'repo_path', 'wal_archive_dir', 'scratch_dir', 'patroni_url', 'wal_archive_async', 'process_max'];
 function cfgErr(p: any): string | null {
   const c = p?.set; if (!c || typeof c !== 'object' || Array.isArray(c)) return 'set must be an object';
   const ks = Object.keys(c); if (!ks.length || ks.length > CFG_KEYS.length) return 'nothing to change';

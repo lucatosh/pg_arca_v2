@@ -277,7 +277,7 @@ function buildDirectView(prior: any, c: DirectConnection, snap: any, members: an
   const dbs = snap.databases.map((d: any) => ({ oid: String(d.oid), name: d.name, size: d.size, schemas: (prior.databases || []).find((x: any) => x.name === d.name)?.schemas || [] }));
   let tps = prior.tps || 0;
   if (prev && snap.xact_total !== null && snap.xact_total >= prev.total && now > prev.at) tps = Math.round(((snap.xact_total - prev.total) / ((now - prev.at) / 1000)) * 10) / 10;
-  const lag = nodes.some(n => n.role !== 'primary' && n.replicationLagBytes > 64 * 1024 * 1024);
+  const lag = nodes.some(n => n.role !== 'primary' && (n.replicationLagBytes ?? 0) > 64 * 1024 * 1024);
   return {
     ...prior, pgVersion: snap.version, status: nodes.some(n => !n.online) || lag ? 'degraded' : 'healthy', tps,
     totalSizeBytes: dbs.reduce((a: number, d: any) => a + d.size, 0), activeTimeline: snap.timeline ?? 0, currentLSN: snap.current_lsn || '',

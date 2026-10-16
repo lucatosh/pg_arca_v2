@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Modal, Badge, Banner, Button, Dot, bytes, ago } from '../ui';
-import { useOpRunner } from '../hooks';
+import { useOpRunner, useRole } from '../hooks';
 import { OpPanel, Result } from './shared';
 
 type Act = { id: string; label: string; hint: string; danger?: boolean; typed?: boolean; run: () => void; disabled?: string };
@@ -12,6 +12,7 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
   const [pending, setPending] = useState<Act | null>(null); const [typed, setTyped] = useState('');
   const patroni = !!c.haState?.managedByPatroni;
   const isPrimary = node.role === 'primary';
+  const viewer = useRole() === 'viewer';                // operators may run every node action (the server allows them); each one is confirmed, reinit and restart with the typed name
   const healthy = node.online && ['running', 'streaming'].includes(String(node.state));
   const hasAgent = !!agent && agent.online;
   const nid = agent?.id as string | undefined;
@@ -43,7 +44,7 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
     <div className="stack-l">
       <dl className="kv">
         <dt>State</dt><dd>{node.online ? node.state : 'offline'}</dd>
-        {!isPrimary ? <><dt>Replication lag</dt><dd>{bytes(node.replicationLagBytes)}</dd></> : null}
+        {!isPrimary ? <><dt>Replication lag</dt><dd>{node.replicationLagBytes == null ? 'unknown' : bytes(node.replicationLagBytes)}</dd></> : null}
         <dt>Address</dt><dd className="mono">{node.host}:{node.port}</dd>
         <dt>Timeline</dt><dd>{node.timeline ?? '—'}</dd>
         {node.pgVersion ? <><dt>PostgreSQL</dt><dd>{String(node.pgVersion).split(' ')[0]} {node.compat && node.compat.problems.length ? <Badge kind={node.compat.problems.some((p: any) => p.severity === 'critical') ? 'bad' : 'warn'}>{node.compat.tier === 'unsupported' ? 'unsupported' : node.compat.tier === 'legacy' ? 'legacy' : node.compat.eol ? 'end of life' : 'to verify'}</Badge> : node.compat ? <Badge kind="ok">supported</Badge> : null}</dd></> : null}
@@ -53,7 +54,7 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
       {acts.map(g => <div key={g.group}><h4 style={{ margin: '0 0 8px' }}>{g.group}</h4>
         <div className="stack">{g.items.map(a => <div key={a.id} className="row gap-s" style={{ alignItems: 'flex-start', justifyContent: 'space-between' }}>
           <div style={{ flex: 1 }}><strong>{a.label}</strong><div className="small muted">{a.disabled ? a.disabled + '.' : a.hint}</div></div>
-          <Button sm kind={a.danger ? 'danger' : undefined} disabled={!!a.disabled || r.busy || !isAdmin && a.danger} onClick={() => go(a)}>Run</Button></div>)}</div></div>)}
+          <Button sm kind={a.danger ? 'danger' : undefined} disabled={!!a.disabled || r.busy || viewer} onClick={() => go(a)}>Run</Button></div>)}</div></div>)}
       {pending ? <Banner kind={pending.danger ? 'bad' : 'info'} title={`${pending.label} on ${node.name}?`}>
         <p>{pending.hint}</p>
         {pending.typed ? <p>Type the node name to confirm: <input className="input" value={typed} onChange={e => setTyped(e.target.value)} placeholder={node.name} /></p> : null}

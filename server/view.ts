@@ -34,7 +34,7 @@ export function lsnToBig(lsn?: string | null): bigint | null {
 export interface DerivedNode {
   name: string; role: 'primary' | 'sync_standby' | 'replica' | 'standby_leader'; state: string;
   host: string; port: number; timeline: number; lsn: string;
-  replicationLagBytes: number; replicationLagMs: number; dcsLeader: boolean;
+  replicationLagBytes: number | null; replicationLagMs: number; dcsLeader: boolean;   // null = unknown (never shown as 0: a disconnected replica looked in sync)
   cpuPercent: number; memoryPercent: number; connections: number; maxConnections: number;
   online: boolean; nodeId?: string; source: 'agent' | 'patroni' | 'direct';
   pgVersion?: string; compat?: { label: string; tier: string; eol: boolean; eolDate: string; problems: { severity: string; code: string; text: string }[] } | null;
@@ -47,7 +47,9 @@ function num(v: any, d = 0): number { const n = Number(v); return Number.isFinit
 export function deriveNodes(nodes: NodeRecord[], now = Date.now()): DerivedNode[] {
   const withSnap = nodes.filter(n => n.snapshot);
   // the primary's replication view is the authority for lag / sync state
-  const primarySnap = withSnap.map(n => n.snapshot).find(s => s?.postgres && s.postgres.is_in_recovery === false);
+  // from an ONLINE primary only: a dead primary's last snapshot made a replica that left hours ago look in sync (independent review)
+  const isOn = (n: NodeRecord) => !!n.lastSeen && now - Date.parse(n.lastSeen) < OFFLINE_AFTER_MS;
+  const primarySnap = withSnap.filter(isOn).map(n => n.snapshot).find(s => s?.postgres && s.postgres.is_in_recovery === false);
   const repl: any[] = primarySnap?.postgres?.replication || [];
   const primaryLsn = lsnToBig(primarySnap?.postgres?.current_lsn);
   const patroniMembers: any[] = withSnap.flatMap(n => n.snapshot?.patroni?.members || []);
@@ -71,8 +73,8 @@ export function deriveNodes(nodes: NodeRecord[], now = Date.now()): DerivedNode[
     else role = r?.sync_state === 'sync' ? 'sync_standby' : 'replica';
 
     const nodeLsn = lsnToBig(pg.current_lsn);
-    let lagBytes = num(r?.replay_lag_bytes, -1);
-    if (lagBytes < 0) lagBytes = role !== 'primary' && primaryLsn !== null && nodeLsn !== null && primaryLsn >= nodeLsn ? Number(primaryLsn - nodeLsn) : 0;
+    let lagBytes: number | null = num(r?.replay_lag_bytes, -1);
+    if (lagBytes < 0) lagBytes = role === 'primary' ? 0 : primaryLsn !== null && nodeLsn !== null && primaryLsn >= nodeLsn ? Number(primaryLsn - nodeLsn) : null;
     const sys = s.system || {};
     const ncpu = Math.max(1, num(sys.cpu_count, 1));
     return {
@@ -98,7 +100,7 @@ export function deriveNodes(nodes: NodeRecord[], now = Date.now()): DerivedNode[
     if (!m?.name || seen.has(m.name)) continue; seen.add(m.name);
     const pr = String(m.role || ''); const st = String(m.state || '');
     const role: DerivedNode['role'] = ['leader', 'primary', 'master'].includes(pr) ? 'primary' : pr === 'standby_leader' ? 'standby_leader' : pr === 'sync_standby' || pr === 'quorum_standby' ? 'sync_standby' : 'replica';
-    const lag = num(m.lag, 0);
+    const lag = Number.isFinite(Number(m.lag)) && m.lag !== null && m.lag !== '' ? Number(m.lag) : (['leader', 'primary', 'master'].includes(pr) ? 0 : null);   // Patroni says "unknown" when it cannot tell
     extra.push({ name: m.name, memberName: m.name, role, state: st || 'unknown', host: m.host || '', port: num(m.port, 5432), timeline: num(m.timeline, 0), lsn: '',
       replicationLagBytes: lag, replicationLagMs: 0, dcsLeader: role === 'primary', cpuPercent: 0, memoryPercent: 0, connections: 0, maxConnections: 0,
       online: ['running', 'streaming'].includes(st), source: 'patroni' });
@@ -123,7 +125,7 @@ export function deriveCluster(opts: {
   const ptOf = (n: any) => n?.snapshot?.patroni?.accessible !== false && n?.snapshot?.patroni?.scope ? n.snapshot.patroni : null;
   const pt = ptOf(primaryRec) || opts.nodes.filter(n => dn.some(d => d.nodeId === n.id && d.online)).map(ptOf).find(Boolean) || primaryRec?.snapshot?.patroni || {};
   const anyOffline = dn.some(n => !n.online);
-  const lagging = dn.some(n => n.role !== 'primary' && n.role !== 'standby_leader' && n.replicationLagBytes > 64 * 1024 * 1024);
+  const lagging = dn.some(n => n.role !== 'primary' && n.role !== 'standby_leader' && (n.replicationLagBytes ?? 0) > 64 * 1024 * 1024);
   const status = !lead ? 'degraded' : (anyOffline || lagging ? 'degraded' : 'healthy');
   const prior = opts.prior || {};
   const dbs = (pg.databases || []).map((d: any) => {

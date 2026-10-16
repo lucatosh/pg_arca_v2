@@ -134,6 +134,8 @@ export function mountPolicyRoutes(app: any, store: Store) {
     if (typeof name !== 'string' || !name.trim() || name.length > 60) return res.status(400).json({ error: 'name_required' });
     const v = validatePolicy({ ...req.body?.policy, enabled: true });
     if (!v.ok) return res.status(400).json({ error: 'invalid_policy', message: v.error });
+    // a NEW template never replaces an existing one with the same derived id (it may be assigned: its schedule and retention would change everywhere)
+    if (req.body?.create && (store.peek().settings.policyTemplates || {})[id]) return res.status(409).json({ error: 'template_exists', message: `A template with this name already exists (${id}): choose another name, or edit that one.` });
     await store.mutate(d => {
       (d.settings.policyTemplates ||= {})[id] = { id, name: name.trim(), description: String(description).slice(0, 300), policy: v.policy };
       audit(d, { actor: actor(req), action: 'policy.template.save', status: 'OK', details: { id, name } });

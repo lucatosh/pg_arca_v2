@@ -157,6 +157,10 @@ PY
 # archive attempt fail and pg_wal would grow until the disk is full. Switch archiving off (or to another tool) first, or PG_ARCA_FORCE=1.
 if [[ "${PG_ARCA_UNINSTALL:-}" == 1 ]]; then
   if [[ "${PG_ARCA_FORCE:-}" != 1 ]]; then
+    SP="$STATE_ROOT/state/walspool"
+    if [[ -d "$SP" ]] && ls -A "$SP" 2>/dev/null | grep -qv '^\.'; then
+      die "the asynchronous WAL spool ($SP) still holds segments that are not in the archive: let the agent push them (or switch asynchronous archiving off and wait), or PG_ARCA_FORCE=1 (they would be lost)"
+    fi
     st="$(archiving_state 2>/dev/null || echo "unknown:the check failed")"
     [[ "$st" == yes ]] && die "PostgreSQL still archives WAL through this agent ($UNIT). Switch archiving off or to another tool first (then reload), or set PG_ARCA_FORCE=1."
     [[ "$st" == unknown:* ]] && die "cannot tell whether PostgreSQL still archives WAL through this agent ($UNIT): ${st#unknown:}. Removing the agent while it does fills pg_wal. Check archive_command, then re-run with PG_ARCA_FORCE=1."
@@ -319,7 +323,13 @@ if [[ -n "${PG_ARCA_TLS_CA:-}" ]]; then
 import json, sys
 c = json.load(open(sys.argv[1]))
 if c.get("tls_ca_file") != sys.argv[2]:
-    c["tls_ca_file"] = sys.argv[2]; json.dump(c, open(sys.argv[1], "w"), indent=2)
+    import os
+    c["tls_ca_file"] = sys.argv[2]
+    tmp = sys.argv[1] + ".tmp"                      # atomic: archive_command reads this file at any moment, a half-written one must never be seen
+    with open(tmp, "w") as f:
+        json.dump(c, f, indent=2)
+    st = os.stat(sys.argv[1]); os.chown(tmp, st.st_uid, st.st_gid); os.chmod(tmp, st.st_mode & 0o777)
+    os.rename(tmp, sys.argv[1])
 PY
   fi
 fi

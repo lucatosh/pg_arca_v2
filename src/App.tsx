@@ -154,7 +154,7 @@ function Shell({ user, role, logout }: { user: string; role: string; logout: () 
         {role === 'admin' ? <JoinBanner /> : null}
         <Suspense fallback={<div className="stack"><Skeleton h={30} w={260} /><Skeleton h={140} /><Skeleton h={140} /></div>}>
           {route.page === 'clusters' && <Clusters clusters={clusters} loading={loading} demoAvailable={!!data?.demoAvailable} />}
-          {route.page === 'cluster' && <ClusterView id={route.id!} tab={route.tab} />}
+          {route.page === 'cluster' && <ClusterView key={route.id} id={route.id!} tab={route.tab} />}   {/* one instance per cluster: no state of another cluster's page (results, busy flags, overrides) */}
           {route.page === 'audit' && <Audit clusters={clusters} />}
           {route.page === 'history' && <HistoryPage clusters={clusters} />}
           {route.page === 'discovery' && <Discovery />}

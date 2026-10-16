@@ -38,7 +38,7 @@ SEG_RE = re.compile(r"^([0-9A-F]{8})([0-9A-F]{8})([0-9A-F]{8})$")
 HIST_LINE_RE = re.compile(r"^\s*(\d+)\s+([0-9A-Fa-f]+)/([0-9A-Fa-f]+)")
 
 
-def _branch_not_on_our_history(src_path, name):
+def _branch_not_on_our_history(src_path, name, pg_wal_dir=None):
     """For a segment of an OLDER timeline than the one this server writes: '' when the server's own history may need it, else the reason
     it never will. PostgreSQL recovering along a timeline history reads timeline T only up to the point where the history left T, and the
     segment holding that switch point is read from the newer timeline. A copy of timeline T's segment that holds or follows that point is
@@ -48,7 +48,7 @@ def _branch_not_on_our_history(src_path, name):
     if not m:
         return ""
     try:
-        wal_dir = os.path.dirname(os.path.abspath(src_path))
+        wal_dir = pg_wal_dir or os.path.dirname(os.path.abspath(src_path))     # the server's pg_wal (not the async spool the copy may come from)
         seg_size = os.path.getsize(src_path)
         names = os.listdir(wal_dir)
         cur = max((int(x[:8], 16) for x in names if SEG_RE.match(x)), default=0)      # the timeline this server writes now
@@ -93,6 +93,12 @@ try:
     import zstandard as _zstd
 except Exception:  # pragma: no cover
     _zstd = None
+_stdz = None
+if _zstd is None:                                   # Python >= 3.14 has zstd in the standard library: the same codec the repository uses (engine/util.py)
+    try:
+        from compression import zstd as _stdz
+    except ImportError:
+        _stdz = None
 
 
 OWNER_FILE = "ARCHIVE_OWNER.json"      # the database (system identifier) this archive belongs to: one database per WAL archive directory
@@ -140,8 +146,14 @@ def _sha256_file(path, bufsize=1 << 20):
     return h.hexdigest()
 
 
+def known_archives_file(state_dir):
+    """Archives this host has initialized ({realpath: system identifier}), next to the agent's state."""
+    return os.path.join(state_dir or "/var/lib/pgarca/state", "wal_archives.json")
+
+
 class WalManager:
-    def __init__(self, wal_dir="/var/lib/pgarca/wal", compression="zstd", level=3, segment_size=16 * 1024 * 1024, crypto=None, previous=None):
+    def __init__(self, wal_dir="/var/lib/pgarca/wal", compression="zstd", level=3, segment_size=16 * 1024 * 1024, crypto=None, previous=None,
+                 create=True, known_file=None):
         self.crypto = crypto
         self.wal_dir = wal_dir
         # earlier locations of this archive (the destination was changed): READ only - restores and chain checks find old segments there;
@@ -150,8 +162,14 @@ class WalManager:
         self.compression = compression
         self.level = int(level)
         self.segment_size = segment_size
-        os.makedirs(wal_dir, mode=0o750, exist_ok=True)
-        os.makedirs(os.path.join(wal_dir, "conflicts"), mode=0o750, exist_ok=True)
+        # known_file: archives this host has initialized (state dir). An initialized archive found EMPTY again is a share that is not mounted (or was
+        # wiped): archiving into the bare mount point would hide every segment when the share comes back (independent review)
+        self.known_file = known_file
+        if create:
+            os.makedirs(wal_dir, mode=0o750, exist_ok=True)
+            os.makedirs(os.path.join(wal_dir, "conflicts"), mode=0o750, exist_ok=True)
+        elif not os.path.isdir(wal_dir):
+            raise WalArchiveError("PGA-WAL-096", "the WAL archive directory %s does not exist (share not mounted?)" % wal_dir)
         self._cont_cache = (0, None, None)   # (computed_at, dir_mtime, report)
 
     # ------------------------------------------------------------------ codecs
@@ -161,6 +179,10 @@ class WalManager:
             if _zstd is not None:
                 with open(src, "rb") as fi, open(dst, "wb") as fo:
                     _zstd.ZstdCompressor(level=self.level).copy_stream(fi, fo)
+                return "zst"
+            if _stdz is not None:
+                with open(src, "rb") as fi, open(dst, "wb") as fo:
+                    fo.write(_stdz.compress(fi.read(), level=self.level))
                 return "zst"
             if shutil.which("zstd"):
                 subprocess.run(["zstd", "-q", "-f", "-%d" % self.level, src, "-o", dst], check=True)
@@ -182,6 +204,9 @@ class WalManager:
             if _zstd is not None:
                 with open(src, "rb") as fi, open(dst, "wb") as fo:
                     _zstd.ZstdDecompressor().copy_stream(fi, fo)
+            elif _stdz is not None:
+                with open(src, "rb") as fi, open(dst, "wb") as fo:
+                    fo.write(_stdz.decompress(fi.read()))
             elif shutil.which("zstd"):
                 subprocess.run(["zstd", "-d", "-q", "-f", src, "-o", dst], check=True)
             else:
@@ -233,6 +258,10 @@ class WalManager:
         """A WAL archive directory holds ONE database (segment names restart at 1 in every cluster): a second database writing here would collide with
         the first one's names and its retention would delete the other's WAL. The sites of a geo-redundant pair are the same database: they share it."""
         cur = self.owner()
+        if cur is None and self._known(sysid):
+            raise WalArchiveError("PGA-WAL-096", "the WAL archive %s held this database's WAL and is empty now: the share is not mounted, or the archive was "
+                                  "removed. Nothing is written into it (the segments would be hidden by the share once mounted): mount it, or set a new "
+                                  "archive from the console (Backup storage)" % self.wal_dir)
         if cur is None:
             p = os.path.join(self.wal_dir, OWNER_FILE)
             tmp = "%s.%d.tmp" % (p, os.getpid())
@@ -247,9 +276,38 @@ class WalManager:
             finally:
                 os.unlink(tmp)
             cur = self.owner()
+        if cur == sysid:
+            self._remember(sysid)
         if cur and cur != sysid:
             raise WalArchiveError("PGA-WAL-032", "this WAL archive (%s) belongs to another database (system identifier %s; this one is %s): each PostgreSQL cluster "
                                   "needs its own WAL archive directory. Set a different wal_archive_dir for this cluster" % (self.wal_dir, cur, sysid))
+
+    def _known(self, sysid):
+        if not self.known_file:
+            return False
+        try:
+            with open(self.known_file, "r", encoding="utf-8") as f:
+                return json.load(f).get(os.path.realpath(self.wal_dir)) == sysid
+        except (IOError, OSError, ValueError):
+            return False
+
+    def _remember(self, sysid):
+        """Best effort (the state directory may not be writable by PostgreSQL's user): written once per archive."""
+        if not self.known_file or self._known(sysid):
+            return
+        try:
+            try:
+                with open(self.known_file, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+            except (IOError, OSError, ValueError):
+                d = {}
+            d[os.path.realpath(self.wal_dir)] = sysid
+            tmp = "%s.%d.tmp" % (self.known_file, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+            os.rename(tmp, self.known_file)
+        except (IOError, OSError):
+            pass
 
     # ------------------------------------------------------------------ quarantine
     def conflicts(self):
@@ -397,9 +455,11 @@ class WalManager:
                 continue
             os.makedirs(ddir, mode=0o750, exist_ok=True)
             # 1) the dead copy (+ its meta) goes aside, atomically renamed inside the same filesystem
-            os.rename(stored, os.path.join(ddir, os.path.basename(stored)))
+            aside = os.path.join(ddir, os.path.basename(stored))
+            os.rename(stored, aside)
             mp = os.path.join(self.wal_dir, name + ".meta")
-            if os.path.exists(mp):
+            had_meta = os.path.exists(mp)
+            if had_meta:
                 os.rename(mp, os.path.join(ddir, name + ".meta"))
             report["retired"].append(name)
             # 2) the survivor's copy takes its place through the normal write-once path (compression, meta, fsync)
@@ -408,8 +468,17 @@ class WalManager:
                     self.archive_segment(chosen, name)
                     os.rename(chosen, chosen + ".dead-branch")       # consumed: it is in the archive now (kept as a trace, excluded from the alarm)
                     report["promoted"].append(name)
-                except WalArchiveError as e:
-                    report["skipped"].append({"name": name, "why": "quarantined copy not promoted: %s" % e})
+                except (WalArchiveError, OSError) as e:
+                    # the name must not stay ABSENT (a recovery would read "end of archive" there): the set-aside copy goes back, the rest goes on
+                    try:
+                        if not self._find(name)[0]:
+                            os.rename(aside, stored)
+                            if had_meta:
+                                os.rename(os.path.join(ddir, name + ".meta"), mp)
+                            report["retired"].remove(name)
+                    except OSError:
+                        pass
+                    report["skipped"].append({"name": name, "why": "quarantined copy not promoted (the stored copy is kept in place): %s" % e})
             for c in copies:
                 if c != chosen and os.path.exists(c) and not c.endswith(".dead-branch"):
                     os.rename(c, c + ".dead-branch")
@@ -528,6 +597,17 @@ class WalManager:
                         rep["key_id"] = self.crypto.key_id
                     self._write_meta_once(name, rep)
             if stored == raw_sha:
+                # the writer that published it may have died before its fsyncs (PostgreSQL retried): durable before PostgreSQL recycles the segment
+                for pth in (existing, os.path.join(self.wal_dir, name + ".meta")):
+                    try:
+                        fd = os.open(pth, os.O_RDONLY)
+                        try:
+                            os.fsync(fd)
+                        finally:
+                            os.close(fd)
+                    except OSError:
+                        pass
+                _fsync_dir(self.wal_dir)
                 return True, existing, raw_sha, "already archived (identical content)"
             qdir = os.path.join(self.wal_dir, "conflicts")
             qname = self._quarantine(src_path, name, raw_sha)
@@ -536,7 +616,12 @@ class WalManager:
                                       "themselves to the same timeline number (a split-brain between sites, or a server promoted without access to this archive). "
                                       "PostgreSQL stops archiving until this is solved; incoming copy quarantined as conflicts/%s"
                                       % (name, stored[:12], raw_sha[:12], qname))
-            why = _branch_not_on_our_history(src_path, name)
+            if name.endswith(".partial"):
+                # PostgreSQL never restores a .partial (recovery reads the next timeline's copy of that segment): two promoted standbys each archive
+                # their own; refusing the second blocked its archiver for good (independent review). Kept in quarantine, acknowledged.
+                logger.warning("%s: a different .partial is in the archive (another promoted server's): never read by recovery, kept as conflicts/%s", name, qname)
+                return True, existing, raw_sha, "a different .partial is already archived; recovery never reads it, this copy is kept as conflicts/%s" % qname
+            why = _branch_not_on_our_history(src_path, name, getattr(self, "pg_wal_dir", None))
             if why:
                 # the server's own timeline history never reads this copy (the segment holds or follows the point where this server left
                 # that timeline: recovery takes the newer timeline's copy of it). Archiving it is pointless, and refusing it would block
@@ -951,8 +1036,8 @@ class LiveWal(object):
     stored PLAINTEXT segments that restores then refused, PGA-ENC-006) and kept writing to the old directory after a destination change
     (independent review, 16/10)."""
 
-    def __init__(self, config, seg_size=lambda: 16 * 1024 * 1024):
-        self._config, self._seg = config, seg_size
+    def __init__(self, config, seg_size=lambda: 16 * 1024 * 1024, pg_wal=lambda: None):
+        self._config, self._seg, self._pgwal = config, seg_size, pg_wal
         self._key, self._obj = None, None
         self._lock = threading.Lock()
 
@@ -967,8 +1052,13 @@ class LiveWal(object):
                 if kf:
                     from pg_arca.engine.crypt import from_settings
                     crypto = from_settings(kf)               # a key that cannot be read must stop archiving, never fall back to plaintext
-                self._obj = WalManager(key[0], key[2], key[3], key[4], crypto=crypto, previous=list(key[5]) or None)
+                self._obj = WalManager(key[0], key[2], key[3], key[4], crypto=crypto, previous=list(key[5]) or None,
+                                       known_file=known_archives_file(c.get("state_dir")))
                 self._key = key
+            try:
+                self._obj.pg_wal_dir = self._pgwal()                 # the spool pusher's copies come from the spool: the history is in pg_wal
+            except Exception:
+                self._obj.pg_wal_dir = None
             return self._obj
 
     def __getattr__(self, name):

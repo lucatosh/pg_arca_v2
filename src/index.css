@@ -521,3 +521,5 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 
 .viewsw { display: flex; align-items: center; gap: 8px; padding: 8px 14px 0; color: var(--side-ink-2); } .viewsw .seg button { padding: 3px 10px; font-size: 12px; }
 .shell[data-rail="1"] .viewsw { display: none; }
+fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
+fieldset.plain[disabled] .btn { cursor: not-allowed; }

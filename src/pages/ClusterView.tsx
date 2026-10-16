@@ -57,7 +57,7 @@ export function ClusterView({ id, tab }: { id: string; tab?: string }) {
           {findings.length > 4 ? <li><a href="#/today">{findings.length - 4} more on Today</a></li> : null}</ul> : null}</div>
       {agentic && cur !== 'restore' ? <Button kind="primary" icon="restore" onClick={() => go(`c/${encodeURIComponent(id)}/restore`)} title="Restore a table, rows, a database or the whole server">Restore…</Button> : null}
       <Button icon="refresh" busy={spin} title="Reloads the status of the cluster, nodes, backups and operations right away" onClick={async () => { setSpin(true); const k = encodeURIComponent(id); await Promise.all([revalidate(`/api/clusters/${k}`), revalidate('/api/clusters'), revalidate('/api/nodes'), revalidate(`/api/clusters/${k}/backups`), revalidate(`/api/operations?clusterId=${k}`)]); setSpin(false); toast('Status refreshed', 'ok'); }}>Refresh</Button>
-      <Button kind="ghost" className="icon" icon="trash" onClick={() => setDetach(true)} aria-label="Detach this cluster" title="Detach… — stop managing this cluster from the console (PostgreSQL and the backups are not touched)" /></div>
+      {useRoleIsAdmin ? <Button kind="ghost" className="icon" icon="trash" onClick={() => setDetach(true)} aria-label="Detach this cluster" title="Detach… — stop managing this cluster from the console (PostgreSQL and the backups are not touched)" /> : null}</div>
     {c.isSandbox ? <Banner kind="info" title="Demo cluster">Sample data: operations are not executed. You can delete it once you have connected a real cluster.</Banner> : null}
     {agentic && (cur === 'overview' || cur === 'nodes') ? <AgentUpdateBanner clusterId={c.id} /> : null}
     {/* the 30-day ribbon where it answers the question of the page (overview, backups); elsewhere the protection line above says it and the work starts higher */}
@@ -130,10 +130,10 @@ function Nodes({ c }: { c: any }) {
   const mint = async (nodeName?: string) => { setBusy(true); try { const t: any = await api('POST', '/api/enrollment-tokens', { label: `${c.name} +${nodeName || 'node'}`, clusterId: c.id, ttlMinutes: 60 }, { key: 'tok-' + Date.now() }); setTok(nodeName ? { ...t, node: nodeName } : t); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
   return <div className="stack-l">
     {nodes.some(n => n.source === 'patroni') ? <Banner kind="info" title={`${nodes.filter(n => n.source === 'patroni').length} cluster nodes do not have the agent yet`}>Patroni sees them, but managing them (backup, restore, access) needs the agent. If the only node with an agent goes down, backups and restores do not start. Use “Install agent” next to each node: the command is already bound to this cluster.</Banner> : null}
-    <Card title="Cluster members" actions={<span className="row gap-s">{c.activeTimeline || c.currentLSN ? <span className="small faint xp" title="Where the cluster's WAL is now: timeline (increases at each promotion) and current WAL position">timeline {c.activeTimeline || '—'} · LSN {c.currentLSN || '—'}</span> : null}<Badge>{c.haState?.managedByPatroni ? `Patroni cluster · ${nodes.length} nodes` : nodes.length > 1 ? `${nodes.length} independent servers` : "Single instance"}</Badge></span>} pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Node</th><th>Role</th><th>State</th><th className="num">Lag</th><th className="num">CPU</th><th className="num">Memory</th><th className="num">Connections</th><th /></tr></thead>
+    <Card title="Cluster members" actions={<span className="row gap-s">{c.activeTimeline || c.currentLSN ? <span className="small faint xp" title="Where the cluster's WAL is now: timeline (increases at each promotion) and current WAL position">timeline {c.activeTimeline || '—'} · LSN {c.currentLSN || '—'}</span> : null}<Badge>{c.haState?.managedByPatroni ? `Patroni cluster · ${nodes.length} nodes` : nodes.length > 1 ? `${nodes.length} independent servers` : "Single instance"}</Badge></span>} pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Node</th><th>Role</th><th>State</th><th className="num">Lag</th><th className="num" title="Load average over 1 minute per core (runnable and waiting processes, I/O included): not CPU utilisation">Load</th><th className="num">Memory</th><th className="num">Connections</th><th /></tr></thead>
       <tbody>{nodes.map(n => <tr key={n.name}><td><span className="row gap-s"><Dot kind={n.online ? 'ok' : 'bad'} /><strong>{n.name}</strong>{n.source === 'patroni' ? (isAdmin && !c.isSandbox ? <PendingJoin name={n.name}><Badge kind="warn" title="Seen by Patroni: without an agent, no backups, restores or changes can be done on this node">no agent</Badge><Button sm icon="plus" disabled={busy} onClick={() => mint(n.name)}>Install agent</Button></PendingJoin> : <Badge kind="warn" title="Seen by Patroni: without an agent, no backups, restores or changes can be done on this node">no agent</Badge>) : null}</span><div className="faint small">{n.host}:{n.port}{n.memberName && n.memberName !== n.name ? <span title="The name Patroni knows this node by (its member name differs from the hostname)"> · Patroni: {n.memberName}</span> : null}</div></td>
         <td><Badge kind={n.role === 'primary' ? 'accent' : undefined}>{n.role === 'primary' ? 'Primary' : n.role === 'sync_standby' ? 'Sync standby' : n.role === 'standby_leader' ? 'Standby leader' : 'Replica'}</Badge></td>
-        <td>{n.online ? n.state : 'offline'}</td><td className="num">{n.role === 'primary' ? '—' : bytes(n.replicationLagBytes)}</td>
+        <td>{n.online ? n.state : 'offline'}</td><td className="num">{n.role === 'primary' ? '—' : n.replicationLagBytes == null ? <span className="faint" title="Not measurable now (no online primary reports this replica)">unknown</span> : bytes(n.replicationLagBytes)}</td>
         <td className="num">{n.source === 'agent' ? `${n.cpuPercent}%` : '—'}</td><td className="num">{n.source === 'agent' ? `${n.memoryPercent}%` : '—'}</td><td className="num">{n.connections}/{n.maxConnections || '—'}</td><td className="num">{!c.isSandbox && c.source !== 'direct' ? <Button sm onClick={() => setSel(n.name)}>Manage</Button> : null}</td></tr>)}
         {!nodes.length ? <tr><td colSpan={8} className="muted">No nodes detected.</td></tr> : null}</tbody></table></div></Card>
     {c.source !== 'direct' && !c.isSandbox ? <Card title="Installed agents" actions={isAdmin ? <Button sm icon="plus" busy={busy && !revoke} onClick={() => mint()}>Add node</Button> : undefined} pad={false}>
@@ -156,7 +156,7 @@ function HA({ c }: { c: any }) {
   const nodes: any[] = c.haState?.nodes || [];
   const leader = nodes.find(n => n.role === 'primary');
   const [act, setAct] = useState<HaAct | null>(null); const [cand, setCand] = useState(''); const [typed, setTyped] = useState('');
-  const r = useOpRunner(c.id, () => revalidate(`/api/clusters/${encodeURIComponent(c.id)}`));
+  const r = useOpRunner(c.id, () => revalidate(`/api/clusters/${encodeURIComponent(c.id)}`)); const viewer = useRole() === 'viewer';   // the server refuses their operations
   if (c.isSandbox) return <Banner kind="info" title="Not available on the demo cluster">Connect a real Patroni cluster to use switchover and failover.</Banner>;
   if (!c.haState?.managedByPatroni) return <Card><Empty icon="swap" title="Patroni not detected">High-availability operations require a Patroni-managed cluster with the agent installed (or its API connected in connection mode).</Empty></Card>;
   const standbys = nodes.filter(n => n.role !== 'primary' && n.online && ['running', 'streaming'].includes(String(n.state)));   // only replicas Patroni could really promote
@@ -175,7 +175,8 @@ function HA({ c }: { c: any }) {
   };
   return <div className="stack-l">
     {c.haState.maintenanceMode ? <Banner kind="warn" title="Maintenance mode on">Patroni will not perform automatic failovers until you turn it off.</Banner> : null}
-    <Card title="Actions">
+    {viewer ? <Banner kind="info" title="Read-only">Your role can look at high availability but not change it.</Banner> : null}
+    <fieldset className="plain" disabled={viewer}><Card title="Actions">
       <div className="row wrap">
         <Button icon="swap" disabled={!standbys.length || r.busy} onClick={() => start({ kind: 'switchover' })}>Planned switchover</Button>
         <Button icon="pause" disabled={r.busy} onClick={() => start({ kind: 'pause' })}>{c.haState.maintenanceMode ? 'Leave maintenance mode' : 'Enter maintenance mode'}</Button>
@@ -186,9 +187,9 @@ function HA({ c }: { c: any }) {
         <dt>Enter maintenance mode</dt><dd className="small muted">Suspends Patroni’s automatic failovers: the cluster does not change primary by itself while you work. Remember to leave it.</dd>
         <dt>Reload Patroni</dt><dd className="small muted">Makes Patroni re-read its configuration file (patroni.yml) on the node, without restarting PostgreSQL. Needed after editing it by hand. Does not change the primary.</dd>
         <dt>Forced failover</dt><dd className="small muted">Promotes a replica immediately, without waiting for the primary. Only when the primary is not responding: transactions not yet replicated are lost.</dd></dl>
-      {sickCount > 0 ? <p className="small" style={{ marginTop: 8, color: 'var(--warn, #d9a441)' }}>{sickCount} {sickCount === 1 ? 'replica is' : 'replicas are'} not healthy (state other than running): {sickCount === 1 ? 'it' : 'they'} cannot be chosen{standbys.length ? '' : ', so switchover and failover are disabled'}.</p> : null}</Card>
+      {sickCount > 0 ? <p className="small" style={{ marginTop: 8, color: 'var(--warn, #d9a441)' }}>{sickCount} {sickCount === 1 ? 'replica is' : 'replicas are'} not healthy (state other than running): {sickCount === 1 ? 'it' : 'they'} cannot be chosen{standbys.length ? '' : ', so switchover and failover are disabled'}.</p> : null}</Card></fieldset>
     <Card title="Members" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Member</th><th>Role</th><th>State</th><th /></tr></thead><tbody>
-      {nodes.map(n => <tr key={n.name}><td>{n.name}</td><td>{n.role === 'primary' ? 'Leader' : 'Replica'}</td><td>{n.online ? n.state : 'offline'}</td><td className="num"><Button sm disabled={r.busy} onClick={() => start({ kind: 'restart', member: mname(n) })}>Restart</Button></td></tr>)}</tbody></table></div></Card>
+      {nodes.map(n => <tr key={n.name}><td>{n.name}</td><td>{n.role === 'primary' ? 'Leader' : 'Replica'}</td><td>{n.online ? n.state : 'offline'}</td><td className="num">{viewer ? null : <Button sm disabled={r.busy} onClick={() => start({ kind: 'restart', member: mname(n) })}>Restart</Button>}</td></tr>)}</tbody></table></div></Card>
     {r.conflict?.overridable ? <Banner kind="warn" title="Conflict with another operation">{r.conflict.message} <Button sm kind="danger" onClick={() => r.runForced()}>Proceed anyway</Button></Banner>
       : (r.op || r.error) ? <Card><OpPanel op={r.op} error={r.error} cancel={undefined} /><Result op={r.op} /></Card> : null}
     {act ? <Modal2 act={act} leader={mname(leader)} standbys={standbys} cand={cand} setCand={setCand} typed={typed} setTyped={setTyped} onClose={() => setAct(null)} onGo={exec} maint={!!c.haState.maintenanceMode} /> : null}
@@ -199,7 +200,7 @@ function Modal2({ act, leader, standbys, cand, setCand, typed, setTyped, onClose
   const k = act.kind; const danger = k === 'failover' || k === 'restart';
   const title = k === 'switchover' ? 'Planned switchover' : k === 'failover' ? 'Forced failover' : k === 'restart' ? `Restart ${act.member}?` : k === 'reload' ? 'Reload Patroni?' : maint ? 'Leave maintenance mode?' : 'Enter maintenance mode?';
   return <Confirm title={title} danger={danger} confirmLabel="Run" requireText={k === 'failover' ? 'FAILOVER' : undefined} onClose={onClose} onConfirm={() => (k === 'failover' && !cand ? null : onGo())}>
-    {k === 'switchover' || k === 'failover' ? <Field label="New primary"><select className="input" value={cand} onChange={e => setCand(e.target.value)}>{standbys.map((s: any) => <option key={s.name} value={s.memberName || s.name}>{s.name}{s.replicationLagBytes ? ` (lag ${bytes(s.replicationLagBytes)})` : ''}</option>)}</select></Field> : null}
+    {k === 'switchover' || k === 'failover' ? <Field label="New primary"><select className="input" value={cand} onChange={e => setCand(e.target.value)}>{standbys.map((s: any) => <option key={s.name} value={s.memberName || s.name}>{s.name}{s.replicationLagBytes == null ? ' (lag unknown)' : ` (lag ${bytes(s.replicationLagBytes)})`}{s.online === false ? ' — offline' : ''}</option>)}</select></Field> : null}
     {k === 'switchover' ? <p>The current primary <strong>{leader}</strong> hands over its role in an orderly way. Active connections are interrupted for a few seconds.</p> : null}
     {k === 'failover' ? <Banner kind="bad" title="Risk of data loss">Promotes the chosen replica without waiting for the primary. Transactions not yet replicated will be lost.</Banner> : null}
     {k === 'restart' ? <p>The member will be unreachable while PostgreSQL restarts.</p> : null}
@@ -215,9 +216,10 @@ function Params({ c }: { c: any }) {
   const PK = `params:${c.id}`;
   const [name, setName] = useDraft(PK + ':name', ''); const [value, setValue] = useDraft(PK + ':value', ''); const [reset, setReset] = useDraft(PK + ':reset', false); const [node, setNode] = useDraft(PK + ':node', '');
   const [ask, setAsk] = useState(false);
-  const r = useOpRunner(c.id, undefined, PK + ':op');
+  const r = useOpRunner(c.id, undefined, PK + ':op'); const viewer = useRole() === 'viewer';
   if (c.isSandbox) return <Banner kind="info" title="Not available on the demo cluster">Connect a real cluster to change parameters.</Banner>;
-  const valid = /^[a-z_][a-z0-9_.]*$/i.test(name) && (reset || value !== '');
+  // PostgreSQL parameter names are case-insensitive and SHOW ALL prints DateStyle / TimeZone: sent lowercase, as the server and the agent expect
+  const valid = /^[a-z_][a-z0-9_.]*$/i.test(name) && (reset || value !== '') && !viewer;
   const nodes = c.agentNodes || [];
   return <div className="stack-l">
     <Card title="Change a parameter" actions={<Badge title={c.haState?.managedByPatroni ? 'Patroni cluster: the parameter goes into the dynamic configuration (like patronictl edit-config) and applies to all members; never ALTER SYSTEM or postgresql.conf.' : undefined}>{c.haState?.managedByPatroni ? 'Patroni DCS (edit-config)' : 'ALTER SYSTEM'}</Badge>}>
@@ -227,13 +229,16 @@ function Params({ c }: { c: any }) {
         {nodes.length > 1 && !c.haState?.managedByPatroni ? <Field label="Node" hint="The parameter applies to the chosen node."><select className="input" value={node} onChange={e => setNode(e.target.value)}><option value="">Primary (automatic)</option>{nodes.map((n: any) => <option key={n.id} value={n.id}>{n.name}</option>)}</select></Field> : null}</div>
         <label className="check"><input type="checkbox" checked={reset} onChange={e => setReset(e.target.checked)} />Reset to the default value</label>
         <div className="row"><Button kind="primary" disabled={!valid || r.busy} onClick={() => setAsk(true)}>Apply</Button>
-          <Button disabled={r.busy} onClick={() => r.run('pg_reload', {}, { nodeId: node || undefined })}>Reload configuration</Button></div></div></Card>
+          <Button disabled={r.busy || viewer} onClick={() => r.run('pg_reload', {}, { nodeId: node || undefined })}>Reload configuration</Button></div></div></Card>
     {r.conflict?.overridable ? <Banner kind="warn" title={r.conflict.error === 'geo_standby_lower' ? 'Standby sites first' : 'Conflict with another operation'} actions={<Button sm kind="danger" onClick={() => r.runForced()}>Apply anyway</Button>}>{r.conflict.message}</Banner>
       : (r.op || r.error) ? <Card><OpPanel op={r.op} error={r.error} /><Result op={r.op} /></Card> : null}
-    {ask ? <Confirm title="Apply the parameter?" confirmLabel="Apply" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); r.run('pg_set_param', { name, value: reset ? null : value }, { nodeId: node || undefined }); }}>
+    {ask ? <Confirm title="Apply the parameter?" confirmLabel="Apply" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); r.run('pg_set_param', { name: name.trim().toLowerCase(), value: reset ? null : value }, { nodeId: node || undefined }); }}>
       <p><code>{name}</code> → <code>{reset ? 'DEFAULT' : value}</code>. {c.haState?.managedByPatroni ? 'It will be written to Patroni’s dynamic configuration (DCS) and applied by all members.' : 'It will be saved with ALTER SYSTEM and the configuration reloaded.'} If the parameter needs a restart, the result says so and the restart stays your decision.</p></Confirm> : null}
   </div>;
 }
+
+/** Operations the server refuses to cancel once running (optypes.ts cancellable: false). */
+const OP_SPECS_CANCEL: Record<string, boolean> = Object.fromEntries(['geo_promote', 'geo_demote', 'destination_drop_old', 'backup_expire', 'restore_kept_drop', 'restored_stop', 'restored_resume', 'restored_drop', 'restore_db_swap', 'restore_promote', 'restore_diff', 'restore_apply_rows', 'ephemeral_install'].map(t => [t, false]));
 
 function Operations({ c }: { c: any }) {
   const q = useQuery<{ operations: Op[] }>(`/api/operations?clusterId=${encodeURIComponent(c.id)}`, { interval: 3000 });
@@ -243,12 +248,13 @@ function Operations({ c }: { c: any }) {
   const all = q.data?.operations || []; const isRead = (o: Op) => OP_SPECS[o.type] ? !OP_SPECS[o.type].mutating : false;
   const ops = checks ? all : all.filter(o => !isRead(o) || o.status === 'failed' || o.status === 'expired'); const hidden = all.length - ops.length;   // a failed check is never hidden
   const cancel = async (id: string) => { try { await api('POST', `/api/operations/${id}/cancel`); q.refresh(); } catch (e: any) { toast(e.message, 'bad'); } };
+  const viewerOps = useRole() === 'viewer';
   return <Card title="Operations on this cluster" pad={false} actions={hidden || checks ? <label className="check small"><input type="checkbox" checked={checks} onChange={e => setChecks(e.target.checked)} />Show checks and reads{!checks && hidden ? ` (${hidden})` : ''}</label> : undefined}>
     {!ops.length ? <Empty icon="list" title="No operations">Backups, restores and other actions appear here with outcome and duration.</Empty> :
       <div className="tablewrap"><table className="t"><thead><tr><th>When</th><th>Operation</th><th>Status</th><th>Started by</th><th /></tr></thead><tbody>
         {ops.map(o => <React.Fragment key={o.id}><tr className="click" onClick={() => setOpen(open === o.id ? null : o.id)}>
           <td title={dt(o.createdAt)}>{ago(o.createdAt)}</td><td>{OP_LABEL[o.type] || o.type}{o.params?.type ? ` (${o.params.type})` : ''}</td><td>{statusBadge(o.status)}</td>
-          <td className="muted">{(o as any).createdBy}</td><td className="num">{!isTerminal(o.status) ? <Button sm onClick={e => { e.stopPropagation(); cancel(o.id); }}>Cancel</Button> : null}</td></tr>
+          <td className="muted">{(o as any).createdBy}</td><td className="num">{!isTerminal(o.status) && !viewerOps && (o.status === 'queued' || OP_SPECS_CANCEL[o.type] !== false) ? <Button sm onClick={e => { e.stopPropagation(); cancel(o.id); }}>Cancel</Button> : null}</td></tr>
           {open === o.id ? <tr><td colSpan={5}><div className="stack"><OpPanel op={o} /><Result op={o} /><details><summary className="small muted" style={{ cursor: 'pointer' }}>History and parameters</summary><pre className="out">{JSON.stringify({ params: o.params, history: (o as any).history }, null, 2)}</pre></details></div></td></tr> : null}</React.Fragment>)}
       </tbody></table></div>}
   </Card>;

@@ -105,5 +105,12 @@ const codes = (st: any) => evaluate(st, now).filter(i => i.clusterId === 'c').ma
     const st = base(); st.nodes = { p: nodes[0], s: nodes[1] };
     const pz = evaluate(st, now).find(i => i.code === 'patroni_paused'); assert(pz && pz.severity === 'critical', JSON.stringify(pz));
   }
+  { // a replica whose lag nobody can measure (primary offline, Patroni says "unknown") is "unknown", never "0 B" (it looked in sync in the failover dialog)
+    const nodes: any[] = [{ id: 'p', name: 'pg1', clusterId: 'c', lastSeen: iso(now - 10 * 60_000), snapshot: { postgres: { is_in_recovery: false, alive: true, current_lsn: '0/9000000', replication: [] } } },
+      { id: 's', name: 'pg2', clusterId: 'c', lastSeen: iso(now), snapshot: { postgres: { is_in_recovery: true, alive: true }, patroni: { accessible: true, scope: 'pg', members: [{ name: 'pg3', role: 'replica', state: 'streaming', lag: 'unknown' }] } } }];
+    const v = deriveCluster({ id: 'c', name: 'c', environment: 'prod', nodes, now });
+    assert.strictEqual(v.haState.nodes.find((n: any) => n.name === 'pg2').replicationLagBytes, null);
+    assert.strictEqual(v.haState.nodes.find((n: any) => n.name === 'pg3').replicationLagBytes, null);
+  }
   console.log('review health/scheduler OK');
 })().catch(e => { console.error(e); process.exit(1); });

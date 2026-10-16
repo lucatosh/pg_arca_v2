@@ -71,7 +71,8 @@ def main():
         logger.info("Patroni REST: %s", rt.patroni.patroni_url)
 
     from pg_arca.wal_manager import LiveWal
-    wal = LiveWal(config, lambda: ((rt.instance or {}).get("control") or {}).get("wal_segment_size") or 16 * 1024 * 1024)
+    wal = LiveWal(config, lambda: ((rt.instance or {}).get("control") or {}).get("wal_segment_size") or 16 * 1024 * 1024,
+                  pg_wal=lambda: os.path.join((rt.instance or {}).get("data_directory") or "", "pg_wal") if (rt.instance or {}).get("data_directory") else None)
     class _Summary(object):                 # rebuilt lazily (PostgreSQL binding may change); cached 20s so heartbeats stay cheap
         _at, _val = 0.0, None
 

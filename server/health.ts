@@ -473,7 +473,9 @@ export function objectives(st: any, clusterId: string, now = Date.now()) {
   let rpo: { seconds: number | null; state: 'ok' | 'warn' | 'bad' | 'unknown'; text: string; openSegment?: boolean };
   if (!primary) rpo = { seconds: null, state: 'unknown', text: 'No reachable primary: the recovery point cannot be measured.' };
   else if (pg.settings?.archive_mode === 'off') rpo = { seconds: null, state: 'bad', text: 'WAL archiving is off: only the backups themselves can be recovered (no point-in-time recovery).' };
-  else if (failing) rpo = { seconds: null, state: 'bad', text: `WAL archiving is failing since ${new Date(arch.last_failed_time).toISOString().slice(0, 16).replace('T', ' ')}: everything written since then is at risk.` };
+  // at risk since the LAST SUCCESS (the last failure is the latest retry, always "now"), in UTC and said so
+  else if (failing) { const okAt = Date.parse(arch.last_archived_time || ''); rpo = { seconds: null, state: 'bad',
+    text: Number.isFinite(okAt) ? `WAL archiving is failing: the last segment was archived at ${new Date(okAt).toISOString().slice(0, 16).replace('T', ' ')} UTC (${durH((now - okAt) / 1000)} ago); everything written since then is at risk.` : 'WAL archiving is failing and nothing was archived yet: everything written is at risk.' }; }
   else if (!Number.isFinite(lastArch)) rpo = { seconds: null, state: 'warn', text: 'Nothing archived yet.' };
   else {
     const since = Math.max(0, (now - lastArch) / 1000);

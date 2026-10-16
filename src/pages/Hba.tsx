@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, get, uid } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Empty, Field, Icon, Modal, Skeleton, ago, dt, nof } from '../ui';
-import { clearDrafts, isTerminal, Op, revalidate, toast, useDraft, useQuery } from '../hooks';
+import { clearDrafts, isTerminal, Op, revalidate, toast, useDraft, useQuery, useRole } from '../hooks';
 import { AccessNeed, Issue, Rule, accessCoverage, analyze, clusterNeeds, covers, describe, fill, fromEffective, key, sortRules, stripUntil, tag, untilLabel, untilOf, validCidr, withUntil } from '../hbaLogic';
 
 type Row = Rule & { _id: string };
@@ -149,11 +149,13 @@ function HbaInner({ c }: { c: any }) {
   // ---- plan / apply ----
   const [planned, setPlanned] = useDraft<{ sig: string; reads: { node: string; res?: any; error?: string }[] } | null>(HK + ':planned', null, { secret: true }); const [planning, setPlanning] = useState(false);
   const [applying, setApplying] = useState(false); const [applyRes, setApplyRes] = useDraft<{ node: string; ok: boolean; text: string }[] | null>(HK + ':applied', null); const [force, setForce] = useState(false);
-  const [confirmApply, setConfirmApply] = useState(false);
+  const [confirmApply, setConfirmApply] = useState(false); const roleHba = useRole();
   const keyRef = useRef<{ sig: string; key: string } | null>(null);
   const curSig = sig(shown);
+  // "apply anyway" answers ONE list of lock-outs: any change of the rules or a new check asks again (independent review)
+  useEffect(() => { setForce(false); }, [curSig]);
   const doPlan = async () => {
-    setPlanning(true); setApplyRes(null);
+    setPlanning(true); setApplyRes(null); setForce(false);
     try {
       const rules = shown.map(clean);
       const out = await Promise.all(okReads.map(async n => { try { const op = await runOp(c.id, 'hba_plan', { rules, adopt }, n.nodeId); return { node: n.nodeName, res: op.result }; } catch (e: any) { return { node: n.nodeName, error: e.message }; } }));
@@ -238,12 +240,12 @@ function HbaInner({ c }: { c: any }) {
       })}</tbody></table></div></Card> : null}
 
     <Card title="Check and apply">
-      <div className="stack">
+      <div className="stack">{roleHba === 'viewer' ? <Banner kind="info" title="Read-only">Your role can read the access rules but not change them.</Banner> : null}
         {!dirty ? <p className="muted">No changes compared with what is on the {patroni ? 'cluster' : okReads.length > 1 ? 'cluster' : 'node'}.</p> : <div className="row wrap gap-s"><p className="grow" style={{ margin: 0 }}>You have unapplied changes (they stay here even if you change page). Check the effect first: the simulation verifies that no existing connection (replication and local administration) gets blocked.</p>
           <Button sm kind="ghost" onClick={() => { const m: Rule[] = (first.managed?.rules || []).map((r: any) => ({ type: r.type, database: r.database, user: r.user, address: r.address || '', method: r.method, options: r.options, comment: r.comment })); setRows(m.map(toRow)); setOrder('specific'); setPlanned(null); setApplyRes(null); setServerMoved(false); }}>Discard changes</Button></div>}
         {dirty && serverMoved ? <Banner kind="warn" title="The rules on the server changed while you were editing">Your changes have been kept. Check the effect again before applying (or discard them to start over from the current rules).</Banner> : null}
         <div className="row wrap"><Button icon="eye" busy={planning} disabled={planning || applying || errorsInDraft} onClick={doPlan}>Check the effect</Button>
-          <Button kind="primary" icon="check" busy={applying} disabled={!plans || invalid || nothing || errorsInDraft || (lock.length > 0 && !force) || applying} onClick={() => setConfirmApply(true)}>{patroni ? 'Apply to the whole cluster' : okReads.length > 1 ? `Apply to ${okReads.length} nodes` : 'Apply'}</Button>
+          <Button kind="primary" icon="check" busy={applying} disabled={roleHba === 'viewer' || !plans || invalid || nothing || errorsInDraft || (lock.length > 0 && !force) || applying} onClick={() => setConfirmApply(true)}>{patroni ? 'Apply to the whole cluster' : okReads.length > 1 ? `Apply to ${okReads.length} nodes` : 'Apply'}</Button>
           {!patroni && first.backups?.length ? <Button icon="restore" disabled={applying} onClick={() => setRb(true)}>Restore the previous version</Button> : null}</div>
         {patroni ? <p className="small muted">Written only to the Patroni DCS (like <span className="mono">patronictl edit-config</span>): Patroni rewrites pg_hba.conf on every member and reloads; the agent verifies with PostgreSQL (pg_hba_file_rules) that the rules are in effect. The files on the nodes are never read or changed.</p> : null}
         {errorsInDraft ? <Banner kind="bad" title="There are duplicate rules">Remove the duplicates flagged in red before continuing.</Banner> : null}

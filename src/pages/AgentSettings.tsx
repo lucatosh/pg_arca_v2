@@ -7,8 +7,8 @@ const HINT: Record<string, string> = {
   pg_data: 'The directory that contains PG_VERSION, for example /var/lib/pgsql/16/data or …/data/pgdata.',
   pg_bin_dir: 'Directory with pg_ctl and postgres, if not in the PATH.',
   pg_host: 'Socket directory (e.g. /var/run/postgresql) or a host.',
-  repo_path: 'Where the agent writes backups. It cannot be a system directory.',
-  wal_archive_dir: 'Where the agent archives WAL. It must be reachable from every node if you want to restore anywhere.',
+  repo_path: 'Where the agent writes backups, on THIS node only. To move the backups of the whole cluster (with migration of what exists), use Backup storage.',
+  wal_archive_dir: 'Where THIS node archives WAL: a test segment must reach it before the change is kept. To move the archive of the whole cluster, use Backup storage.',
   patroni_url: 'Usually detected automatically. Needed only if the Patroni API is not on this server.',
   process_max: 'Threads that compress and copy during a backup and extract during a restore. Each one is a core taken from PostgreSQL while it runs: the default is half the cores (2 to 8). Raise it on a big server with a fast destination, lower it if backups slow production down.',
   wal_archive_async: 'archive_command parks each segment in a local spool and returns at once; the agent pushes the spool into the archive in parallel. For WAL rates the synchronous archive_command cannot sustain. A segment in the spool is not in the archive yet: it is lost if this host is lost before it is pushed (the console shows the spool and counts it in the recovery point). Leave off unless the archiver falls behind.',
@@ -32,7 +32,8 @@ export function AgentSettings({ clusterId, nodes }: { clusterId: string; nodes: 
   if (!nodes.length) return null;
   const online = nodes.find(n => n.id === nodeId)?.online;
   const dirty = Object.keys(draft).length > 0; const canEdit = isAdmin && online !== false;
-  const save = () => { setSaving(true); setErr(null); wr.run('agent_config_set', { set: Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, v.trim() === '' ? null : v.trim()])) }, { nodeId }); };
+  // a new WAL archive directory is proven (a test segment must land there through PostgreSQL's own archive_command) or the change is undone
+  const save = () => { setSaving(true); setErr(null); wr.run('agent_config_set', { set: Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, v.trim() === '' ? null : v.trim()])), ...('wal_archive_dir' in draft ? { verify_wal: true } : {}) }, { nodeId }); };
   return <Card title="Paths and discovery" actions={nodes.length > 1 ? <select value={nodeId} onChange={e => setNodeId(e.target.value)} aria-label="Node">{nodes.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}</select> : <span className="muted small">{nodes[0].name}</span>}>
     <div className="stack">
       <p className="muted small">The agent detects directories, port and binaries by itself. If your installation differs, enter the right value here: the agent checks it on the server before saving it. Leave empty to use the detected value.</p>

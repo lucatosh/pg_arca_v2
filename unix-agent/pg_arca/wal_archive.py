@@ -9,6 +9,9 @@ import os
 import sys
 
 
+DEFAULT_CONF = "/etc/pg-arca/agent.conf"
+
+
 class ConfError(Exception):
     pass
 
@@ -16,13 +19,16 @@ class ConfError(Exception):
 def _conf():
     """The agent's effective settings as the archiver sees them: agent.conf, then the console-managed agent.local.json next to it (same precedence as the agent itself:
     file < overrides < environment). Without the second step a WAL directory changed from the console would be used by the agent but NOT by archive_command."""
-    path = os.environ.get("PG_ARCA_CONF", "/etc/pg-arca/agent.conf")
+    path = os.environ.get("PG_ARCA_CONF", DEFAULT_CONF)
     c = {}
     try:
         with open(path, "r", encoding="utf-8") as f:
             c = json.load(f)
     except Exception as e:
-        if os.environ.get("PG_ARCA_CONF") and not os.environ.get("WAL_ARCHIVE_DIR"):
+        import errno as _errno
+        if not os.environ.get("WAL_ARCHIVE_DIR") and (os.environ.get("PG_ARCA_CONF") or getattr(e, "errno", None) != _errno.ENOENT):
+            # a configuration that exists but cannot be read or parsed (a typo, a half-written file, permissions) is not "no configuration": the
+            # defaults would archive into another directory, without the encryption key (independent review). Only a missing default file falls back.
             # an instance agent's configuration named explicitly (archive_command = env PG_ARCA_CONF=/etc/pg-arca/<inst>/agent.conf ...) is gone or
             # unreadable: the defaults would put this cluster's WAL into ANOTHER cluster's archive (independent review). Fail: PostgreSQL retries.
             raise ConfError("cannot read %s (%s)" % (path, e))
@@ -41,7 +47,8 @@ def _settings():
     c = _conf()
     d = os.environ.get("WAL_ARCHIVE_DIR") or c.get("wal_archive_dir")
     comp = os.environ.get("PG_ARCA_COMPRESSION") or c.get("compression")
-    return d or "/var/lib/pgarca/wal", comp or "zstd", c.get("compression_level", 3), c.get("wal_segment_size", 16 * 1024 * 1024)
+    seg = os.environ.get("PG_ARCA_WAL_SEGSIZE")
+    return d or "/var/lib/pgarca/wal", comp or "zstd", c.get("compression_level", 3), int(seg) if seg and seg.isdigit() else c.get("wal_segment_size", 16 * 1024 * 1024)
 
 
 def _previous():
@@ -133,7 +140,11 @@ def main(argv):
         if walprefetch.take(spool, argv[2], argv[3]):
             walprefetch.kick(spool, argv[2])
             return 0
-    from pg_arca.wal_manager import WalManager, WalArchiveError
+    try:
+        from pg_arca.wal_manager import WalManager, WalArchiveError, known_archives_file
+    except Exception as e:                                  # a half-upgraded install: an error, never "end of archive" for restore_command
+        sys.stderr.write("pg_arca %s FAILED: PGA-WAL-095 cannot load pg_arca (%s)\n" % (argv[1], e))
+        return 1 if argv[1] == "archive" else 126
     try:
         d, comp, lvl, seg = _settings()
     except ConfError as e:
@@ -150,7 +161,15 @@ def main(argv):
         except Exception as e:
             sys.stderr.write("pg_arca %s FAILED: %s\n" % (argv[1], e))
             return 1 if argv[1] == "archive" else 126        # for restore_command 1 means "end of archive": a key error must ABORT recovery, not end it early
-    wm = WalManager(d, comp, lvl, seg, crypto=crypto, previous=_previous() if argv[1] in ("get", "prefetch") else None)
+    reading = argv[1] in ("get", "prefetch")
+    try:
+        # restore_command never creates the archive (an unmounted share would become an empty archive answering "not found" for every segment:
+        # PostgreSQL then ends recovery early, silently); archive_command creates it only the first time (a known archive found empty is refused)
+        known = None if os.environ.get("WAL_ARCHIVE_DIR") else known_archives_file(_conf().get("state_dir"))
+        wm = WalManager(d, comp, lvl, seg, crypto=crypto, previous=_previous() if reading else None, create=not reading, known_file=known)
+    except Exception as e:
+        sys.stderr.write("pg_arca %s FAILED: PGA-WAL-096 %s\n" % (argv[1], e))
+        return 126 if reading else 1
     if argv[1] == "prefetch":                                # detached read-ahead worker: pg-arca-wal prefetch <spool> <segments ahead>
         from pg_arca import walprefetch
         walprefetch.run(wm, argv[2], argv[3])
@@ -162,6 +181,22 @@ def main(argv):
             sp = wal_spool.spool_dir(c.get("state_dir"))
             if wal_spool.accept(sp, argv[2], argv[3]):     # parked locally, the agent pushes it; otherwise (pusher dead, spool full) synchronous as below
                 return 0
+            if not wal_spool.pusher_alive(sp):
+                # the pusher is dead: what it left in the spool goes into the archive FIRST, oldest first - archiving this segment alone would leave
+                # a hole of the spooled ones that nothing fills until the agent restarts (independent review)
+                wm.pg_wal_dir = os.path.dirname(os.path.abspath(argv[2]))
+                for n in wal_spool.pending(sp):
+                    p_ = os.path.join(sp, n)
+                    try:
+                        wm.archive_segment(p_, n)
+                    except Exception as e:
+                        sys.stderr.write("pg_arca archive FAILED: PGA-WAL-094 the asynchronous spool holds %s, not archivable now (%s): archived first, "
+                                         "in order\n" % (n, e))
+                        return 1
+                    try:
+                        os.unlink(p_)
+                    except OSError:
+                        pass
         try:
             ok, dest, sha, msg = wm.archive_segment(argv[2], argv[3])
         except WalArchiveError as e:

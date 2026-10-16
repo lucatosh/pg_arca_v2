@@ -118,7 +118,7 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
 
     {dlg === 'edit' ? <EditWorker w={w} onClose={() => setDlg('')} /> : null}
     {dlg === 'use' ? <UseForRecovery w={w} clusters={cl.data?.clusters || []} onClose={() => setDlg('')} /> : null}
-    {dlg === 'dest' ? <DestCheck onRun={(p) => { pre.run('destination_check', p); setDlg(''); }} onClose={() => setDlg('')} /> : null}
+    {dlg === 'dest' ? <DestCheck wid={id} onRun={(p) => { pre.run('destination_check', p); setDlg(''); }} onClose={() => setDlg('')} /> : null}
     {dlg === 'install' ? <Confirm title={`Install PostgreSQL ${mj} on ${w.name}?`} confirmLabel="Install" requireText="INSTALL" onClose={() => setDlg('')}
       onConfirm={() => { pre.run('ephemeral_install', { major: mj, mode: w.root || w.sudo ? 'system' : 'private', confirm: 'INSTALL' }); setDlg(''); }}>
       <p>{w.root || w.sudo ? 'With the system packages (the machine has the privileges).' : 'In a pg_arca private directory, without root privileges.'} Only the server binaries are needed; no instance is started.</p></Confirm> : null}
@@ -177,8 +177,9 @@ function UseForRecovery({ w, clusters, onClose }: { w: WFull; clusters: any[]; o
       {err ? <Banner kind="bad">{err}</Banner> : null}</div></Modal>;
 }
 
-function DestCheck({ onRun, onClose }: { onRun: (p: any) => void; onClose: () => void }) {
-  const [type, setType] = useDraft('workerdest:type', 'local'); const [repo, setRepo] = useDraft('workerdest:repo', ''); const [wal, setWal] = useDraft('workerdest:wal', '');
+function DestCheck({ onRun, onClose, wid }: { onRun: (p: any) => void; onClose: () => void; wid?: string }) {
+  const K = `workerdest:${wid || '-'}`;                   // per host: paths typed for one machine never appear on another
+  const [type, setType] = useDraft(K + ':type', 'local'); const [repo, setRepo] = useDraft(K + ':repo', ''); const [wal, setWal] = useDraft(K + ':wal', '');
   const ok = (p: string) => !p || p.startsWith('/');
   return <Modal title="Check a backup directory from this host" onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Cancel</Button><Button kind="primary" disabled={!repo || !ok(repo) || !ok(wal)} onClick={() => onRun({ type, repo_path: repo, ...(wal ? { wal_path: wal } : {}), require_mount: type !== 'local' })}>Check</Button></>}>
     <div className="stack"><p className="small muted">A real check: filesystem type, exclusive write with fsync and atomic rename, free space. Nothing is moved.</p>

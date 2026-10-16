@@ -56,7 +56,9 @@ class Ctx(object):
         pv = ""
         if getattr(self.wal, "previous", None):                    # earlier archive locations (destination changed): old segments are found there
             pv = " PG_ARCA_WAL_PREVIOUS=%s" % _shq(os.pathsep.join(self.wal.previous))
-        return "env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent%s%s%s %s get %%f %%p" % (_shq(self.wal_dir), _shq(home), kf, sp, pv, _shq(self.agent_path))
+        # the real segment size: the read-ahead sizes its disk guard with it (16 MB assumed for 1 GB segments let it fill the scratch volume)
+        ss = " PG_ARCA_WAL_SEGSIZE=%d" % int(self.seg_size) if getattr(self, "seg_size", None) else ""
+        return "env WAL_ARCHIVE_DIR=%s PG_ARCA_HOME=%s PG_ARCA_CONF=/nonexistent%s%s%s%s %s get %%f %%p" % (_shq(self.wal_dir), _shq(home), kf, sp, pv, ss, _shq(self.agent_path))
 
     @property
     def spool_dir(self):

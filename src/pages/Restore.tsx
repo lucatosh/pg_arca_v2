@@ -87,7 +87,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const dbsR = useOpRunner(c.id, undefined, K + ':dbs'); const dropsR = useOpRunner(c.id, undefined, K + ':drops'); const liveR = useOpRunner(c.id, undefined, K + ':live'); const tdropR = useOpRunner(c.id, undefined, K + ':tdrop'); const [fxHours, setFxHours] = useDraft(K + ':fxHours', 72);
   const objR = useOpRunner(c.id, undefined, K + ':obj'); const plan = useOpRunner(c.id, undefined, K + ':plan'); const exec = useOpRunner(c.id, undefined, K + ':exec'); const fx = useOpRunner(c.id, undefined, K + ':fx'); const dml = useOpRunner(c.id, undefined, K + ':dml'); const [dmlMin, setDmlMin] = useDraft(K + ':dmlMin', 100);
 
-  const from = useMemo(() => Math.min(...sets.map(s => Date.parse(s.stop_time!))), [sets]);
+  // the window begins at the OLDEST backup kept, also when it is older than the 60 sets the heartbeat lists (oldest_complete)
+  const from = useMemo(() => Math.min(...sets.map(s => Date.parse(s.stop_time!)), Date.parse(d.backup?.oldest_complete?.stop_time || '') || Infinity), [sets, d.backup?.oldest_complete?.stop_time]);
   const to = Math.max(Date.now(), d.archiver?.last_archived_time ? Date.parse(d.archiver.last_archived_time) : 0);
   const events: (TlEvent & { raw: any })[] = useMemo(() => (fx.op?.result?.events || []).map((e: any) => ({ at: parseWalTime(e.time), label: `${e.kind}: ${(e.names || []).join(', ')}`, raw: e })).filter((e: any) => Number.isFinite(e.at)), [fx.op]);
 
@@ -198,8 +199,9 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   const blocked = plan.op?.status === 'succeeded' && (!!plan.op.result?.missing_wal?.length || plan.op.result?.preflight?.ok === false);
   const baseSet = useMemo(() => {
     const t = tgt?.mode === 'time' ? tgt.ms : Infinity; const ok = sets.filter(s => Date.parse(s.stop_time!) <= t);
-    return ok.length ? ok[ok.length - 1] : null;
-  }, [sets, tgt]);
+    const oc = d.backup?.oldest_complete;                 // older than the listed sets: the agent finds the right set itself
+    return ok.length ? ok[ok.length - 1] : (oc && Date.parse(oc.stop_time) <= t ? { ...oc, status: 'COMPLETE' } as SetRow : null);
+  }, [sets, tgt, d.backup?.oldest_complete]);
   const running = exec.busy;
   const doneOk = exec.op?.status === 'succeeded';
   // once the recovered database has been swapped in, the "check it and swap it in… the original has not been touched" line is history:

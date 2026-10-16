@@ -177,7 +177,10 @@ function PreviousLocation({ cluster, d }: { cluster: SCluster; d: any }) {
   const plan = useOpRunner(cluster.id, undefined, PL + ':plan'); const mig = useOpRunner(cluster.id, () => { revalidate(`/api/clusters/${encodeURIComponent(cluster.id)}/destination`); }, PL + ':mig'); const drop = useOpRunner(cluster.id, undefined, PL + ':drop');
   const [mb, setMb] = useDraft(PL + ':mb', ''); const [ask, setAsk] = useState(false); const [askDrop, setAskDrop] = useState(false); const [abandon, setAbandon] = useState(false);
   const [src0, setSrc0] = useDraft<any>(PL + ':src', null);              // the location being worked on: the agent stops reporting it once migrated or deleted
-  const src = src0 || { ...(repo[0] ? { source_repo: repo[0].path } : {}), ...(wal[0] ? { source_wal: wal[0].path } : {}) };
+  // the location still being worked on (it disappears from the reports once migrated or deleted); a location the agents report NOW wins over a
+  // remembered one that is gone, so the confirmation always names what is really sent (independent review)
+  const live = { ...(repo[0] ? { source_repo: repo[0].path } : {}), ...(wal[0] ? { source_wal: wal[0].path } : {}) };
+  const src = (live as any).source_repo || (live as any).source_wal ? (src0 && ((src0.source_repo && src0.source_repo === (live as any).source_repo) || (src0.source_wal && src0.source_wal === (live as any).source_wal)) ? src0 : live) : (src0 || live);
   if (!repo.length && !wal.length && !mig.op && !drop.op) return null;
   const p = plan.op?.status === 'succeeded' ? plan.op.result : null;
   const gib = (b: number) => bytes(b);
@@ -214,7 +217,7 @@ function PreviousLocation({ cluster, d }: { cluster: SCluster; d: any }) {
     {ask ? <Confirm title="Start the migration?" confirmLabel="Start" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); setSrc0(src); mig.run('destination_migrate', { ...src, ...(mb ? { throttle_mb_s: Number(mb) } : {}) }); }}>
       <p>Copies {p ? gib(p.total_bytes) : ''} to the new destination, in the background{mb ? `, at most ${mb} MB/s` : ''}. You can cancel and resume it.</p></Confirm> : null}
     {askDrop ? <Confirm title="Delete the backups from the previous location?" danger requireText="DELETE" confirmLabel="Delete" onClose={() => setAskDrop(false)} onConfirm={() => { setAskDrop(false); setSrc0(src); drop.run('destination_drop_old', { ...src, confirm: 'DELETE', ...(abandon ? { abandon: true } : {}) }); }}>
-      <p>The backups and WAL of <strong>{cluster.name}</strong> in {[repo[0]?.path, wal[0]?.path].filter(Boolean).join(' and ')} are deleted. There is no way back.</p>
+      <p>The backups and WAL of <strong>{cluster.name}</strong> in {[src.source_repo, src.source_wal].filter(Boolean).join(' and ')} are deleted. There is no way back.</p>
       <label className="check"><input type="checkbox" checked={abandon} onChange={e => setAbandon(e.target.checked)} />Even if something was not migrated (the restore history it holds is lost)</label></Confirm> : null}
   </div></Card>;
 }

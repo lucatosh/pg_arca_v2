@@ -5,7 +5,7 @@ import { OffsiteCopy } from './AgentSettings';
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, CopyBlock, Empty, Field, Icon, Modal, Skeleton, bytes, dt, dur, ago, num, nof, setName } from '../ui';
-import { Op, revalidate, toast, useOpRunner, useQuery, useDraft } from '../hooks';
+import { Op, revalidate, toast, useOpRunner, useQuery, useDraft, useRole } from '../hooks';
 import { OP_LABEL, OpPanel, Result } from './shared';
 import { openRestoreAt } from '../tasks';
 
@@ -43,7 +43,7 @@ export function BackupTab({ c }: { c: any }) {
   const key = `/api/clusters/${encodeURIComponent(c.id)}/backups`;
   const agentic = c.source !== 'direct' && !c.isSandbox;
   const q = useQuery<any>(agentic ? key : null, { interval: 5000 });
-  const rec = useRecommended(c, () => q.refresh());
+  const rec = useRecommended(c, () => q.refresh()); const role = useRole(); const viewer = role === 'viewer';
   const reg = useQuery<{ nodes: any[] }>(agentic ? '/api/nodes' : null, { interval: 15000 });
   if (c.isSandbox) return <Banner kind="info" title="Not available on the demo cluster">Connect a real cluster with the agent to run backups.</Banner>;
   if (c.source === 'direct') return <Card><Empty icon="shield" title="The agent is required">Backup and restore run on the database server. Install the agent on a node of this cluster: the console cannot read data files through a plain SQL connection.</Empty></Card>;
@@ -54,11 +54,15 @@ export function BackupTab({ c }: { c: any }) {
   const done = sets.filter(s => s.status === 'COMPLETE');
   return <div className="stack-l">
     {/* one banner, with the way out on it: "not scheduled" carries the button that schedules (a review found the problem said twice and the fix hidden behind a small gear) */}
-    <Banner kind={v.kind} title={v.title} actions={!d.policy?.enabled || d.policySource?.scope === 'none' ? (rec.sug && !d.policySource?.disabled ? <Button sm kind="primary" icon="shield" busy={rec.busy} onClick={rec.assign}>Schedule with “{rec.sug.name}” (recommended)</Button> : null) : undefined}>{v.text}</Banner>
+    <Banner kind={v.kind} title={v.title} actions={(!d.policy?.enabled || d.policySource?.scope === 'none') && role === 'admin' ? (rec.sug && !d.policySource?.disabled ? <Button sm kind="primary" icon="shield" busy={rec.busy} onClick={rec.assign}>Schedule with “{rec.sug.name}” (recommended)</Button> : null) : undefined}>{v.text}</Banner>
     {d.archiveMode === 'off' ? <ArchiveSetup c={c} refresh={q.refresh} /> : null}
-    <RunCard c={c} hasFull={done.some(s => s.type === 'full')} running={d.running || []} refresh={q.refresh} />
-    <RestorePoints c={c} from={done.length ? Math.min(...done.map(s => Date.parse(s.stop_time!) || Infinity)) : Infinity} />
+    {/* the heartbeat lists the newest 60 sets: the oldest backup and the existence of a full come from the agent's own summary (a 5-day-old restore
+        point was "no longer restorable" with 30 days of backups - independent review) */}
+    <fieldset className="plain stack-l" disabled={viewer}>
+    <RunCard c={c} hasFull={done.some(s => s.type === 'full') || Number(d.backup?.full_count) > 0 || !!d.backup?.last_full} running={d.running || []} refresh={q.refresh} />
+    <RestorePoints c={c} from={Math.min(done.length ? Math.min(...done.map(s => Date.parse(s.stop_time!) || Infinity)) : Infinity, Date.parse(d.backup?.oldest_complete?.stop_time || '') || Infinity)} />
     <div className="grid g2"><StrategyCard c={c} policy={d.policySource?.scope === 'none' || d.policySource?.disabled ? null : d.policy} source={d.policySource} onSaved={q.refresh} /><HealthCard c={c} d={d} refresh={q.refresh} /></div>
+    </fieldset>
     <SetsCard sets={sets} d={d} />
     {(() => { const ns = (reg.data?.nodes || []).filter((n: any) => n.clusterId === c.id && n.kind !== 'worker'); return ns.length ? <OffsiteCopy clusterId={c.id} nodes={ns.map((n: any) => ({ id: n.id, name: n.name, online: n.online }))} /> : null; })()}
   </div>;
@@ -163,6 +167,10 @@ function WalConflicts({ c, count, offHistory = 0, refresh }: { c: any; count: nu
 }
 
 function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) {
+  // the cleanup by hand keeps exactly what the scheduled one keeps: the policy's chains AND its days of point-in-time recovery; without a policy
+  // the agent's own configuration decides (independent review: only the chains were sent and a 30-day window was cut to 2 weeks)
+  const pol = d.policySource?.scope === 'none' || d.policySource?.disabled ? null : d.policy;
+  const retention: Record<string, number> = pol ? { retention_full: pol.retentionFull, ...(pol.retentionDays ? { retention_days: pol.retentionDays } : {}) } : {};
   const r = useOpRunner(c.id, refresh, `backup:${c.id}:health`); const [kind, setKind] = useDraft(`backup:${c.id}:health:kind`, '');
   const [ask, setAsk] = useState(false);
   const run = (k: string, type: string, params: any) => { setKind(k); r.run(type, params); };
@@ -179,15 +187,15 @@ function HealthCard({ c, d, refresh }: { c: any; d: any; refresh: () => void }) 
       <div className="row wrap"><Button sm disabled={r.busy} onClick={() => run('verify', 'backup_verify', {})}>Quick verify</Button><Button sm disabled={r.busy} onClick={() => run('deep', 'backup_verify', { deep: true })}>Deep verify</Button>
         <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('test', 'backup_verify', { restore_test: true })} title="Actually restores the latest backup into a temporary instance">Test restore</Button>
         <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('drill', 'restore_drill', {})} title="Restores the whole cluster into a temporary directory, starts it, checks every database and measures the time">Disaster recovery drill</Button>
-        <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('dry', 'backup_expire', { dry_run: true, retention_full: d.policy.retentionFull })}>Preview cleanup</Button></div>
+        <Button sm disabled={r.busy || !bk?.sets} onClick={() => run('dry', 'backup_expire', { dry_run: true, ...retention })}>Preview cleanup</Button></div>
       {(r.op || r.error) ? <><OpPanel op={r.op} error={r.error} cancel={r.cancel} label={kind === 'drill' ? 'Disaster recovery drill' : kind === 'test' ? 'Test restore' : kind === 'dry' ? 'Preview cleanup' : kind === 'deep' ? 'Deep verify' : 'Verify'} />
         {r.op?.status === 'succeeded' && kind === 'drill' ? <Banner kind="ok" title={`Cluster restored in ${res.rto_seconds >= 120 ? Math.round(res.rto_seconds / 60) + ' minutes' : Math.round(res.rto_seconds) + ' seconds'}`}>{bytes(res.data_bytes)} at {res.throughput_mb_s} MB/s; {(res.databases_checked || []).length} databases checked. This time was measured on this server with this data volume: use it as a reference for your recovery time objective (RTO).</Banner> : null}
         {r.op?.status === 'succeeded' && kind !== 'dry' && kind !== 'drill' ? (res?.ok ? <Banner kind="ok" title="Repository intact">{res.chunks_checked ? `${num(res.chunks_checked)} chunks checked.` : 'Structural checks passed.'}{res.restore_test ? ' The latest backup was actually restored and PostgreSQL completed recovery.' : ''}</Banner> : <Banner kind="bad" title="Problems found"><ul style={{ margin: '4px 0 0 18px', padding: 0 }}>{(res?.problems || []).slice(0, 8).map((x: string, i: number) => <li key={i}>{x}</li>)}</ul></Banner>) : null}
-        {r.op?.status === 'succeeded' && kind === 'dry' ? <><Banner kind={res.delete_sets?.length ? 'warn' : 'ok'} title={res.delete_sets?.length ? `The cleanup would delete ${res.delete_sets.length} backups` : 'Nothing to delete'}>{res.delete_sets?.length ? res.delete_sets.join(', ') : `You are already within the ${res.retention_full} retained chains.`}</Banner>
+        {r.op?.status === 'succeeded' && kind === 'dry' ? <><Banner kind={res.delete_sets?.length ? 'warn' : 'ok'} title={res.delete_sets?.length ? `The cleanup would delete ${res.delete_sets.length} backups` : 'Nothing to delete'}>{res.delete_sets?.length ? res.delete_sets.join(', ') : `You are already within the ${res.retention_full} retained chains${retention.retention_days ? ` and ${retention.retention_days} days of point-in-time recovery` : ''}.`}</Banner>
           {res.delete_sets?.length ? <div><Button kind="danger" sm onClick={() => setAsk(true)}>Delete now…</Button></div> : null}</> : null}
         {kind === 'expire' && r.op?.status === 'succeeded' ? <Banner kind="ok" title="Cleanup completed">{bytes(res.bytes_freed)} freed, {num(res.wal_removed)} WAL segments removed.</Banner> : null}</> : null}
     </div>
-    {ask ? <Confirm danger title="Delete the expired backups?" confirmLabel="Delete" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); run('expire', 'backup_expire', { retention_full: d.policy.retentionFull }); }}>
+    {ask ? <Confirm danger title="Delete the expired backups?" confirmLabel="Delete" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); run('expire', 'backup_expire', { ...retention }); }}>
       <p>The listed backups and the WAL no longer needed will be deleted from the repository. This cannot be undone.</p></Confirm> : null}
   </Card>;
 }

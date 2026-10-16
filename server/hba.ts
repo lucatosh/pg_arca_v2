@@ -126,6 +126,15 @@ export async function hbaFanout(store: Store, c: any, body: any, key: string, ac
   const patroni = !!c.haState?.managedByPatroni;
   const t = patroni ? hbaTarget(st, c.id) : null;
   if (patroni && !t) return { code: 409, body: { error: 'no_suitable_node', message: 'No node with a reachable Patroni API: pg_hba is changed only through the DCS.' } };
+  // per node: only the nodes that were checked (their current revision came with the request); a node whose read failed was never reviewed.
+  // Patroni: one DCS, one revision - whichever node read it (independent review: keyed by the reader, the leader's id found none and the
+  // stale-view protection was off)
+  const checked = Object.keys(baseRevs);
+  if (!patroni && checked.length) {
+    const unseen = online.filter(n => !checked.includes(n.id));
+    if (unseen.length) return { code: 409, body: { error: 'not_checked', message: `Not checked on ${unseen.map(n => n.name).join(', ')} (no answer when the rules were read): check again before applying.` } };
+  }
+  const dcsRev = patroni ? (baseRevs[t!.id] || Object.values(baseRevs).find(v => !!v)) : undefined;
   const targets = patroni ? [t!] : online;
   {                                                   // a colleague is already changing pg_hba here: refused with who and since when (replays of the same intent pass)
     const cf = conflictFor(st.operations.filter(o => !String(o.idempotencyKey || '').startsWith(`${key}:`)), c0.id, 'hba_apply', {}, actor);
@@ -134,7 +143,7 @@ export async function hbaFanout(store: Store, c: any, body: any, key: string, ac
   const out: any[] = [];
   try {
     for (const n of targets) {
-      const r = await ops.submit(store, { type: 'hba_apply', clusterId: c.id, nodeId: n.id, params: { rules, force: !!force, adopt: !!adopt, base_rev: (Object.prototype.hasOwnProperty.call(baseRevs, n.id) && baseRevs[n.id]) || undefined }, idempotencyKey: `${key}:${n.id}`, createdBy: actor, ttlSeconds: 600 });
+      const r = await ops.submit(store, { type: 'hba_apply', clusterId: c.id, nodeId: n.id, params: { rules, force: !!force, adopt: !!adopt, base_rev: patroni ? dcsRev : ((Object.prototype.hasOwnProperty.call(baseRevs, n.id) && baseRevs[n.id]) || undefined) }, idempotencyKey: `${key}:${n.id}`, createdBy: actor, ttlSeconds: 600 });
       out.push({ nodeId: n.id, nodeName: n.name, operation: r.op, replayed: !r.created });
     }
   } catch (e: any) {

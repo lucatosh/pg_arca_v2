@@ -641,6 +641,39 @@ def fit_chain_to_timeline(ctx, chain, timeline="latest"):
     return keep, None
 
 
+def _commit_after(ctx, name, want_ts):
+    """True when archived segment `name` holds a COMMIT/ABORT later than want_ts (epoch); False otherwise or when it cannot be told."""
+    import subprocess
+    import tempfile
+    from pg_arca.engine.walscan import TS_RE, _ENV, _parse_iso
+    exe = ctx.conn.exe("pg_waldump")
+    if os.path.sep in exe and not os.path.exists(exe):
+        return False
+    tmp = tempfile.mkdtemp(prefix="pgarca-hole-", dir=ctx.scratch_dir if os.path.isdir(ctx.scratch_dir) else None)
+    try:
+        f = os.path.join(tmp, name)
+        if ctx.wal.retrieve_segment(name, f)[0] != 0:
+            return False
+        with tempfile.TemporaryFile() as errf:
+            p = subprocess.Popen([exe, f], stdout=subprocess.PIPE, stderr=errf, env=_ENV)
+            out = p.stdout.read()
+            p.stdout.close()
+            p.wait()
+        for line in out.splitlines():
+            if b"rmgr: Transaction" in line and b"desc: " in line:
+                d = line.split(b"desc: ", 1)[1]
+                if d.startswith((b"COMMIT", b"ABORT")):
+                    t = TS_RE.search(d)
+                    v = _parse_iso(t.group(1).decode()) if t else None
+                    if v is not None and v > want_ts:
+                        return True
+        return False
+    except Exception:
+        return False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def clamp_time_target(ctx, chain, target_time, timeline="latest", max_segments=6):
     """PostgreSQL stops at a TIME only on a commit/abort record later than it; with none in the archive (an idle database, the end of an abandoned
     timeline) it replays everything and then refuses to start ('recovery ended before configured recovery target was reached'). The state at that
@@ -847,13 +880,11 @@ def check_wal_for_chain(ctx, chain, target_lsn=None, target_time=None, to_end=Fa
                 continue
             if want_dt is not None:
                 # the segment before the hole was archived at `t`: a target later than that needs what comes after it
+                # the target lies before the hole only when a transaction of the segment before it ends AFTER the target (PostgreSQL stops there).
+                # The file's time said when it was ARCHIVED: late archiving, a rescue or an offsite download made a hole look harmless (independent review)
                 pn = next((wal_name(t, prev, seg) for t in tls if ctx.wal.has_segment(wal_name(t, prev, seg))), None)
-                path = ctx.wal._find(pn, anywhere=True)[0] if pn else None
-                if path:
-                    import datetime as _dt
-                    t_arch = _dt.datetime.fromtimestamp(os.stat(path).st_mtime, _dt.timezone.utc)
-                    if want_dt <= t_arch:
-                        break                                  # the target lies before the hole: not needed
+                if pn and _commit_after(ctx, pn, want_dt.timestamp()):
+                    break
             missing.append(wal_name(tli, n, seg))
             break
     except Exception as e:                                  # the precise check must never be what breaks a restore: the recovery still stops at a hole and says so

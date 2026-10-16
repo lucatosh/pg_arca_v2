@@ -74,6 +74,7 @@ class RepoSummary(object):
                 # the newest full, whatever the length of recent_sets (60 sets: with hourly incrementals a weekly full fell off the list after
                 # 2.5 days and the console believed there was none - independent review)
                 "last_full": ({k: fulls[-1].get(k) for k in ("id", "start_time", "stop_time")} if fulls else None),
+                "oldest_complete": ({k: done[0].get(k) for k in ("id", "start_time", "stop_time")} if done else None),     # where the restorable window begins
                 "gc_postponed": _gc_postponed(repo),
                 "total_chunks": (cas or {}).get("chunks"), "stored_bytes": stored, "raw_bytes": logical,
                 "dedup_ratio": round(logical / float(stored), 2) if stored else None, "repo_path": repo.path,

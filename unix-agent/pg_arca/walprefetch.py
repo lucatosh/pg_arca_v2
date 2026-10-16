@@ -136,17 +136,19 @@ def run(wm, spool, ahead):
                 if (cur not in names or len(want) < ahead) and time.time() - listed > 2.0:
                     names, listed = wm.list_segments(), time.time()      # the archive grew while we were running (a recovery that follows a live primary)
                     want = _next_names(names, cur, ahead)
-                try:
-                    free = shutil.disk_usage(spool).free
-                except OSError:
-                    free = 0
                 for n in want:
                     if n in flight and not flight[n].done():
                         continue
                     if os.path.exists(os.path.join(spool, n)):
                         continue
-                    if free < (ahead + 2) * 2 * wm.segment_size:
-                        break                                    # never fill the volume for a convenience
+                    try:
+                        free = shutil.disk_usage(spool).free
+                    except OSError:
+                        free = 0
+                    busy = sum(1 for v in flight.values() if not v.done())
+                    # measured before EVERY submit, counting the jobs still writing (each may hold a decrypted copy too): never fill the volume for a convenience
+                    if free < (busy + 3) * 2 * wm.segment_size + (256 << 20):
+                        break
                     flight[n] = pool.submit(_prepare, wm, spool, n)
                 for n in [k for k, v in flight.items() if v.done()]:
                     del flight[n]

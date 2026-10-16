@@ -38,6 +38,7 @@ import { schedulerTick } from '../../server/scheduler';
   // custom templates: builtin ids protected, in-use protected
   assert.strictEqual((await call('PUT', '/api/policies/templates/prod-standard', { name: 'x', policy: {} })).status, 400);
   const cr = await call('PUT', '/api/policies/templates/nightly', { name: 'Notturno', policy: { fullEveryHours: 24, incrEveryHours: 0, retentionFull: 7 } }); assert.strictEqual(cr.status, 200, JSON.stringify(cr.body));
+  assert.strictEqual((await call('PUT', '/api/policies/templates/nightly', { name: 'Nightly', create: true, policy: { fullEveryHours: 24, incrEveryHours: 0, retentionFull: 1 } })).status, 409, 'a new template never replaces an existing one');
   await call('PUT', '/api/policies/assignments', { scope: 'env', key: 'test', templateId: 'nightly' });
   assert.strictEqual((await call('DELETE', '/api/policies/templates/nightly')).status, 409);
   assert.strictEqual((await call('PUT', '/api/policies/templates/bad', { name: 'x', policy: { fullEveryHours: 1 } })).status, 400);
