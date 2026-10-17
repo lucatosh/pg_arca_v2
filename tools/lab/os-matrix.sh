@@ -33,7 +33,7 @@ run_os() {
     $setup
     command -v python3 >/dev/null || { echo 'OS-ENV: python3 missing'; exit 3; }
     id postgres >/dev/null 2>&1 || { echo 'OS-ENV: no postgres user'; exit 3; }
-    cp -r /work/unix-agent /tmp/agent && chown -R postgres /tmp/agent
+    cp -r /work/unix-agent /tmp/agent && mkdir -p /tmp/tools/lab && cp /work/tools/lab/*.sql /tmp/tools/lab/ && chown -R postgres /tmp/agent /tmp/tools
     echo \"ENV \$(uname -sr) \$(python3 -V 2>&1) \$(ls /usr/local/bin/initdb /usr/pgsql-*/bin/initdb /usr/lib/postgresql/*/bin/initdb 2>/dev/null | head -1)\"
     for s in \$SUITES; do
       su postgres -s /bin/sh -c \"cd /tmp/agent && PATH=\$PATH PG_ARCA_TEST_BIN=\$PG_ARCA_TEST_BIN timeout ${SUITE_TIMEOUT:-1800} python3 -W ignore -m unittest \$s\" > /tmp/suite.log 2>&1; rc=\$?
