@@ -227,6 +227,51 @@ export const isAdmin = (req: Request) => (req as any).role === 'admin';
 /** An operation as a non-administrator may see it: the backup locations in its parameters and result hidden. */
 export const maskOpFor = (req: Request, o: any) => (!o || isAdmin(req) || !LOCATION_OPS.has(o.type) ? o : { ...o, params: maskPaths(o.params), result: maskPaths(o.result) });
 
+/**
+ * WHERE each node of the cluster really keeps its backups and WAL, in operator terms: on a backup server (a worker host with the
+ * "repository" role, recognised from the server part of the node's NFS/SMB mount), on another network share, or on the node's own disk; whether
+ * every node sees the SAME storage (proven by the id file inside it, not guessed from paths); free space; same disk as the data.
+ * Paths, mount sources and server addresses are configuration details: only administrators receive them, and the console reveals them on request.
+ */
+export function storageOf(st: any, c: any, admin: boolean) {
+  const { dest, resolved } = destinationFor(st, c);
+  const loc = (n: NodeRecord, which: 'repo' | 'wal') => {
+    const sto = n.snapshot?.storage || {};
+    const disks = (n.snapshot?.system?.disks || {}) as Record<string, any>;
+    const disk = which === 'repo' ? disks.repo : disks.wal_archive;
+    const m = (which === 'repo' ? sto.repo_mount : sto.wal_mount) || null;
+    const path = which === 'repo' ? sto.repo_path ?? n.snapshot?.config?.repo_path ?? null : sto.wal_path ?? null;
+    const network = !!m?.remote_host || /^(nfs|nfs4|cifs|smb3|smbfs|ceph|glusterfs|lustre|gpfs|beegfs|9p|fuse\.sshfs)$/.test(m?.fstype || '');
+    const w = network ? workerForHost(st, m?.remote_host) : null;
+    const kind = !m && !disk ? 'unknown' : w && (w.roles || []).includes('repository') ? 'backup_server' : w ? 'worker_share' : network ? 'network_share' : 'local_disk';
+    const sameDisk = !!(disk && disks.pgdata && disk.dev !== undefined && disk.dev === disks.pgdata.dev);
+    return {
+      kind, fstype: m?.fstype || null, server: w ? { id: w.id, name: w.name, online: online(w) } : null,
+      freeBytes: disk?.free_bytes ?? null, totalBytes: disk?.total_bytes ?? null, sameDiskAsData: sameDisk,
+      id: (which === 'repo' ? sto.repo_id : sto.wal_id) || null,
+      ...(admin ? { path, mountpoint: m?.mountpoint || null, source: m?.source || null, remoteHost: m?.remote_host || null } : {}),
+    };
+  };
+  const nodes = nodesOf(st, c.id).map(n => ({ id: n.id, name: n.name, online: online(n), role: n.snapshot?.postgres?.is_in_recovery === false ? 'primary' : n.snapshot?.postgres?.is_in_recovery === true ? 'replica' : null,
+    repo: loc(n, 'repo'), wal: loc(n, 'wal') }));
+  // shared = every reporting node sees the same storage (same id file); split = at least two different ones (a failover would lose the history)
+  const sharing = (which: 'repo' | 'wal') => {
+    const ids = nodes.filter(n => n.online && n[which].id).map(n => n[which].id);
+    return nodes.length < 2 ? 'single' : ids.length < 2 ? 'unknown' : new Set(ids).size === 1 ? 'shared' : 'split';
+  };
+  const servers = (Object.values(st.nodes) as any[]).filter(n => n.kind === 'worker' && (n.roles || []).includes('repository'))
+    .map(n => ({ id: n.id, name: n.name, online: online(n), label: n.label || '', ...(admin ? { hosts: hostsOf(n) } : {}) })).sort((a, b) => a.name.localeCompare(b.name));
+  const redact = (d: ResolvedDestination | null) => !d ? null : admin ? d : { type: d.type, require_mount: d.require_mount, server: d.server ? { id: d.server.id, name: d.server.name, missing: d.server.missing } : undefined };
+  const level = (k: string) => resolved.sources?.[k] ? { scope: resolved.sources[k].scope, key: resolved.sources[k].key } : null;
+  const repoSharing = sharing('repo'), walSharing = sharing('wal');
+  for (const n of nodes) for (const w of ['repo', 'wal'] as const) delete (n[w] as any).id;
+  return {
+    admin, nodes, repoSharing, walSharing, backupServers: servers,
+    configured: redact(dest), configuredAt: level('repoPath') || level('walPath') || level('type'),
+    applied: (() => { const a = (st.settings.destinationApplied || {})[c.id]; return a ? { at: a.at, by: a.by, type: a.type, ...(admin ? { repo_path: a.repo_path, wal_path: a.wal_path } : {}) } : null; })(),
+  };
+}
+
 export function mountDestinationRoutes(app: any, store: Store) {
   const actor = (req: Request) => (req as any).actor || 'admin';
 
@@ -294,43 +339,19 @@ export function mountDestinationRoutes(app: any, store: Store) {
   app.get('/api/clusters/:id/storage', (req: Request, res: Response) => {
     const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
-    const admin = (req as any).role === 'admin';
-    const { dest, resolved } = destinationFor(st, c);
-    const loc = (n: NodeRecord, which: 'repo' | 'wal') => {
-      const sto = n.snapshot?.storage || {};
-      const disks = (n.snapshot?.system?.disks || {}) as Record<string, any>;
-      const disk = which === 'repo' ? disks.repo : disks.wal_archive;
-      const m = (which === 'repo' ? sto.repo_mount : sto.wal_mount) || null;
-      const path = which === 'repo' ? sto.repo_path ?? n.snapshot?.config?.repo_path ?? null : sto.wal_path ?? null;
-      const network = !!m?.remote_host || /^(nfs|nfs4|cifs|smb3|smbfs|ceph|glusterfs|lustre|gpfs|beegfs|9p|fuse\.sshfs)$/.test(m?.fstype || '');
-      const w = network ? workerForHost(st, m?.remote_host) : null;
-      const kind = !m && !disk ? 'unknown' : w && (w.roles || []).includes('repository') ? 'backup_server' : w ? 'worker_share' : network ? 'network_share' : 'local_disk';
-      const sameDisk = !!(disk && disks.pgdata && disk.dev !== undefined && disk.dev === disks.pgdata.dev);
-      return {
-        kind, fstype: m?.fstype || null, server: w ? { id: w.id, name: w.name, online: online(w) } : null,
-        freeBytes: disk?.free_bytes ?? null, totalBytes: disk?.total_bytes ?? null, sameDiskAsData: sameDisk,
-        id: (which === 'repo' ? sto.repo_id : sto.wal_id) || null,
-        ...(admin ? { path, mountpoint: m?.mountpoint || null, source: m?.source || null, remoteHost: m?.remote_host || null } : {}),
-      };
-    };
-    const nodes = nodesOf(st, c.id).map(n => ({ id: n.id, name: n.name, online: online(n), role: n.snapshot?.postgres?.is_in_recovery === false ? 'primary' : n.snapshot?.postgres?.is_in_recovery === true ? 'replica' : null,
-      repo: loc(n, 'repo'), wal: loc(n, 'wal') }));
-    // shared = every reporting node sees the same storage (same id file); split = at least two different ones (a failover would lose the history)
-    const sharing = (which: 'repo' | 'wal') => {
-      const ids = nodes.filter(n => n.online && n[which].id).map(n => n[which].id);
-      return nodes.length < 2 ? 'single' : ids.length < 2 ? 'unknown' : new Set(ids).size === 1 ? 'shared' : 'split';
-    };
-    const servers = (Object.values(st.nodes) as any[]).filter(n => n.kind === 'worker' && (n.roles || []).includes('repository'))
-      .map(n => ({ id: n.id, name: n.name, online: online(n), label: n.label || '', ...(admin ? { hosts: hostsOf(n) } : {}) })).sort((a, b) => a.name.localeCompare(b.name));
-    const redact = (d: ResolvedDestination | null) => !d ? null : admin ? d : { type: d.type, require_mount: d.require_mount, server: d.server ? { id: d.server.id, name: d.server.name, missing: d.server.missing } : undefined };
-    const level = (k: string) => resolved.sources?.[k] ? { scope: resolved.sources[k].scope, key: resolved.sources[k].key } : null;
-    const repoSharing = sharing('repo'), walSharing = sharing('wal');
-    for (const n of nodes) for (const w of ['repo', 'wal'] as const) delete (n[w] as any).id;
-    res.json({
-      admin, nodes, repoSharing, walSharing, backupServers: servers,
-      configured: redact(dest), configuredAt: level('repoPath') || level('walPath') || level('type'),
-      applied: (() => { const a = (st.settings.destinationApplied || {})[c.id]; return a ? { at: a.at, by: a.by, type: a.type, ...(admin ? { repo_path: a.repo_path, wal_path: a.wal_path } : {}) } : null; })(),
-    });
+    res.json(storageOf(st, c, isAdmin(req)));
+  });
+
+  /** Every cluster in one line: where its backups really are (backup server names / share / local disks) and whether the nodes share it. */
+  app.get('/api/storage-overview', (req: Request, res: Response) => {
+    const st = store.peek();
+    res.json({ clusters: st.clusters.filter((c: any) => !c.isSandbox && c.source !== 'direct').map((c: any) => {
+      const s = storageOf(st, c, false);
+      const kinds = [...new Set(s.nodes.map((n: any) => n.repo.kind).filter((k: string) => k !== 'unknown'))];
+      const servers = [...new Set(s.nodes.map((n: any) => n.repo.server?.name).filter(Boolean))];
+      return { id: c.id, name: c.name, environment: c.environment, nodes: s.nodes.length, kinds, servers, repoSharing: s.repoSharing, walSharing: s.walSharing,
+        sameDiskAsData: s.nodes.some((n: any) => n.repo.sameDiskAsData) };
+    }) });
   });
 
   // check on every online node: the destination must work from each of them (a standby may take over)

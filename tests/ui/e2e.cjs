@@ -210,7 +210,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('.modal button:has-text("Close")');
   await p.click('role=tab[name="Backup storage"]'); await p.waitForSelector('text=Where the repository and WAL archive go');
   // the wizard above stored prodpg's own storage (backup server bk01): it shows in the table, then goes back to inheriting
-  await p.waitForSelector('tr:has-text("prodpg") >> text=Backup server bk01');
+  await p.waitForSelector('tr:has-text("prodpg") >> text=Backup server bk01'); await p.waitForSelector('th:has-text("In use on the nodes")');
   await p.locator('tr:has-text("prodpg") button:has-text("Edit")').click(); await p.click('.modal button:has-text("Remove: inherit")'); await p.waitForSelector('text=Inheriting again');
   await p.locator('tr:has-text("All clusters") button:has-text("Edit")').click(); await p.waitForSelector('text=Where backups are written');
   await p.selectOption('.modal select >> nth=0', 'nfs'); await p.fill('input[placeholder="/mnt/backup/pgarca"]', '/mnt/backup/pgarca'); await p.fill('input[placeholder="/mnt/backup/wal/{env}/{cluster}"]', '/mnt/backup/wal/{env}/{cluster}');

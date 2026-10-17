@@ -68,6 +68,11 @@ import { workerView } from '../../server/workers';
     assert.equal(JSON.stringify(r.body).includes('/mnt/pgarca'), false); assert.equal(JSON.stringify(r.body).includes('10.0.0.9'), false);
   }
 
+  // the fleet in one answer (no locations in it, for every role)
+  const ov = (await call('GET', '/api/storage-overview', 'viewer')).body.clusters;
+  assert.deepEqual(ov.find((x: any) => x.id === 'c1'), { id: 'c1', name: 'prod1', environment: 'prod', nodes: 2, kinds: ['backup_server'], servers: ['backup-dc1'], repoSharing: 'shared', walSharing: 'shared', sameDiskAsData: false });
+  assert.deepEqual(ov.find((x: any) => x.id === 'c2').kinds, ['local_disk']); assert.equal(ov.find((x: any) => x.id === 'c2').repoSharing, 'split');
+  assert.equal(JSON.stringify(ov).includes('/mnt'), false);
   // local disks on each node: split (a failover loses the history), same disk as the data
   r = await call('GET', '/api/clusters/c2/storage');
   assert.equal(r.body.repoSharing, 'split');
