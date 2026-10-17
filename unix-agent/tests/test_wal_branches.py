@@ -479,3 +479,62 @@ class G12Writer(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class S9ExpiredQuarantine(Base):
+    """The lab case (17/10): 137 identical copies of 0000001A000000010000001B an older agent quarantined on every archive_command retry, the
+    stored copy (and the successor timeline's) later removed by the retention: no recovery from a kept backup can read that range any more,
+    yet verification failed forever ('divergent WAL copies') and retiring the branch found 'nothing stored under this name'."""
+
+    def _setup(self):
+        wm = self.wm()
+        P = os.path.join(self.t, "P")
+        for n in (1, 2, 3, 4, 5, 6):
+            self.arch(wm, P, name(1, n), seg_bytes("s%d" % n))
+        q = os.path.join(wm.wal_dir, "conflicts")
+        os.makedirs(os.path.join(q, "reviewed"))
+        old = seg_bytes("other", tli=1)
+        sh = sha(old)[:12]
+        for i, ts in enumerate((1791985661, 1791985670, 1791985678)):              # an older agent's retries: same content, timestamped names
+            with open(os.path.join(q, "%s.%s.%d" % (name(1, 2), sh, ts)), "wb") as f:
+                f.write(old)
+        with open(os.path.join(q, "%s.%s.%d" % (name(1, 5), sh, 1)), "wb") as f:   # above the floor: still a real divergence
+            f.write(old)
+        with open(os.path.join(q, "reviewed", "%s.%s.%d" % (name(1, 3), sh, 1)), "wb") as f:
+            f.write(old)
+        with open(os.path.join(q, "00000002.history.%s.1" % sh), "w") as f:      # a history copy: never expired
+            f.write("1\t0/100000\tx\n")
+        return wm
+
+    def test_copies_below_the_retention_floor_are_not_divergent(self):
+        wm = self._setup()
+        before = wm.verify_continuity(max_age=0)
+        self.assertEqual(before["conflicts"], 3, "segment 2 (one content), segment 5, the history")
+        for n in (1, 2, 3):
+            wm.remove_segment(name(1, n))
+        wm.set_retention_floor(4, "0/400000")                                      # what the retention writes after removing 1..3
+        kinds = {(c["name"], c["kind"]) for c in wm.classify_conflicts(None)}
+        self.assertIn((name(1, 2), "expired"), kinds)
+        self.assertIn((name(1, 5), "divergent"), kinds, "above the floor nothing is relieved")
+        self.assertIn(("00000002.history", "divergent"), kinds)
+        after = wm.verify_continuity(max_age=0)
+        self.assertEqual(after["conflicts"], 2); self.assertEqual(after["conflicts_expired"], 1)
+
+    def test_retention_tidies_the_quarantine(self):
+        wm = self._setup()
+        for n in (1, 2, 3):
+            wm.remove_segment(name(1, n))
+        wm.set_retention_floor(4, "0/400000")
+        r = wm.tidy_quarantine()
+        self.assertEqual(r["expired"], 4, "three copies of segment 2 and the reviewed copy of segment 3")
+        left = sorted(os.listdir(os.path.join(wm.wal_dir, "conflicts")))
+        self.assertIn("00000002.history.%s.1" % sha(seg_bytes("other", tli=1))[:12], left)
+        self.assertTrue(any(f.startswith(name(1, 5)) for f in left))
+        self.assertFalse(any(f.startswith(name(1, 2)) for f in left))
+
+    def test_identical_retries_collapse_to_one(self):
+        wm = self._setup()                                                         # no retention floor: nothing expires, duplicates go
+        r = wm.tidy_quarantine()
+        self.assertEqual((r["expired"], r["duplicates"]), (0, 2))
+        left = [f for f in os.listdir(os.path.join(wm.wal_dir, "conflicts")) if f.startswith(name(1, 2))]
+        self.assertEqual(left, ["%s.%s.1791985661" % (name(1, 2), sha(seg_bytes("other", tli=1))[:12])], "the oldest copy is kept")

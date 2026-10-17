@@ -44,7 +44,7 @@ def repo_info(ctx):
 
 
 # --------------------------------------------------------------------------- verify
-def verify(ctx, deep=False, progress=None, cancel=None):
+def verify(ctx, deep=False, progress=None, cancel=None, current_timeline=None, local_wal_dir=None):
     repo = ctx.repo
     repo.reload_index()                                            # verify what is on disk now, not what this process remembers
     problems, report = [], []
@@ -139,7 +139,9 @@ def verify(ctx, deep=False, progress=None, cancel=None):
                 entry["problems"] += 1
     for pr in repo.index().problems:                               # a pack index that cannot be read: its chunks look missing above; say why
         problems.append("pack index unreadable: %s" % pr)
-    cont = ctx.wal.verify_continuity(max_age=0)
+    # the quarantined copies are judged against the timeline this server is on (as the heartbeat does): a failover's leftovers and copies older
+    # than every kept backup are not problems; without a timeline every copy counts (nothing is relieved blindly)
+    cont = ctx.wal.verify_continuity(max_age=0, current_timeline=current_timeline, local_wal_dir=local_wal_dir)
     if not cont.get("continuous", True):
         problems.append("WAL archive has %d gap(s)" % cont.get("gap_count", len(cont.get("gaps", []))))
     if cont.get("conflicts"):
@@ -278,6 +280,10 @@ def expire(ctx, dry_run=False, retention_full=None, retention_days=None):
                 if p and p[1] < floor:
                     ctx.wal.remove_segment(name)
                     walrm += 1
+            try:                                       # refused copies of that range go too (and the duplicates older agents piled up)
+                plan["quarantine_tidied"] = ctx.wal.tidy_quarantine()
+            except (OSError, AttributeError) as e:
+                getattr(ctx, "log", lambda *a: None)("warning", "quarantine housekeeping skipped: %s" % e)
         plan.update(chunks_removed=removed, bytes_freed=freed, wal_removed=walrm)
         return plan
 

@@ -1031,7 +1031,7 @@ class OperationExecutor:
             # judge against the wrong history and could file away a real divergence)
             if not self._is_primary():
                 raise OpError("filing away the failover leftovers is decided by the primary (this node is in recovery or PostgreSQL is not reachable): run it there")
-            mine = [c["file"] for c in wm.classify_conflicts(tl, local_wal_dir=lw) if c.get("kind") == "off_history"]
+            mine = [c["file"] for c in wm.classify_conflicts(tl, local_wal_dir=lw) if c.get("kind") in ("off_history", "expired")]
             files = [f for f in mine if f in files] if files is not None else mine          # what the person saw AND what this agent judges leftovers
         moved = wm.conflicts_reviewed(files) if p.get("reviewed") and (files is None or files) else []
         return {"conflicts": wm.classify_conflicts(tl, local_wal_dir=lw), "current_timeline": tl, "reviewed": moved, "wal_dir": wal_dir}
@@ -1206,7 +1206,9 @@ class OperationExecutor:
         from pg_arca.engine.maintenance import verify
         from pg_arca.engine.granular import restore_test
         ctx = self._ctx_ro()
-        out = verify(ctx, bool(p.get("deep")), self._progress, self._cancelled)
+        pgd = ((getattr(self.runtime, "instance", None) or {}) if self.runtime is not None else {}).get("data_directory")
+        out = verify(ctx, bool(p.get("deep")), self._progress, self._cancelled, current_timeline=self._local_timeline(),
+                     local_wal_dir=os.path.join(pgd, "pg_wal") if pgd else None)
         if p.get("restore_test"):
             self._progress({"phase": "restore-test"})
             out["restore_test"] = restore_test(ctx, p.get("set"), self._progress, self._cancelled)

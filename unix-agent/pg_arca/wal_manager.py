@@ -471,6 +471,8 @@ class WalManager:
                          ancestor timeline that holds or follows the point where the history left it AND whose successor timeline's copy
                          of that segment is in the archive (the old primary's tail after a failover), or a copy of a sibling timeline that is
                          not an ancestor at all. Kept; informational, not an alarm.
+          'expired'      a segment (or partial) older than the retention floor: no backup kept starts before it, so no recovery can read
+                         it, whatever its timeline (the retention removed the stored copies of that range on purpose). Informational.
           'divergent'    on the shared history, or undecidable: a real split-brain signal.
         Never relieved (independent engine review, 16/10): copies of the current timeline or a newer one (the reporter may lag behind a
         promotion), a divergent HISTORY file of an ancestor (two promotions to the same number), any copy when the current timeline's history
@@ -491,9 +493,19 @@ class WalManager:
             if not forks or any((c.get("name") or "") == "%08X.history" % cur for c in items):
                 forks = None                                          # empty / garbled / contested history: no relief at all
         lineage = sorted(list((forks or {}).keys()) + ([cur] if cur else []))
+        floor_seg, floor_lsn = self._retention_floor_lsn()
         for c in items:
             kind, why = "divergent", ""
             name, tli = c.get("name") or "", c.get("timeline")
+            m0 = SEG_RE.match(name.split(".")[0])
+            if floor_lsn and m0 and not name.endswith(".history"):
+                size = int(c.get("size") or 0)
+                seg = size if 1048576 <= size <= 1073741824 and size & (size - 1) == 0 else self.segment_size
+                end = (int(m0.group(2), 16) * (0x100000000 // seg) + int(m0.group(3), 16) + 1) * seg
+                if end <= floor_lsn:
+                    c["kind"], c["why"] = "expired", ("older than the retention floor %X/%X: no backup kept starts before it, so no recovery reads this segment"
+                                                      % (floor_lsn >> 32, floor_lsn & 0xFFFFFFFF))
+                    continue
             if cur is not None and forks is not None and tli is not None and tli < cur:
                 m = SEG_RE.match(name.split(".")[0])
                 if name.endswith(".partial"):
@@ -1249,6 +1261,73 @@ class WalManager:
         _fsync_dir(self.wal_dir)
         self._cont_cache = (0, None, None)
 
+    def _retention_floor_lsn(self):
+        """(segno, LSN where the kept WAL starts) from the retention's own record, (0, 0) when the retention never ran."""
+        try:
+            with open(os.path.join(self.wal_dir, self.FLOOR_FILE), "r", encoding="utf-8") as f:
+                d = json.load(f)
+            segno, seg = int(d.get("segno") or 0), int(d.get("seg_size") or self.segment_size)
+            return segno, segno * seg
+        except (IOError, OSError, ValueError, TypeError):
+            return 0, 0
+
+    def tidy_quarantine(self):
+        """Housekeeping of conflicts/ and conflicts/reviewed/ (run by the retention):
+          - copies of segments entirely below the retention floor are removed with their sidecar: the stored copies of that range were removed
+            on purpose, no kept backup can start a recovery there, so a refused copy of it is no evidence of anything any more;
+          - identical copies older agents quarantined again and again (name.<sha12>.<timestamp>, one per archive_command retry: 137 copies of one
+            16 MB segment on the lab) are collapsed to the oldest one - same content, nothing is lost.
+        History files are never touched (they say how timelines connect). Returns {"expired": n, "duplicates": n, "bytes": n}."""
+        out = {"expired": 0, "duplicates": 0, "bytes": 0}
+        _segno, floor_lsn = self._retention_floor_lsn()
+        qroot = os.path.join(self.wal_dir, "conflicts")
+        for sub in ("", "reviewed"):
+            d = os.path.join(qroot, sub)
+            if not os.path.isdir(d):
+                continue
+            seen = {}
+            for f in sorted(os.listdir(d)):                      # name.<sha12> sorts before name.<sha12>.<epoch>: the oldest copy is kept
+                p = os.path.join(d, f)
+                if not self._is_qcopy(f) or not os.path.isfile(p):
+                    continue
+                name = self._qname(f)
+                drop = False
+                m = SEG_RE.match(name.split(".")[0])
+                if floor_lsn and m and not name.endswith(".history"):
+                    info = self._qinfo(p)
+                    size = int(info.get("size") or os.path.getsize(p))
+                    seg = size if 1048576 <= size <= 1073741824 and size & (size - 1) == 0 else self.segment_size
+                    if (int(m.group(2), 16) * (0x100000000 // seg) + int(m.group(3), 16) + 1) * seg <= floor_lsn:
+                        drop, key = True, "expired"
+                if not drop:
+                    parts = f.split(".")
+                    two = len(parts) > 1 and parts[1] in ("history", "partial")
+                    sha12 = (parts[2] if len(parts) > 2 else "") if two else (parts[1] if len(parts) > 1 else "")
+                    legacy = len(parts) == (4 if two else 3) and parts[-1].isdigit()          # name.<sha12>.<epoch>: an older agent's retry
+                    k = (name, sha12)
+                    if legacy and sha12 and k in seen:
+                        drop, key = True, "duplicates"
+                    else:
+                        try:
+                            seen.setdefault(k, os.stat(p).st_mtime)
+                        except OSError:
+                            pass
+                if drop:
+                    try:
+                        sz = os.path.getsize(p)
+                        if os.path.exists(p + self.SIDECAR):
+                            os.unlink(p + self.SIDECAR)
+                        os.unlink(p)
+                        out[key] += 1
+                        out["bytes"] += sz
+                    except OSError:
+                        pass
+            if out["expired"] or out["duplicates"]:
+                _fsync_dir(d)
+        if out["expired"] or out["duplicates"]:
+            self._cont_cache = (0, None, None)
+        return out
+
     def retention_floor(self):
         try:
             with open(os.path.join(self.wal_dir, self.FLOOR_FILE), "r", encoding="utf-8") as f:
@@ -1372,7 +1451,8 @@ class WalManager:
         # one divergent CONTENT is one problem, however many times older agents quarantined it (they used a timestamp in the name)
         uniq = lambda xs: len(set((c["name"], c["sha"]) for c in xs))
         return {"conflicts": uniq(div), "conflicts_newest": max([c["at"] for c in div] or [0]) or None,
-                "conflicts_off_history": uniq([c for c in cl if c.get("kind") != "divergent"]), "conflicts_classified": current_timeline is not None}
+                "conflicts_off_history": uniq([c for c in cl if c.get("kind") == "off_history"]), "conflicts_expired": uniq([c for c in cl if c.get("kind") == "expired"]),
+                "conflicts_classified": current_timeline is not None}
 
     def _compute_continuity(self, current_timeline=None, local_wal_dir=None):
         per_id = 0x100000000 // self.segment_size
