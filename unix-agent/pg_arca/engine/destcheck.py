@@ -396,6 +396,13 @@ def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None,
             add("mount_opts", "bad", "%s is mounted read-only" % mp)
         elif "soft" in opts:
             add("mount_opts", "warn", "%s is an NFS mount with 'soft': a slow server makes writes fail silently - backups and WAL can be lost" % mp, "remount with 'hard'")
+        # backups, expiry and migrations coordinate through flock() files in the repository: with locks kept local to each node (nolock,
+        # local_lock=flock|all) two nodes can both "hold" the lock - two writers at once, a collector deleting a pack a backup deduplicates against
+        if fs in ("nfs", "nfs4") and ("nolock" in opts or "local_lock=flock" in opts or "local_lock=all" in opts):
+            add("locks", "bad" if kind == "repo" else "warn",
+                "%s is mounted with locks local to this node (%s): the repository lock would not be seen by the other nodes" % (mp, "nolock" if "nolock" in opts else
+                                                                                                                                   [o for o in opts if o.startswith("local_lock=")][0]),
+                "remount without 'nolock' / with local_lock=none (NFSv4, or NFSv3 with lockd/statd running)")
         try:
             st = os.statvfs(real)
             free = st.f_bavail * st.f_frsize

@@ -21,7 +21,7 @@ const scopeKey = (s: Scope, k: string) => (s === 'global' ? 'global' : `${s}:${k
 const srcText = (s?: { scope: string; key: string }) => !s || s.scope === 'default' ? 'default' : s.scope === 'cluster' ? 'this cluster' : s.scope === 'folder' ? `folder ${s.key.replace(/^folder:/, '')}` : s.scope === 'env' ? `environment ${s.key.replace(/^env:/, '')}` : 'global';
 
 interface FormProps { value: Record<string, any>; set: (k: string, v: any) => void; view: SView }
-interface KindUI { title: string; intro: string; Form: React.FC<FormProps>; summary: (v: Record<string, any>, view?: SView) => React.ReactNode; fields: string[]; labels: Record<string, string> }
+interface KindUI { title: string; intro: string; Form: React.FC<FormProps>; summary: (v: Record<string, any>, view?: SView, show?: boolean) => React.ReactNode; fields: string[]; labels: Record<string, string> }
 
 /* ---------------------------------------------------------------------------------------------------------------------- ephemeral instance */
 const EPH_LABELS: Record<string, string> = { placement: 'Where it runs', centralNode: 'Central recovery host', scratchDir: 'Scratch directory', binDir: 'PostgreSQL binaries', portMin: 'Ports', sharedBuffersMb: 'Memory (shared_buffers)', keepOnFailure: 'Keep on failure', installDir: 'Installation directory', installMode: 'Installation', centralInto: 'Result delivery' };
@@ -63,10 +63,11 @@ const EphForm: React.FC<FormProps> = ({ value: v, set, view }) => {
 const DEST_LABELS: Record<string, string> = { type: 'Type', server: 'Backup server', serverPath: 'Folder on the backup server', repoPath: 'Repository', walPath: 'WAL archive', requireMount: 'Mount required', minFreeGb: 'Minimum free space (GiB)' };
 const TYPE_LABEL: Record<string, string> = { local: 'Local directory', nfs: 'NFS share', smb: 'SMB/CIFS share' };
 const HIDDEN = '(hidden)';
-const destSummary = (v: Record<string, any>, view?: SView) => <>
+const destSummary = (v: Record<string, any>, view?: SView, show?: boolean) => <>
   <Badge kind={v.type === 'local' ? undefined : 'accent'}>{TYPE_LABEL[v.type] || v.type}</Badge>{' '}
   {v.server && v.type !== 'local' ? <><Badge kind="accent">Backup server {view?.nodes.find(n => n.id === v.server)?.name || '(removed)'}</Badge>{' '}</> : null}
   {v.repoPath === HIDDEN || v.walPath === HIDDEN ? <span className="small faint">directories visible to administrators</span>
+    : !show ? <span className="small faint">{v.repoPath || v.walPath ? 'directories set' : 'paths not set'}</span>
     : <span className="small muted mono">{[v.repoPath ? `repo ${v.repoPath}` : null, v.walPath ? `wal ${v.walPath}` : null].filter(Boolean).join('  ') || 'paths not set'}</span>}
   <span className="small muted">{v.requireMount ? ' · mount required' : ''}</span></>;
 const PREVIEW = [{ id: 's3', label: 'Amazon S3 / MinIO / Ceph RGW' }, { id: 'azure', label: 'Azure Blob Storage' }, { id: 'gcs', label: 'Google Cloud Storage' }, { id: 'sftp', label: 'SFTP' }];
@@ -277,16 +278,18 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
   const [dlg, setDlg] = useDraft<{ scope: Scope; k: string; label: string } | null>(`infra:${kind}:dlg`, null); const [pre, setPre] = useDraft<SCluster | null>(`infra:${kind}:pre`, null);
   const v = q.data; const role = useRole();
   const [wiz, setWiz] = useDraft(`infra:${kind}:wizard`, false);
+  const [showLoc, setShowLoc] = useState(false);       // backup locations are shown on request, not in plain view
   const eff = (c: SCluster) => c.effective.value;
   const used = useMemo(() => new Set(Object.values(v?.assignments || {}).flatMap(a => Object.keys(a))), [v]);
   if (!v) return <div className="stack"><Skeleton h={40} /><Skeleton h={220} /></div>;
   const line = (scope: Scope, k: string, title: string, sub?: string) => { const a = v.assignments[scopeKey(scope, k)]; return <tr key={scopeKey(scope, k)}>
     <td><strong>{title}</strong>{sub ? <div className="small muted">{sub}</div> : null}</td>
-    <td>{a ? <div className="row wrap gap-s">{Object.keys(a).filter(f => f !== 'portMax').map(f => <Badge key={f} kind="accent" title={f === 'portMin' ? `${a.portMin}–${a.portMax}` : f === 'centralNode' ? (v.nodes.find(n => n.id === a[f])?.name || a[f]) : JSON.stringify(a[f])}>{f === 'centralNode' ? `Recovery host: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : f === 'placement' ? (a[f] === 'central' ? 'On a central recovery host' : 'On the cluster node') : kind === 'destination' && f === 'server' ? `Backup server: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : kind === 'destination' && f === 'type' ? (TYPE_LABEL[a[f]] || a[f]) : ui.labels[f] || f}</Badge>)}</div> : <span className="muted">{scope === 'global' ? 'Not set (built-in defaults)' : 'Inherits'}</span>}</td>
+    <td>{a ? <div className="row wrap gap-s">{Object.keys(a).filter(f => f !== 'portMax').map(f => <Badge key={f} kind="accent" title={f === 'portMin' ? `${a.portMin}–${a.portMax}` : f === 'centralNode' ? (v.nodes.find(n => n.id === a[f])?.name || a[f]) : kind === 'destination' && /path/i.test(f) && !showLoc ? undefined : JSON.stringify(a[f])}>{f === 'centralNode' ? `Recovery host: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : f === 'placement' ? (a[f] === 'central' ? 'On a central recovery host' : 'On the cluster node') : kind === 'destination' && f === 'server' ? `Backup server: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : kind === 'destination' && f === 'type' ? (TYPE_LABEL[a[f]] || a[f]) : ui.labels[f] || f}</Badge>)}</div> : <span className="muted">{scope === 'global' ? 'Not set (built-in defaults)' : 'Inherits'}</span>}</td>
     <td className="num">{role === 'admin' ? <Button sm onClick={() => setDlg({ scope, k, label: title })}>Edit</Button> : null}</td></tr>; };
   return <div className="stack-l">
     <div className="row wrap" style={{ alignItems: 'flex-start' }}><p className="sub grow" style={{ margin: 0, maxWidth: 820 }}>{ui.intro}</p>
-      {kind === 'destination' && role === 'admin' ? <Button kind="primary" icon="server" onClick={() => setWiz(true)}>Configure backup storage…</Button> : null}</div>
+      {kind === 'destination' && role === 'admin' ? <><Button kind="ghost" icon={showLoc ? 'lock' : 'eye'} aria-pressed={showLoc} onClick={() => setShowLoc(!showLoc)}>{showLoc ? 'Hide locations' : 'Show locations'}</Button>
+        <Button kind="primary" icon="server" onClick={() => setWiz(true)}>Configure backup storage…</Button></> : null}</div>
     {kind === 'destination' && (v as any).hidden ? <Banner kind="info" title="Locations visible to administrators">Directories, shares and server addresses are shown to administrators only. The kind of storage and the backup server in use are shown below.</Banner> : null}
     {wiz ? <StorageWizard onClose={() => setWiz(false)} /> : null}
     <Card title="Levels" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Level</th><th>What it sets</th><th /></tr></thead><tbody>
@@ -295,7 +298,7 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
       {v.folders.map(f => line('folder', f, `Folder: ${f}`, nof(v.clusters.filter(c => c.folder === f || c.folder.startsWith(f + '/')).length, 'cluster')))}</tbody></table></div></Card>
     <Card title="Clusters" pad={false}>{!v.clusters.length ? <div style={{ padding: 16 }} className="muted">No connected clusters.</div> : <div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>In effect</th><th /></tr></thead><tbody>
       {v.clusters.map(c => <tr key={c.id}><td><strong>{c.name}</strong><div className="small muted">{c.environment}{c.folder ? ` · ${c.folder}` : ''}</div></td>
-        <td><div>{ui.summary(eff(c), v)}</div><div className="small muted">{ui.fields.filter(f => c.effective.sources[f] && c.effective.sources[f].scope !== 'default' && eff(c)[f] !== undefined).map(f => `${ui.labels[f]}: ${srcText(c.effective.sources[f])}`).join(' · ') || 'defaults'}</div></td>
+        <td><div>{ui.summary(eff(c), v, showLoc)}</div><div className="small muted">{ui.fields.filter(f => c.effective.sources[f] && c.effective.sources[f].scope !== 'default' && eff(c)[f] !== undefined).map(f => `${ui.labels[f]}: ${srcText(c.effective.sources[f])}`).join(' · ') || 'defaults'}</div></td>
         <td className="num"><div className="row gap-s" style={{ justifyContent: 'flex-end' }}>{role === 'admin' ? <Button sm onClick={() => setDlg({ scope: 'cluster', k: c.id, label: c.name })}>Edit</Button> : null}
           <Button sm icon={kind === 'ephemeral' ? 'search' : 'check'} disabled={c.source === 'direct'} title={c.source === 'direct' ? 'Needs the agent on the cluster' : undefined} onClick={() => setPre(c)}>{kind === 'ephemeral' ? 'Verify' : 'Check and apply'}</Button></div></td></tr>)}</tbody></table></div>}</Card>
     {dlg ? <ScopeDialog kind={kind} scope={dlg.scope} k={dlg.k} label={dlg.label} view={v} onClose={() => setDlg(null)} /> : null}

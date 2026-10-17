@@ -71,6 +71,19 @@ class Paths(unittest.TestCase):
         self.assertTrue(destcheck._same_server("bk1.lan", ["bk1"])); self.assertTrue(destcheck._same_server("bk1", ["bk1.lan"]))
         self.assertTrue(destcheck._same_server("::ffff:10.0.0.9", ["10.0.0.9"]))
 
+    def test_nfs_with_node_local_locks_is_refused_for_the_repository(self):
+        table = [("/", "ext4", "/dev/vda"), (self.t, "nfs4", "bk1:/x")]
+        orig = destcheck.mount_options
+        try:
+            for opts, level in ((set(["rw", "nolock"]), "bad"), (set(["rw", "local_lock=flock"]), "bad"), (set(["rw", "local_lock=none"]), None)):
+                destcheck.mount_options = lambda mp, path=None, o=opts: o
+                r = destcheck.check_path("repo", os.path.join(self.t, "r"), "nfs", True, table=table)
+                self.assertEqual(lv(r, "locks"), [level] if level else [], opts)
+            destcheck.mount_options = lambda mp, path=None: set(["nolock"])
+            self.assertEqual(lv(destcheck.check_path("wal", os.path.join(self.t, "w"), "nfs", True, table=table), "locks"), ["warn"])
+        finally:
+            destcheck.mount_options = orig
+
     def test_smb_expects_cifs_and_warns_on_the_wrong_network_type(self):
         r = destcheck.check_path("repo", os.path.join(self.t, "r"), "smb", False, table=[("/", "ext4", "x"), (self.t, "nfs4", "s")])
         self.assertEqual(lv(r, "fs"), ["warn"]); self.assertTrue(r["ok"])

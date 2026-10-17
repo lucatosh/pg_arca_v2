@@ -88,7 +88,7 @@ Known limits (not solved): `unix_socket_directories` with several entries uses t
 - Tests: `unix-agent/tests/test_packs.py`; the real-PostgreSQL suites (`test_engine_pg`, `test_engine_standby_pg`, `test_engine_failover_pg`, `test_backup_crash_pg`, `test_destination_migrate_pg`, …) run on format 2.
 
 ## Locks on shared storage — 15/10
-Backups, expire/garbage collection and migrations coordinate through `flock` files in the repository (`stanza` lock per stanza, `cas/gc.lock` for the whole repository: backups and migrations shared, the collector exclusive). On NFS this needs working locks: **do not mount the repository with `nolock`** (NFSv4 or NFSv3 with lockd/statd). Without them two writers could run at once and a collector could delete a pack a backup is deduplicating against; the agent's destination check does not detect this yet.
+Backups, expire/garbage collection and migrations coordinate through `flock` files in the repository (`stanza` lock per stanza, `cas/gc.lock` for the whole repository: backups and migrations shared, the collector exclusive). On NFS this needs working locks: **do not mount the repository with `nolock`** (NFSv4 or NFSv3 with lockd/statd). Without them two writers could run at once and a collector could delete a pack a backup is deduplicating against. The destination check refuses a repository on an NFS mount with node-local locks (`nolock`, `local_lock=flock|all`) and warns for the WAL archive (17/10).
 
 ## Worker hosts (backup server, recovery host) — 11/10
 - Agent role `node_role`: `auto` (default: the console decides), `database`, `worker`. At installation `PG_ARCA_ROLE=worker`; without a `postgres` user the installer creates the system user `pgarca`.

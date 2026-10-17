@@ -97,6 +97,16 @@ Installer options (environment variables): `PG_ARCA_TLS_CA` (CA of the console c
 
 After registration: enable WAL archiving from the cluster's Backup tab, take the first full backup, then assign a backup policy.
 
+### Where the backups are stored
+
+Every node of a cluster must write repository and WAL archive to the **same** storage: after a switchover or a failover the new primary continues the same history. Three choices, configured from the console (Backup page → Where the backups are stored → **Configure…**, or Storage & recovery → Backup storage), administrators only:
+
+1. **A backup server**: install the agent on that machine as a worker host (`PG_ARCA_ROLE=worker`) and give it the *Backup server* role on its page. The wizard checks the folder on the server and prints the export and mount commands: the folder belongs to PostgreSQL's uid:gid on the database nodes (the same on every node), exported over NFS (`rw,sync,no_subtree_check`) and mounted at the same path on every node (`hard,noatime,_netdev` in `/etc/fstab`). The check on each node then proves the path is really mounted **from that server**, writable the way the engine writes (exclusive create, fsync, rename, hard links for the WAL archive) and with room, before anything is applied.
+2. **An existing network share** (NAS, storage array; NFS or SMB with hard-link support) mounted at the same path on every node.
+3. **The local disk of each node**: single-node clusters and test systems only.
+
+pg_arca never mounts anything itself. Existing backups stay readable in the previous location after a change and can be migrated in the background. Directories, mount sources and server addresses are shown to administrators only, on request.
+
 ## 5. Upgrades
 
 **Console**: extract the new release and run its `install-console.sh` (same command as the first install). The installer saves the state to `/var/lib/pg-arca-console/backups/`, switches the code, starts the service and waits for the new version to answer. If it does not, it puts back the previous release and the saved state by itself. Agents keep working during the upgrade (they retry), and the console then lists the agents of the older release as outdated, with the upgrade command.
