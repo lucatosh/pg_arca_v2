@@ -293,6 +293,9 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
   const [showLoc, setShowLoc] = useState(false);
   const ov = useQuery<{ clusters: Overview[] }>(kind === 'destination' ? '/api/storage-overview' : null, { interval: 15000 });       // backup locations are shown on request, not in plain view
   const eff = (c: SCluster) => c.effective.value;
+  // a backup server counts only from the level that chose the storage type (as the console resolves it): not shown when inherited past a change of type
+  const ownServer = (c: SCluster) => { const e = { ...c.effective.value }; const a = c.effective.sources.server, b = c.effective.sources.type;
+    if (e.server && !(a && b && a.scope === b.scope && a.key === b.key)) { delete e.server; delete e.serverPath; } return e; };
   const used = useMemo(() => new Set(Object.values(v?.assignments || {}).flatMap(a => Object.keys(a))), [v]);
   if (!v) return <div className="stack"><Skeleton h={40} /><Skeleton h={220} /></div>;
   const line = (scope: Scope, k: string, title: string, sub?: string) => { const a = v.assignments[scopeKey(scope, k)]; return <tr key={scopeKey(scope, k)}>
@@ -311,7 +314,7 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
       {v.folders.map(f => line('folder', f, `Folder: ${f}`, nof(v.clusters.filter(c => c.folder === f || c.folder.startsWith(f + '/')).length, 'cluster')))}</tbody></table></div></Card>
     <Card title="Clusters" pad={false}>{!v.clusters.length ? <div style={{ padding: 16 }} className="muted">No connected clusters.</div> : <div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>{kind === 'destination' ? 'Configured' : 'In effect'}</th>{kind === 'destination' ? <th>In use on the nodes</th> : null}<th /></tr></thead><tbody>
       {v.clusters.map(c => <tr key={c.id}><td><strong>{c.name}</strong><div className="small muted">{c.environment}{c.folder ? ` · ${c.folder}` : ''}</div></td>
-        <td><div>{ui.summary(eff(c), v, showLoc)}</div><div className="small muted">{ui.fields.filter(f => c.effective.sources[f] && c.effective.sources[f].scope !== 'default' && eff(c)[f] !== undefined).map(f => `${ui.labels[f]}: ${srcText(c.effective.sources[f])}`).join(' · ') || 'defaults'}</div></td>
+        <td><div>{ui.summary(kind === 'destination' ? ownServer(c) : eff(c), v, showLoc)}</div><div className="small muted">{ui.fields.filter(f => c.effective.sources[f] && c.effective.sources[f].scope !== 'default' && eff(c)[f] !== undefined).map(f => `${ui.labels[f]}: ${srcText(c.effective.sources[f])}`).join(' · ') || 'defaults'}</div></td>
         {kind === 'destination' ? <td><InUse o={ov.data?.clusters.find(x => x.id === c.id)} /></td> : null}
         <td className="num"><div className="row gap-s" style={{ justifyContent: 'flex-end' }}>{role === 'admin' ? <Button sm onClick={() => setDlg({ scope: 'cluster', k: c.id, label: c.name })}>Edit</Button> : null}
           <Button sm icon={kind === 'ephemeral' ? 'search' : 'check'} disabled={c.source === 'direct'} title={c.source === 'direct' ? 'Needs the agent on the cluster' : undefined} onClick={() => setPre(c)}>{kind === 'ephemeral' ? 'Verify' : 'Check and apply'}</Button></div></td></tr>)}</tbody></table></div>}</Card>
