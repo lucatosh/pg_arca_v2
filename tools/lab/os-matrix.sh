@@ -54,8 +54,9 @@ if [[ " $PARTS " == *" os "* ]]; then
   run_os rocky8-pg16 rockylinux:8 'dnf -y -q install https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm >/dev/null 2>&1;
     dnf -y -q module disable postgresql >/dev/null 2>&1; dnf -y -q install postgresql16-server postgresql16-contrib python3 procps-ng findutils >/dev/null 2>&1; export PG_ARCA_TEST_BIN=/usr/pgsql-16/bin'
   # Rocky 9: python 3.9, PGDG 15
+  # (the distribution's own postgresql module hides the PGDG packages on EL9 too: disable it first, as on EL8)
   run_os rocky9-pg15 rockylinux:9 'dnf -y -q install https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm >/dev/null 2>&1;
-    dnf -y -q install postgresql15-server postgresql15-contrib python3 python3-cryptography procps-ng findutils >/dev/null 2>&1; export PG_ARCA_TEST_BIN=/usr/pgsql-15/bin'
+    dnf -y -q module disable postgresql >/dev/null 2>&1; dnf -y -q install postgresql15-server postgresql15-contrib python3 python3-cryptography procps-ng findutils >/dev/null 2>&1; export PG_ARCA_TEST_BIN=/usr/pgsql-15/bin'
   # Ubuntu 24.04: the distribution packages (PostgreSQL 16, python 3.12)
   run_os ubuntu2404-pg16 ubuntu:24.04 'export DEBIAN_FRONTEND=noninteractive; APTO="-o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false";
     apt-get $APTO update -qq >/dev/null 2>&1; apt-get $APTO install -y -qq --no-install-recommends postgresql-16 postgresql-contrib python3 python3-cryptography procps >/dev/null 2>&1'
