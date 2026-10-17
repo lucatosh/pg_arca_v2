@@ -295,7 +295,7 @@ export function validateOp(type: string, params: Record<string, any>): string | 
   if (typeof p === 'object' && !Array.isArray(p)) for (const k of RESERVED_PARAMS) if (k in p) return `${k} is set by the console, not by the client`;
   // switches are true/false and nothing else: JavaScript and Python disagree on what [] / {} / "0" mean (independent security review: dry_run: []
   // was "a dry run" for the four-eyes check here and a REAL run for the agent, which bypassed the approval of production restores and restarts)
-  if (typeof p === 'object' && p) for (const k of BOOL_PARAMS) if (p[k] !== undefined && p[k] !== null && typeof p[k] !== 'boolean') return `${k} must be true or false`;
+  if (typeof p === 'object' && p) { const q = p as Record<string, any>; for (const k of BOOL_PARAMS) if (q[k] !== undefined && q[k] !== null && typeof q[k] !== 'boolean') return `${k} must be true or false`; }
   return spec.validate(p);
 }
 
