@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { Badge, Banner, Button, CopyBlock, Field, Icon, Modal, Skeleton } from '../ui';
 import { clearDrafts, revalidate, toast, useDraft, useOpRunner, useQuery } from '../hooks';
@@ -67,6 +67,7 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
   const [localRoot, setLocalRoot] = useDraft(K + ':local', '/var/lib/pgarca');
   const [dedicated, setDedicated] = useDraft(K + ':dedicated', false);
   const [custom, setCustom] = useDraft<{ repo?: string; wal?: string }>(K + ':custom', {});
+  const [manual, setManual] = useDraft(K + ':manual', false);           // default: one directory per cluster under the base, created automatically
   const [minFree, setMinFree] = useDraft<number | ''>(K + ':minfree', '');
   const [owner, setOwner] = useDraft(K + ':owner', '');
   const [scope, setScope] = useDraft(K + ':scope', clusterId ? `cluster:${clusterId}` : 'global');
@@ -80,24 +81,29 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
   const repoPath = custom.repo ?? `${base}/repo`;
   const walPath = custom.wal ?? `${base}/wal/{env}/{cluster}`;
   const value = useMemo(() => ({
-    type: where === 'local' ? 'local' : proto, repoPath: clean(repoPath), walPath: clean(walPath), requireMount: where === 'local' ? dedicated : true,
+    type: where === 'local' ? 'local' : proto, ...(manual ? { repoPath: clean(repoPath), walPath: clean(walPath) } : { baseDir: base }), requireMount: where === 'local' ? dedicated : true,
     ...(minFree !== '' && minFree > 0 ? { minFreeGb: minFree } : {}),
     ...(where === 'server' && serverId ? { server: serverId, serverPath: clean(serverPath) } : {}),
-  }), [where, proto, repoPath, walPath, dedicated, minFree, serverId, serverPath]);
+  }), [where, proto, manual, base, repoPath, walPath, dedicated, minFree, serverId, serverPath]);
 
   const [sc, sk] = scope === 'global' ? ['global', ''] : (scope.split(/:(.*)/s) as [string, string]);
   const affected = (view.data?.clusters || []).filter(c => sc === 'global' || (sc === 'env' && c.environment === sk) || (sc === 'cluster' && c.id === sk) || (sc === 'folder' && (c.folder === sk || c.folder.startsWith(sk + '/'))));
   const scopeText = sc === 'global' ? 'all clusters' : sc === 'env' ? `the ${ENV_LABEL[sk] || sk} environment` : sc === 'folder' ? `folder ${sk}` : `cluster ${cluster?.name || sk}`;
-  const walOk = /\{(cluster|id)\}/.test(walPath) || sc === 'cluster';
+  const walOk = !manual || /\{(cluster|id)\}/.test(walPath) || sc === 'cluster';
 
   // the directories as the backup server sees them: the node-side mount point replaced by the exported folder, cut before the first placeholder
   const onServer = (p: string) => { const m = clean(mountPoint); const q = clean(p); const r = q === m ? clean(serverPath) : q.startsWith(m + '/') ? clean(serverPath) + q.slice(m.length) : null;
     return r ? (r.split('/').filter((x, i, a) => !a.slice(0, i + 1).some(y => y.includes('{'))).join('/') || '/') : null; };
-  const srvCheck = { repo_path: onServer(repoPath), wal_path: onServer(walPath) };
-  const chkCurrent = !!chk.op && chk.op.params?.repo_path === srvCheck.repo_path && chk.op.params?.wal_path === srvCheck.wal_path;
+  const srvCheck: { repo_path: string | null; wal_path?: string | null } = manual ? { repo_path: onServer(repoPath), wal_path: onServer(walPath) } : { repo_path: clean(serverPath) };
+  const chkCurrent = !!chk.op && chk.op.params?.repo_path === srvCheck.repo_path && (chk.op.params?.wal_path || null) === (srvCheck.wal_path || null);
   const detailsOk = where === 'server' ? !!srv && abs(serverPath) && abs(mountPoint) && clean(mountPoint) !== '/'
     : where === 'share' ? abs(mountPoint) && clean(mountPoint) !== '/' : abs(localRoot);
-  const pathsOk = abs(repoPath) && abs(walPath) && clean(repoPath) !== clean(walPath) && walOk;
+  const pathsOk = manual ? abs(repoPath) && abs(walPath) && clean(repoPath) !== clean(walPath) && walOk : abs(base) && base !== '/';
+  // the review shows what each cluster will really get (computed by the console with the same rules it applies)
+  const [preview, setPreview] = useState<any[] | null>(null);
+  useEffect(() => { if (step !== 3 || !pathsOk) return; let on = true; setPreview(null);
+    api<any>('POST', '/api/destination/preview', { scope: sc, key: sk, value }).then(r => { if (on) setPreview(r.clusters.filter((c: any) => c.affected)); }).catch(() => on && setPreview([]));
+    return () => { on = false; }; }, [step, scope, JSON.stringify(value)]);
   const reachable = (i: number) => i === 0 || (i >= 1 && !!where && (i < 2 || (detailsOk && pathsOk)));
 
   const close = () => { clearDrafts(K); onClose(); };
@@ -149,10 +155,10 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
               <input className="input mono" value={serverPath} onChange={e => setServerPath(e.target.value)} /></Field>
             <Field label="Mount point on the database nodes" hint="The same path on every node; backups are refused if the share is not mounted there." error={abs(mountPoint) && clean(mountPoint) !== '/' ? null : 'An absolute path other than /'}>
               <input className="input mono" value={mountPoint} onChange={e => setMountPoint(e.target.value)} /></Field></div>
-          <div className="row wrap"><Button sm icon="search" busy={chk.busy} disabled={!srv.online || !abs(serverPath) || !srvCheck.repo_path || !srvCheck.wal_path}
-            onClick={() => chk.run('destination_check', { type: 'local', repo_path: srvCheck.repo_path!, wal_path: srvCheck.wal_path!, require_mount: false })}>Check the folder on {srv.name}</Button>
+          <div className="row wrap"><Button sm icon="search" busy={chk.busy} disabled={!srv.online || !abs(serverPath) || !srvCheck.repo_path || (manual && !srvCheck.wal_path)}
+            onClick={() => chk.run('destination_check', { type: 'local', repo_path: srvCheck.repo_path!, ...(srvCheck.wal_path ? { wal_path: srvCheck.wal_path } : {}), require_mount: false })}>Check the folder on {srv.name}</Button>
             <span className="small muted">Writes and removes one small file; creates the folder if its parent exists.</span></div>
-          {!srvCheck.repo_path || !srvCheck.wal_path ? <span className="small" style={{ color: 'var(--warn)' }}>The directories set under Advanced are not inside the mount point {clean(mountPoint)}: they would not be on the backup server.</span> : null}
+          {manual && (!srvCheck.repo_path || !srvCheck.wal_path) ? <span className="small" style={{ color: 'var(--warn)' }}>The directories set under Advanced are not inside the mount point {clean(mountPoint)}: they would not be on the backup server.</span> : null}
           {chkCurrent && chk.op && chk.op.status !== 'succeeded' ? <OpPanel op={chk.op} error={chk.error} /> : null}
           {chkCurrent && chk.op?.status === 'succeeded' ? <><Banner kind={chk.op.result?.ok ? 'ok' : 'bad'} title={chk.op.result?.ok ? `The folder on ${srv.name} is usable` : 'The folder is not usable yet: each problem below has its remedy'} /><DestPaths r={chk.op.result} /></> : null}
           <details open><summary className="small" style={{ cursor: 'pointer' }}>Commands: export the folder and mount it on the nodes</summary><div className="stack" style={{ marginTop: 8 }}>
@@ -177,13 +183,15 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
         <Banner kind="warn" title="Each node keeps its own copy">With more than one node, the backups and WAL written by one node are not visible to the others: after a switchover the history is split between nodes and point-in-time recovery across it is not possible. Use a backup server or a network share for replicated clusters.</Banner>
       </div> : null}
 
-      {step === 1 && where ? <details><summary className="small" style={{ cursor: 'pointer' }}>Advanced: exact directories and free-space threshold</summary><div className="grid g2" style={{ marginTop: 8 }}>
+      {step === 1 && where ? <p className="small muted">Each cluster gets its own directory under <span className="mono">{base}</span>, created automatically by the node check: <span className="mono">{base}/&lt;environment&gt;/&lt;cluster&gt;/backup</span> and <span className="mono">…/wal</span>. Several clusters can share the disk or the share without ever mixing their files.</p> : null}
+      {step === 1 && where ? <details><summary className="small" style={{ cursor: 'pointer' }}>Advanced: set the directories by hand, free-space threshold</summary><div className="stack" style={{ marginTop: 8 }}>
+        <label className="check"><input type="checkbox" checked={manual} onChange={e => setManual(e.target.checked)} />Set the repository and WAL archive directories by hand (instead of one directory per cluster)</label>
+        {manual ? <div className="grid g2">
         <Field label="Repository (backups)" hint="Several clusters can share it: each one has its own space inside." error={abs(repoPath) ? null : 'Absolute path required'}>
           <input className="input mono" value={repoPath} onChange={e => setCustom({ ...custom, repo: e.target.value })} /></Field>
         <Field label="WAL archive" hint="One per cluster: keep {cluster} (or {id}) in the path. Placeholders: {cluster} {env} {id}." error={!abs(walPath) ? 'Absolute path required' : !walOk ? 'Include {cluster} or {id}: every cluster needs its own WAL archive' : clean(walPath) === clean(repoPath) ? 'Must differ from the repository' : null}>
-          <input className="input mono" value={walPath} onChange={e => setCustom({ ...custom, wal: e.target.value })} /></Field>
-        <Field label="Minimum free space (GiB)" hint="The node check fails below this."><input className="input" type="number" min={0} value={minFree} onChange={e => setMinFree(e.target.value === '' ? '' : Number(e.target.value))} /></Field>
-        <div className="row" style={{ alignItems: 'end' }}>{custom.repo !== undefined || custom.wal !== undefined ? <Button sm kind="ghost" onClick={() => setCustom({})}>Back to the suggested directories</Button> : null}</div></div></details> : null}
+          <input className="input mono" value={walPath} onChange={e => setCustom({ ...custom, wal: e.target.value })} /></Field></div> : null}
+        <Field label="Minimum free space (GiB)" hint="The node check fails below this."><input className="input" style={{ maxWidth: 160 }} type="number" min={0} value={minFree} onChange={e => setMinFree(e.target.value === '' ? '' : Number(e.target.value))} /></Field></div></details> : null}
 
       {step === 2 ? <div className="stack">
         <p className="muted">Decide once for many clusters, then make exceptions: a value set for a cluster wins over its folder, which wins over its environment, which wins over all clusters.</p>
@@ -203,11 +211,15 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
           <dt>Storage</dt><dd>{where === 'server' ? <>Backup server <strong>{srv?.name}</strong> over {proto === 'nfs' ? 'NFS' : 'SMB/CIFS'}</> : where === 'share' ? `Network share (${proto === 'nfs' ? 'NFS' : 'SMB/CIFS'})` : 'Local disk of each node'}</dd>
           {where === 'server' ? <><dt>Folder on the server</dt><dd className="mono">{clean(serverPath)}</dd></> : null}
           {where !== 'local' ? <><dt>Mounted on the nodes at</dt><dd className="mono">{clean(mountPoint)}</dd></> : null}
-          <dt>Repository</dt><dd className="mono">{clean(repoPath)}</dd>
-          <dt>WAL archive</dt><dd className="mono">{clean(walPath)}</dd>
+          {manual ? <><dt>Repository</dt><dd className="mono">{clean(repoPath)}</dd><dt>WAL archive</dt><dd className="mono">{clean(walPath)}</dd></>
+            : <><dt>Directories</dt><dd>one per cluster, created automatically under <span className="mono">{base}</span></dd></>}
           <dt>Separate mount required</dt><dd>{value.requireMount ? 'yes: the path is refused unless it is on a separately mounted filesystem (not the root filesystem)' : 'no (any filesystem accepted)'}{value.minFreeGb ? ` · at least ${value.minFreeGb} GiB free` : ''}</dd>
           <dt>Applies to</dt><dd>{scopeText}</dd>
         </dl>
+        {preview === null ? <Skeleton h={40} /> : preview.length ? <div className="tablewrap"><table className="t small"><thead><tr><th>Cluster</th><th>Backups (repository)</th><th>WAL archive</th></tr></thead><tbody>
+          {preview.slice(0, 12).map((c: any) => <tr key={c.id}><td><strong>{c.name}</strong><div className="faint">{ENV_LABEL[c.environment] || c.environment}</div></td><td className="mono">{c.repo_path || '—'}</td>
+            <td className="mono">{c.wal_path || '—'}{c.wal_collision ? <div style={{ color: 'var(--bad)' }}>{c.wal_collision}</div> : null}</td></tr>)}</tbody></table>
+          {preview.length > 12 ? <p className="small muted">…and {preview.length - 12} more.</p> : null}</div> : <p className="small muted">No cluster takes this setting today (a more specific level sets its own, or none is in this level yet).</p>}
         {saved ? <Banner kind="ok" title="Saved">Nothing has changed on the nodes yet. Next: every node checks the new location (mount, server, write, space); then you apply it{clusterId && affected.some(c => c.id === clusterId) ? '' : ': on each affected cluster, use “Check and apply” in Storage & recovery → Backup storage'}. Existing backups stay readable where they are and can be migrated in the background.</Banner>
           : <Banner kind="info" title="What saving does">It records the setting. The nodes keep writing where they write today until the location is checked on every node and applied; after that, the first backup in the new location is a full one.</Banner>}
         {err ? <Banner kind="bad">{err}</Banner> : null}

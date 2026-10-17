@@ -15,6 +15,8 @@ import * as ops from './ops';
 import { audit } from './ops';
 import { registerKind, resolveScoped, KindSpec } from './scoped';
 import { requiresApproval, requestApproval } from './approvals';
+import { geoGroups } from './geo';
+import { normFolder } from './policies';
 
 export const DEST_TYPES = ['local', 'nfs', 'smb'] as const;
 export const PREVIEW_TYPES = [
@@ -44,6 +46,12 @@ const destination: KindSpec = {
             if (PREVIEW_TYPES.some(t => t.id === String(x))) throw new Error('This destination type is in preview: today the backup engine writes to a local directory or to a network share (NFS/SMB) mounted on the nodes.');
             if (!(DEST_TYPES as readonly string[]).includes(String(x))) throw new Error('invalid type');
             out[k] = x; break;
+          case 'baseDir': {                                   // automatic layout: <baseDir>/<environment>/<cluster>/{backup,wal}, one directory per cluster
+            const b = destPath(x, 'baseDir');
+            if (/[{}]/.test(b)) throw new Error('baseDir: no placeholders - each cluster gets its own directory under it automatically');
+            if (b === '/') throw new Error('baseDir: choose a dedicated directory, not /');
+            out[k] = b; break;
+          }
           case 'repoPath': out[k] = destPath(x, 'repoPath'); break;
           case 'walPath': out[k] = destPath(x, 'walPath'); break;
           case 'requireMount': out[k] = !!x; break;
@@ -56,6 +64,7 @@ const destination: KindSpec = {
         }
       }
     } catch (e: any) { return { ok: false, error: e.message }; }
+    if (out.baseDir && (out.repoPath || out.walPath)) return { ok: false, error: 'either a base directory (one directory per cluster, created automatically) or explicit repository / WAL directories, not both' };
     if (out.server && out.type && out.type === 'local') return { ok: false, error: 'a backup server is reached through a network share: choose NFS or SMB as the type' };
     if (out.repoPath && out.walPath && out.repoPath === out.walPath) return { ok: false, error: 'the repository and the WAL archive must be different directories' };
     return { ok: true, value: out };
@@ -64,7 +73,7 @@ const destination: KindSpec = {
 destination.mask = maskPaths;                               // (a hoisted function declaration, defined further down)
 registerKind('destination', destination);
 
-export interface ResolvedDestination { type: string; repo_path?: string; wal_path?: string; require_mount: boolean; min_free_gb?: number; wal_shared_warning?: string; wal_collision?: string;
+export interface ResolvedDestination { type: string; repo_path?: string; wal_path?: string; base_dir?: string; cluster_dir?: string; require_mount: boolean; min_free_gb?: number; wal_shared_warning?: string; wal_collision?: string;
   server?: { id: string; name: string | null; hosts: string[]; missing?: boolean; isBackupServer?: boolean }; server_path?: string }
 
 /** Every name and address a worker host is known by (its node name, the address the console sees, what it reports about itself), lower-case, de-duplicated. */
@@ -94,15 +103,53 @@ export function workerForHost(st: any, host?: string | null): any | null {
   return ws.find(w => matches(hostsOf(w))) || null;
 }
 const expand = (p: string, c: any) => p.replace(/\{cluster\}/g, slug(c.name)).replace(/\{env\}/g, slug(c.environment)).replace(/\{id\}/g, slug(c.id));
+const sysidOf = (st: any, cid: string) => Object.values(st.nodes || {}).map((n: any) => n.clusterId === cid ? n.snapshot?.postgres?.system_identifier : null).find(Boolean) || null;
+
+/**
+ * The cluster's own directory under a base directory: "<environment>/<cluster name>-<short id>" (readable on the share, unique even for two
+ * clusters with the same name). STABLE: once applied, the name is remembered (a renamed cluster or one moved to another environment keeps
+ * writing where its history is). The sites of one geo-redundant database share it on purpose (one WAL archive, one catalogue).
+ */
+export function clusterDir(st: any, c: any): string {
+  const applied = (st.settings?.destinationApplied || {}) as Record<string, any>;
+  if (applied[c.id]?.dirName) return applied[c.id].dirName;
+  let owner = c;
+  try {
+    const g = geoGroups(st).find(x => x.sites.some(s => s.clusterId === c.id));
+    if (g) {
+      const ids = new Set(g.sites.map(s => s.clusterId));
+      const done = [...ids].map(id => applied[id]?.dirName).find(Boolean);
+      if (done) return done;
+      owner = (st.clusters as any[]).find(x => ids.has(x.id)) || c;              // the first site the console knew
+    }
+  } catch { /* geo view unavailable: the cluster's own name */ }
+  const short = String(owner.id || '').replace(/^[a-z]+_/, '').replace(/[^a-z0-9]/gi, '').slice(0, 6).toLowerCase();
+  return `${slug(owner.environment || 'env')}/${slug(owner.name)}${short ? '-' + short : ''}`;
+}
+
+const RANK: Record<string, number> = { default: 0, global: 1, env: 2, folder: 3, cluster: 4 };
+/** Repository and WAL directories of a cluster, as configured (no checks): a base directory gives <base>/<cluster dir>/backup and /wal; explicit
+ *  paths are used as they are. Field by field, the more specific level wins (a base directory set for an environment beats explicit paths set
+ *  for all clusters, explicit paths set for one cluster beat a global base directory). */
+function pathsFor(st: any, c: any, r = resolveScoped(st, 'destination', c)) {
+  const v = r.value; const rk = (f: string) => RANK[r.sources?.[f]?.scope] ?? 0;
+  if (v.baseDir && rk('baseDir') >= Math.max(v.repoPath ? rk('repoPath') : 0, v.walPath ? rk('walPath') : 0)) {
+    const dir = clusterDir(st, c);
+    return { base: String(v.baseDir), dir, repo: `${v.baseDir}/${dir}/backup`, wal: `${v.baseDir}/${dir}/wal` };
+  }
+  return { base: undefined, dir: undefined, repo: v.repoPath ? expand(v.repoPath, c) : undefined, wal: v.walPath ? expand(v.walPath, c) : undefined };
+}
 
 /** The concrete destination of one cluster (placeholders expanded). `null` when nothing is configured for it. */
 export function destinationFor(st: any, c: any): { dest: ResolvedDestination | null; resolved: ReturnType<typeof resolveScoped> } {
   const r = resolveScoped(st, 'destination', c);
   const v = r.value;
-  if (!v.repoPath && !v.walPath) return { dest: null, resolved: r };
+  if (!v.repoPath && !v.walPath && !v.baseDir) return { dest: null, resolved: r };
   const d: ResolvedDestination = { type: v.type || 'local', require_mount: !!v.requireMount };
-  if (v.repoPath) d.repo_path = expand(v.repoPath, c);
-  if (v.walPath) d.wal_path = expand(v.walPath, c);
+  const ps = pathsFor(st, c, r);
+  if (ps.repo) d.repo_path = ps.repo;
+  if (ps.wal) d.wal_path = ps.wal;
+  if (ps.base) { d.base_dir = ps.base; d.cluster_dir = ps.dir; }
   if (v.minFreeGb) d.min_free_gb = Number(v.minFreeGb);
   // the backup server belongs to the level that chose the KIND of storage: a level below that switches to another share or to local disks
   // (setting type and paths without a server) must not inherit a server check from above
@@ -116,20 +163,19 @@ export function destinationFor(st: any, c: any): { dest: ResolvedDestination | n
   }
   if (serverHere && v.serverPath) d.server_path = v.serverPath;
   // a value set on ONE cluster is that cluster's own path: the warning is about a shared value (global / environment / folder) without {cluster}
-  if (v.walPath && !/\{(cluster|id)\}/.test(v.walPath) && r.sources?.walPath?.scope !== 'cluster' && st.clusters.filter((x: any) => !x.isSandbox).length > 1) {
+  if (!ps.base && v.walPath && !/\{(cluster|id)\}/.test(v.walPath) && r.sources?.walPath?.scope !== 'cluster' && st.clusters.filter((x: any) => !x.isSandbox).length > 1) {
     d.wal_shared_warning = 'The WAL path does not contain {cluster}: if the same value applies to several clusters, their WAL segments end up in the same directory and overwrite each other.';
   }
   if (d.wal_path) {                                         // two clusters that RESOLVE to the same (or a nested) archive directory, even with placeholders (same name and environment, two clusters assigned the same path by hand)
     const mine = d.wal_path.replace(/\/+$/, '') + '/';
     // the sites of ONE geo-redundant database (same system identifier) share its archive on purpose: same WAL names, same history, one catalogue
-    const sysidOf = (cid: string) => Object.values(st.nodes || {}).map((n: any) => n.clusterId === cid ? n.snapshot?.postgres?.system_identifier : null).find(Boolean) || null;
-    const me = sysidOf(c.id);
+    const me = sysidOf(st, c.id);
     for (const o of st.clusters) {
       if (o.id === c.id || o.isSandbox) continue;
-      if (me && sysidOf(o.id) === me) continue;
-      const ow = (resolveScoped(st, 'destination', o).value.walPath as string | undefined);
+      if (me && sysidOf(st, o.id) === me) continue;
+      const ow = pathsFor(st, o).wal;
       if (!ow) continue;
-      const theirs = expand(ow, o).replace(/\/+$/, '') + '/';
+      const theirs = ow.replace(/\/+$/, '') + '/';
       if (mine === theirs || mine.startsWith(theirs) || theirs.startsWith(mine)) { d.wal_collision = `WAL archive ${d.wal_path} is the same as (or contains / is contained in) the one of cluster “${o.name}”: segments with the same name would overwrite each other. Change the path (for example by adding {id}).`; break; }
     }
   }
@@ -195,7 +241,8 @@ export async function applyDestination(store: Store, c: any, key: string, by: st
   const prevOf = (n: any) => ({ repo: n.snapshot?.storage?.repo_path || null, wal: n.snapshot?.storage?.wal_path || null });
   const prim = nodesOf(st, c.id).find(n => online(n) && n.snapshot?.postgres?.is_in_recovery === false);
   await store.mutate(d => {
-    (d.settings.destinationApplied ||= {})[c.id] = { at: new Date().toISOString(), by, repo_path: dest!.repo_path, wal_path: dest!.wal_path, type: dest!.type, previous: prim ? prevOf(prim) : null };
+    (d.settings.destinationApplied ||= {})[c.id] = { at: new Date().toISOString(), by, repo_path: dest!.repo_path, wal_path: dest!.wal_path, type: dest!.type, previous: prim ? prevOf(prim) : null,
+      ...(dest!.cluster_dir ? { dirName: dest!.cluster_dir, baseDir: dest!.base_dir } : {}) };
     audit(d, { clusterId: c.id, actor: by, action: 'destination.apply', status: 'OK', details: { ...dest } });
   });
   return { code: 202, body: { destination: dest, operations: out,
@@ -205,7 +252,7 @@ export async function applyDestination(store: Store, c: any, key: string, by: st
 /** Where the backups physically are (directories, share sources, server addresses) is administrator information: other roles get the shape of the
  *  answer with these values replaced, so every screen still works and says "shown to administrators". */
 export const HIDDEN = '(hidden)';
-const PATH_KEYS = new Set(['path', 'repo_path', 'wal_path', 'wal_archive_dir', 'repoPath', 'walPath', 'server_path', 'serverPath', 'source', 'mountpoint', 'remoteHost', 'hosts', 'repo', 'wal',
+const PATH_KEYS = new Set(['baseDir', 'base_dir', 'path', 'repo_path', 'wal_path', 'wal_archive_dir', 'repoPath', 'walPath', 'server_path', 'serverPath', 'source', 'mountpoint', 'remoteHost', 'hosts', 'repo', 'wal',
   'source_repo', 'source_wal', 'destination', 'dead_branch_dir', 'fix_commands', 'current']);
 /** Operations whose parameters and results describe the backup locations. */
 export const LOCATION_OPS = new Set(['destination_check', 'destination_migrate', 'destination_drop_old', 'agent_config_set', 'destination_apply']);
@@ -346,6 +393,26 @@ export function mountDestinationRoutes(app: any, store: Store) {
     const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
     res.json(storageOf(st, c, isAdmin(req)));
+  });
+
+  /** What a storage setting WOULD give each cluster before it is saved (the wizard's review): the directories, created automatically per cluster
+   *  under a base directory, and any WAL archive collision. Administrators only (it is all paths). */
+  app.post('/api/destination/preview', (req: Request, res: Response) => {
+    if (!isAdmin(req)) return res.status(403).json({ error: 'forbidden' });
+    const { scope, key = '', value } = req.body || {};
+    if (!['global', 'env', 'folder', 'cluster'].includes(scope)) return res.status(400).json({ error: 'invalid_scope' });
+    const vv = destination.validate(value, store.peek());
+    if (!vv.ok) return res.status(400).json({ error: 'invalid_value', message: (vv as any).error });
+    const st = store.peek();
+    const k = scope === 'global' ? 'global' : `${scope}:${scope === 'folder' ? normFolder(key) : String(key)}`;
+    const sc = st.settings.scoped || {};
+    const st2 = { ...st, settings: { ...st.settings, scoped: { ...sc, destination: { ...(sc.destination || {}), [k]: (vv as any).value } } } };
+    res.json({ clusters: st.clusters.filter((c: any) => !c.isSandbox && c.source !== 'direct').map((c: any) => {
+      const { dest, resolved } = destinationFor(st2, c);
+      const src = resolved.sources?.baseDir || resolved.sources?.repoPath || resolved.sources?.walPath;
+      return { id: c.id, name: c.name, environment: c.environment, affected: !!src && src.scope === scope && src.key === k,
+        repo_path: dest?.repo_path || null, wal_path: dest?.wal_path || null, cluster_dir: dest?.cluster_dir || null, wal_collision: dest?.wal_collision || null };
+    }) });
   });
 
   /** Every cluster in one line: where its backups really are (backup server names / share / local disks) and whether the nodes share it. */

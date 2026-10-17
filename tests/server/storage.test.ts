@@ -153,5 +153,39 @@ import { workerView, mountWorkerRoutes } from '../../server/workers';
   assert.equal((await call('GET', '/api/scoped/destination', 'viewer')).body.clusters[0].source, 'agent');
   const pl = (await call('GET', '/api/clusters/c1/placement', 'viewer')).body;
   assert.equal(pl.hidden, true); assert.equal(typeof pl.backup.pending, 'boolean'); assert.equal(pl.backup.type, 'nfs');
+  // automatic layout: one base directory, one directory per cluster under it (backup + wal), created by the check, remembered once applied
+  {
+    const st0 = store.peek();
+    await store.mutate(d => { d.settings.scoped = { ...(d.settings.scoped || {}), destination: {} }; d.settings.destinationApplied = {};
+      d.clusters.push({ id: 'cl_aa11bb22cc33', name: 'prod1', environment: 'prod', folder: '', source: 'agent' } as any); });
+    assert.equal(v({ baseDir: '/mnt/pgarca', repoPath: '/x' }).ok, false, 'base directory or explicit paths, not both');
+    assert.equal(v({ baseDir: '/mnt/{cluster}' }).ok, false); assert.equal(v({ baseDir: '/' }).ok, false);
+    assert.equal((await call('PUT', '/api/scoped/destination/assignments', 'admin', { scope: 'global', value: { type: 'nfs', baseDir: '/mnt/pgarca', requireMount: true } })).status, 200);
+    const dOf = (id: string) => destinationFor(store.peek(), store.peek().clusters.find((x: any) => x.id === id)).dest!;
+    const a1 = dOf('c1'), a2 = dOf('cl_aa11bb22cc33'), dv = dOf('c2');
+    assert.deepEqual([a1.repo_path, a1.wal_path], ['/mnt/pgarca/prod/prod1-c1/backup', '/mnt/pgarca/prod/prod1-c1/wal']);
+    assert.deepEqual([a2.repo_path, a2.wal_path], ['/mnt/pgarca/prod/prod1-aa11bb/backup', '/mnt/pgarca/prod/prod1-aa11bb/wal'], 'same name, own directory');
+    assert.equal(dv.wal_path, '/mnt/pgarca/dev/dev1-c2/wal');
+    assert.equal(a1.wal_collision, undefined); assert.equal(a1.wal_shared_warning, undefined);
+    // the more specific level wins, field by field
+    await call('PUT', '/api/scoped/destination/assignments', 'admin', { scope: 'cluster', key: 'c2', value: { repoPath: '/data/dev/repo', walPath: '/data/dev/wal' } });
+    assert.deepEqual([dOf('c2').repo_path, dOf('c2').base_dir], ['/data/dev/repo', undefined]);
+    await call('PUT', '/api/scoped/destination/assignments', 'admin', { scope: 'cluster', key: 'c2', inherit: true });
+    await call('PUT', '/api/scoped/destination/assignments', 'admin', { scope: 'global', value: { type: 'nfs', repoPath: '/mnt/old/repo', walPath: '/mnt/old/wal/{cluster}' } });
+    await call('PUT', '/api/scoped/destination/assignments', 'admin', { scope: 'env', key: 'prod', value: { baseDir: '/mnt/new' } });
+    assert.equal(dOf('c1').repo_path, '/mnt/new/prod/prod1-c1/backup'); assert.equal(dOf('c2').repo_path, '/mnt/old/repo');
+    // the wizard's review: what a setting WOULD give each cluster, before saving (administrators only)
+    const pv = await call('POST', '/api/destination/preview', 'admin', { scope: 'env', key: 'prod', value: { type: 'nfs', baseDir: '/mnt/b2', requireMount: true } });
+    assert.equal(pv.status, 200);
+    const p1 = pv.body.clusters.find((x: any) => x.id === 'c1'); assert.equal(p1.repo_path, '/mnt/b2/prod/prod1-c1/backup'); assert.equal(p1.affected, true);
+    assert.equal(pv.body.clusters.find((x: any) => x.id === 'c2').affected, false);
+    assert.equal(destinationFor(store.peek(), store.peek().clusters.find((x: any) => x.id === 'c1')).dest!.repo_path, '/mnt/new/prod/prod1-c1/backup', 'nothing saved');
+    assert.equal((await call('POST', '/api/destination/preview', 'operator', { scope: 'global', value: { baseDir: '/x' } })).status, 403);
+    assert.equal((await call('POST', '/api/destination/preview', 'admin', { scope: 'global', value: { baseDir: '/x', walPath: '/y' } })).status, 400);
+    // remembered once applied: a renamed cluster keeps writing where its history is
+    await store.mutate(d => { d.settings.destinationApplied = { c1: { dirName: 'prod/prod1-c1', baseDir: '/mnt/new' } }; (d.clusters.find((x: any) => x.id === 'c1') as any).name = 'renamed'; });
+    assert.equal(dOf('c1').repo_path, '/mnt/new/prod/prod1-c1/backup');
+    await store.mutate(d => { d.settings.scoped = st0.settings.scoped; d.settings.destinationApplied = st0.settings.destinationApplied; d.clusters = d.clusters.filter((x: any) => x.id !== 'cl_aa11bb22cc33'); (d.clusters.find((x: any) => x.id === 'c1') as any).name = 'prod1'; });
+  }
   console.log('storage.test OK');
 })().catch(e => { console.error(e); process.exit(1); });

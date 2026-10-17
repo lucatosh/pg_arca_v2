@@ -61,14 +61,15 @@ const EphForm: React.FC<FormProps> = ({ value: v, set, view }) => {
 };
 
 /* ---------------------------------------------------------------------------------------------------------------------- destination */
-const DEST_LABELS: Record<string, string> = { type: 'Type', server: 'Backup server', serverPath: 'Folder on the backup server', repoPath: 'Repository', walPath: 'WAL archive', requireMount: 'Separate mount required', minFreeGb: 'Minimum free space (GiB)' };
+const DEST_LABELS: Record<string, string> = { type: 'Type', server: 'Backup server', serverPath: 'Folder on the backup server', baseDir: 'Base directory (one per cluster)', repoPath: 'Repository', walPath: 'WAL archive', requireMount: 'Separate mount required', minFreeGb: 'Minimum free space (GiB)' };
 const TYPE_LABEL: Record<string, string> = { local: 'Local disk of each node', nfs: 'NFS share', smb: 'SMB/CIFS share' };
 const HIDDEN = '(hidden)';
 const destSummary = (v: Record<string, any>, view?: SView, show?: boolean) => <>
   <Badge kind={v.type === 'local' ? undefined : 'accent'}>{TYPE_LABEL[v.type] || v.type}</Badge>{' '}
   {v.server && v.type !== 'local' ? <><Badge kind="accent">Backup server {view?.nodes.find(n => n.id === v.server)?.name || '(removed)'}</Badge>{' '}</> : null}
   {v.repoPath === HIDDEN || v.walPath === HIDDEN ? <span className="small faint">directories visible to administrators</span>
-    : !show ? <span className="small faint">{v.repoPath || v.walPath ? 'directories set' : 'paths not set'}</span>
+    : !show ? <span className="small faint">{v.baseDir ? 'one directory per cluster' : v.repoPath || v.walPath ? 'directories set' : 'paths not set'}</span>
+    : v.baseDir && !v.repoPath && !v.walPath ? <span className="small muted mono">{v.baseDir}/&lt;environment&gt;/&lt;cluster&gt;/{'{backup,wal}'}</span>
     : <span className="small muted mono">{[v.repoPath ? `repo ${v.repoPath}` : null, v.walPath ? `wal ${v.walPath}` : null].filter(Boolean).join('  ') || 'paths not set'}</span>}
   <span className="small muted">{v.requireMount ? ' · separate mount required' : ''}</span></>;
 const PREVIEW = [{ id: 's3', label: 'Amazon S3 / MinIO / Ceph RGW' }, { id: 'azure', label: 'Azure Blob Storage' }, { id: 'gcs', label: 'Google Cloud Storage' }, { id: 'sftp', label: 'SFTP' }];
@@ -83,8 +84,10 @@ const DestForm: React.FC<FormProps> = ({ value: v, set, view }) => <div classNam
       <select className="input" value={v.server ?? ''} onChange={e => set('server', e.target.value)}><option value="">None (a NAS or another server)</option>
         {view.nodes.filter(n => n.worker && (n.roles || []).includes('repository')).map(n => <option key={n.id} value={n.id}>{n.name}{n.label ? ` — ${n.label}` : ''}</option>)}</select></Field>
     <Field label="Folder on the backup server" hint="Shown in the export and mount instructions."><input className="input mono" placeholder="/srv/pgarca" value={v.serverPath ?? ''} onChange={e => set('serverPath', e.target.value)} /></Field></div> : null}
+  <Field label="Base directory: one directory per cluster, created automatically" hint="Each cluster writes to <base>/<environment>/<cluster>/backup and …/wal: several clusters on one disk or share never mix their files. Leave empty to set the two directories below by hand.">
+    <input className="input mono" placeholder="/mnt/pgarca" value={v.baseDir ?? ''} onChange={e => set('baseDir', e.target.value)} /></Field>
   <div className="grid g2">
-    <Field label="Repository directory" hint="Placeholders: {cluster} {env} {id}. Several clusters can share the same repository (each has its own space)."><input className="input mono" placeholder="/mnt/backup/pgarca" value={v.repoPath ?? ''} onChange={e => set('repoPath', e.target.value)} /></Field>
+    <Field label="Repository directory" hint="Only without a base directory. Placeholders: {cluster} {env} {id}. Several clusters can share the same repository (each has its own space)."><input className="input mono" placeholder="/mnt/backup/pgarca" value={v.repoPath ?? ''} onChange={e => set('repoPath', e.target.value)} /></Field>
     <Field label="WAL archive directory" hint="Must be different for each cluster: use {cluster} or {id}."><input className="input mono" placeholder="/mnt/backup/wal/{env}/{cluster}" value={v.walPath ?? ''} onChange={e => set('walPath', e.target.value)} /></Field>
     <Field label="Minimum free space (GiB)" hint="The check fails below this threshold."><input className="input" type="number" min={0} value={v.minFreeGb ?? ''} onChange={e => set('minFreeGb', e.target.value === '' ? '' : Number(e.target.value))} /></Field>
     <Field label="Separate mount required" hint="Refuse the path unless it is on a separately mounted filesystem (not the root filesystem): backups can never fill the system disk when the share is not mounted.">

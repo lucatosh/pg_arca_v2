@@ -105,7 +105,7 @@ Every node of a cluster must write repository and WAL archive to the **same** st
 2. **An existing network share** (NAS, storage array; NFS or SMB with hard-link support) mounted at the same path on every node.
 3. **The local disk of each node**: single-node clusters and test systems only.
 
-pg_arca never mounts anything itself. Existing backups stay readable in the previous location after a change and can be migrated in the background. Directories, mount sources and server addresses are shown to administrators only, on request.
+Under the chosen directory every cluster gets its own folder, created automatically: `<base>/<environment>/<cluster>/backup` and `…/wal` (the name is kept once applied, also if the cluster is renamed; the two sites of a geo-redundant database share theirs on purpose). Explicit directories remain possible under Advanced. pg_arca never mounts anything itself. Existing backups stay readable in the previous location after a change and can be migrated in the background. Directories, mount sources and server addresses are shown to administrators only, on request.
 
 ## 5. Upgrades
 

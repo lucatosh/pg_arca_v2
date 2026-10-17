@@ -9,6 +9,7 @@ import { geoGroups, mountGeoRoutes, geoSlotFor, geoParamGuard, geoStanzaPlan, st
 import { evaluate } from '../../server/health';
 import { GEO_DR_TIMING, geoMonitorTick, watchOf, recoverInterruptedGeoJobs, pruneGeoJobs, startFailover } from '../../server/geodr';
 import { deriveCluster } from '../../server/view';
+import { clusterDir } from '../../server/destinations';
 
 (async () => {
   { // finished site-role jobs are bounded, running ones kept
@@ -33,6 +34,8 @@ import { deriveCluster } from '../../server/view';
   // 1. pairing + replication state
   assert.strictEqual(geoSlotFor('geo-dc1'), 'geo_dc1'); assert.strictEqual(geoSlotFor('Milano Nord'), 'geo_milano_nord');
   let g = geoGroups(store.peek()); assert.strictEqual(g.length, 1); assert.strictEqual(g[0].primary, 'c1');
+  // automatic backup layout: the two sites of ONE database share one directory (one WAL archive, one history)
+  assert.strictEqual(clusterDir(store.peek(), store.peek().clusters[0]), 'prod/geo-dc1-c1'); assert.strictEqual(clusterDir(store.peek(), store.peek().clusters[1]), 'prod/geo-dc1-c1');
   assert.deepStrictEqual(g[0].sites.find(s => s.clusterId === 'c1')!.endpoint, { host: 'dc1-haproxy', port: 5000 }, 'primary address detected from the standby site');
   let s2 = g[0].sites.find(s => s.clusterId === 'c2')!;
   assert.strictEqual(s2.role, 'standby'); assert.strictEqual(s2.lagBytes, 0); assert.strictEqual(s2.health, 'ok'); assert.strictEqual(s2.slot?.name, 'geo_dc2');
