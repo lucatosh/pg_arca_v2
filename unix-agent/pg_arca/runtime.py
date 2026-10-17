@@ -474,11 +474,24 @@ def _archive_error(wal_dir):
         return None
 
 
-def mount_info(path):
+_MOUNT_CACHE = {}
+
+
+def mount_info(path, ttl=30.0):
     """Where a directory really lives: {mountpoint, fstype, source, remote_host} of the filesystem that holds it (source is "server:/export"
-    for NFS, "//server/share" for SMB). What the console shows as "backup server bk1 over NFS"; None when the path is unknown."""
+    for NFS, "//server/share" for SMB). What the console shows as "backup server bk1 over NFS"; None when the path is unknown.
+    Cached `ttl` seconds per path (every heartbeat asks; without /proc it costs a `mount` process)."""
     if not path:
         return None
+    hit = _MOUNT_CACHE.get(path)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    v = _mount_info(path)
+    _MOUNT_CACHE[path] = (time.time(), v)
+    return v
+
+
+def _mount_info(path):
     try:
         from pg_arca.engine.destcheck import mount_of, NETWORK_FS, remote_host
         p = path

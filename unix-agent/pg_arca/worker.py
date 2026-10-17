@@ -104,13 +104,12 @@ class Inventory(object):
             except Exception as e:
                 facts = {"error": str(e)[:200]}
             self._slow = {"pg_installations": [{k: i.get(k) for k in ("major", "version", "bindir", "source", "missing_tools")} for i in inst],
-                          "host": facts}
+                          "host": facts, "identity": _identity()}
             self._at = time.time()
         out = dict(self._slow)
         out["mounts"] = mounts()
         out["dirs"] = {k: _dir_info(self.config.get(v)) for k, v in (("scratch", "scratch_dir"), ("repo", "repo_path"), ("wal_archive", "wal_archive_dir"))}
         out["role"] = "worker"
-        out["identity"] = _identity()
         return out
 
 
