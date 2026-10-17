@@ -1,5 +1,6 @@
 #!/bin/bash
-# Lab helper: bring the VM to a branch of origin (default: the one checked out): pull, rebuild UI, restart console, update agents.
+# Lab helper: bring the VM to a branch of origin (default: the one checked out): pull, rebuild UI, restart console, update EVERY agent and prove it.
+# One command after every new build:  tools/lab/deploy.sh release/1.0.0-rc.1      (agents only: tools/lab/agents-sync.sh)
 #   tools/lab/deploy.sh [branch]        e.g. tools/lab/deploy.sh release/1.0.0-rc.1
 # Run from /opt/pg_arca_v2/tools/lab as a docker-group user (sudo w/o password).
 set -e; cd "$(dirname "$0")/../.."
@@ -16,5 +17,6 @@ cd tools/lab; ./lab.sh agent-update 2>&1 | tail -1
 [ -n "$(docker ps -q -f name=solo1)" ] && ./lab.sh solo-agent-update 2>&1 | tail -2 || true
 [ -n "$(docker ps -q -f name=dc1-pg1)" ] && ./geo.sh agent-update 2>&1 | grep -E "^==|FAILED|ERROR" || true
 [ -n "$(docker ps -q -f name=s14)" ] && ./vers.sh agent-update 2>&1 | grep -E "^==|OK|PROBLEM|ERROR" || true
-./agents-update.sh 2>&1 | grep -E "^==|failed" || true
+# every agent the console knows (any lab, Docker or Proxmox): the console's upgrade command, restart of the agent process if needed, then proof
+./agents-sync.sh || echo "AGENTS NOT ALL CURRENT: see the table above (offline nodes update when they are back: run tools/lab/agents-sync.sh again)"
 echo deployed
