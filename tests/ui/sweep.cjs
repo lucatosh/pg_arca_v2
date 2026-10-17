@@ -40,5 +40,25 @@ const base = process.env.BASE || 'http://localhost:5188';
     await p.screenshot({ path: `${out}/${tag}-storage-wizard.png` });
     await p.keyboard.press('Escape');
   }
+  // the same pages as an OBSERVER: every backup location masked in the answers ("(hidden)") must not break a screen, and none may show in plain view
+  {
+    const p = await (await b.newContext({ viewport: { width: 1360, height: 860 } })).newPage();
+    p.on('pageerror', e => problems.push(`viewer pageerror ${e.message}`));
+    await p.goto(base); await p.waitForSelector('text=Sign in');
+    await p.fill('input[autocomplete=username]', 'admin'); await p.fill('input[type=password]', 'correct-horse-battery'); await p.click('button[type=submit]'); await p.waitForTimeout(1200);
+    const mk = await p.evaluate(async () => (await fetch('/api/users', { method: 'POST', headers: { 'content-type': 'application/json', 'x-pg-arca': '1' }, body: JSON.stringify({ username: 'sweep-viewer', password: 'viewer-password-123', role: 'viewer' }) })).status);
+    if (![200, 201, 409].includes(mk)) problems.push(`viewer: cannot create the observer (${mk})`);
+    await p.evaluate(async () => { await fetch('/api/auth/logout', { method: 'POST', headers: { 'x-pg-arca': '1' } }); });
+    await p.goto(base); await p.waitForSelector('text=Sign in');
+    await p.fill('input[autocomplete=username]', 'sweep-viewer'); await p.fill('input[type=password]', 'viewer-password-123'); await p.click('button[type=submit]'); await p.waitForTimeout(1500);
+    const cid = await p.evaluate(async () => { const r = await fetch('/api/clusters'); const j = await r.json(); return (j.clusters.find(c => c.name === 'prodpg') || {}).id; });
+    const wid = await p.evaluate(async () => { const r = await fetch('/api/workers'); const j = await r.json(); return ((j.workers || [])[0] || {}).id; });
+    for (const r of ['infra/destination', 'workers', ...(wid ? [`w/${encodeURIComponent(wid)}`] : []), ...['backup', 'nodes', 'overview'].map(t => `c/${encodeURIComponent(cid)}/${t}`)]) {
+      await p.goto(`${base}/#/${r}`); await p.waitForTimeout(1500);
+      const txt = await p.evaluate(() => document.querySelector('main.page')?.innerText || '');
+      if (/\/mnt\/backup|\/var\/lib\/pgarca\/(repo|wal)|\/backup\/pgarca/.test(txt)) problems.push(`viewer /${r}: a backup location is visible`);
+      await p.screenshot({ path: `${out}/viewer-${r.replace(/[^a-z0-9]+/gi, '_')}.png` });
+    }
+  }
   console.log(problems.length ? problems.join('\n') : 'sweep OK'); await b.close(); process.exit(problems.length ? 1 : 0);
 })();
