@@ -283,7 +283,7 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
   const line = (scope: Scope, k: string, title: string, sub?: string) => { const a = v.assignments[scopeKey(scope, k)]; return <tr key={scopeKey(scope, k)}>
     <td><strong>{title}</strong>{sub ? <div className="small muted">{sub}</div> : null}</td>
     <td>{a ? <div className="row wrap gap-s">{Object.keys(a).filter(f => f !== 'portMax').map(f => <Badge key={f} kind="accent" title={f === 'portMin' ? `${a.portMin}–${a.portMax}` : f === 'centralNode' ? (v.nodes.find(n => n.id === a[f])?.name || a[f]) : JSON.stringify(a[f])}>{f === 'centralNode' ? `Recovery host: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : f === 'placement' ? (a[f] === 'central' ? 'On a central recovery host' : 'On the cluster node') : kind === 'destination' && f === 'server' ? `Backup server: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : kind === 'destination' && f === 'type' ? (TYPE_LABEL[a[f]] || a[f]) : ui.labels[f] || f}</Badge>)}</div> : <span className="muted">{scope === 'global' ? 'Not set (built-in defaults)' : 'Inherits'}</span>}</td>
-    <td className="num"><Button sm onClick={() => setDlg({ scope, k, label: title })}>Edit</Button></td></tr>; };
+    <td className="num">{role === 'admin' ? <Button sm onClick={() => setDlg({ scope, k, label: title })}>Edit</Button> : null}</td></tr>; };
   return <div className="stack-l">
     <div className="row wrap" style={{ alignItems: 'flex-start' }}><p className="sub grow" style={{ margin: 0, maxWidth: 820 }}>{ui.intro}</p>
       {kind === 'destination' && role === 'admin' ? <Button kind="primary" icon="server" onClick={() => setWiz(true)}>Configure backup storage…</Button> : null}</div>
@@ -296,7 +296,7 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
     <Card title="Clusters" pad={false}>{!v.clusters.length ? <div style={{ padding: 16 }} className="muted">No connected clusters.</div> : <div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>In effect</th><th /></tr></thead><tbody>
       {v.clusters.map(c => <tr key={c.id}><td><strong>{c.name}</strong><div className="small muted">{c.environment}{c.folder ? ` · ${c.folder}` : ''}</div></td>
         <td><div>{ui.summary(eff(c), v)}</div><div className="small muted">{ui.fields.filter(f => c.effective.sources[f] && c.effective.sources[f].scope !== 'default' && eff(c)[f] !== undefined).map(f => `${ui.labels[f]}: ${srcText(c.effective.sources[f])}`).join(' · ') || 'defaults'}</div></td>
-        <td className="num"><div className="row gap-s" style={{ justifyContent: 'flex-end' }}><Button sm onClick={() => setDlg({ scope: 'cluster', k: c.id, label: c.name })}>Edit</Button>
+        <td className="num"><div className="row gap-s" style={{ justifyContent: 'flex-end' }}>{role === 'admin' ? <Button sm onClick={() => setDlg({ scope: 'cluster', k: c.id, label: c.name })}>Edit</Button> : null}
           <Button sm icon={kind === 'ephemeral' ? 'search' : 'check'} disabled={c.source === 'direct'} title={c.source === 'direct' ? 'Needs the agent on the cluster' : undefined} onClick={() => setPre(c)}>{kind === 'ephemeral' ? 'Verify' : 'Check and apply'}</Button></div></td></tr>)}</tbody></table></div>}</Card>
     {dlg ? <ScopeDialog kind={kind} scope={dlg.scope} k={dlg.k} label={dlg.label} view={v} onClose={() => setDlg(null)} /> : null}
     {pre ? (kind === 'ephemeral' ? <PreflightModal cluster={pre} onClose={() => setPre(null)} /> : <DestinationModal cluster={pre} onClose={() => setPre(null)} />) : null}

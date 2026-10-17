@@ -300,7 +300,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       for (const [field, what] of [['wal_id', 'The WAL archive'], ['repo_id', 'The backup repository']] as const) {
         const ids = new Map<string, string[]>();
         for (const n of online) { const v = n.snapshot?.storage?.[field]; if (v) ids.set(v, [...(ids.get(v) || []), n.name]); }
-        if (ids.size >= 2) add({ severity: 'warning', code: field === 'wal_id' ? 'wal_not_shared' : 'repo_not_shared', title: `${what} is not shared between the nodes`, cause: `Each node writes into its own directory (${[...ids.values()].map(v => v.join(', ')).join(' | ')}). After a switchover or a failover, WAL and backups end up on another node and point-in-time recovery breaks silently. Mount the same shared storage (NFS, CephFS, shared volume…) at the same path on every node and set it in the agent settings.`, action: { label: 'Paths and discovery', page: 'nodes' } });
+        if (ids.size >= 2) add({ severity: 'warning', code: field === 'wal_id' ? 'wal_not_shared' : 'repo_not_shared', title: `${what} is not shared between the nodes`, cause: `Each node writes into its own directory (${[...ids.values()].map(v => v.join(', ')).join(' | ')}). After a switchover or a failover, WAL and backups end up on another node and point-in-time recovery breaks silently. Put the cluster on shared storage: a backup server or a network share mounted at the same path on every node (Backup page → Where the backups are stored → Configure…).`, action: { label: 'Configure backup storage', page: 'backup' } });
       }
     }
 

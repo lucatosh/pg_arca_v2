@@ -28,6 +28,17 @@ const base = process.env.BASE || 'http://localhost:5188';
       for (const x of res) problems.push(`${tag} /${r}: ${x}`);
       await p.screenshot({ path: `${out}/${tag}-${r.replace(/[^a-z0-9]+/gi, '_') || 'home'}.png` });
     }
+    // the storage wizard (a wide modal with choices, fields and command blocks) at this width: nothing sticks out of the dialog
+    await p.goto(`${base}/#/c/${encodeURIComponent(cid)}/backup`); await p.waitForSelector('.placement button:has-text("Configure")', { timeout: 15000 });
+    await p.click('.placement button:has-text("Configure")'); await p.click('.modal .choice:has-text("A backup server")'); await p.click('.modal button:has-text("Continue")');
+    await p.click('.modal .choice:has-text("bk01")'); await p.waitForTimeout(500);
+    const wz = await p.evaluate(() => { const m = document.querySelector('.modal'); const o = []; if (!m) return ['no dialog'];
+      const R = m.getBoundingClientRect(); if (R.right > window.innerWidth + 1) o.push(`dialog wider than the window (${Math.round(R.right)} > ${window.innerWidth})`);
+      for (const el of m.querySelectorAll('*')) { const r = el.getBoundingClientRect(); if (r.width > 0 && r.right > R.right + 2 && !el.closest('pre, .out, .tablewrap')) { o.push(`sticks out of the dialog: <${el.tagName.toLowerCase()} class="${el.className}"> "${(el.textContent || '').trim().slice(0, 40)}"`); break; } }
+      return o; });
+    for (const x of wz) problems.push(`${tag} storage wizard: ${x}`);
+    await p.screenshot({ path: `${out}/${tag}-storage-wizard.png` });
+    await p.keyboard.press('Escape');
   }
   console.log(problems.length ? problems.join('\n') : 'sweep OK'); await b.close(); process.exit(problems.length ? 1 : 0);
 })();
