@@ -62,6 +62,14 @@ class Paths(unittest.TestCase):
                                    expect_server={"name": "bk1", "hosts": ["bk1"]})
         self.assertEqual(lv(smb, "server"), ["ok"], "case-insensitive")
         self.assertEqual(destcheck.remote_host("/dev/sdb1"), None)
+        # addresses are never shortened, names from two different domains never match
+        self.assertFalse(destcheck._same_server("10.0.0.50", ["10.0.0.9"]))
+        self.assertFalse(destcheck._same_server("192.168.5.5", ["192.168.1.9", "bk1"]))
+        self.assertFalse(destcheck._same_server("bk1.other.org", ["bk1.lan"]))
+        self.assertFalse(destcheck._same_server("bk1.other.org", ["bk1", "bk1.lan"]), "the server has an FQDN of its own")
+        self.assertTrue(destcheck._same_server("bk1.any.org", ["bk1"]), "known by its short name only")
+        self.assertTrue(destcheck._same_server("bk1.lan", ["bk1"])); self.assertTrue(destcheck._same_server("bk1", ["bk1.lan"]))
+        self.assertTrue(destcheck._same_server("::ffff:10.0.0.9", ["10.0.0.9"]))
 
     def test_smb_expects_cifs_and_warns_on_the_wrong_network_type(self):
         r = destcheck.check_path("repo", os.path.join(self.t, "r"), "smb", False, table=[("/", "ext4", "x"), (self.t, "nfs4", "s")])

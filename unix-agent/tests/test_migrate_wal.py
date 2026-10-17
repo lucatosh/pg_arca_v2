@@ -41,7 +41,7 @@ class WalPlan(unittest.TestCase):
             logs = []
             def log(self, lvl, m): self.logs.append(m)
         # what the migration does with the conflict: a verified copy into conflicts/migrated/<segment>/, the current version untouched
-        kd = os.path.join(self.new, migrate.MIGRATED_CONFLICTS, S2)
+        kd = migrate._kept_dir(self.old, self.new, S2, conflicts[S2])
         os.makedirs(kd)
         for f in conflicts[S2]:
             migrate._copy_verified(os.path.join(self.old, f), os.path.join(kd, f))
@@ -49,6 +49,24 @@ class WalPlan(unittest.TestCase):
         self.assertEqual(conflicts2, {}); self.assertEqual(sorted(kept2), [S2])
         with open(os.path.join(self.new, S2 + ".meta")) as f:
             self.assertEqual(json.load(f)["sha256"], "cc", "the current archive's version is never overwritten")
+        # a THIRD version (another previous location) under the same name and codec is not "already kept"
+        third = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, third)
+        put(third, S2, "ee")
+        self.assertEqual(sorted(migrate._wal_plan(third, self.new)[1]), [S2])
+
+    def test_what_the_current_archive_set_aside_is_not_copied_back(self):
+        H = "00000003.history"; S = "000000030000000000000004"
+        for d in (self.old,):
+            with open(os.path.join(d, H), "w") as f:
+                f.write("2\t0/5000000\tx\n")
+            put(d, S, "dead")
+        dd = os.path.join(self.new, "conflicts", "dead-branch-00000003"); os.makedirs(dd)
+        shutil.copy(os.path.join(self.old, H), dd); shutil.copy(os.path.join(self.old, S + ".zst"), dd); shutil.copy(os.path.join(self.old, S + ".meta"), dd)
+        with open(os.path.join(dd, "RETIRED.json"), "w") as f:
+            f.write("{}")
+        self.assertEqual(migrate._wal_plan(self.old, self.new), ([], {}, {}), "a retired dead branch is never resurrected by a migration")
+        put(self.old, S, "other-dead-version")
+        self.assertEqual(sorted(migrate._wal_plan(self.old, self.new)[1]), [S], "a different version is still kept, not dropped")
 
     def test_files_without_meta_compare_their_bytes(self):
         with open(os.path.join(self.old, "00000002.history"), "w") as f:

@@ -537,8 +537,9 @@ class WalManager:
             return report
         os.makedirs(ddir, mode=0o750, exist_ok=True)
         self._mark_retired(ddir, tli, "retire_abandoned")
+        suf = self._free_suffix(ddir, names)
         for f in names:
-            os.rename(os.path.join(self.wal_dir, f), self._free_name(os.path.join(ddir, f)))
+            os.rename(os.path.join(self.wal_dir, f), os.path.join(ddir, f + suf))
         _fsync_dir(ddir)
         _fsync_dir(self.wal_dir)
         self._cont_cache = (0, None, None)
@@ -565,8 +566,9 @@ class WalManager:
             return report
         os.makedirs(ddir, mode=0o750, exist_ok=True)
         self._mark_retired(ddir, tli, "retire_tail")
+        suf = self._free_suffix(ddir, names)
         for f in names:
-            os.rename(os.path.join(self.wal_dir, f), self._free_name(os.path.join(ddir, f)))
+            os.rename(os.path.join(self.wal_dir, f), os.path.join(ddir, f + suf))
         _fsync_dir(ddir)
         _fsync_dir(self.wal_dir)
         self._cont_cache = (0, None, None)
@@ -575,15 +577,14 @@ class WalManager:
     RETIRED = "RETIRED.json"
 
     @staticmethod
-    def _free_name(path):
-        """`path`, or `path.prev-N` when a file already has that name: the same timeline number retired twice (reused after a first retirement)
-        must never overwrite what the first retirement kept - nothing set aside is ever deleted."""
-        if not os.path.lexists(path):
-            return path
-        n = 1
-        while os.path.lexists("%s.prev-%d" % (path, n)):
+    def _free_suffix(ddir, names):
+        """'' when none of `names` exists in `ddir`, else the first '.prev-N' free for ALL of them: objects moved together (a segment and its meta,
+        a branch) keep the same suffix, so they still pair up."""
+        n, suf = 0, ""
+        while any(os.path.lexists(os.path.join(ddir, f + suf)) for f in names):
             n += 1
-        return "%s.prev-%d" % (path, n)
+            suf = ".prev-%d" % n
+        return suf
 
     def _mark_retired(self, ddir, tli, by):
         """RETIRED.json {at, timeline, by} in a dead-branch directory: WHEN the branch was set aside. A backup that started after that
@@ -685,11 +686,12 @@ class WalManager:
                 self._mark_retired(ddir, tli, "retire_branch")
                 marked = True
             # 1) the dead copy (+ its meta) goes aside, atomically renamed inside the same filesystem
-            aside = self._free_name(os.path.join(ddir, os.path.basename(stored)))
-            os.rename(stored, aside)
             mp = os.path.join(self.wal_dir, name + ".meta")
             had_meta = os.path.exists(mp)
-            meta_aside = self._free_name(os.path.join(ddir, name + ".meta"))
+            suf = self._free_suffix(ddir, [os.path.basename(stored), name + ".meta"])
+            aside = os.path.join(ddir, os.path.basename(stored) + suf)
+            os.rename(stored, aside)
+            meta_aside = os.path.join(ddir, name + ".meta" + suf)
             if had_meta:
                 os.rename(mp, meta_aside)
             report["retired"].append(name)
@@ -1205,12 +1207,17 @@ class WalManager:
         return sorted(out)
 
     def list_histories(self):
+        """History files of the archive and of its previous locations. A timeline set aside as a dead branch in the CURRENT archive
+        (conflicts/dead-branch-<tli>/) is not brought back by a stale copy of its history left in a previous location."""
         out = set()
-        for d in [self.wal_dir] + self.previous:
+        for i, d in enumerate([self.wal_dir] + self.previous):
             try:
-                out |= set(n for n in os.listdir(d) if n.endswith(".history"))
+                names = set(n for n in os.listdir(d) if n.endswith(".history"))
             except OSError:
                 continue
+            if i:
+                names = set(n for n in names if n in out or not os.path.isdir(os.path.join(self.wal_dir, "conflicts", "dead-branch-" + n[:8].upper())))
+            out |= names
         return sorted(out)
 
     def remove_segment(self, name):
@@ -1269,7 +1276,8 @@ class WalManager:
         """{ancestor timeline: LSN where it ended} from <tli>.history (in the archive - the current location first, then the previous ones a
         destination change left, which restore_command reads too - or in `directory`), or None when the file is missing/unreadable."""
         lines = None
-        for d in ([directory] if directory else [self.wal_dir] + list(self.previous or [])):
+        dirs = [directory] if directory else [self.wal_dir] + ([] if os.path.isdir(os.path.join(self.wal_dir, "conflicts", "dead-branch-%08X" % tli)) else list(self.previous or []))
+        for d in dirs:
             try:
                 with open(os.path.join(d, "%08X.history" % tli), "r", encoding="utf-8", errors="replace") as f:
                     lines = f.read().splitlines()

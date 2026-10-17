@@ -78,11 +78,20 @@ export function hostsOf(n: any): string[] {
 /** The worker host a mount's server part ("bk1", "bk1.lan", "10.0.0.9") points to, if any. Backup servers (role "repository") win over other workers. */
 export function workerForHost(st: any, host?: string | null): any | null {
   if (!host) return null;
-  const h = String(host).toLowerCase().replace(/^::ffff:/, '');
-  const short = h.split('.')[0];
+  const h = String(host).toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:/, '');
+  const isIp = (x: string) => /^[0-9.]+$/.test(x) || x.includes(':');
+  // addresses match exactly; a short name matches an FQDN only when ONE side has no domain ("bk1" ~ "bk1.lan", never "bk1.lan" ~ "bk1.other.org")
+  // a mount from "bk1.x.org" matches a host known only as "bk1", but not one whose own FQDN is "bk1.lan"
+  const matches = (hosts: string[]) => {
+    if (hosts.includes(h)) return true;
+    if (isIp(h)) return false;
+    const names = hosts.filter(x => !isIp(x));
+    if (!h.includes('.')) return names.some(x => x.split('.')[0] === h);
+    return !names.some(x => x.includes('.')) && names.includes(h.split('.')[0]);
+  };
   const ws = (Object.values(st.nodes || {}) as any[]).filter(n => n.kind === 'worker')
     .sort((a, b) => Number((b.roles || []).includes('repository')) - Number((a.roles || []).includes('repository')));
-  return ws.find(w => hostsOf(w).some(x => x === h || (!/^[0-9.:]+$/.test(h) && x.split('.')[0] === short))) || null;
+  return ws.find(w => matches(hostsOf(w))) || null;
 }
 const expand = (p: string, c: any) => p.replace(/\{cluster\}/g, slug(c.name)).replace(/\{env\}/g, slug(c.environment)).replace(/\{id\}/g, slug(c.id));
 
@@ -95,13 +104,17 @@ export function destinationFor(st: any, c: any): { dest: ResolvedDestination | n
   if (v.repoPath) d.repo_path = expand(v.repoPath, c);
   if (v.walPath) d.wal_path = expand(v.walPath, c);
   if (v.minFreeGb) d.min_free_gb = Number(v.minFreeGb);
-  if (v.server) {
+  // the backup server belongs to the level that chose the KIND of storage: a level below that switches to another share or to local disks
+  // (setting type and paths without a server) must not inherit a server check from above
+  const sameLevel = (a?: { scope: string; key: string }, b?: { scope: string; key: string }) => !!a && !!b && a.scope === b.scope && a.key === b.key;
+  const serverHere = !!v.server && d.type !== 'local' && sameLevel(r.sources?.server, r.sources?.type);
+  if (serverHere) {
     const w = (st.nodes || {})[v.server];
     d.server = w && w.kind === 'worker' && Object.prototype.hasOwnProperty.call(st.nodes, v.server)
       ? { id: v.server, name: w.name, hosts: hostsOf(w), isBackupServer: (w.roles || []).includes('repository') }
       : { id: v.server, name: null, hosts: [], missing: true };
   }
-  if (v.serverPath) d.server_path = v.serverPath;
+  if (serverHere && v.serverPath) d.server_path = v.serverPath;
   // a value set on ONE cluster is that cluster's own path: the warning is about a shared value (global / environment / folder) without {cluster}
   if (v.walPath && !/\{(cluster|id)\}/.test(v.walPath) && r.sources?.walPath?.scope !== 'cluster' && st.clusters.filter((x: any) => !x.isSandbox).length > 1) {
     d.wal_shared_warning = 'The WAL path does not contain {cluster}: if the same value applies to several clusters, their WAL segments end up in the same directory and overwrite each other.';
@@ -192,9 +205,14 @@ export async function applyDestination(store: Store, c: any, key: string, by: st
 /** Where the backups physically are (directories, share sources, server addresses) is administrator information: other roles get the shape of the
  *  answer with these values replaced, so every screen still works and says "shown to administrators". */
 export const HIDDEN = '(hidden)';
-const PATH_KEYS = new Set(['path', 'repo_path', 'wal_path', 'repoPath', 'walPath', 'server_path', 'serverPath', 'source', 'mountpoint', 'remoteHost', 'hosts', 'repo', 'wal']);
+const PATH_KEYS = new Set(['path', 'repo_path', 'wal_path', 'wal_archive_dir', 'repoPath', 'walPath', 'server_path', 'serverPath', 'source', 'mountpoint', 'remoteHost', 'hosts', 'repo', 'wal',
+  'source_repo', 'source_wal', 'destination', 'dead_branch_dir', 'fix_commands', 'current']);
+/** Operations whose parameters and results describe the backup locations. */
+export const LOCATION_OPS = new Set(['destination_check', 'destination_migrate', 'destination_drop_old', 'agent_config_set', 'destination_apply']);
 export function maskPaths<T>(v: T): T {
   const walk = (x: any, k?: string): any => {
+    // "source" is also a plain word elsewhere (a cluster's source: agent / direct): only a location-looking value is hidden
+    if (k === 'source' && typeof x === 'string' && !/[/:\\]/.test(x)) return x;
     if (k && PATH_KEYS.has(k)) {
       if (typeof x === 'string') return HIDDEN;
       if (Array.isArray(x)) return x.map(e => (typeof e === 'string' ? HIDDEN : walk(e)));
@@ -206,6 +224,8 @@ export function maskPaths<T>(v: T): T {
   return walk(v);
 }
 export const isAdmin = (req: Request) => (req as any).role === 'admin';
+/** An operation as a non-administrator may see it: the backup locations in its parameters and result hidden. */
+export const maskOpFor = (req: Request, o: any) => (!o || isAdmin(req) || !LOCATION_OPS.has(o.type) ? o : { ...o, params: maskPaths(o.params), result: maskPaths(o.result) });
 
 export function mountDestinationRoutes(app: any, store: Store) {
   const actor = (req: Request) => (req as any).actor || 'admin';

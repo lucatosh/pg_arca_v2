@@ -59,5 +59,15 @@ class ConcreteTimeline(unittest.TestCase):
         self.assertEqual(_recovery_path(ctx, 1, "latest"), [(2, None), (1, 0x3000000)])
 
 
+    def test_a_dead_branch_set_aside_here_is_not_revived_by_the_previous_location(self):
+        hist(self.d, 2, [(1, "0/3000000")])
+        hist(self.prev, 2, [(1, "0/3000000")]); hist(self.prev, 3, [(1, "0/3000000"), (2, "0/6000000")])   # 3: retired as dead in the current archive
+        os.makedirs(os.path.join(self.d, "conflicts", "dead-branch-00000003"))
+        ctx = Ctx(WalManager(self.d, compression="none", previous=[self.prev], create=False))
+        self.assertEqual(concrete_timeline(ctx, [{"timeline": 1}]), "2")
+        hist(self.d, 3, [(1, "0/3000000"), (2, "0/7000000")])                          # the number reused for real later: followed
+        self.assertEqual(concrete_timeline(ctx, [{"timeline": 1}]), "3")
+
+
 if __name__ == "__main__":
     unittest.main()

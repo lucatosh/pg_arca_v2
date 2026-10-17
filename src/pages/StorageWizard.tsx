@@ -28,22 +28,26 @@ const abs = (p: string) => /^\/[^\0]*$/.test(p) && !p.split('/').includes('..');
 const clean = (p: string) => (p || '').trim().replace(/\/+$/, '') || '/';
 const hostOf = (w?: Worker) => (w ? (w.address || w.remoteIp || w.name).replace(/^::ffff:/, '') : '<server>');
 
-/** The commands that make the backup server's folder appear on every node at the same path. pg_arca runs none of them: mounting is the system's job. */
-function shareCommands(proto: Proto, w: Worker | undefined, serverPath: string, mountPoint: string, uid?: number | null) {
-  const host = hostOf(w); const name = w?.name || 'the backup server'; const owner = uid ?? '<uid of the folder owner>';
+/** The commands that make the backup server's folder appear on every node at the same path. pg_arca runs none of them: mounting is the system's job.
+ *  The folder belongs to the uid/gid PostgreSQL has on the database nodes (the same on every node): files then show the same owner everywhere,
+ *  which the node check requires (the agent and PostgreSQL must see each other's files the same way). No squashing of ordinary users. */
+function shareCommands(proto: Proto, w: Worker | undefined, serverPath: string, mountPoint: string, owner: string) {
+  const host = hostOf(w); const name = w?.name || 'the backup server';
+  const [uid, gid] = /^\d+:\d+$/.test(owner) ? owner.split(':') : ['<uid>', '<gid>'];
   return proto === 'nfs'
-    ? { server: `# on ${name}, as root: the folder and its export (every client is mapped to the folder's owner, so permissions cannot differ between nodes)
-mkdir -p ${serverPath}
-echo '${serverPath}  <database-nodes-network>/24(rw,sync,no_subtree_check,all_squash,anonuid=${owner},anongid=${owner})' >> /etc/exports
+    ? { server: `# on ${name}, as root: the folder, owned by PostgreSQL's uid:gid on the database nodes, and its export
+mkdir -p ${serverPath} && chown ${uid}:${gid} ${serverPath} && chmod 0750 ${serverPath}
+echo '${serverPath}  <database-nodes-network>/24(rw,sync,no_subtree_check)' >> /etc/exports
 exportfs -ra`,
       nodes: `# on EVERY database node, as root: the same mount point everywhere, mounted at boot
 mkdir -p ${mountPoint}
 echo '${host}:${serverPath}  ${mountPoint}  nfs  hard,noatime,_netdev  0 0' >> /etc/fstab
 mount ${mountPoint}` }
-    : { server: `# on ${name}: share ${serverPath} as [pgarca] (Samba: path = ${serverPath}, read only = no, force user = <folder owner>)`,
+    : { server: `# on ${name}: share ${serverPath} as [pgarca] (Samba: path = ${serverPath}, read only = no, force user = the owner of the folder).
+# The WAL archive publishes every segment with a hard link: Samba and Windows NTFS shares support them, Azure Files does not (the node check tests it).`,
       nodes: `# on EVERY database node, as root (credentials file readable by root only)
 mkdir -p ${mountPoint}
-echo '//${host}/pgarca  ${mountPoint}  cifs  credentials=/etc/pgarca-smb.cred,uid=postgres,gid=postgres,file_mode=0640,dir_mode=0750,_netdev  0 0' >> /etc/fstab
+echo '//${host}/pgarca  ${mountPoint}  cifs  credentials=/etc/pgarca-smb.cred,uid=${uid},gid=${gid},file_mode=0640,dir_mode=0750,_netdev  0 0' >> /etc/fstab
 mount ${mountPoint}` };
 }
 
@@ -64,6 +68,7 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
   const [dedicated, setDedicated] = useDraft(K + ':dedicated', false);
   const [custom, setCustom] = useDraft<{ repo?: string; wal?: string }>(K + ':custom', {});
   const [minFree, setMinFree] = useDraft<number | ''>(K + ':minfree', '');
+  const [owner, setOwner] = useDraft(K + ':owner', '');
   const [scope, setScope] = useDraft(K + ':scope', clusterId ? `cluster:${clusterId}` : 'global');
   const [saved, setSaved] = useDraft(K + ':saved', false);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null);
@@ -145,7 +150,9 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
           {chk.op && chk.op.status !== 'succeeded' ? <OpPanel op={chk.op} error={chk.error} /> : null}
           {chk.op?.status === 'succeeded' ? <><Banner kind={chk.op.result?.ok ? 'ok' : 'bad'} title={chk.op.result?.ok ? `The folder on ${srv.name} is usable` : 'The folder is not usable yet: each problem below has its remedy'} /><DestPaths r={chk.op.result} /></> : null}
           <details open><summary className="small" style={{ cursor: 'pointer' }}>Commands: export the folder and mount it on the nodes</summary><div className="stack" style={{ marginTop: 8 }}>
-            {(() => { const c = shareCommands(proto, srv, clean(serverPath), clean(mountPoint), chk.op?.result?.agent?.uid); return <><CopyBlock text={c.server} /><CopyBlock text={c.nodes} /></>; })()}
+            <Field label="Owner of the files: PostgreSQL's uid:gid on the database nodes" hint="Run “id postgres” on a node. It must be the same on every node; the commands below use it." error={!owner || /^\d+:\d+$/.test(owner) ? null : 'Format uid:gid, e.g. 26:26'}>
+              <input className="input mono" style={{ maxWidth: 160 }} value={owner} placeholder="26:26" onChange={e => setOwner(e.target.value.trim())} /></Field>
+            {(() => { const c = shareCommands(proto, srv, clean(serverPath), clean(mountPoint), owner); return <><CopyBlock text={c.server} /><CopyBlock text={c.nodes} /></>; })()}
             <p className="small muted">pg_arca never mounts anything itself. The check on the nodes (after saving) proves that the path is mounted from {srv.name} and writable the way the engine writes.</p></div></details>
         </> : null}
       </div> : null}
@@ -155,7 +162,7 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
         <Field label="Mount point on the database nodes" hint="Where the share is mounted, at the same path on every node. Backups are refused when the share is not mounted there, so they can never fill a local disk by mistake."
           error={abs(mountPoint) && clean(mountPoint) !== '/' ? null : 'An absolute path other than /'}><input className="input mono" value={mountPoint} onChange={e => setMountPoint(e.target.value)} /></Field>
         <details><summary className="small" style={{ cursor: 'pointer' }}>Mount command for the nodes</summary>
-          <CopyBlock text={shareCommands(proto, undefined, '<exported path>', clean(mountPoint)).nodes.replace('<server>', '<nas>')} /></details>
+          <CopyBlock text={shareCommands(proto, undefined, '<exported path>', clean(mountPoint), '').nodes.replace('<server>', '<nas>')} /></details>
       </div> : null}
 
       {step === 1 && where === 'local' ? <div className="stack">

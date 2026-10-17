@@ -7,11 +7,12 @@ import { Store } from '../../server/store';
 import { mountScopedRoutes, SPECS } from '../../server/scoped';
 import { mountDestinationRoutes, destinationFor, workerForHost, hostsOf, HIDDEN } from '../../server/destinations';
 import { validateOp } from '../../server/optypes';
+import { mountOperatorRoutes } from '../../server/agents';
 
 (async () => {
   const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'sto-'))); const app = new MiniApp();
   app.use((req: any, _res: any, next: any) => { req.role = req.headers['x-role'] || 'admin'; req.actor = 'u'; return next(); });
-  mountScopedRoutes(app, store); mountDestinationRoutes(app, store);
+  mountScopedRoutes(app, store); mountDestinationRoutes(app, store); mountOperatorRoutes(app, store, {});
   const now = new Date().toISOString();
   const disks = (repoDev: number) => ({ repo: { path: '/mnt/pgarca/repo', free_bytes: 5e11, total_bytes: 1e12, dev: repoDev }, wal_archive: { path: '/mnt/pgarca/wal', free_bytes: 5e11, total_bytes: 1e12, dev: repoDev }, pgdata: { path: '/var/lib/pgsql/data', free_bytes: 1e11, total_bytes: 2e11, dev: 1 } });
   const nfs = (id: string) => ({ repo_path: '/mnt/pgarca/repo', wal_path: '/mnt/pgarca/wal', repo_id: id, wal_id: id + 'w',
@@ -39,6 +40,9 @@ import { validateOp } from '../../server/optypes';
   assert.equal(workerForHost(store.peek(), '10.0.0.20')?.id, 'w2');
   assert.equal(workerForHost(store.peek(), '127.0.0.1'), null);
   assert.equal(workerForHost(store.peek(), '10.0.0'), null, 'an address prefix is not a short name');
+  assert.equal(workerForHost(store.peek(), '10.7.7.7'), null, 'addresses are never shortened');
+  assert.equal(workerForHost(store.peek(), 'bk1.other.org'), null, 'two different domains');
+  assert.equal(workerForHost(store.peek(), 'bk1.dc2.lan')?.id ?? null, null);
 
   // administrator: the backup server by name, shared storage, details
   let r = await call('GET', '/api/clusters/c1/storage');
@@ -87,6 +91,13 @@ import { validateOp } from '../../server/optypes';
   assert.deepEqual(op.params.expect_server, { name: 'backup-dc1', hosts: d1.server!.hosts });
   assert.equal(validateOp('destination_check', op.params), null);
   assert.ok(validateOp('destination_check', { type: 'nfs', repo_path: '/x', expect_server: { name: 'a', hosts: 'bk1' } }));
+  // a level below that picks another share (or local disks) does not inherit the server check from above
+  await call('PUT', '/api/scoped/destination/assignments', 'admin', { scope: 'cluster', key: 'c1', value: { type: 'nfs', repoPath: '/mnt/nas/repo', walPath: '/mnt/nas/wal/{cluster}', requireMount: true } });
+  assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.server, undefined);
+  await call('PUT', '/api/scoped/destination/assignments', 'admin', { scope: 'cluster', key: 'c1', value: { type: 'local', repoPath: '/var/lib/pgarca/repo' } });
+  assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.server, undefined);
+  await call('PUT', '/api/scoped/destination/assignments', 'admin', { scope: 'cluster', key: 'c1', inherit: true });
+  assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.server?.id, 'w1');
   // the server disappears: nothing can be applied until another one is chosen
   await store.mutate(d => { delete d.nodes.w1; });
   assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.server?.missing, true);
@@ -101,6 +112,15 @@ import { validateOp } from '../../server/optypes';
     assert.equal(JSON.stringify(op2.body).includes('/mnt/pgarca'), false, `${u}: operators do not`);
     assert.ok(JSON.stringify(op2.body).includes(HIDDEN), u);
   }
+  // the operations that carry locations (check, apply, migrate): masked for non-administrators too
+  const opId = store.peek().operations.find((o: any) => o.type === 'destination_check')!.id;
+  for (const u of ['/api/operations', `/api/operations/${opId}`]) {
+    const ad = await call('GET', u, 'admin'); const vw = await call('GET', u, 'viewer');
+    assert.ok(JSON.stringify(ad.body).includes('/mnt/pgarca'), u); assert.equal(JSON.stringify(vw.body).includes('/mnt/pgarca'), false, u);
+    assert.equal(JSON.stringify(vw.body).includes('10.0.0.9'), false, u);
+  }
+  // "source" as a plain word (a cluster's source) is not hidden
+  assert.equal((await call('GET', '/api/scoped/destination', 'viewer')).body.clusters[0].source, 'agent');
   const pl = (await call('GET', '/api/clusters/c1/placement', 'viewer')).body;
   assert.equal(pl.hidden, true); assert.equal(typeof pl.backup.pending, 'boolean'); assert.equal(pl.backup.type, 'nfs');
   console.log('storage.test OK');

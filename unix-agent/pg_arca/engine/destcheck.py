@@ -257,9 +257,14 @@ def remote_host(src):
     return None
 
 
+def _is_ip(h):
+    return bool(re.match(r"^[0-9.]+$", h)) or ":" in h
+
+
 def _same_server(host, expected):
-    """Is `host` (from the mount source) one of the backup server's names/addresses? Names are compared case-insensitively (also the short form of an FQDN);
-    a name that resolves to one of the server's addresses matches too."""
+    """Is `host` (from the mount source) one of the backup server's names/addresses? Addresses must match exactly; names case-insensitively,
+    and a short name matches an FQDN only when the server has no FQDN of its own ("bk1.x.org" ~ "bk1", never ~ a server known as "bk1.lan"); a name that
+    resolves to one of the server's addresses matches too."""
     import socket
     want = set()
     for h in expected or ():
@@ -268,15 +273,22 @@ def _same_server(host, expected):
             h = h[7:]
         if h:
             want.add(h)
-            want.add(h.split(".")[0])
-    h = host.lower()
-    if h in want or h.split(".")[0] in want:
+    h = host.lower().strip("[]")
+    if h.startswith("::ffff:"):
+        h = h[7:]
+    if h in want:
         return True
+    if not _is_ip(h):
+        names = [w for w in want if not _is_ip(w)]
+        if "." not in h and any(w.split(".")[0] == h for w in names):
+            return True
+        if "." in h and not any("." in w for w in names) and h.split(".")[0] in names:
+            return True                                   # the server is known by its short name only
     try:
-        addrs = {sa[0] for _f, _t, _p, _c, sa in socket.getaddrinfo(host, None)}
+        addrs = {sa[0] for _f, _t, _p, _c, sa in socket.getaddrinfo(h, None)}
     except Exception:
         addrs = set()
-    return bool(addrs & want)
+    return bool(addrs & {w for w in want if _is_ip(w)})
 
 
 def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None, stanza=None, current=None, protected=(), bench=False, table=None, owner=None,

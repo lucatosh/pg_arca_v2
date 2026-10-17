@@ -15,7 +15,7 @@ import { Store, NodeRecord, sha256, newSecret, newId, nowIso } from './store';
 import * as ops from './ops';
 import { OP_SPECS, validateOp, hbaOpenRule, workKey } from './optypes';
 import { requiresApproval, requestApproval } from './approvals';
-import { applyDestination } from './destinations';
+import { applyDestination, isAdmin, maskOpFor, maskPaths } from './destinations';
 import { hbaFanout, recordHbaHistory, hbaTarget } from './hba';
 import { deriveCluster, computeTps, sanitizeSnapshot } from './view';
 import { objectives } from './health';
@@ -561,7 +561,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     const now = Date.now(); const list = (store.peek().settings.approvalRequests || []) as any[];
     return list.map(r => ops.redactOp(r.status === 'pending' && Date.parse(r.expiresAt) < now ? { ...r, status: 'expired' } : r)).slice(-50).reverse();
   };
-  app.get('/api/approvals', (_req: Request, res: Response) => res.json({ approvals: pendingView() }));
+  app.get('/api/approvals', (req: Request, res: Response) => res.json({ approvals: pendingView().map((a: any) => maskOpFor(req, a)) }));
   /** A DR promotion approved hours after it was asked: the primary site may be back meanwhile. Unless the requester stated it lost while it was still
    *  visible, a primary site that is alive NOW refuses the promotion (independent review: approving at 08:00 a request of 02:00 promoted the standby
    *  site while the primary had been taking writes again since 02:10, and the rejoin then rewound those writes away). */
@@ -611,7 +611,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     const running = st.operations.filter(o => o.clusterId === cluster.id && ['backup_run', 'backup_verify', 'backup_expire', 'restore_instance', 'restore_database', 'restore_object', 'restore_promote', 'restore_drill'].includes(o.type) && !isTerminalStatus(o.status));
     res.json({
       agent: nodes.length > 0, node: src ? { id: src.id, name: src.name, lastSeen: src.lastSeen } : null,
-      backup: src?.snapshot?.backup || null, wal: src?.snapshot?.wal || null,
+      backup: (src?.snapshot?.backup && !isAdmin(req) ? maskPaths({ repo_path: src.snapshot.backup.repo_path, ...src.snapshot.backup }) : src?.snapshot?.backup) || null, wal: src?.snapshot?.wal || null,
       archiver: src?.snapshot?.postgres?.archiver || null, archiveMode: src?.snapshot?.postgres?.settings?.archive_mode || null,
       policy: resolvePolicy(st, cluster).policy || { ...DEFAULT_POLICY }, policySource: resolvePolicy(st, cluster).source, running,
       // whole-instance restores started by an agent of this cluster (each node keeps its own registry): where they run and how to reach them
@@ -649,7 +649,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
         cancelRequested: !!o.cancelRequested, progress: o.progress || null, subtype: o.params && typeof o.params.type === 'string' ? o.params.type : undefined, background: o.params && o.params.background === true && OP_SPECS[o.type] && !OP_SPECS[o.type].mutating ? true : undefined, readonly: OP_SPECS[o.type] && !OP_SPECS[o.type].mutating ? true : undefined, work: workKey(o.params),
         error: o.error ? String(o.error).slice(0, 400) : undefined })) });
     }
-    res.json({ operations: list.slice(-200).reverse().map(ops.redactOp) });
+    res.json({ operations: list.slice(-200).reverse().map(ops.redactOp).map((o: any) => maskOpFor(req, o)) });
   });
 
   /** Operation history (retention: settings.activity.retentionDays, default 7). ?status=all|failed|succeeded &hours=1..(retention*24) &clusterId &search &limit(≤500) &offset */
@@ -682,7 +682,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
 
   app.get('/api/operations/:id', (req: Request, res: Response) => {
     const op = store.peek().operations.find(o => o.id === req.params.id);
-    op ? res.json({ operation: ops.withResult(op) }) : res.status(404).json({ error: 'not_found' });
+    op ? res.json({ operation: maskOpFor(req, ops.withResult(op)) }) : res.status(404).json({ error: 'not_found' });
   });
 
   /** Log of one operation (status changes + what the agent reported); `after` = number of lines already shown, for cheap polling. */

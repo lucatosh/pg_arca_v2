@@ -3,6 +3,7 @@ import { scrubSecrets } from './scrub';
 import type { Request, Response } from 'express';
 import { Store } from './store';
 import * as ops from './ops';
+import { isAdmin, maskPaths } from './destinations';
 
 function categoryOf(action: string): string {
   if (/patroni|switchover|failover/.test(action)) return 'ha_patroni';
@@ -19,7 +20,8 @@ export function mountPlatformRoutes(app: any, store: Store) {
     const { clusterId, category, status, search, limit = '100' } = req.query as Record<string, string>;
     const st = store.peek();
     const names = Object.fromEntries(st.clusters.map((c: any) => [c.id, c.name]));
-    let list = [...st.audit].reverse().map((e: any) => ({
+    const hide = !isAdmin(req);                 // where the backups live (destination.* entries) is administrator information
+    let list = [...st.audit].reverse().map((e: any) => (hide && /^destination\./.test(String(e.action)) ? { ...e, details: maskPaths(e.details) } : e)).map((e: any) => ({
       id: e.id, timestamp: e.timestamp, clusterId: e.clusterId, clusterName: e.clusterId ? names[e.clusterId] : undefined,
       category: categoryOf(e.action), action: e.action, status: statusOf(e.status), user: e.actor,
       details: typeof e.details === 'string' ? e.details : JSON.stringify(e.details ?? {}), metadata: e.details,

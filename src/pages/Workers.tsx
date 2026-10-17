@@ -128,14 +128,14 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
 /** The folder on the backup server is fine: what to do next, concretely. The nodes reach it through a share THEY mount; pg_arca never mounts anything. */
 function ExportHints({ w, res, repo, wal }: { w: WFull; res: any; repo: string; wal: string }) {
   const host = (w.address || w.remoteIp || w.name).replace(/^::ffff:/, '');
-  const uid = res?.agent?.uid ?? w.host?.euid ?? 26;   // the folder's owner on this host: with all_squash+anonuid every node's writes become it, whatever uid postgres has on the nodes
   const paths = [repo, wal].filter(Boolean);
   const parent = paths.length > 1 ? (repo.split('/').slice(0, -1).join('/') || repo) : (repo || wal);
   return <details><summary className="small" style={{ cursor: 'pointer' }}>Next step: let the database nodes use this folder (NFS export + mount + destination)</summary>
     <div className="stack small" style={{ marginTop: 8 }}>
-      <p className="muted">The nodes write backups through a share they mount from this host. On <strong>{w.name}</strong> (as root), export the folder — map every writer to the owner so NFS permissions can never fail:</p>
-      <pre className="out">{`# /etc/exports on ${w.name}
-${parent}  <nodes-network>/24(rw,sync,no_subtree_check,all_squash,anonuid=${uid},anongid=${uid})
+      <p className="muted">The nodes write backups through a share they mount from this host. On <strong>{w.name}</strong> (as root), give the folder to the uid:gid PostgreSQL has on the database nodes (<code>id postgres</code> on a node; the same on every node) and export it:</p>
+      <pre className="out">{`chown <uid>:<gid> ${parent} && chmod 0750 ${parent}
+# /etc/exports on ${w.name}
+${parent}  <nodes-network>/24(rw,sync,no_subtree_check)
 exportfs -ra`}</pre>
       <p className="muted">On every database node (as root):</p>
       <pre className="out">{`mkdir -p /mnt/pgarca && echo '${host}:${parent} /mnt/pgarca nfs hard,noatime,_netdev 0 0' >> /etc/fstab && mount /mnt/pgarca`}</pre>

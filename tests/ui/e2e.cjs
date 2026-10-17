@@ -46,7 +46,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   // configure the storage with the guided sequence: backup server -> folder check + export/mount commands -> level -> review -> save -> check (the share must come from it) -> apply
   await p.click('.placement button:has-text("Configure…")'); await p.click('.modal .choice:has-text("A backup server")'); await p.click('.modal button:has-text("Continue")');
   await p.click('.modal .choice:has-text("bk01")'); await p.waitForSelector('.modal pre:has-text("exportfs -ra")'); await p.waitForSelector('.modal pre:has-text("bk01.dc1.lan:/srv/pgarca  /mnt/pgarca")');
-  await p.click('.modal button:has-text("Check the folder on bk01")'); await p.waitForSelector('text=The folder on bk01 is usable', { timeout: 15000 }); await p.waitForSelector('.modal pre:has-text("anonuid=2001")'); await shot('04g-storage-wizard');
+  await p.click('.modal button:has-text("Check the folder on bk01")'); await p.waitForSelector('text=The folder on bk01 is usable', { timeout: 15000 }); await p.fill('.modal input[placeholder="26:26"]', '26:26'); await p.waitForSelector('.modal pre:has-text("chown 26:26 /srv/pgarca")'); await shot('04g-storage-wizard');
   await p.click('.modal button:has-text("Continue")'); await p.waitForSelector('.modal select:has(option:has-text("This cluster only"))');
   await p.click('.modal button:has-text("Continue")'); await p.waitForSelector('.modal dd:has-text("/mnt/pgarca/wal/{env}/{cluster}")');
   await p.click('.modal button:has-text("Save")'); await p.waitForSelector('.modal >> text=Nothing has changed on the nodes yet');

@@ -154,6 +154,19 @@ def _logical_sha(d, base, files):
     return None
 
 
+def _kept_dir(src_wal, dst_wal, base, files):
+    """Where a conflicting version is kept in the current archive: one directory PER VERSION (conflicts/migrated/<segment>/<content id>/), so a
+    third version from another previous location is never mistaken for one already kept, nor written over it."""
+    v = _logical_sha(src_wal, base, files)
+    if v is None:
+        h = hashlib.sha256()
+        for f in sorted(files):
+            with open(os.path.join(src_wal, f), "rb") as fh:
+                h.update(f.encode() + b"\0" + hashlib.sha256(fh.read()).digest())
+        v = h.hexdigest()
+    return os.path.join(dst_wal, MIGRATED_CONFLICTS, base, hashlib.sha256(v.encode()).hexdigest()[:16])
+
+
 def _wal_plan(src_wal, dst_wal):
     """Per archived object of the previous location: copy (not in the current archive under ANY codec), skip (already there with the same content),
     or CONFLICT (the current archive holds a different version under the same name - two servers wrote that segment; never overwritten, never
@@ -165,8 +178,24 @@ def _wal_plan(src_wal, dst_wal):
     dst = {}
     for n in _wal_files(dst_wal) if dst_wal and os.path.isdir(dst_wal) else []:
         dst.setdefault(_wal_base(n), []).append(n)
+    # what the current archive already SET ASIDE (dead branches, tails of an old primary): never copied back into the live archive
+    retired = {}
+    qroot = os.path.join(dst_wal, "conflicts") if dst_wal else None
+    for top in (os.listdir(qroot) if qroot and os.path.isdir(qroot) else []):
+        if top.startswith(("dead-branch-", "branch-tail-")) and os.path.isdir(os.path.join(qroot, top)):
+            for n in os.listdir(os.path.join(qroot, top)):
+                if n != "RETIRED.json" and ".prev-" not in n:
+                    retired.setdefault(_wal_base(n), (os.path.join(qroot, top), []))[1].append(n)
     copy, conflicts, kept = [], {}, {}
     for base, files in sorted(src.items()):
+        if base in retired and (base not in dst or not [f for f in dst[base] if not f.endswith(".meta")]):
+            rdir, rfiles = retired[base]
+            a, b = _logical_sha(src_wal, base, files), _logical_sha(rdir, base, rfiles)
+            if a is not None and (a == b or (a.startswith("file:") and b and b.startswith("file:") and a.rsplit(":", 1)[1] == b.rsplit(":", 1)[1])):
+                continue                                    # the same copy is already set aside
+            kd = _kept_dir(src_wal, dst_wal, base, files)
+            (kept if all(os.path.exists(os.path.join(kd, f)) for f in files) else conflicts)[base] = files
+            continue
         if base not in dst or not [f for f in dst[base] if not f.endswith(".meta")]:
             copy.extend(files)
             continue
@@ -176,7 +205,7 @@ def _wal_plan(src_wal, dst_wal):
             same = True
         if same:
             continue
-        kd = os.path.join(dst_wal, MIGRATED_CONFLICTS, base)
+        kd = _kept_dir(src_wal, dst_wal, base, files)
         if all(os.path.exists(os.path.join(kd, f)) for f in files):
             kept[base] = files
         else:
@@ -387,7 +416,7 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
         # (quarantine of the current archive, with its meta) for the operator to examine - deleting the previous location must never erase it
         for base, files in sorted(conflicts.items()):
             _check_cancel(cancel)
-            kd = os.path.join(ctx.wal_dir, MIGRATED_CONFLICTS, base)
+            kd = _kept_dir(src_wal, ctx.wal_dir, base, files)
             os.makedirs(kd, exist_ok=True)
             for f in sorted(files, key=lambda n: (0 if n.endswith(".meta") else 1, n)):
                 done_b += _copy_verified(os.path.join(src_wal, f), os.path.join(kd, f), th, fresh_mtime=False)
