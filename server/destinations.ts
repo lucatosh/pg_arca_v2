@@ -199,7 +199,7 @@ export async function applyDestination(store: Store, c: any, key: string, by: st
     audit(d, { clusterId: c.id, actor: by, action: 'destination.apply', status: 'OK', details: { ...dest } });
   });
   return { code: 202, body: { destination: dest, operations: out,
-    note: dest!.repo_path ? 'Existing backups stay in the previous location, readable by restores; the new destination starts with a full backup (the next backup becomes one by itself). You can migrate the old content in the background.' : undefined } };
+    note: dest!.repo_path ? 'Existing backups stay in the previous location, readable by restores; the new backup storage starts with a full backup (the next backup becomes one by itself). You can migrate the old content in the background.' : undefined } };
 }
 
 /** Where the backups physically are (directories, share sources, server addresses) is administrator information: other roles get the shape of the

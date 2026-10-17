@@ -20,10 +20,14 @@ const ROLE_LABEL: Record<string, { label: string; hint: string }> = {
   repository: { label: 'Backup server', hint: 'hosts repositories and WAL archives, usually exported to the nodes over NFS/SMB' },
   drill: { label: 'Restore drills', hint: 'runs the periodic tests that the backups really restore' },
 };
-const usedText = (u: { key: string }) => u.key === 'global' ? 'all clusters' : u.key.startsWith('env:') ? `environment ${u.key.slice(4)}` : u.key.startsWith('folder:') ? `folder ${u.key.slice(7)}` : u.key.startsWith('cluster:') ? 'one cluster' : u.key;
+const ENV_LABEL: Record<string, string> = { prod: 'Production', prep: 'Pre-production', int: 'Integration', dev: 'Development', test: 'Test' };
+let clusterNames: Record<string, string> = {};       // filled by the pages from /api/clusters: "cluster prod-db-1" rather than an id
+const usedText = (u: { key: string }) => u.key === 'global' ? 'all clusters' : u.key.startsWith('env:') ? `the ${ENV_LABEL[u.key.slice(4)] || u.key.slice(4)} environment` : u.key.startsWith('folder:') ? `folder ${u.key.slice(7)}` : u.key.startsWith('cluster:') ? `cluster ${clusterNames[u.key.slice(8)] || u.key.slice(8)}` : u.key;
+function useClusterNames() { const c = useQuery<{ clusters: any[] }>('/api/clusters'); clusterNames = Object.fromEntries((c.data?.clusters || []).map(x => [x.id, x.name])); }
 
 export function WorkersPage({ role }: { role: string }) {
   const q = useQuery<{ workers: WRow[]; candidates: { id: string; name: string; clusterName?: string }[] }>('/api/workers', { interval: 10000 });
+  useClusterNames();
   const [add, setAdd] = useState(false); const [conv, setConv] = useState<{ id: string; name: string; clusterName?: string } | null>(null);
   const d = q.data;
   return <>
@@ -36,7 +40,7 @@ export function WorkersPage({ role }: { role: string }) {
     {!d ? <Skeleton h={180} /> : !d.workers.length ? <Empty icon="server" title="No worker hosts"
       action={role === 'admin' ? <Button kind="primary" icon="plus" onClick={() => setAdd(true)}>Add worker host</Button> : undefined}>
       A backup server or a host dedicated to restores takes load and space off the production nodes. Install the agent with the “worker host” role.</Empty> :
-      <Card pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Host</th><th>Roles</th><th>PostgreSQL installed</th><th>Resources</th><th>Used by</th><th>Status</th></tr></thead><tbody>
+      <Card pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Host</th><th>Roles</th><th>PostgreSQL installed</th><th>Resources</th><th>Chosen in settings</th><th>Status</th></tr></thead><tbody>
         {d.workers.map(w => <tr key={w.id} className="click" onClick={() => go(`w/${encodeURIComponent(w.id)}`)}>
           <td><strong>{w.name}</strong>{w.label ? <div className="small muted">{w.label}</div> : null}</td>
           <td>{w.roles.length ? <div className="row wrap gap-s">{w.roles.map(r => <Badge key={r} kind="accent">{ROLE_LABEL[r]?.label || r}</Badge>)}</div> : <span className="faint">—</span>}</td>
@@ -67,6 +71,7 @@ function AddWorker({ onClose }: { onClose: () => void }) {
 export function WorkerView({ id, role }: { id: string; role: string }) {
   const q = useQuery<WFull>(`/api/workers/${encodeURIComponent(id)}`, { interval: 8000 });
   const cl = useQuery<{ clusters: any[] }>('/api/clusters');
+  clusterNames = Object.fromEntries((cl.data?.clusters || []).map(x => [x.id, x.name]));
   const w = q.data;
   const [dlg, setDlg0] = useDraft<'' | 'edit' | 'use' | 'dest' | 'install'>(`worker:${id}:dlg`, '');
   const setDlg = (v: '' | 'edit' | 'use' | 'dest' | 'install') => { if (!v) clearDrafts(`worker:${id}:form`); setDlg0(v); };
@@ -95,7 +100,7 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
           <dt>Resources</dt><dd>{w.cpus ?? '?'} CPU · {bytes(w.memTotal)} memory ({bytes(w.memAvailable)} available)</dd>
           <dt>Privileges</dt><dd>{w.root ? 'root' : w.sudo ? 'user with passwordless sudo' : 'unprivileged user (private installations only)'}</dd>
           {(w.stores || []).length ? <><dt>Holds the backups of</dt><dd>{w.stores!.map(x => <div key={x.clusterId}><a href={`#/c/${encodeURIComponent(x.clusterId)}/backup`}><strong>{x.clusterName}</strong></a> <span className="muted">— {x.what.join(' and ')}, mounted on {x.nodes.join(', ')}</span></div>)}</dd></> : null}
-          <dt>Used by</dt><dd>{w.usedBy.length ? (['recovery', 'backup'] as const).map(as => { const u = w.usedBy.filter(x => (x.as || 'recovery') === as); return u.length ? <div key={as}>{as === 'recovery' ? 'recovery host' : 'backup server'} for {u.map(usedText).join(', ')}</div> : null; }) : <span className="faint">no configuration uses it yet</span>}</dd>
+          <dt>Chosen in settings</dt><dd>{w.usedBy.length ? (['recovery', 'backup'] as const).map(as => { const u = w.usedBy.filter(x => (x.as || 'recovery') === as); return u.length ? <div key={as}>{as === 'recovery' ? 'recovery host' : 'backup server'} for {u.map(usedText).join(', ')}</div> : null; }) : <span className="faint">not chosen in any storage or restore setting</span>}</dd>
         </dl>
         <div className="row wrap">{role !== 'viewer' ? <Button sm icon="search" busy={pre.busy} onClick={() => pre.run('ephemeral_preflight', { major: mj })}>Verify as recovery host (PG {mj})</Button> : null}
           {role === 'admin' ? <Button sm onClick={() => setDlg('use')}>Use it for restores…</Button> : null}
@@ -103,12 +108,12 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
         {majors.length > 1 ? <div className="row small"><span className="muted">Version to verify:</span><select className="input" style={{ width: 'auto' }} value={mj} onChange={e => setMajor(Number(e.target.value))}>{majors.map(m => <option key={m} value={m}>PostgreSQL {m}</option>)}</select></div> : null}
         {pre.op && !res ? <OpPanel op={pre.op} error={pre.error} /> : null}
         {res && pre.op?.type === 'ephemeral_preflight' ? <><Banner kind={res.ok ? (res.level === 'warn' ? 'warn' : 'ok') : 'bad'} title={res.ok ? 'It can run restores' : 'It cannot run restores yet'}>PostgreSQL {res.major ?? mj}</Banner><CheckList checks={res.checks || []} /></> : null}
-        {res && pre.op?.type === 'destination_check' ? <><Banner kind={res.ok ? 'ok' : 'bad'} title={res.ok ? 'Directory usable' : 'Directory not usable: every problem below has its remedy'} /><DestPaths r={res} />
+        {res && pre.op?.type === 'destination_check' ? <><Banner kind={res.ok ? 'ok' : 'bad'} title={res.ok ? 'The directory is usable' : 'The directory is not usable yet: each problem below has its remedy'} /><DestPaths r={res} />
           {res.ok ? <ExportHints w={w} res={res} repo={String(pre.op?.params?.repo_path || '')} wal={String(pre.op?.params?.wal_path || '')} /> : null}</> : null}
       </div></Card>
       <Card title="Disks and shares"><div className="stack">
         {w.mounts.length ? <table className="t small"><thead><tr><th>Mount point</th><th>Type</th><th className="num">Free</th></tr></thead><tbody>
-          {w.mounts.map((m: any) => { const p = m.total_bytes ? Math.round(100 * m.free_bytes / m.total_bytes) : 0; return <tr key={m.mount}><td className="mono">{m.mount}</td><td>{m.remote ? <Badge kind="accent">{m.fstype}</Badge> : m.fstype}</td>
+          {w.mounts.map((m: any) => { const p = m.total_bytes ? Math.round(100 * m.free_bytes / m.total_bytes) : 0; return <tr key={m.mount + ':' + m.fstype + ':' + m.total_bytes}><td className="mono">{m.mount}</td><td>{m.remote ? <Badge kind="accent">{m.fstype}</Badge> : m.fstype}</td>
             <td className="num"><span style={{ color: p < 10 ? 'var(--bad)' : undefined }}>{bytes(m.free_bytes)}</span> <span className="faint">/ {bytes(m.total_bytes)}</span></td></tr>; })}</tbody></table> : <span className="faint small">not reported yet</span>}
         <dl className="kv small">{Object.entries(w.dirs || {}).filter(([, v]) => v).map(([k, v]: any) => <React.Fragment key={k}><dt>{k === 'scratch' ? 'Scratch directory' : k === 'repo' ? 'Repository' : 'WAL archive'}</dt>
           <dd><span className="mono">{v.path}</span> {v.exists ? (v.writable ? <Badge kind="ok">writable</Badge> : <Badge kind="bad">not writable</Badge>) : <Badge>to be created</Badge>} {v.free_bytes != null ? <span className="faint">{bytes(v.free_bytes)} free</span> : null}</dd></React.Fragment>)}</dl>
@@ -127,20 +132,23 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
 }
 
 /** The folder on the backup server is fine: what to do next, concretely. The nodes reach it through a share THEY mount; pg_arca never mounts anything. */
-function ExportHints({ w, res, repo, wal }: { w: WFull; res: any; repo: string; wal: string }) {
+function ExportHints({ w, repo, wal }: { w: WFull; res: any; repo: string; wal: string }) {
   const host = (w.address || w.remoteIp || w.name).replace(/^::ffff:/, '');
   const paths = [repo, wal].filter(Boolean);
-  const parent = paths.length > 1 ? (repo.split('/').slice(0, -1).join('/') || repo) : (repo || wal);
-  return <details><summary className="small" style={{ cursor: 'pointer' }}>Next step: let the database nodes use this folder (NFS export + mount + destination)</summary>
+  // one export for both when they share a parent directory below /, otherwise one export (and one mount point) each
+  const seg = (p: string) => p.split('/').filter(Boolean);
+  const common = paths.length > 1 ? (() => { const a = seg(paths[0]), b = seg(paths[1]); const c: string[] = []; for (let i = 0; i < Math.min(a.length, b.length) && a[i] === b[i]; i++) c.push(a[i]); return c.length ? '/' + c.join('/') : ''; })() : paths[0];
+  const exportsList = common ? [{ dir: common, mnt: '/mnt/pgarca' }] : paths.map((p, i) => ({ dir: p, mnt: i ? '/mnt/pgarca-wal' : '/mnt/pgarca-repo' }));
+  return <details><summary className="small" style={{ cursor: 'pointer' }}>Next step: let the database nodes use this folder (NFS export, mount, backup storage)</summary>
     <div className="stack small" style={{ marginTop: 8 }}>
       <p className="muted">The nodes write backups through a share they mount from this host. On <strong>{w.name}</strong> (as root), give the folder to the uid:gid PostgreSQL has on the database nodes (<code>id postgres</code> on a node; the same on every node) and export it:</p>
-      <pre className="out">{`chown <uid>:<gid> ${parent} && chmod 0750 ${parent}
+      <pre className="out">{exportsList.map(e => `chown <uid>:<gid> ${e.dir} && chmod 0750 ${e.dir}`).join('\n') + `
 # /etc/exports on ${w.name}
-${parent}  <nodes-network>/24(rw,sync,no_subtree_check)
+` + exportsList.map(e => `${e.dir}  <database-nodes-subnet, e.g. 10.0.0.0/24>(rw,sync,no_subtree_check)`).join('\n') + `
 exportfs -ra`}</pre>
       <p className="muted">On every database node (as root):</p>
-      <pre className="out">{`mkdir -p /mnt/pgarca && echo '${host}:${parent} /mnt/pgarca nfs hard,noatime,_netdev 0 0' >> /etc/fstab && mount /mnt/pgarca`}</pre>
-      <p className="muted">Then, on a cluster’s Backup page (Backup storage → Configure…) or in Storage &amp; recovery → Backup storage, choose <strong>A backup server</strong> → {w.name}: the wizard prints these commands with your paths, and the check on every node proves the share is mounted from this host before anything is applied.</p>
+      <pre className="out">{exportsList.map(e => `mkdir -p ${e.mnt} && echo '${host}:${e.dir} ${e.mnt} nfs hard,noatime,_netdev 0 0' >> /etc/fstab && mount ${e.mnt}`).join('\n')}</pre>
+      <p className="muted">Then, on a cluster’s Backup page (Where the backups are stored → Configure…) or in Storage &amp; recovery → Backup storage → Configure backup storage…, choose <strong>A backup server</strong> → {w.name}: the wizard prints these commands with your paths, and the check on every node proves the share is mounted from this host before anything is applied.</p>
     </div></details>;
 }
 

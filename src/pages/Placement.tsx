@@ -57,10 +57,10 @@ interface Storage { admin: boolean; nodes: { id: string; name: string; online: b
 const FS = (f: string | null) => (f ? ({ nfs: 'NFS', nfs4: 'NFS v4', cifs: 'SMB/CIFS', smb3: 'SMB 3', smbfs: 'SMB' } as Record<string, string>)[f] || f : '');
 function LocText({ l }: { l: Loc }) {
   switch (l.kind) {
-    case 'backup_server': return <><Icon n="server" s={14} /> Backup server <strong>{l.server!.name}</strong>{l.server && !l.server.online ? <> <Badge kind="warn">offline</Badge></> : null} <span className="faint">· {FS(l.fstype)}</span></>;
-    case 'worker_share': return <><Icon n="server" s={14} /> Share from worker host <strong>{l.server!.name}</strong> <span className="faint">· {FS(l.fstype)} (the host has no Backup server role)</span></>;
-    case 'network_share': return <><Icon n="layers" s={14} /> Network share <span className="faint">· {FS(l.fstype)}</span></>;
-    case 'local_disk': return <><Icon n="hdd" s={14} /> Local disk of the node <span className="faint">· {l.fstype}</span></>;
+    case 'backup_server': return <><Icon n="server" s={14} /> Backup server <strong>{l.server!.name}</strong>{l.server && !l.server.online ? <> <Badge kind="warn">offline</Badge></> : null}{l.fstype ? <span className="faint"> · {FS(l.fstype)}</span> : null}</>;
+    case 'worker_share': return <><Icon n="server" s={14} /> Share from worker host <strong>{l.server!.name}</strong> <span className="faint">{l.fstype ? `· ${FS(l.fstype)} ` : ''}(the host has no Backup server role)</span></>;
+    case 'network_share': return <><Icon n="layers" s={14} /> Network share{l.fstype ? <span className="faint"> · {FS(l.fstype)}</span> : null}</>;
+    case 'local_disk': return <><Icon n="hdd" s={14} /> Local disk of the node{l.fstype ? <span className="faint"> · {l.fstype}</span> : null}</>;
     default: return <span className="faint">not reported yet (agent update or first check-in pending)</span>;
   }
 }

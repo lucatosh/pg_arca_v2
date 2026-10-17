@@ -37,7 +37,7 @@ function shareCommands(proto: Proto, w: Worker | undefined, serverPath: string, 
   return proto === 'nfs'
     ? { server: `# on ${name}, as root: the folder, owned by PostgreSQL's uid:gid on the database nodes, and its export
 mkdir -p ${serverPath} && chown ${uid}:${gid} ${serverPath} && chmod 0750 ${serverPath}
-echo '${serverPath}  <database-nodes-network>/24(rw,sync,no_subtree_check)' >> /etc/exports
+echo '${serverPath}  <database-nodes-subnet, e.g. 10.0.0.0/24>(rw,sync,no_subtree_check)' >> /etc/exports
 exportfs -ra`,
       nodes: `# on EVERY database node, as root: the same mount point everywhere, mounted at boot
 mkdir -p ${mountPoint}
@@ -90,6 +90,11 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
   const scopeText = sc === 'global' ? 'all clusters' : sc === 'env' ? `the ${ENV_LABEL[sk] || sk} environment` : sc === 'folder' ? `folder ${sk}` : `cluster ${cluster?.name || sk}`;
   const walOk = /\{(cluster|id)\}/.test(walPath) || sc === 'cluster';
 
+  // the directories as the backup server sees them: the node-side mount point replaced by the exported folder, cut before the first placeholder
+  const onServer = (p: string) => { const m = clean(mountPoint); const q = clean(p); const r = q === m ? clean(serverPath) : q.startsWith(m + '/') ? clean(serverPath) + q.slice(m.length) : null;
+    return r ? (r.split('/').filter((x, i, a) => !a.slice(0, i + 1).some(y => y.includes('{'))).join('/') || '/') : null; };
+  const srvCheck = { repo_path: onServer(repoPath), wal_path: onServer(walPath) };
+  const chkCurrent = !!chk.op && chk.op.params?.repo_path === srvCheck.repo_path && chk.op.params?.wal_path === srvCheck.wal_path;
   const detailsOk = where === 'server' ? !!srv && abs(serverPath) && abs(mountPoint) && clean(mountPoint) !== '/'
     : where === 'share' ? abs(mountPoint) && clean(mountPoint) !== '/' : abs(localRoot);
   const pathsOk = abs(repoPath) && abs(walPath) && clean(repoPath) !== clean(walPath) && walOk;
@@ -111,7 +116,7 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
   const footer = saved
     ? <><div className="grow" /><Button onClick={close}>Close</Button>
       {clusterId && affected.some(c => c.id === clusterId) ? <Button kind="primary" icon="check" onClick={() => setApply(true)}>Check and apply on the nodes</Button>
-        : <Button kind="primary" onClick={() => { close(); go('infra/destination'); }}>Check and apply per cluster</Button>}</>
+        : null}</>
     : <>{step > 0 ? <Button kind="ghost" onClick={() => setStep(step - 1)}>Back</Button> : null}<div className="grow" /><Button onClick={close}>Cancel</Button>
       {step < 3 ? next : <Button kind="primary" busy={busy} disabled={!pathsOk || !detailsOk} onClick={save}>Save</Button>}</>;
 
@@ -144,11 +149,12 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
               <input className="input mono" value={serverPath} onChange={e => setServerPath(e.target.value)} /></Field>
             <Field label="Mount point on the database nodes" hint="The same path on every node; backups are refused if the share is not mounted there." error={abs(mountPoint) && clean(mountPoint) !== '/' ? null : 'An absolute path other than /'}>
               <input className="input mono" value={mountPoint} onChange={e => setMountPoint(e.target.value)} /></Field></div>
-          <div className="row wrap"><Button sm icon="search" busy={chk.busy} disabled={!srv.online || !abs(serverPath)}
-            onClick={() => chk.run('destination_check', { type: 'local', repo_path: `${clean(serverPath)}/repo`, wal_path: `${clean(serverPath)}/wal`, require_mount: false })}>Check the folder on {srv.name}</Button>
+          <div className="row wrap"><Button sm icon="search" busy={chk.busy} disabled={!srv.online || !abs(serverPath) || !srvCheck.repo_path || !srvCheck.wal_path}
+            onClick={() => chk.run('destination_check', { type: 'local', repo_path: srvCheck.repo_path!, wal_path: srvCheck.wal_path!, require_mount: false })}>Check the folder on {srv.name}</Button>
             <span className="small muted">Writes and removes one small file; creates the folder if its parent exists.</span></div>
-          {chk.op && chk.op.status !== 'succeeded' ? <OpPanel op={chk.op} error={chk.error} /> : null}
-          {chk.op?.status === 'succeeded' ? <><Banner kind={chk.op.result?.ok ? 'ok' : 'bad'} title={chk.op.result?.ok ? `The folder on ${srv.name} is usable` : 'The folder is not usable yet: each problem below has its remedy'} /><DestPaths r={chk.op.result} /></> : null}
+          {!srvCheck.repo_path || !srvCheck.wal_path ? <span className="small" style={{ color: 'var(--warn)' }}>The directories set under Advanced are not inside the mount point {clean(mountPoint)}: they would not be on the backup server.</span> : null}
+          {chkCurrent && chk.op && chk.op.status !== 'succeeded' ? <OpPanel op={chk.op} error={chk.error} /> : null}
+          {chkCurrent && chk.op?.status === 'succeeded' ? <><Banner kind={chk.op.result?.ok ? 'ok' : 'bad'} title={chk.op.result?.ok ? `The folder on ${srv.name} is usable` : 'The folder is not usable yet: each problem below has its remedy'} /><DestPaths r={chk.op.result} /></> : null}
           <details open><summary className="small" style={{ cursor: 'pointer' }}>Commands: export the folder and mount it on the nodes</summary><div className="stack" style={{ marginTop: 8 }}>
             <Field label="Owner of the files: PostgreSQL's uid:gid on the database nodes" hint="Run “id postgres” on a node. It must be the same on every node; the commands below use it." error={!owner || /^\d+:\d+$/.test(owner) ? null : 'Format uid:gid, e.g. 26:26'}>
               <input className="input mono" style={{ maxWidth: 160 }} value={owner} placeholder="26:26" onChange={e => setOwner(e.target.value.trim())} /></Field>
@@ -167,7 +173,7 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
 
       {step === 1 && where === 'local' ? <div className="stack">
         <Field label="Directory on each node" error={abs(localRoot) ? null : 'Absolute path required'}><input className="input mono" value={localRoot} onChange={e => setLocalRoot(e.target.value)} /></Field>
-        <label className="check"><input type="checkbox" checked={dedicated} onChange={e => setDedicated(e.target.checked)} />It is a dedicated disk mounted there (recommended): refuse the path if it sits on the system disk</label>
+        <label className="check"><input type="checkbox" checked={dedicated} onChange={e => setDedicated(e.target.checked)} />Separate mount required (recommended: a dedicated disk mounted there): refuse the path if it sits on the system disk</label>
         <Banner kind="warn" title="Each node keeps its own copy">With more than one node, the backups and WAL written by one node are not visible to the others: after a switchover the history is split between nodes and point-in-time recovery across it is not possible. Use a backup server or a network share for replicated clusters.</Banner>
       </div> : null}
 
@@ -199,10 +205,10 @@ export function StorageWizard({ clusterId, onClose }: { clusterId?: string; onCl
           {where !== 'local' ? <><dt>Mounted on the nodes at</dt><dd className="mono">{clean(mountPoint)}</dd></> : null}
           <dt>Repository</dt><dd className="mono">{clean(repoPath)}</dd>
           <dt>WAL archive</dt><dd className="mono">{clean(walPath)}</dd>
-          <dt>Protection</dt><dd>{value.requireMount ? 'refused when the path is not on its own mounted filesystem' : 'none (any filesystem accepted)'}{value.minFreeGb ? ` · at least ${value.minFreeGb} GiB free` : ''}</dd>
+          <dt>Separate mount required</dt><dd>{value.requireMount ? 'yes: the path is refused unless it is on a separately mounted filesystem (not the root filesystem)' : 'no (any filesystem accepted)'}{value.minFreeGb ? ` · at least ${value.minFreeGb} GiB free` : ''}</dd>
           <dt>Applies to</dt><dd>{scopeText}</dd>
         </dl>
-        {saved ? <Banner kind="ok" title="Saved">Nothing has changed on the nodes yet. Next: every node checks the new location (mount, server, write, space){clusterId ? '' : ' — per cluster, from Storage & recovery → Backup storage'}; then you apply it. Existing backups stay readable where they are and can be migrated in the background.</Banner>
+        {saved ? <Banner kind="ok" title="Saved">Nothing has changed on the nodes yet. Next: every node checks the new location (mount, server, write, space); then you apply it{clusterId && affected.some(c => c.id === clusterId) ? '' : ': on each affected cluster, use “Check and apply” in Storage & recovery → Backup storage'}. Existing backups stay readable where they are and can be migrated in the background.</Banner>
           : <Banner kind="info" title="What saving does">It records the setting. The nodes keep writing where they write today until the location is checked on every node and applied; after that, the first backup in the new location is a full one.</Banner>}
         {err ? <Banner kind="bad">{err}</Banner> : null}
       </div> : null}

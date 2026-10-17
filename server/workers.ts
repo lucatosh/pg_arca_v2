@@ -12,7 +12,7 @@ import { Store, NodeRecord, nowIso } from './store';
 import * as ops from './ops';
 import { validateOp } from './optypes';
 import { refreshCluster } from './agents';
-import { workerForHost } from './destinations';
+import { workerForHost, isAdmin, HIDDEN } from './destinations';
 
 export const WORKER_OPS = ['ephemeral_preflight', 'ephemeral_install', 'destination_check', 'discovery_scan', 'agent_config_get', 'agent_config_set'];
 const ADMIN_ONLY = ['ephemeral_install', 'agent_config_set'];
@@ -75,22 +75,31 @@ export function workerView(st: any, n: NodeRecord, full = false) {
   return { ...base, installations: inst, mounts: w.mounts || [], dirs: w.dirs || {}, host: w.host || {}, system: n.snapshot?.system || null, recent };
 }
 
+/** What a non-administrator sees of a worker host: no addresses, mount points or directories (a backup server's are the backup locations). */
+function forRole(req: Request, v: any) {
+  if (isAdmin(req)) return v;
+  const o = { ...v, remoteIp: v.remoteIp ? HIDDEN : v.remoteIp, address: v.address ? HIDDEN : v.address };
+  if (Array.isArray(v.mounts)) o.mounts = v.mounts.map((m: any) => ({ ...m, mount: HIDDEN, source: m.source ? HIDDEN : m.source }));
+  if (v.dirs) o.dirs = Object.fromEntries(Object.entries(v.dirs).map(([k, d]: any) => [k, d ? { ...d, path: HIDDEN } : d]));
+  return o;
+}
+
 export function mountWorkerRoutes(app: any, store: Store) {
   const actor = (req: Request) => (req as any).actor || 'admin';
   const workers = (st: any) => (Object.values(st.nodes) as NodeRecord[]).filter(n => n.kind === 'worker');
 
-  app.get('/api/workers', (_req: Request, res: Response) => {
+  app.get('/api/workers', (req: Request, res: Response) => {
     const st = store.peek();
     // database nodes whose agent never found a database: probably an operational machine enrolled the old way (it created an empty cluster)
     const candidates = (Object.values(st.nodes) as NodeRecord[]).filter(n => n.kind !== 'worker' && n.lastSeen && !n.snapshot?.postgres?.alive && !(n.discovery?.postgres_instances || []).length && !n.snapshot?.postgres?.data_directory)
       .map(n => ({ id: n.id, name: n.name, clusterId: n.clusterId, clusterName: (st.clusters as any[]).find(c => c.id === n.clusterId)?.name }));
-    res.json({ workers: workers(st).map(n => workerView(st, n)).sort((a, b) => a.name.localeCompare(b.name)), candidates });
+    res.json({ workers: workers(st).map(n => forRole(req, workerView(st, n))).sort((a, b) => a.name.localeCompare(b.name)), candidates });
   });
 
   app.get('/api/workers/:id', (req: Request, res: Response) => {
     const st = store.peek(); const n = st.nodes[req.params.id];
     if (!n || n.kind !== 'worker' || !Object.prototype.hasOwnProperty.call(st.nodes, req.params.id)) return res.status(404).json({ error: 'not_found' });
-    res.json(workerView(st, n, true));
+    res.json(forRole(req, workerView(st, n, true)));
   });
 
   app.patch('/api/workers/:id', async (req: Request, res: Response) => {

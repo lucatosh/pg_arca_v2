@@ -13,12 +13,13 @@ import { go } from '../router';
  * ==================================================================================================================================================== */
 type Scope = 'global' | 'env' | 'folder' | 'cluster';
 interface SCluster { id: string; name: string; environment: string; folder: string; source: string; effective: { value: Record<string, any>; sources: Record<string, { scope: string; key: string }> } }
-interface SNode { id: string; name: string; clusterId: string | null; online: boolean; pg: boolean; worker?: boolean; label?: string; pgMajors?: number[] }
+interface SNode { id: string; name: string; clusterId: string | null; online: boolean; pg: boolean; worker?: boolean; roles?: string[]; label?: string; pgMajors?: number[] }
 interface SView { kind: string; defaults: Record<string, any>; assignments: Record<string, Record<string, any>>; folders: string[]; clusters: SCluster[]; nodes: SNode[] }
 const ENVS = ['prod', 'prep', 'int', 'dev', 'test'];
 const ENV_LABEL: Record<string, string> = { prod: 'Production', prep: 'Pre-production', int: 'Integration', dev: 'Development', test: 'Test' };
 const scopeKey = (s: Scope, k: string) => (s === 'global' ? 'global' : `${s}:${k}`);
-const srcText = (s?: { scope: string; key: string }) => !s || s.scope === 'default' ? 'default' : s.scope === 'cluster' ? 'this cluster' : s.scope === 'folder' ? `folder ${s.key.replace(/^folder:/, '')}` : s.scope === 'env' ? `environment ${s.key.replace(/^env:/, '')}` : 'global';
+const srcText = (s?: { scope: string; key: string }) => { if (!s || s.scope === 'default') return 'default'; const k = s.key.replace(/^(folder|env):/, '');
+  return s.scope === 'cluster' ? 'this cluster' : s.scope === 'folder' ? `folder ${k}` : s.scope === 'env' ? `the ${ENV_LABEL[k] || k} environment` : 'all clusters'; };
 
 interface FormProps { value: Record<string, any>; set: (k: string, v: any) => void; view: SView }
 interface KindUI { title: string; intro: string; Form: React.FC<FormProps>; summary: (v: Record<string, any>, view?: SView, show?: boolean) => React.ReactNode; fields: string[]; labels: Record<string, string> }
@@ -60,8 +61,8 @@ const EphForm: React.FC<FormProps> = ({ value: v, set, view }) => {
 };
 
 /* ---------------------------------------------------------------------------------------------------------------------- destination */
-const DEST_LABELS: Record<string, string> = { type: 'Type', server: 'Backup server', serverPath: 'Folder on the backup server', repoPath: 'Repository', walPath: 'WAL archive', requireMount: 'Mount required', minFreeGb: 'Minimum free space (GiB)' };
-const TYPE_LABEL: Record<string, string> = { local: 'Local directory', nfs: 'NFS share', smb: 'SMB/CIFS share' };
+const DEST_LABELS: Record<string, string> = { type: 'Type', server: 'Backup server', serverPath: 'Folder on the backup server', repoPath: 'Repository', walPath: 'WAL archive', requireMount: 'Separate mount required', minFreeGb: 'Minimum free space (GiB)' };
+const TYPE_LABEL: Record<string, string> = { local: 'Local disk of each node', nfs: 'NFS share', smb: 'SMB/CIFS share' };
 const HIDDEN = '(hidden)';
 const destSummary = (v: Record<string, any>, view?: SView, show?: boolean) => <>
   <Badge kind={v.type === 'local' ? undefined : 'accent'}>{TYPE_LABEL[v.type] || v.type}</Badge>{' '}
@@ -69,26 +70,26 @@ const destSummary = (v: Record<string, any>, view?: SView, show?: boolean) => <>
   {v.repoPath === HIDDEN || v.walPath === HIDDEN ? <span className="small faint">directories visible to administrators</span>
     : !show ? <span className="small faint">{v.repoPath || v.walPath ? 'directories set' : 'paths not set'}</span>
     : <span className="small muted mono">{[v.repoPath ? `repo ${v.repoPath}` : null, v.walPath ? `wal ${v.walPath}` : null].filter(Boolean).join('  ') || 'paths not set'}</span>}
-  <span className="small muted">{v.requireMount ? ' · mount required' : ''}</span></>;
+  <span className="small muted">{v.requireMount ? ' · separate mount required' : ''}</span></>;
 const PREVIEW = [{ id: 's3', label: 'Amazon S3 / MinIO / Ceph RGW' }, { id: 'azure', label: 'Azure Blob Storage' }, { id: 'gcs', label: 'Google Cloud Storage' }, { id: 'sftp', label: 'SFTP' }];
 
 const DestForm: React.FC<FormProps> = ({ value: v, set, view }) => <div className="stack">
-  <Field label="Where backups are written" hint="The engine writes to file paths: a local directory or a network share (NFS, SMB) already mounted on the nodes. pg_arca mounts nothing: it checks that the mount is really there. Using a backup server? Check its folder from its page (Worker hosts): when the check passes, it prints the exact export and mount commands for the nodes, then come back here with the mounted path.">
+  <Field label="Where backups are written" hint="A local disk or a network share (NFS, SMB) already mounted at the same path on every node. pg_arca mounts nothing: it checks that the mount is there. For a backup server, use “Configure backup storage…”: it prints the export and mount commands.">
     <select className="input" value={v.type ?? ''} onChange={e => set('type', e.target.value)}>
       <option value="">Same as the level above</option><option value="local">Local directory on the node</option><option value="nfs">NFS network share (mounted)</option><option value="smb">SMB/CIFS network share (mounted)</option>
       <optgroup label="Preview — not available yet">{PREVIEW.map(p => <option key={p.id} value={p.id} disabled>{p.label} (Preview)</option>)}</optgroup></select></Field>
   {v.type === 'nfs' || v.type === 'smb' ? <div className="grid g2">
     <Field label="Backup server (optional)" hint="The worker host that exports this share. When set, the check on every node proves the share is really mounted from it.">
-      <select className="input" value={v.server ?? ''} onChange={e => set('server', e.target.value)}><option value="">Not a pg_arca worker host / not specified</option>
-        {view.nodes.filter(n => n.worker).map(n => <option key={n.id} value={n.id}>{n.name}{n.label ? ` — ${n.label}` : ''}</option>)}</select></Field>
+      <select className="input" value={v.server ?? ''} onChange={e => set('server', e.target.value)}><option value="">None (a NAS or another server)</option>
+        {view.nodes.filter(n => n.worker && (n.roles || []).includes('repository')).map(n => <option key={n.id} value={n.id}>{n.name}{n.label ? ` — ${n.label}` : ''}</option>)}</select></Field>
     <Field label="Folder on the backup server" hint="Shown in the export and mount instructions."><input className="input mono" placeholder="/srv/pgarca" value={v.serverPath ?? ''} onChange={e => set('serverPath', e.target.value)} /></Field></div> : null}
   <div className="grid g2">
     <Field label="Repository directory" hint="Placeholders: {cluster} {env} {id}. Several clusters can share the same repository (each has its own space)."><input className="input mono" placeholder="/mnt/backup/pgarca" value={v.repoPath ?? ''} onChange={e => set('repoPath', e.target.value)} /></Field>
     <Field label="WAL archive directory" hint="Must be different for each cluster: use {cluster} or {id}."><input className="input mono" placeholder="/mnt/backup/wal/{env}/{cluster}" value={v.walPath ?? ''} onChange={e => set('walPath', e.target.value)} /></Field>
     <Field label="Minimum free space (GiB)" hint="The check fails below this threshold."><input className="input" type="number" min={0} value={v.minFreeGb ?? ''} onChange={e => set('minFreeGb', e.target.value === '' ? '' : Number(e.target.value))} /></Field>
-    <Field label="Mount required" hint="Rejects the path if it is on the system disk: prevents backups from filling the local disk when the share is not mounted.">
+    <Field label="Separate mount required" hint="Refuse the path unless it is on a separately mounted filesystem (not the root filesystem): backups can never fill the system disk when the share is not mounted.">
       <select className="input" value={v.requireMount === undefined || v.requireMount === '' ? '' : v.requireMount ? '1' : '0'} onChange={e => set('requireMount', e.target.value === '' ? '' : e.target.value === '1')}><option value="">Same as the level above</option><option value="1">Yes</option><option value="0">No</option></select></Field></div>
-  <Banner kind="info" title="What happens when you change the destination">Existing backups stay where they are: they are not moved. The new destination starts with a new full backup; restores from older points keep reading from the old path as long as you keep it.</Banner></div>;
+  <Banner kind="info" title="What happens when you change the backup storage">Existing backups stay where they are: they are not moved. The new backup storage starts with a new full backup; restores from older points keep reading from the old path as long as you keep it.</Banner></div>;
 
 const KINDS: Record<'ephemeral' | 'destination', KindUI> = {
   ephemeral: { title: 'Where restores run', intro: 'To restore a database, a schema or a table without touching the running cluster, pg_arca starts a temporary PostgreSQL instance on files extracted from the backup. Here you decide where it runs and with which resources: for all clusters, per environment, per folder or per cluster.', Form: EphForm, summary: ephSummary, fields: Object.keys(EPH_LABELS), labels: EPH_LABELS },
@@ -155,22 +156,23 @@ function PreflightModal({ cluster, onClose }: { cluster: SCluster; onClose: () =
 }
 
 /* ---------------------------------------------------------------------------------------------------------------------- destination: check + apply */
-function NodeCheck({ opId }: { opId: string }) {
+function NodeCheck({ opId, show = true }: { opId: string; show?: boolean }) {
   const q = useQuery<{ operation: Op }>(`/api/operations/${opId}`, { interval: 1500 });
   const op = q.data?.operation;
   if (!op) return <Skeleton h={18} />;
   if (!isTerminal(op.status)) return <div className="small muted">Check running…</div>;
   if (op.status !== 'succeeded') return <Banner kind="bad" title="The check failed">{op.error || op.status}</Banner>;
   const r = op.result;
-  return <DestPaths r={r} />;
+  return <DestPaths r={r} show={show} />;
 }
 
 /** The full result of a destination_check: per path, every check with its remedy, who writes there, and the root commands that fix the permissions. */
-export function DestPaths({ r }: { r: any }) {
-  return <div className="stack">{(r.paths || []).map((p: any) => <div key={p.kind} className="stack"><div className="small"><strong>{p.kind === 'repo' ? 'Repository' : 'WAL archive'}</strong> <span className="mono">{p.path}</span>{p.mount ? <span className="muted"> · {p.mount.fstype}</span> : null}{p.free_bytes != null ? <span className="muted"> · {bytes(p.free_bytes)} free</span> : null}</div>
-    <CheckList checks={p.checks} />{p.bench && !p.bench.error ? <div className="small muted">Measured: write {p.bench.write_mb_s} MB/s, read {p.bench.read_mb_s} MB/s ({p.bench.note})</div> : null}
+export function DestPaths({ r, show = true }: { r: any; show?: boolean }) {
+  const ck = (cs: any[]) => show ? cs : (cs || []).map(c => ({ ...c, text: hidePaths(c.text), fix: c.fix ? hidePaths(c.fix) : c.fix }));
+  return <div className="stack">{(r.paths || []).map((p: any) => <div key={p.kind} className="stack"><div className="small"><strong>{p.kind === 'repo' ? 'Repository' : 'WAL archive'}</strong> {show ? <span className="mono">{p.path}</span> : null}{p.mount ? <span className="muted"> · {p.mount.fstype}</span> : null}{p.free_bytes != null ? <span className="muted"> · {bytes(p.free_bytes)} free</span> : null}</div>
+    <CheckList checks={ck(p.checks)} />{p.bench && !p.bench.error ? <div className="small muted">Measured: write {p.bench.write_mb_s} MB/s, read {p.bench.read_mb_s} MB/s ({p.bench.note})</div> : null}
     {p.identity ? <Writers id={p.identity} /> : null}
-    {p.fix_commands?.length && p.checks.some((c: any) => c.level !== 'ok') ? <details open={p.checks.some((c: any) => c.level === 'bad')}><summary className="small" style={{ cursor: 'pointer' }}>Commands to fix the permissions (run as root on the node)</summary>
+    {show && p.fix_commands?.length && p.checks.some((c: any) => c.level !== 'ok') ? <details open={p.checks.some((c: any) => c.level === 'bad')}><summary className="small" style={{ cursor: 'pointer' }}>Commands to fix the permissions (run as root on the node)</summary>
       <pre className="out">{p.fix_commands.join('\n')}</pre><p className="small muted">pg_arca does not run them itself: they change system users, groups and permissions. Afterwards, run the check again.</p></details> : null}</div>)}
     {r.server_probe ? <div className="small muted">{r.server_probe === 'not run: no running PostgreSQL on this node (the agent\'s own identity was tested)' ? 'PostgreSQL is not running on this node: only the agent’s user was tested.' : r.server_probe}</div> : null}</div>;
 }
@@ -182,7 +184,7 @@ function Writers({ id }: { id: any }) {
 }
 
 /** The location the backups and WAL were in before the last change: still read by restores until migrated; migrate in the background or delete. */
-function PreviousLocation({ cluster, d }: { cluster: SCluster; d: any }) {
+function PreviousLocation({ cluster, d, show = false }: { cluster: SCluster; d: any; show?: boolean }) {
   const prev = d.previous || {}; const repo: any[] = prev.repo || []; const wal: any[] = prev.wal || [];
   const PL = `prevloc:${cluster.id}`;
   const plan = useOpRunner(cluster.id, undefined, PL + ':plan'); const mig = useOpRunner(cluster.id, () => { revalidate(`/api/clusters/${encodeURIComponent(cluster.id)}/destination`); }, PL + ':mig'); const drop = useOpRunner(cluster.id, undefined, PL + ':drop');
@@ -192,18 +194,19 @@ function PreviousLocation({ cluster, d }: { cluster: SCluster; d: any }) {
   // remembered one that is gone, so the confirmation always names what is really sent (independent review)
   const live = { ...(repo[0] ? { source_repo: repo[0].path } : {}), ...(wal[0] ? { source_wal: wal[0].path } : {}) };
   const src = (live as any).source_repo || (live as any).source_wal ? (src0 && ((src0.source_repo && src0.source_repo === (live as any).source_repo) || (src0.source_wal && src0.source_wal === (live as any).source_wal)) ? src0 : live) : (src0 || live);
-  if (!repo.length && !wal.length && !mig.op && !drop.op) return null;
+  const gone = !repo.length && !wal.length;              // migrated or deleted: only the outcome of what was done stays on screen
+  if (gone && !mig.op && !drop.op) return null;
   const p = plan.op?.status === 'succeeded' ? plan.op.result : null;
   const gib = (b: number) => bytes(b);
   return <Card title="Previous location"><div className="stack">
-    <p className="small">After the last destination change, the existing backups and WAL stayed here. Restores still read them (including a PITR that spans the change), but nothing new is written to this location.</p>
-    {!repo.length && !wal.length ? <p className="small muted">Restores no longer use the previous location.</p> : null}
-    <dl className="kv">{repo.map(x => <Fragment key={x.path}><dt>Repository</dt><dd className="mono">{x.path} {x.readable ? null : <Badge kind="bad">unreachable</Badge>}</dd></Fragment>)}
-      {wal.map(x => <Fragment key={x.path}><dt>WAL archive</dt><dd className="mono">{x.path} {x.readable ? null : <Badge kind="bad">unreachable</Badge>}</dd></Fragment>)}</dl>
+    {gone ? <p className="small muted">Restores no longer use the previous location.</p> : <>
+    <p className="small">After the last change of backup storage, the existing backups and WAL stayed here. Restores still read them (including a PITR that spans the change), but nothing new is written to this location.</p>
+    <dl className="kv">{repo.map(x => <Fragment key={x.path}><dt>Repository</dt><dd><Loc p={x.path} show={show} /> {x.readable ? null : <Badge kind="bad">unreachable</Badge>}</dd></Fragment>)}
+      {wal.map(x => <Fragment key={x.path}><dt>WAL archive</dt><dd><Loc p={x.path} show={show} /> {x.readable ? null : <Badge kind="bad">unreachable</Badge>}</dd></Fragment>)}</dl>
     <div className="row wrap gap-s"><Button icon="search" busy={plan.busy} onClick={() => plan.run('destination_migrate', { ...src, dry_run: true })}>Work out what to move</Button></div>
     {plan.op && !p ? <OpPanel op={plan.op} error={plan.error} label="Migration plan" /> : plan.error ? <Banner kind="bad">{plan.error}</Banner> : null}
     {p ? <div className="stack">
-      {p.nothing_to_do ? <Banner kind="ok" title="Nothing to move">Everything needed is already in the new destination: restores no longer need the previous location.</Banner> : <>
+      {p.nothing_to_do ? <Banner kind="ok" title="Nothing to move">Everything needed is already in the new backup storage: restores no longer need the previous location.</Banner> : <>
         <table className="t"><tbody>
           <tr><td>Backups to move</td><td className="num">{p.sets.length} ({p.sets.filter((x: any) => x.type === 'full').length} full)</td></tr>
           <tr><td>Backup chunks</td><td className="num">{num(p.chunks)} · {gib(p.chunk_bytes + p.set_bytes)}</td></tr>
@@ -217,24 +220,30 @@ function PreviousLocation({ cluster, d }: { cluster: SCluster; d: any }) {
         <div className="row wrap gap-s" style={{ alignItems: 'flex-end' }}><Field label="Bandwidth limit (MB/s, empty = none)"><input className="input" style={{ width: 120 }} value={mb} onChange={e => setMb(e.target.value.replace(/[^0-9.]/g, ''))} /></Field>
           <Button kind="primary" icon="zap" disabled={!p.ok || mig.busy} busy={mig.busy} onClick={() => setAsk(true)}>Start the migration in the background</Button></div>
         <p className="small muted">Verified copy (every file is read back and compared), resumable: if interrupted, running it again continues where it was. Backups keep running in the meantime. The previous location is not deleted.</p></>}
-    </div> : null}
+    </div> : null}</>}
     {mig.op || mig.error ? <OpPanel op={mig.op} error={mig.error} cancel={mig.cancel} label="Backup migration" /> : null}
     {mig.op?.status === 'succeeded' ? <Banner kind={mig.op.result.complete ? 'ok' : 'warn'} title={mig.op.result.complete ? 'Migration completed' : 'Partial migration'}>
       {num(mig.op.result.copied.sets)} backups, {num(mig.op.result.copied.chunks)} chunks and {num(mig.op.result.copied.wal)} WAL files copied and verified in {Math.round(mig.op.result.seconds)} s. {mig.op.result.complete ? 'Restores no longer use the previous location.' : `Left: ${mig.op.result.left.sets.length} backups, ${mig.op.result.left.wal_files} WAL files.`}</Banner> : null}
-    <div className="hr" />
+    {gone ? null : <><div className="hr" />
     <div className="row wrap gap-s"><Button kind="danger" icon="trash" busy={drop.busy} onClick={() => setAskDrop(true)}>Delete the previous location…</Button>
-      <span className="small muted">Only this cluster’s data; refused while something exists only there and until the new destination has a full backup.</span></div>
+      <span className="small muted">Only this cluster’s data; refused while something exists only there and until the new backup storage has a full backup.</span></div></>}
     {drop.op || drop.error ? <OpPanel op={drop.op} error={drop.error} label="Deleting the previous location" /> : null}
     {ask ? <Confirm title="Start the migration?" confirmLabel="Start" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); setSrc0(src); mig.run('destination_migrate', { ...src, ...(mb ? { throttle_mb_s: Number(mb) } : {}) }); }}>
-      <p>Copies {p ? gib(p.total_bytes) : ''} to the new destination, in the background{mb ? `, at most ${mb} MB/s` : ''}. You can cancel and resume it.</p></Confirm> : null}
+      <p>Copies {p ? gib(p.total_bytes) : ''} to the new backup storage, in the background{mb ? `, at most ${mb} MB/s` : ''}. You can cancel and resume it.</p></Confirm> : null}
     {askDrop ? <Confirm title="Delete the backups from the previous location?" danger requireText="DELETE" confirmLabel="Delete" onClose={() => setAskDrop(false)} onConfirm={() => { setAskDrop(false); setSrc0(src); drop.run('destination_drop_old', { ...src, confirm: 'DELETE', ...(abandon ? { abandon: true } : {}) }); }}>
       <p>The backups and WAL of <strong>{cluster.name}</strong> in {[src.source_repo, src.source_wal].filter(Boolean).join(' and ')} are deleted. There is no way back.</p>
       <label className="check"><input type="checkbox" checked={abandon} onChange={e => setAbandon(e.target.checked)} />Even if something was not migrated (the restore history it holds is lost)</label></Confirm> : null}
   </div></Card>;
 }
 
-function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: () => void }) {
+/** A directory or share in plain view only when asked ("Show locations"); otherwise the text keeps its sense without it. */
+export const hidePaths = (t: string) => String(t ?? '').replace(/(^|[\s('"])([\w.\-[\]]*:)?\/[^\s,;()'"]*/g, '$1‹hidden›');
+const Loc = ({ p, show }: { p?: string | null; show: boolean }) => !p ? <span>—</span> : show ? <span className="mono">{p}</span> : <span className="faint">hidden</span>;
+
+function DestinationModal({ cluster, onClose: close0 }: { cluster: SCluster; onClose: () => void }) {
   const url = `/api/clusters/${encodeURIComponent(cluster.id)}/destination`;
+  const [show, setShow] = useState(false);
+  const onClose = () => { clearDrafts(`dest:${cluster.id}:done`); close0(); };    // "Apply started" belongs to this visit, not to the next one
   const q = useQuery<any>(url, { interval: 3000 });
   const [busy, setBusy] = useState(''); const [err, setErr] = useState<string | null>(null); const [bench, setBench] = useDraft(`dest:${cluster.id}:bench`, false); const [ops, setOps] = useDraft<any[]>(`dest:${cluster.id}:ops`, []); const [done, setDone] = useDraft<any>(`dest:${cluster.id}:done`, null);
   const lastD = useRef<any>(null);
@@ -247,28 +256,30 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
   };
   const nodes: any[] = d?.nodes || []; const online = nodes.filter(n => n.online);
   const allOk = !!d?.destination && online.length > 0 && online.every(n => d.checks?.[n.id]?.ok === true && d.checks[n.id].fresh);
-  return <Modal wide title={`Backup storage — ${cluster.name}`} onClose={onClose} footer={<><Button onClick={onClose}>Close</Button></>}>
+  const offline = nodes.filter(n => !n.online);
+  return <Modal wide title={`Backup storage — ${cluster.name}`} onClose={onClose} footer={<><Button kind="ghost" icon={show ? 'lock' : 'eye'} aria-pressed={show} onClick={() => setShow(!show)}>{show ? 'Hide locations' : 'Show locations'}</Button><div className="grow" /><Button onClick={onClose}>Close</Button></>}>
     {!d ? <Skeleton h={80} /> : !d.destination ? <div className="stack">
-      {d.current?.repo ? <Banner kind="info" title="Destination set on the node">The cluster writes to <code>{d.current.repo}</code> (WAL to <code>{d.current.wal || '—'}</code>), from the agent configuration. To manage it from the console, set a path for this cluster, its environment, a folder or all clusters: then check and apply it from here.</Banner>
-        : <Banner kind="warn" title="No destination configured">Set a path at the global, environment, folder or cluster level.</Banner>}
-      <PreviousLocation cluster={cluster} d={d} /></div> : <div className="stack">
-      <dl className="kv"><dt>Type</dt><dd>{TYPE_LABEL[d.destination.type]}</dd>{d.destination.repo_path ? <><dt>Repository</dt><dd className="mono">{d.destination.repo_path}</dd></> : null}{d.destination.wal_path ? <><dt>WAL archive</dt><dd className="mono">{d.destination.wal_path}</dd></> : null}
-        <dt>Mount required</dt><dd>{d.destination.require_mount ? 'yes' : 'no'}</dd>{d.destination.min_free_gb ? <><dt>Minimum free space</dt><dd>{d.destination.min_free_gb} GiB</dd></> : null}</dl>
+      {d.current?.repo ? <Banner kind="info" title="Backup storage set on the node">The cluster writes to <Loc p={d.current.repo} show={show} /> (WAL archive: <Loc p={d.current.wal} show={show} />), from the agent configuration. To manage it from the console, set a path for this cluster, its environment, a folder or all clusters: then check and apply it from here.</Banner>
+        : <Banner kind="warn" title="No backup storage configured">Choose it with “Configure backup storage…”, for this cluster, its environment, a folder or all clusters.</Banner>}
+      <PreviousLocation cluster={cluster} d={d} show={show} /></div> : <div className="stack">
+      <dl className="kv"><dt>Type</dt><dd>{TYPE_LABEL[d.destination.type]}{d.destination.server?.name ? ` · backup server ${d.destination.server.name}` : ''}</dd>{d.destination.repo_path ? <><dt>Repository</dt><dd><Loc p={d.destination.repo_path} show={show} /></dd></> : null}{d.destination.wal_path ? <><dt>WAL archive</dt><dd><Loc p={d.destination.wal_path} show={show} /></dd></> : null}
+        <dt>Separate mount required</dt><dd>{d.destination.require_mount ? 'yes' : 'no'}</dd>{d.destination.min_free_gb ? <><dt>Minimum free space</dt><dd>{d.destination.min_free_gb} GiB</dd></> : null}</dl>
       {d.destination.wal_shared_warning ? <Banner kind="warn" title="Shared WAL archive">{d.destination.wal_shared_warning}</Banner> : null}
       {d.destination.wal_collision ? <Banner kind="bad" title="WAL archive conflicts with another cluster">{d.destination.wal_collision}</Banner> : null}
       <div className="stack"><strong>Nodes</strong>{nodes.map(n => { const c = d.checks?.[n.id]; const op = ops.find(o => o.nodeId === n.id)?.operation?.id || c?.opId;
         return <Card key={n.id} title={<span className="row gap-s">{n.name}{n.online ? null : <Badge kind="warn">offline</Badge>}{c ? (c.ok === true ? <Badge kind="ok">check passed {ago(c.at)}</Badge> : c.ok === false ? <Badge kind="bad">check failed</Badge> : <Badge>running</Badge>) : <Badge>never checked</Badge>}{c && !c.fresh && c.ok ? <Badge kind="warn">stale: run again</Badge> : null}</span>}>
-          {op ? <NodeCheck opId={op} /> : <p className="small muted">No check for this destination yet.</p>}</Card>; })}</div>
+          {op ? <NodeCheck opId={op} show={show} /> : <p className="small muted">No check for this backup storage yet.</p>}</Card>; })}</div>
       <div className="row wrap gap-s"><Button icon="check" busy={busy === 'check'} disabled={!!busy || !online.length} onClick={() => act('check')}>Check on all nodes</Button>
         <label className="check"><input type="checkbox" checked={bench} onChange={e => setBench(e.target.checked)} />Also measure write throughput (writes 32 MiB)</label></div>
       <div className="hr" />
-      {d.current ? <dl className="kv"><dt>In use now</dt><dd><span className="mono">{d.current.repo || '—'}</span> · WAL <span className="mono">{d.current.wal || '—'}</span></dd></dl> : null}
-      <Banner kind="info" title="Applying the destination">Sets the repository and WAL archive on every node’s agent. On the primary, pg_arca immediately checks that the next WAL segment lands in the new directory; if it does not, it switches back to the previous one by itself and says so. Existing backups stay readable in the previous location (including for a PITR spanning the change) and you can migrate them in the background. The new destination starts with a full backup. In a protected environment a second administrator must approve.</Banner>
-      <div><Button kind="primary" icon="zap" busy={busy === 'apply'} disabled={!allOk || !!busy} onClick={() => act('apply')}>Apply to the nodes</Button>{!allOk ? <span className="small muted"> Every node needs a recent passed check.</span> : null}</div>
+      {d.current ? <dl className="kv"><dt>In use now</dt><dd><Loc p={d.current.repo} show={show} /> · WAL archive <Loc p={d.current.wal} show={show} /></dd></dl> : null}
+      <Banner kind="info" title="Applying the new backup storage">Sets the repository and WAL archive on every node’s agent. On the primary, pg_arca immediately checks that the next WAL segment lands in the new directory; if it does not, it switches back to the previous one by itself and says so. Existing backups stay readable in the previous location (including for a PITR spanning the change) and you can migrate them in the background. The new backup storage starts with a full backup. In a protected environment a second administrator must approve.</Banner>
+      <div><Button kind="primary" icon="zap" busy={busy === 'apply'} disabled={!allOk || !!busy} onClick={() => act('apply')}>Apply to the nodes</Button>{!allOk ? <span className="small muted"> Every online node needs a recent passed check.</span> : null}</div>
+      {offline.length ? <Banner kind="warn" title={`${offline.map(n => n.name).join(', ')} ${offline.length === 1 ? 'is' : 'are'} offline`}>An offline node is not checked and keeps writing to its current storage until it is back, checked and applied: after a failover to it, backups would go elsewhere. Bring it back first when you can.</Banner> : null}
       {done ? (done.approval ? <Banner kind="info" title="Awaiting approval">A destination change in this environment requires approval from another administrator (Today page). It is applied as soon as it is approved.</Banner>
         : <Banner kind="ok" title="Apply started">{nof(done.operations.length, 'operation')} sent to the nodes (follow them in Activity, top right). {done.note}</Banner>) : null}
       {err ? <Banner kind="bad">{err}</Banner> : null}
-      <PreviousLocation cluster={cluster} d={d} /></div>}
+      <PreviousLocation cluster={cluster} d={d} show={show} /></div>}
   </Modal>;
 }
 
@@ -317,7 +328,7 @@ function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
         <td><div>{ui.summary(kind === 'destination' ? ownServer(c) : eff(c), v, showLoc)}</div><div className="small muted">{ui.fields.filter(f => c.effective.sources[f] && c.effective.sources[f].scope !== 'default' && eff(c)[f] !== undefined).map(f => `${ui.labels[f]}: ${srcText(c.effective.sources[f])}`).join(' · ') || 'defaults'}</div></td>
         {kind === 'destination' ? <td><InUse o={ov.data?.clusters.find(x => x.id === c.id)} /></td> : null}
         <td className="num"><div className="row gap-s" style={{ justifyContent: 'flex-end' }}>{role === 'admin' ? <Button sm onClick={() => setDlg({ scope: 'cluster', k: c.id, label: c.name })}>Edit</Button> : null}
-          <Button sm icon={kind === 'ephemeral' ? 'search' : 'check'} disabled={c.source === 'direct'} title={c.source === 'direct' ? 'Needs the agent on the cluster' : undefined} onClick={() => setPre(c)}>{kind === 'ephemeral' ? 'Verify' : 'Check and apply'}</Button></div></td></tr>)}</tbody></table></div>}</Card>
+          {kind === 'destination' && role !== 'admin' ? null : <Button sm icon={kind === 'ephemeral' ? 'search' : 'check'} disabled={c.source === 'direct'} title={c.source === 'direct' ? 'Needs the agent on the cluster' : undefined} onClick={() => setPre(c)}>{kind === 'ephemeral' ? 'Verify' : 'Check and apply'}</Button>}</div></td></tr>)}</tbody></table></div>}</Card>
     {dlg ? <ScopeDialog kind={kind} scope={dlg.scope} k={dlg.k} label={dlg.label} view={v} onClose={() => setDlg(null)} /> : null}
     {pre ? (kind === 'ephemeral' ? <PreflightModal cluster={pre} onClose={() => setPre(null)} /> : <DestinationModal cluster={pre} onClose={() => setPre(null)} />) : null}
   </div>;

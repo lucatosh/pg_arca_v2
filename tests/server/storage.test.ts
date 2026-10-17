@@ -8,12 +8,12 @@ import { mountScopedRoutes, SPECS } from '../../server/scoped';
 import { mountDestinationRoutes, destinationFor, workerForHost, hostsOf, HIDDEN } from '../../server/destinations';
 import { validateOp } from '../../server/optypes';
 import { mountOperatorRoutes } from '../../server/agents';
-import { workerView } from '../../server/workers';
+import { workerView, mountWorkerRoutes } from '../../server/workers';
 
 (async () => {
   const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'sto-'))); const app = new MiniApp();
   app.use((req: any, _res: any, next: any) => { req.role = req.headers['x-role'] || 'admin'; req.actor = 'u'; return next(); });
-  mountScopedRoutes(app, store); mountDestinationRoutes(app, store); mountOperatorRoutes(app, store, {});
+  mountScopedRoutes(app, store); mountDestinationRoutes(app, store); mountOperatorRoutes(app, store, {}); mountWorkerRoutes(app, store);
   const now = new Date().toISOString();
   const disks = (repoDev: number) => ({ repo: { path: '/mnt/pgarca/repo', free_bytes: 5e11, total_bytes: 1e12, dev: repoDev }, wal_archive: { path: '/mnt/pgarca/wal', free_bytes: 5e11, total_bytes: 1e12, dev: repoDev }, pgdata: { path: '/var/lib/pgsql/data', free_bytes: 1e11, total_bytes: 2e11, dev: 1 } });
   const nfs = (id: string) => ({ repo_path: '/mnt/pgarca/repo', wal_path: '/mnt/pgarca/wal', repo_id: id, wal_id: id + 'w',
@@ -58,6 +58,12 @@ import { workerView } from '../../server/workers';
   // the backup server's page says which clusters really write there (from the nodes' mounts)
   assert.deepEqual((workerView(store.peek(), store.peek().nodes.w1, true) as any).stores, [{ clusterId: 'c1', clusterName: 'prod1', nodes: ['pg-a', 'pg-b'], what: ['backups', 'WAL archive'] }]);
   assert.deepEqual((workerView(store.peek(), store.peek().nodes.w2, true) as any).stores, []);
+  // a backup server's addresses, mount points and directories: administrators only
+  await store.mutate(d => { (d.nodes.w1 as any).snapshot.worker.mounts = [{ mount: '/srv/pgarca', fstype: 'xfs', remote: false }]; (d.nodes.w1 as any).snapshot.worker.dirs = { repo: { path: '/srv/pgarca/repo', exists: true } }; });
+  for (const u of ['/api/workers', '/api/workers/w1']) {
+    const ad = JSON.stringify((await call('GET', u, 'admin')).body), vw = JSON.stringify((await call('GET', u, 'viewer')).body);
+    assert.ok(ad.includes('10.0.0.9'), u); assert.equal(vw.includes('10.0.0.9'), false, u); assert.equal(vw.includes('/srv/pgarca'), false, u);
+  }
   // operator / viewer: the same picture, no paths, sources or addresses
   for (const role of ['operator', 'viewer']) {
     r = await call('GET', '/api/clusters/c1/storage', role);
