@@ -8,6 +8,7 @@ import { mountScopedRoutes, SPECS } from '../../server/scoped';
 import { mountDestinationRoutes, destinationFor, workerForHost, hostsOf, HIDDEN } from '../../server/destinations';
 import { validateOp } from '../../server/optypes';
 import { mountOperatorRoutes } from '../../server/agents';
+import { workerView } from '../../server/workers';
 
 (async () => {
   const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'sto-'))); const app = new MiniApp();
@@ -54,6 +55,9 @@ import { mountOperatorRoutes } from '../../server/agents';
   assert.equal(a.repo.id, undefined, 'storage ids stay internal');
   assert.deepEqual(r.body.backupServers.map((s: any) => s.name), ['backup-dc1']); assert.ok(r.body.backupServers[0].hosts.includes('bk1.lan'));
 
+  // the backup server's page says which clusters really write there (from the nodes' mounts)
+  assert.deepEqual((workerView(store.peek(), store.peek().nodes.w1, true) as any).stores, [{ clusterId: 'c1', clusterName: 'prod1', nodes: ['pg-a', 'pg-b'], what: ['backups', 'WAL archive'] }]);
+  assert.deepEqual((workerView(store.peek(), store.peek().nodes.w2, true) as any).stores, []);
   // operator / viewer: the same picture, no paths, sources or addresses
   for (const role of ['operator', 'viewer']) {
     r = await call('GET', '/api/clusters/c1/storage', role);

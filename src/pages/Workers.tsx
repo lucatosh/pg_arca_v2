@@ -12,7 +12,7 @@ import { CheckList, DestPaths } from './Infra';
  * used for (roles, central recovery node of which levels), and the actions that make sense on it.
  * ==================================================================================================================================================== */
 interface WRow { id: string; name: string; label: string; roles: string[]; online: boolean; lastSeen?: string; agentVersion?: string; remoteIp?: string; address?: string; os?: string; cpus?: number;
-  memTotal?: number; memAvailable?: number; root: boolean; sudo: boolean; pgMajors: number[]; remoteMounts: number; usedBy: { scope: string; key: string; as?: 'recovery' | 'backup' }[]; reported: boolean }
+  memTotal?: number; memAvailable?: number; root: boolean; sudo: boolean; pgMajors: number[]; remoteMounts: number; usedBy: { scope: string; key: string; as?: 'recovery' | 'backup' }[]; stores?: { clusterId: string; clusterName: string; nodes: string[]; what: string[] }[]; reported: boolean }
 interface WFull extends WRow { installations: any[]; mounts: any[]; dirs: Record<string, any>; host: any; system: any; recent: any[] }
 
 const ROLE_LABEL: Record<string, { label: string; hint: string }> = {
@@ -94,6 +94,7 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
           <dt>PostgreSQL</dt><dd>{w.installations.length ? w.installations.map((i: any) => <div key={i.bindir}><Badge>{i.major}</Badge> <span className="mono">{i.bindir}</span> <span className="faint">{i.source === 'private' ? 'pg_arca private installation' : i.source === 'system' ? 'system packages' : 'configured'}</span></div>) : <span className="faint">no installation found</span>}</dd>
           <dt>Resources</dt><dd>{w.cpus ?? '?'} CPU · {bytes(w.memTotal)} memory ({bytes(w.memAvailable)} available)</dd>
           <dt>Privileges</dt><dd>{w.root ? 'root' : w.sudo ? 'user with passwordless sudo' : 'unprivileged user (private installations only)'}</dd>
+          {(w.stores || []).length ? <><dt>Holds the backups of</dt><dd>{w.stores!.map(x => <div key={x.clusterId}><a href={`#/c/${encodeURIComponent(x.clusterId)}/backup`}><strong>{x.clusterName}</strong></a> <span className="muted">— {x.what.join(' and ')}, mounted on {x.nodes.join(', ')}</span></div>)}</dd></> : null}
           <dt>Used by</dt><dd>{w.usedBy.length ? (['recovery', 'backup'] as const).map(as => { const u = w.usedBy.filter(x => (x.as || 'recovery') === as); return u.length ? <div key={as}>{as === 'recovery' ? 'recovery host' : 'backup server'} for {u.map(usedText).join(', ')}</div> : null; }) : <span className="faint">no configuration uses it yet</span>}</dd>
         </dl>
         <div className="row wrap">{role !== 'viewer' ? <Button sm icon="search" busy={pre.busy} onClick={() => pre.run('ephemeral_preflight', { major: mj })}>Verify as recovery host (PG {mj})</Button> : null}

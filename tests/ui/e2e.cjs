@@ -328,6 +328,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.keyboard.press('Escape').catch(() => {});
   await p.goto(base + '/#/workers'); await p.waitForSelector('td:has-text("bk01")'); await shot('18a-workers');
   await p.click('.side .citem:has-text("bk01")'); await p.waitForSelector('text=Disks and shares'); await p.waitForSelector('text=/backup');
+  await p.waitForSelector('dd:has-text("prodpg — backups and WAL archive, mounted on")');
   await p.click('button:has-text("Verify as recovery host")'); await p.waitForSelector('text=It can run restores', { timeout: 15000 }); await shot('18b-worker');
   await p.click('button:has-text("Use it for restores")'); await p.click('.modal button:has-text("Use this host")'); await p.waitForSelector('text=recovery host for all clusters', { timeout: 10000 });
   // geo-redundancy: the pair, the DR strip on the standby site, endpoint + planned switchover through both DCS

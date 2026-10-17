@@ -12,6 +12,7 @@ import { Store, NodeRecord, nowIso } from './store';
 import * as ops from './ops';
 import { validateOp } from './optypes';
 import { refreshCluster } from './agents';
+import { workerForHost } from './destinations';
 
 export const WORKER_OPS = ['ephemeral_preflight', 'ephemeral_install', 'destination_check', 'discovery_scan', 'agent_config_get', 'agent_config_set'];
 const ADMIN_ONLY = ['ephemeral_install', 'agent_config_set'];
@@ -39,6 +40,23 @@ function shareAddress(n: NodeRecord): string {
   return ((id.addresses || []) as string[]).find(a => !loop(a)) || n.name;
 }
 
+/** The clusters whose nodes REALLY write here (their repository or WAL archive is a mount from this host), whatever the configuration says. */
+function storedHere(st: any, id: string): { clusterId: string; clusterName: string; nodes: string[]; what: string[] }[] {
+  const by: Record<string, { clusterId: string; clusterName: string; nodes: Set<string>; what: Set<string> }> = {};
+  for (const n of Object.values(st.nodes || {}) as any[]) {
+    if (n.kind === 'worker' || !n.clusterId) continue;
+    for (const [k, what] of [['repo_mount', 'backups'], ['wal_mount', 'WAL archive']] as const) {
+      const h = n.snapshot?.storage?.[k]?.remote_host;
+      if (h && workerForHost(st, h)?.id === id) {
+        const c = (st.clusters as any[]).find(x => x.id === n.clusterId);
+        const e = (by[n.clusterId] ||= { clusterId: n.clusterId, clusterName: c?.name || n.clusterId, nodes: new Set(), what: new Set() });
+        e.nodes.add(n.name); e.what.add(what);
+      }
+    }
+  }
+  return Object.values(by).map(e => ({ clusterId: e.clusterId, clusterName: e.clusterName, nodes: [...e.nodes].sort(), what: [...e.what] })).sort((a, b) => a.clusterName.localeCompare(b.clusterName));
+}
+
 export function workerView(st: any, n: NodeRecord, full = false) {
   const w = n.snapshot?.worker || n.discovery?.worker || {};
   const inst = ((w.pg_installations || []) as any[]).filter(i => i && i.major);
@@ -48,6 +66,7 @@ export function workerView(st: any, n: NodeRecord, full = false) {
     pgMajors: [...new Set(inst.map(i => Number(i.major)))].sort((a, b) => b - a),
     remoteMounts: ((w.mounts || []) as any[]).filter(m => m.remote).length,
     usedBy: usedBy(st, n.id),
+    stores: storedHere(st, n.id),
     address: shareAddress(n),
     reported: !!n.snapshot?.worker,
   };
