@@ -134,6 +134,12 @@ import { workerView, mountWorkerRoutes } from '../../server/workers';
     assert.ok(JSON.stringify(ad.body).includes('/mnt/pgarca'), u); assert.equal(JSON.stringify(vw.body).includes('/mnt/pgarca'), false, u);
     assert.equal(JSON.stringify(vw.body).includes('10.0.0.9'), false, u);
   }
+  // the agent's settings page: its backup locations hidden, the rest as it is
+  await store.mutate(d => { d.operations.push({ id: 'cfg1', type: 'agent_config_get', clusterId: 'c1', nodeId: 'a', status: 'succeeded', params: {}, createdAt: now, updatedAt: now,
+    result: { settings: [{ key: 'repo_path', detected: '/var/lib/pgarca/repo', override: '/mnt/pgarca/c1/repo', effective: '/mnt/pgarca/c1/repo' }, { key: 'pg_port', detected: 5432, override: null, effective: 5432 }] } } as any); });
+  const cfgV = (await call('GET', '/api/operations/cfg1', 'viewer')).body.operation.result.settings;
+  assert.equal(cfgV[0].effective, HIDDEN); assert.equal(cfgV[1].effective, 5432);
+  assert.equal((await call('GET', '/api/operations/cfg1', 'admin')).body.operation.result.settings[0].effective, '/mnt/pgarca/c1/repo');
   // "source" as a plain word (a cluster's source) is not hidden
   assert.equal((await call('GET', '/api/scoped/destination', 'viewer')).body.clusters[0].source, 'agent');
   const pl = (await call('GET', '/api/clusters/c1/placement', 'viewer')).body;

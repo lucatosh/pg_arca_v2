@@ -225,7 +225,13 @@ export function maskPaths<T>(v: T): T {
 }
 export const isAdmin = (req: Request) => (req as any).role === 'admin';
 /** An operation as a non-administrator may see it: the backup locations in its parameters and result hidden. */
-export const maskOpFor = (req: Request, o: any) => (!o || isAdmin(req) || !LOCATION_OPS.has(o.type) ? o : { ...o, params: maskPaths(o.params), result: maskPaths(o.result) });
+const LOCATION_SETTINGS = new Set(['repo_path', 'wal_archive_dir', 'repo_previous', 'wal_previous']);
+export const maskOpFor = (req: Request, o: any) => {
+  if (!o || isAdmin(req)) return o;
+  if (o.type === 'agent_config_get' && Array.isArray(o.result?.settings))      // the agent's settings page: its backup locations only
+    return { ...o, result: { ...o.result, settings: o.result.settings.map((x: any) => (LOCATION_SETTINGS.has(x?.key) ? { ...x, detected: x.detected ? HIDDEN : x.detected, override: x.override ? HIDDEN : x.override, effective: x.effective ? HIDDEN : x.effective, check: x.check ? maskPaths(x.check) : x.check } : x)) } };
+  return LOCATION_OPS.has(o.type) ? { ...o, params: maskPaths(o.params), result: maskPaths(o.result) } : o;
+};
 
 /**
  * WHERE each node of the cluster really keeps its backups and WAL, in operator terms: on a backup server (a worker host with the
