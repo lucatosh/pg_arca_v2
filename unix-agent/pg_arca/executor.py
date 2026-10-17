@@ -1002,13 +1002,26 @@ class OperationExecutor:
                 out["warning"] = "some members of this site refused to reinitialize (%s): rebuild them with patronictl reinit" % ", ".join(r["member"] for r in out["members_reinitialized"] if not r["ok"])
         return out
 
+    def _wal_manager(self):
+        """The WAL archive as the rest of the agent sees it (LiveWal: encryption key from encryption_key_file / PG_ARCA_KEY_FILE, compression,
+        the server's segment size and pg_wal). A bare WalManager(wal_dir) has no key: retire_branch could not promote a single copy into an
+        encrypted archive (PGA-WAL-037) nor open a sealed quarantined one (architecture review B4/B5)."""
+        from pg_arca.wal_manager import LiveWal
+        inst = ((getattr(self.runtime, "instance", None) or {}) if self.runtime is not None else {})
+        seg = (inst.get("control") or {}).get("wal_segment_size") or self.config.get("wal_segment_size") or 16 * 1024 * 1024
+        pgd = inst.get("data_directory")
+        try:
+            return LiveWal(self.config, lambda: int(seg), pg_wal=lambda: os.path.join(pgd, "pg_wal") if pgd else None).current()
+        except Exception as e:                                         # a key file that cannot be read: said, never a keyless manager
+            raise OpError("the WAL archive cannot be opened with this node's settings: %s" % e)
+
     def h_wal_conflicts(self, p):
-        """Divergent WAL copies the archive refused (conflicts/): listed, or marked as reviewed (kept under conflicts/reviewed/, no more alarm)."""
-        from pg_arca.wal_manager import WalManager
+        """Divergent WAL copies the archive refused (conflicts/): listed, or marked as reviewed (kept under conflicts/reviewed/, no more alarm).
+        Each copy says who sent it (writer) and who wrote the archive's copy (stored_writer), when the agents that wrote them recorded it."""
         wal_dir = self.config.get("wal_archive_dir")
         if not wal_dir or not os.path.isdir(wal_dir):
             raise OpError("no WAL archive configured on this node")
-        wm = WalManager(wal_dir)
+        wm = self._wal_manager()
         files = p.get("files") if isinstance(p.get("files"), list) else None
         tl = self._local_timeline()
         pgd = ((getattr(self.runtime, "instance", None) or {}) if self.runtime is not None else {}).get("data_directory")
@@ -1047,7 +1060,6 @@ class OperationExecutor:
     def h_wal_retire_branch(self, p):
         """Retire the DEAD branch of a timeline number two servers used: its stored copies go to conflicts/dead-branch-<tli>/ and the
         quarantined copies of the survivor (this cluster's current primary) take their place, so the archiver resumes. Nothing is deleted."""
-        from pg_arca.wal_manager import WalManager
         wal_dir = self.config.get("wal_archive_dir")
         if not wal_dir or not os.path.isdir(wal_dir):
             raise OpError("no WAL archive configured on this node")
@@ -1069,7 +1081,15 @@ class OperationExecutor:
                     pgdata = out.strip()
         except Exception:
             pgdata = None
-        wm = WalManager(wal_dir)
+        wm = self._wal_manager()
+        if p.get("tail"):
+            from pg_arca.wal_manager import WalArchiveError
+            # the segments an old primary archived on timeline T after another server was promoted from T: out of the archive's namespace,
+            # into conflicts/branch-tail-<T>/ (nothing is deleted; a restore along the current history never read them)
+            try:
+                return wm.retire_tail(tli, dry_run=dry)
+            except WalArchiveError as e:
+                raise OpError(str(e))
         if p.get("abandoned"):
             # a timeline newer than the primary's: only the primary itself can say which timeline it is on
             cur = None
@@ -1097,7 +1117,9 @@ class OperationExecutor:
             return rep
         rep = wm.retire_branch(tli, survivor_pgdata=pgdata, dry_run=dry)
         rep["wal_dir"] = wal_dir
-        rep["verified_against_primary"] = bool(pgdata)
+        # verified only when EVERY promoted copy was proven byte-identical to the primary's own file (a primary reachable is not a proof:
+        # its pg_wal may have recycled the file; architecture review B6)
+        rep["verified_against_primary"] = bool(pgdata) and bool(rep.get("promoted")) and not rep.get("unverified")
         rep["conflicts_left"] = len(wm.conflicts())
         return rep
 

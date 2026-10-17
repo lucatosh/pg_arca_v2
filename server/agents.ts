@@ -424,7 +424,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     const st = store.peek();
     const cluster = st.clusters.find((c: any) => c.id === req.params.id);
     if (!cluster) return res.status(404).json({ error: 'cluster_not_found' });
-    if (cluster.isSandbox) return res.status(409).json({ error: 'demo_cluster', message: 'This is the demo cluster: operations are not executed. Attach a real cluster.' });
+    if (cluster.isSandbox) return res.status(409).json({ error: 'demo_cluster', message: 'This is the demo cluster: operations are not executed. Connect a real cluster.' });
     const { type, params = {}, nodeId, ttlSeconds } = req.body || {};
     const key = String(req.headers['idempotency-key'] || req.body?.idempotencyKey || '');
     if (!key) return res.status(400).json({ error: 'idempotency_key_required', message: 'Send an Idempotency-Key header (any unique string per user action).' });
@@ -437,14 +437,14 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     if (type === 'hba_apply' || type === 'hba_restore') { const open = hbaOpenRule(params?.rules); if (open && (req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: `Only an administrator can open the server to the network without a password or with a clear-text one: ${open}` }); }
     // a standby site becomes writable only through Geo-redundancy (/api/geo/promote: administrators, refused while the primary site is alive,
     // recorded so that the old primary is fenced and rejoined): never as a plain operation (independent review: an operator could promote it here)
-    if (type === 'geo_promote') return res.status(403).json({ error: 'use_geo_promote', message: 'A standby site is promoted from Geo-redundancy (“Promote this site”), which checks that the primary site is really lost.' });
+    if (type === 'geo_promote') return res.status(403).json({ error: 'use_geo_promote', message: 'A standby site is promoted from Geo-redundancy (“Promote … (disaster recovery)”), which checks that the primary site is really lost.' });
     if (type === 'geo_demote') {                                              // the site may only follow a registered peer site: the agent connects there with the cluster's replication credentials
       // demoting a site stops the writes of the whole database (and force_rewind re-clones a data directory): administrators only, and the
       // destructive options only through Geo-redundancy (independent review: an operator could do both here)
       if ((req as any).role !== 'admin') return res.status(403).json({ error: 'forbidden', message: 'Only an administrator can demote a site (Geo-redundancy).' });
       if (params?.force_rewind || (Array.isArray(params?.drop_slots) && params.drop_slots.length)) return res.status(403).json({ error: 'use_geo', message: 'A forced rebuild or dropping slots is done by Geo-redundancy itself, not as a plain operation.' });
       const eps = knownPeerEndpoints(st, cluster.id);
-      if (!eps.some((e: any) => e.host === String(params.host) && Number(e.port) === Number(params.port))) return res.status(409).json({ error: 'not_a_peer', message: 'A site can only be demoted under a registered peer site (Geo-redundancy → “Address of …”): the address given is not one.' });
+      if (!eps.some((e: any) => e.host === String(params.host) && Number(e.port) === Number(params.port))) return res.status(409).json({ error: 'not_a_peer', message: 'A site can only be demoted under a registered peer site (Geo-redundancy → “Set the address of …”): the address given is not one.' });
     }
     const spec = OP_SPECS[type];
     if (type === 'pg_set_param' && !params.force) { const g = geoParamGuard(st, cluster.id, String(params.name), params.value); if (g) return res.status(409).json({ error: 'geo_standby_lower', message: g, overridable: true }); }
@@ -467,7 +467,7 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
     }
     try {
       if (cluster.source === 'direct') {
-        if (spec.lane === 'data') return { code: 409, body: { error: 'agent_required', message: 'Backup, restore and PITR run on the database host: install the agent on a node of this cluster (agentless attach cannot read the data directory).' } };
+        if (spec.lane === 'data') return { code: 409, body: { error: 'agent_required', message: 'Backup, restore and PITR run on the database host: install the agent on a node of this cluster (a connection-only cluster cannot read the data directory).' } };
         if (!deps.directExec) return { code: 501, body: { error: 'direct_not_available' } };
         const { op, created } = await ops.runLocal(store, { type, clusterId: cluster.id, params, idempotencyKey: key, createdBy: actor }, () => deps.directExec!(cluster, type, params));
         return { code: created ? 202 : 200, body: { operation: ops.redactOp(op), replayed: !created } };
@@ -481,14 +481,14 @@ export function mountOperatorRoutes(app: any, store: Store, deps: Deps = {}) {
       const eph = resolveScoped(st, 'ephemeral', cluster).value;
       if (!target && eph.placement === 'central' && (CENTRAL_OPS.includes(type) || (type === 'restore_plan' && params?.scope !== 'instance'))) {
         const cn = eph.centralNode ? st.nodes[eph.centralNode] : undefined;
-        if (!cn) return { code: 409, body: { error: 'central_node_missing', message: 'Restore is configured on a central node, but that node no longer exists: choose another one in the recovery instance settings.' } };
+        if (!cn) return { code: 409, body: { error: 'central_node_missing', message: 'Restores are configured to run on a central recovery host that no longer exists: choose another one in Storage & recovery → Where restores run.' } };
         target = cn;
         // the central node serves many clusters: tell it whose backup catalogue this is (the stanza the cluster's agents report, or the shared geo one)
         const stanza = cluster.geoStanza || nodes.map(n => (n.snapshot as any)?.backup?.stanza).find(Boolean);
         if (stanza && params?.stanza === undefined) params = { ...params, stanza };
         if (type !== 'restore_drill' && params?.into === undefined) {
           const into = centralInto(st, cluster, eph);
-          if (!into) return { code: 409, body: { error: 'central_no_primary', message: 'The address of this cluster’s primary is unknown: set it in the settings (result delivery).' } };
+          if (!into) return { code: 409, body: { error: 'central_no_primary', message: 'The address of this cluster’s primary is unknown: set it in Storage & recovery → Where restores run (“Delivery: primary host”).' } };
           params = { ...params, into };
         }
       }

@@ -381,7 +381,7 @@ function AddRule({ ck, rows, existing, first, hosts, order, onAdd }: { ck: strin
         {r.type !== 'local' ? <Field label="Source network (CIDR)" error={r.address ? addrErr : null} hint="The narrower, the better."><input className="input mono" value={r.address} onChange={e => set({ address: e.target.value.trim() })} placeholder="10.0.20.0/24" />
           {nets.length ? <div className="row wrap gap-s" style={{ marginTop: 4 }}>{nets.map(n => <button key={n} type="button" className="chip" onClick={() => set({ address: n })}>{n}</button>)}</div> : null}</Field> : null}
         <Field label="Authentication"><select className="input" value={r.method} onChange={e => set({ method: e.target.value })}>{METHODS.filter(([m]) => r.type === 'local' || m !== 'peer').map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
-        <Field label="Note (for you only)"><input className="input" value={r.comment || ''} onChange={e => set({ comment: e.target.value })} placeholder="What it is for" maxLength={120} /></Field>
+        <Field label="Comment (stored with the rule)"><input className="input" value={r.comment || ''} onChange={e => set({ comment: e.target.value })} placeholder="What it is for" maxLength={120} /></Field>
         {canTemp ? <Field label="Validity" hint="A temporary rule is removed automatically when it expires (access for a consultant, a maintenance job).">
           <select className="input" value={valid} onChange={e => setValid(e.target.value)} aria-label="Rule validity"><option value="0">Permanent</option><option value="1">1 hour</option><option value="8">8 hours</option><option value="24">24 hours</option><option value="168">7 days</option><option value="720">30 days</option></select></Field> : null}
       </div>

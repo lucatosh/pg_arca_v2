@@ -73,17 +73,23 @@ class SpoolTests(unittest.TestCase):
         self.assertEqual(pu.cycle(), 0, "not retried before RETRY_SEC")
         pu._retry_at[bad] = 0
         self.assertEqual(pu.cycle(), 0, "still divergent")
-        # a later good segment is not held back by the refused one
+        # a later segment of the SAME timeline is held back by the refused one (publishing it would put this server's segment after
+        # another server's in one chain: architecture review B1); another timeline's is not
         good = seg(1, 0, 9)
         wal_spool.accept(self.spool, self.mk(good), good)
+        other = seg(2, 0, 9)
+        wal_spool.accept(self.spool, self.mk(other), other)
         pu._retry_at[bad] = time.time() + 100
         self.assertEqual(pu.cycle(), 1)
-        self.assertTrue(self.wm.has_segment(good))
+        self.assertFalse(self.wm.has_segment(good))
+        self.assertTrue(self.wm.has_segment(other))
         st = wal_spool.status(self.spool)
-        self.assertEqual((st["pending"], st["pushed"], st["failed"] >= 2), (1, 8, True))
+        self.assertEqual((st["pending"], st["pushed"], st["failed"] >= 2), (2, 8, True))
         self.assertIsNotNone(st["oldest_age_sec"])
-        # the refused copy is removed by the operator: the error clears at the next successful push of ANY segment? no: of that name; here the file goes away
+        # the refused copy is removed by the operator: what waited behind it goes on
         os.unlink(os.path.join(self.spool, bad))
+        self.assertEqual(pu.cycle(), 1)
+        self.assertTrue(self.wm.has_segment(good))
         self.assertEqual(wal_spool.status(self.spool)["pending"], 0)
 
     def test_archive_command_spools_or_goes_synchronous(self):

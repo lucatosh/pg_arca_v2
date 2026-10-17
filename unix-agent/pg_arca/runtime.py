@@ -441,7 +441,8 @@ class Runtime(object):
             "system": self.system_metrics({"pgdata": inst.get("data_directory"), "repo": self.config.get("repo_path"), "wal_archive": self.config.get("wal_archive_dir"),
                                            "scratch": self.config.get("scratch_dir")}),
             "toolchain": self.report.get("toolchain"),
-            "storage": dict({"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir"))}, **self._previous_locations()),
+            "storage": dict({"repo_id": storage_id(self.config.get("repo_path")), "wal_id": storage_id(self.config.get("wal_archive_dir")),
+                             "repo_mount": mount_info(self.config.get("repo_path")), "wal_mount": mount_info(self.config.get("wal_archive_dir"))}, **self._previous_locations()),
             "cluster_key": inst.get("cluster_key") or (("patroni:%s" % self.patroni_info["scope"]) if (self.patroni_info or {}).get("scope") else None),
         }
 
@@ -470,6 +471,23 @@ def _archive_error(wal_dir):
             d = json.load(f)
         return {"segment": d.get("segment"), "error": str(d.get("error") or "")[:600], "at": d.get("at")}
     except (IOError, OSError, ValueError):
+        return None
+
+
+def mount_info(path):
+    """Where a directory really lives: {mountpoint, fstype, source, remote_host} of the filesystem that holds it (source is "server:/export"
+    for NFS, "//server/share" for SMB). What the console shows as "backup server bk1 over NFS"; None when the path is unknown."""
+    if not path:
+        return None
+    try:
+        from pg_arca.engine.destcheck import mount_of, NETWORK_FS, remote_host
+        p = path
+        while p and not os.path.exists(p):
+            p = os.path.dirname(p)
+        mp, fs, src = mount_of(p or "/")
+        host = remote_host(src) if (fs in NETWORK_FS or fs.startswith(("nfs", "cifs", "smb", "fuse"))) else None
+        return {"mountpoint": mp, "fstype": fs, "source": src, "remote_host": host}
+    except Exception:
         return None
 
 

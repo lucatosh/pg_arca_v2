@@ -26,9 +26,9 @@ export function TuningTab({ c }: { c: any }) {
   };
   return <div className="stack-l">
     <Card title="Machine and workload" actions={nodes.length > 1 ? <select className="input" style={{ width: 'auto' }} value={node.id} onChange={e => setNodeId(e.target.value)} aria-label="Node">{nodes.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}</select> : null}>
-      <div className="stack"><p style={{ margin: 0 }}><strong>{node.name}</strong>: {gb} GB RAM, {node.sys.cpu} cores.</p>
+      <div className="stack"><p style={{ margin: 0 }}><strong>{node.name}</strong>: {gb} GiB RAM, {node.sys.cpu} cores.</p>
         <div className="grid g3">{W.map(([k, l, s]) => <label key={k} className={`opt ${w === k ? 'on' : ''}`}><input type="radio" name="wl" checked={w === k} onChange={() => setW(k)} /><div><div>{l}</div><div className="small muted">{s}</div></div></label>)}</div>
-        {c.haState?.managedByPatroni ? <Banner kind="warn" title="Patroni cluster">The parameters are applied to the chosen node with ALTER SYSTEM. To have them equal on all members, repeat the operation on each one (or use Patroni’s dynamic configuration): the Discovery page flags the differences.</Banner> : null}
+        {c.haState?.managedByPatroni ? <Banner kind="info" title="Patroni cluster">The parameters are written to Patroni’s dynamic configuration (DCS) and apply to every member. The recommendations are computed from the chosen node’s memory and cores: choose the smallest member.</Banner> : null}
         {pending.length ? <Banner kind="info" title="Restart pending">These parameters change only after a restart: {pending.join(', ')}.{!c.haState?.managedByPatroni ? <div style={{ marginTop: 8 }}><RestartPg c={c} onDone={() => revalidate(`/api/clusters/${encodeURIComponent(c.id)}`)} /></div> : null}</Banner> : null}</div></Card>
     <Card title="Recommendations" actions={<Button disabled={!todo.length || r.busy} onClick={() => setAsk(todo)}>Apply all ({todo.length})…</Button>} pad={false}>
       <div className="tablewrap"><table className="t"><thead><tr><th>Parameter</th><th>Current</th><th>Recommended</th><th /></tr></thead><tbody>
@@ -39,6 +39,6 @@ export function TuningTab({ c }: { c: any }) {
     {(r.op || r.error) ? <Card><OpPanel op={r.op} error={r.error} /><Result op={r.op} /></Card> : null}
     {ask ? <Confirm title={ask.length > 1 ? `Apply ${ask.length} parameters?` : `Apply ${ask[0].name}?`} confirmLabel="Apply" onClose={() => setAsk(null)} onConfirm={() => run(ask)}>
       <ul style={{ margin: 0, paddingLeft: 18 }}>{ask.map(i => <li key={i.name}><code>{i.name}</code>: {i.current} → <strong>{i.recommended}</strong>{i.restart ? ' (restart required)' : ''}</li>)}</ul>
-      <p className="small muted">Saved with ALTER SYSTEM and the configuration reloaded. Parameters that need a restart stay pending: the restart is your decision.</p></Confirm> : null}
+      <p className="small muted">{c.haState?.managedByPatroni ? 'Written to Patroni’s dynamic configuration (DCS) and applied by every member.' : 'Saved with ALTER SYSTEM and the configuration reloaded.'} Parameters that need a restart stay pending: the restart is your decision.</p></Confirm> : null}
   </div>;
 }

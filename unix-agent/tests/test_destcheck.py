@@ -48,6 +48,21 @@ class Paths(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.t, "mnt")), "must not create the directory on the root disk")
         self.assertIn("not mounted", [c for c in r["checks"] if c["id"] == "fs"][0]["text"])
 
+    def test_the_share_must_come_from_the_chosen_backup_server(self):
+        table = [("/", "ext4", "/dev/vda"), (self.t, "nfs4", "bk1.example.lan:/export/pgarca")]
+        ok = destcheck.check_path("repo", os.path.join(self.t, "r"), "nfs", True, table=table, expect_server={"name": "bk1", "hosts": ["bk1", "10.0.0.9"]})
+        self.assertTrue(ok["ok"], ok["checks"]); self.assertEqual(lv(ok, "server"), ["ok"], "short name of the FQDN matches")
+        wrong = destcheck.check_path("repo", os.path.join(self.t, "w"), "nfs", True, table=table, expect_server={"name": "bk2", "hosts": ["bk2", "10.0.0.10"]})
+        self.assertFalse(wrong["ok"]); self.assertEqual(lv(wrong, "server"), ["bad"])
+        self.assertFalse(os.path.exists(os.path.join(self.t, "w")), "nothing created on a share from the wrong server")
+        ip = destcheck.check_path("repo", os.path.join(self.t, "i"), "nfs", True, table=[("/", "ext4", "x"), (self.t, "nfs", "[fd00::9]:/x")],
+                                  expect_server={"name": "bk1", "hosts": ["fd00::9"]})
+        self.assertEqual(lv(ip, "server"), ["ok"])
+        smb = destcheck.check_path("repo", os.path.join(self.t, "s"), "smb", False, table=[("/", "ext4", "x"), (self.t, "cifs", "//BK1/backup")],
+                                   expect_server={"name": "bk1", "hosts": ["bk1"]})
+        self.assertEqual(lv(smb, "server"), ["ok"], "case-insensitive")
+        self.assertEqual(destcheck.remote_host("/dev/sdb1"), None)
+
     def test_smb_expects_cifs_and_warns_on_the_wrong_network_type(self):
         r = destcheck.check_path("repo", os.path.join(self.t, "r"), "smb", False, table=[("/", "ext4", "x"), (self.t, "nfs4", "s")])
         self.assertEqual(lv(r, "fs"), ["warn"]); self.assertTrue(r["ok"])

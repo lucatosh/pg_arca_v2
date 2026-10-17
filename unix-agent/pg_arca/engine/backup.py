@@ -639,7 +639,7 @@ def _run_locked(ctx, btype, archive_timeout, progress, cancel, note, start_fast=
         # present by NAME is not enough: when another server wrote these names (split brain, a promotion without the archive) the copies in the
         # archive are its WAL, not ours - this set would be COMPLETE and fail at restore time (independent review: only the late-WAL path checked)
         try:
-            why = _late_wal_doubt(ctx, {"timeline": tli, "stop_lsn": stop_lsn}, _wal_needed(tli, start_lsn, stop_lsn, seg_size, in_recovery))
+            why = _late_wal_doubt(ctx, {"timeline": tli, "stop_lsn": stop_lsn, "started_ts": meta.get("started_ts")}, _wal_needed(tli, start_lsn, stop_lsn, seg_size, in_recovery))
         except OSError as e:
             # the archive could not be read just now (network mount, I/O): not a proof against this set - checked again at the next run
             meta.update(status="UNRECOVERABLE", wal_timeout=True, reason="the WAL archive could not be read to confirm this backup (%s): checked again at the next run" % e)
@@ -838,13 +838,38 @@ def _archiver_diagnosis(ctx, sess, in_recovery):
 def _late_wal_doubt(ctx, s, need):
     """Why the archive's copies of `need` may not be THIS server's WAL ('' when there is no such sign): a divergent copy of one of them was
     quarantined (conflicts/, reviewed/ or a retired dead branch), or a later timeline's history says this set's timeline ended before the set
-    did (its tail is not on the surviving history)."""
+    did (its tail is not on the surviving history).
+    A dead branch retired (retire_branch / retire_abandoned: RETIRED.json in conflicts/dead-branch-<tli>/) BEFORE this set started is
+    resolved for it: the set's WAL was archived after the retirement, under names the dead branch no longer held. Without this a timeline
+    number reused after a retirement made every backup of the new incarnation UNRECOVERABLE (architecture review B8). The traces a
+    retirement leaves in the quarantine itself (<copy>.dead-branch) belong to the same retirement."""
     want = set(need)
     root = os.path.join(ctx.wal.wal_dir, "conflicts")
+    started = float(s.get("started_ts") or 0)
+    retired = {}
+
+    def resolved(tli_hex):
+        if not started:
+            return False
+        if tli_hex not in retired:
+            at = None
+            try:
+                with open(os.path.join(root, "dead-branch-" + tli_hex, "RETIRED.json"), "r", encoding="utf-8") as f:
+                    at = float(json.load(f)["at"])
+            except (IOError, OSError, ValueError, KeyError, TypeError):
+                at = None
+            retired[tli_hex] = at
+        return retired[tli_hex] is not None and retired[tli_hex] < started
     try:
         for dirpath, _dirs, files in os.walk(root):
+            rel = os.path.relpath(dirpath, root)
+            top = rel.split(os.sep)[0]
+            if top.startswith("dead-branch-") and resolved(top[len("dead-branch-"):]):
+                continue
             for f in files:
                 if f.split(".")[0] in want:
+                    if (f.endswith(".dead-branch") or f.endswith(".dead-branch.json")) and resolved(f[:8]):
+                        continue
                     return "a divergent copy of %s is in the archive's quarantine (%s): which server's WAL the archive holds must be checked by a person" % (
                         f.split(".")[0], os.path.relpath(os.path.join(dirpath, f), ctx.wal.wal_dir))
     except OSError:

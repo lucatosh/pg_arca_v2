@@ -63,7 +63,7 @@ function Approvals() {
   return <Card title="Two-person approval">
     <p className="small muted" style={{ marginTop: 0 }}>In the selected environments, risky actions start only after another administrator gives the go-ahead.</p>
     {!d ? <Skeleton h={60} /> : <div className="stack">
-      <p className="small muted">Risky actions are: access rule changes, parameter changes, switchover and failover, table replacement, row recovery. Backups, verifications and restores into separate directories need no approval. A request expires after 24 hours.</p>
+      <p className="small muted">Actions that need approval: pg_hba changes, parameter changes, PostgreSQL and Patroni restarts, switchover, failover, maintenance mode, replica reinitialization, enabling WAL archiving, in-place restores (server, database, tables, rows), deleting kept data, retiring a WAL branch, site role changes and binary installations. Backups, verifications and restores into separate copies need no approval. A request expires after 24 hours.</p>
       {d.activeAdmins < 2 ? <Banner kind="warn" title="A second administrator is needed">With only one active administrator, approvals cannot be enabled: nobody could grant them. Create another administrator on the Users page.</Banner> : null}
       <div className="stack">{d.environments.map(env => <label key={env} className="check"><input type="checkbox" disabled={busy || (!d.approvals[env] && d.activeAdmins < 2)} checked={!!d.approvals[env]} onChange={e => toggle(env, e.target.checked)} />{ENV_LABEL[env] || env}{env === 'prod' ? <span className="small muted"> (recommended)</span> : null}</label>)}</div></div>}
   </Card>;

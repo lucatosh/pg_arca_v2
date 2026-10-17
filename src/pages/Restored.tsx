@@ -56,7 +56,7 @@ export function RestoredCard({ r, clusterId, compact }: { r: any; clusterId: str
     <div className="row wrap gap-s"><Icon n="server" /><strong>{r.name}</strong><Badge kind={st[1]}>{st[0]}</Badge>{r.online === false ? <Badge kind="warn">agent offline</Badge> : null}<div className="grow" />
       <span className="small muted">{r.keep ? 'Kept until you delete it' : r.expires_at ? <>Deleted {left(r.expires_at)} ({dt(r.expires_at)})</> : null}</span></div>
     <dl className="kv small">
-      <dt>Server</dt><dd>{r.nodeName}{host && host !== r.nodeName ? <> ({host})</> : null}, port <strong>{r.port}</strong></dd>
+      <dt>Host and port</dt><dd>{r.nodeName}{host && host !== r.nodeName ? <> ({host})</> : null}, port <strong>{r.port}</strong></dd>
       <dt>Content</dt><dd>PostgreSQL {r.major}, {r.set ? <span title={r.set}>{setName(r.set).replace(/^Full backup/, 'full backup').replace(/^(Differential|Incremental)/, m => m.toLowerCase())}</span> : 'backup —'}, {r.target ? <>up to <em>{String(r.target).replace('end of archive', 'end of the archive')}</em></> : null}{r.size_bytes ? <>, {bytes(r.size_bytes)}</> : null}</dd>
       <dt>Directory</dt><dd><code>{r.dest}</code></dd>
       {r.databases?.length ? <><dt>Database</dt><dd>{r.databases.join(', ')}</dd></> : null}

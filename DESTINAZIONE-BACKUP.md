@@ -73,6 +73,17 @@ Esecuzione (operazione `destination_migrate` dell'agent, una per cluster, mai du
 
 UI: avanzamento (byte, file, velocità, ETA), pausa/riprendi/annulla, esito con verifica, notifica (webhook) a fine o in errore.
 
+## 4b. Dove sono i backup, per nodo, e la sequenza guidata (17/10)
+
+Richiesta: rendere chiaro dove stanno i backup rispetto a ogni nodo/ambiente; scegliere la macchina (tra i worker «Backup server»), una condivisione o il disco locale; i percorsi sono configurazione sensibile, non vanno mostrati in chiaro ma con le sequenze giuste.
+
+- **Agent:** ogni nodo riporta `storage.repo_mount` / `storage.wal_mount` (`runtime.mount_info`: punto di mount, fstype, sorgente, `remote_host` estratto da `server:/export`, `[ipv6]:/x`, `//server/share`). I worker riportano `worker.identity` (hostname, FQDN, indirizzi non loopback).
+- **Console, `GET /api/clusters/:id/storage`:** per nodo e per repository/WAL dice *backup server X* (worker con ruolo `repository` riconosciuto dal `remote_host` per nome, nome corto, FQDN o indirizzo), *condivisione da un worker senza ruolo*, *condivisione di rete*, *disco locale*, *non riportato*; spazio libero; stesso disco dei dati; **condivisa / divisa / sconosciuta** provata dall'id scritto nella cartella (`.pgarca-id`), non dedotta dai percorsi. Percorsi, sorgenti di mount e indirizzi dei server solo agli amministratori.
+- **Mascheramento:** `/destination`, `/placement` (parte backup), `/api/scoped/destination` e `/api/clusters/:id/scoped/destination` restituiscono `(hidden)` al posto di percorsi/sorgenti/indirizzi per operatori e osservatori, con `hidden: true`. Restano visibili a chi può vederle le pagine dei nodi (configurazione dell'agent) e i risultati delle singole operazioni: limite noto, documentato.
+- **Destinazione con backup server:** campi `server` (id del worker) e `serverPath` (cartella sul server). `type` deve essere NFS o SMB. Il controllo sui nodi riceve `expect_server {name, hosts}` e **rifiuta** (livello bad, nulla creato) un percorso montato da un'altra macchina (`destcheck._same_server`: nome, nome corto, risoluzione DNS). Se il worker viene rimosso, l'applicazione è rifiutata (`server_missing`).
+- **Interfaccia:** pagina Backup → riquadro «Backup storage» (tabella per nodo in termini operativi, «Show locations» solo per amministratori, avvisi divisa/stesso disco/pendente/precedente); «Configure…» apre la sequenza guidata (`src/pages/StorageWizard.tsx`): Dove (backup server / condivisione esistente / disco locale) → Dettagli (scelta del server, protocollo, cartella sul server con controllo dal server, punto di mount sui nodi, comandi export/fstab pronti da copiare, avanzate) → A chi si applica (cluster, ambiente, cartella, tutti) → Riepilogo e Salva → «Check and apply on the nodes» (stesso controllo per nodo e applicazione di prima). Anche da Storage & recovery → Backup storage («Configure backup storage…»). La pagina del worker mostra «backup server for …».
+- **Test:** `tests/server/storage.test.ts` (riconoscimento server, condivisa/divisa, mascheramento di tutte le risposte, validazione, `expect_server`, server rimosso), `tests/test_destcheck.py::test_the_share_must_come_from_the_chosen_backup_server`, e2e (riquadro, rivelazione percorsi, sequenza guidata completa fino ad applicazione).
+
 ## 5. Sicurezza e governance
 
 - Ruoli: solo amministratori impostano destinazioni; approvazione a quattro occhi per applicare e per cancellare la vecchia.

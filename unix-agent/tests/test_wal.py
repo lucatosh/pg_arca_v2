@@ -86,7 +86,7 @@ class WalTests(unittest.TestCase):
         self.assertTrue(ok); self.assertIn("not needed by this server's timeline history", msg); self.assertIn("timeline 11", msg)
         out = os.path.join(self.t, "r"); self.wm.retrieve_segment(n, out)
         self.assertEqual(open(out, "rb").read(), b"a" * MB, "the stored copy is never replaced")
-        self.assertEqual(len(os.listdir(os.path.join(self.wm.wal_dir, "conflicts"))), 1, "the incoming copy is kept for review")
+        self.assertEqual(len(self.wm.conflicts()), 1, "the incoming copy is kept for review (with its sidecar)")
         hist("0/1200000")                                                              # segment 0x11 entirely BEFORE the switch: shared history
         with self.assertRaises(WalArchiveError) as cm: self.wm.archive_segment(self.mk(n, b"b"), n)
         self.assertEqual(cm.exception.code, "PGA-WAL-031")
@@ -121,7 +121,8 @@ class WalTests(unittest.TestCase):
         n = seg(1, 0, 2); self.wm.archive_segment(self.mk(n, b"a"), n)
         with self.assertRaises(WalArchiveError) as cm: self.wm.archive_segment(self.mk(n, b"b"), n)
         self.assertEqual(cm.exception.code, "PGA-WAL-031")
-        self.assertEqual(len(os.listdir(os.path.join(self.wm.wal_dir, "conflicts"))), 1)
+        self.assertEqual(len(self.wm.conflicts()), 1)
+        self.assertEqual(sorted(f.endswith(".json") for f in os.listdir(os.path.join(self.wm.wal_dir, "conflicts"))), [False, True], "the copy and its sidecar")
         out = os.path.join(self.t, "r"); self.wm.retrieve_segment(n, out)
         self.assertEqual(open(out, "rb").read(), b"a" * MB)           # original untouched
 

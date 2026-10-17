@@ -612,6 +612,21 @@ def _recovery_path(ctx, start_tli, timeline):
     return [(target, None)] + [(t, forks[t]) for t in sorted(forks, reverse=True) if t >= start_tli]
 
 
+def concrete_timeline(ctx, chain, timeline="latest"):
+    """What is written as recovery_target_timeline: 'latest' becomes the NUMBER of the timeline the checks above chose (_recovery_path).
+    PostgreSQL's own 'latest' probes N+1, N+2... in the archive and stops at the first missing history file: a gap (a dead branch's history
+    filed away into the archive's quarantine, a history file lost) makes it settle on an OLDER timeline and silently miss everything after it;
+    a higher-numbered dead branch that does not descend from the backup makes it refuse to start ('not a child of this server's history').
+    The number is exactly the timeline whose WAL presence, chain and target were verified. 'current' and explicit numbers are left as given."""
+    if str(timeline or "latest").strip().lower() != "latest" or not chain:
+        return timeline
+    try:
+        return str(_recovery_path(ctx, int(chain[0].get("timeline") or 1), "latest")[0][0])
+    except Exception as e:
+        ctx.log("warning", "timeline history not readable, recovering with recovery_target_timeline='latest': %s" % e)
+        return "latest"
+
+
 def fit_chain_to_timeline(ctx, chain, timeline="latest"):
     """The chain as the recovery will really replay it. A set taken on timeline T up to stop S is usable only if the recovery stays on T at least up
     to S: when the target timeline left T earlier (a lagging standby promoted, forking at F < S), the set's files hold pages of the ABANDONED branch
@@ -1169,7 +1184,7 @@ def _restore_instance(ctx, set_spec=None, dest=None, target_time=None, target_ls
                     "# the original server. ====\n%s\n" % (iso(), "\n".join(safe)))
         plan["copy_safety"] = safe
     prof.install_recovery(dest, recovery_lines(ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm,
-                                               "promote" if action == "promote" else "pause", inclusive, timeline))       # recovery.signal + auto.conf (>=12) or recovery.conf (<12)
+                                               "promote" if action == "promote" else "pause", inclusive, concrete_timeline(ctx, chain, timeline)))       # recovery.signal + auto.conf (>=12) or recovery.conf (<12)
     bad = audit_symlinks(dest)
     bad = [b for b in bad if not b[0].startswith(os.path.join(dest, "pg_tblspc") + os.sep)]
     if bad:

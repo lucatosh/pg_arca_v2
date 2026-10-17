@@ -81,6 +81,7 @@ export const OP_SPECS: Record<string, OpSpec> = {
   wal_retire_branch: { mutating: true, target: 'any_node', lane: 'control', validate: (p: any) => !Number.isInteger(Number(p.timeline)) || Number(p.timeline) < 1 ? 'timeline (number) required'
                         : (!p.dry_run && !confirmed(p.confirm, 'RETIRE')) ? 'retiring a branch needs confirm="RETIRE" (the stored copies of that timeline that diverge from the current primary are set aside)'
                         : p.abandoned !== undefined && typeof p.abandoned !== 'boolean' ? 'abandoned must be boolean'
+                        : p.tail !== undefined && typeof p.tail !== 'boolean' ? 'tail must be boolean'
                         : p.primary_timeline !== undefined && !(Number.isInteger(p.primary_timeline) && p.primary_timeline >= 1) ? 'primary_timeline must be a timeline number' : null },
   wal_conflicts: { mutating: true, target: 'any_node', lane: 'control', validate: (p: any) => p.files !== undefined && (!Array.isArray(p.files) || p.files.some((f: any) => typeof f !== 'string' || !/^[0-9A-Za-z._-]{1,120}$/.test(f))) ? 'files must be names of quarantined copies'
     : p.kind !== undefined && p.kind !== 'off_history' ? 'kind can only be "off_history" (the copies the current history never reads, decided by the agent)' : null },
@@ -272,7 +273,8 @@ Object.assign(OP_SPECS, {
                       : (p.budget_sec !== undefined && !(Number(p.budget_sec) >= 30 && Number(p.budget_sec) <= 7200) ? 'budget_sec must be 30-7200'
                       : (p.since_iso !== undefined && !(typeof p.since_iso === 'string' && p.since_iso.length <= 40 && !isNaN(Date.parse(p.since_iso))) ? 'since_iso must be a date' : null))))) },
   destination_check:   { mutating: false, target: 'node', lane: 'control', validate: (p: any) => !['local', 'nfs', 'smb'].includes(p.type ?? 'local') ? 'type must be local|nfs|smb (object storage is not supported by the engine yet)'
-                                : (!p.repo_path && !p.wal_path ? 'repo_path and/or wal_path required' : ([p.repo_path, p.wal_path].some((x: any) => x !== undefined && x !== null && (typeof x !== 'string' || !x.startsWith('/') || !noCtl(x) || x.split('/').includes('..'))) ? 'paths must be absolute, without ..' : null)) },
+                                : (!p.repo_path && !p.wal_path ? 'repo_path and/or wal_path required' : ([p.repo_path, p.wal_path].some((x: any) => x !== undefined && x !== null && (typeof x !== 'string' || !x.startsWith('/') || !noCtl(x) || x.split('/').includes('..'))) ? 'paths must be absolute, without ..'
+                                : (p.expect_server !== undefined && (!p.expect_server || typeof p.expect_server !== 'object' || !Array.isArray(p.expect_server.hosts) || p.expect_server.hosts.length > 64 || p.expect_server.hosts.some((h: any) => typeof h !== 'string' || h.length > 255 || !noCtl(h))) ? 'expect_server must be {name, hosts:[...]}' : null))) },
   ephemeral_preflight: { mutating: false, target: 'node', lane: 'control', validate: (p: any) => (p.major !== undefined && !(Number.isInteger(Number(p.major)) && Number(p.major) >= 10 && Number(p.major) <= 40) ? 'major must be a PostgreSQL major version' : (p.need_bytes !== undefined && !(Number(p.need_bytes) >= 0) ? 'need_bytes must be a number' : intoErr(p))) },
   ephemeral_install:   { mutating: true, target: 'node', lane: 'data', cancellable: false, validate: (p: any) => !(Number.isInteger(Number(p.major)) && Number(p.major) >= 10 && Number(p.major) <= 40) ? 'major (PostgreSQL major version) required' : (p.mode && !['private', 'system'].includes(p.mode) ? 'mode must be private|system' : (p.confirm !== 'INSTALL' ? 'type INSTALL to confirm' : null)) },
 } as Record<string, OpSpec>);
@@ -283,7 +285,7 @@ export const laneOf = (type: string): string => (Object.prototype.hasOwnProperty
 /** Parameters the console itself resolves when it hands an operation to the agent (withEphemeral): a client must not be able to pre-fill them,
  *  because they carry a directory the agent will run binaries from. */
 const RESERVED_PARAMS = ['ephemeral'];
-const BOOL_PARAMS = ['dry_run', 'replace_production', 'replace_original', 'keep_archiving', 'force', 'force_rewind', 'delete_all_added', 'allow_cascade',
+const BOOL_PARAMS = ['tail', 'abandoned', 'dry_run', 'replace_production', 'replace_original', 'keep_archiving', 'force', 'force_rewind', 'delete_all_added', 'allow_cascade',
   'delta', 'start_fast', 'include_retained', 'background'];
 
 export function validateOp(type: string, params: Record<string, any>): string | null {

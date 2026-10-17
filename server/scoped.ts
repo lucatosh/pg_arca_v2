@@ -14,10 +14,12 @@ export type Scope = 'global' | 'env' | 'folder' | 'cluster';
 export type Kind = 'ephemeral' | 'destination';
 export interface Resolved { value: Record<string, any>; sources: Record<string, { scope: Scope | 'default'; key: string }> }
 export interface KindSpec {
-  /** field defaults shown as "predefinito" (not stored) */
+  /** field defaults shown as "default" (not stored) */
   defaults: Record<string, any>;
   /** validates ONE assignment (partial object). Returns the cleaned object or an error text. */
   validate: (v: any, st: any) => { ok: true; value: Record<string, any> } | { ok: false; error: string };
+  /** sensitive values (backup locations): what a non-administrator receives instead of the real answer */
+  mask?: <T>(v: T) => T;
 }
 
 const key = (scope: Scope, k: string) => (scope === 'global' ? 'global' : `${scope}:${k}`);
@@ -111,12 +113,13 @@ export function mountScopedRoutes(app: any, store: Store) {
     };
   };
   const kindOf = (req: Request): Kind | null => (Object.prototype.hasOwnProperty.call(SPECS, req.params.kind) ? (req.params.kind as Kind) : null);
-  app.get('/api/scoped/:kind', (req: Request, res: Response) => { const k = kindOf(req); if (!k) return res.status(404).json({ error: 'unknown_kind' }); res.json(view(k)); });
+  const out = (req: Request, k: Kind, v: any) => (SPECS[k].mask && (req as any).role !== 'admin' ? { ...SPECS[k].mask!(v), hidden: true } : v);
+  app.get('/api/scoped/:kind', (req: Request, res: Response) => { const k = kindOf(req); if (!k) return res.status(404).json({ error: 'unknown_kind' }); res.json(out(req, k, view(k))); });
   app.get('/api/clusters/:id/scoped/:kind', (req: Request, res: Response) => {
     const k = kindOf(req); const st = store.peek(); const c = st.clusters.find((x: any) => x.id === req.params.id);
     if (!k) return res.status(404).json({ error: 'unknown_kind' });
     if (!c) return res.status(404).json({ error: 'cluster_not_found' });
-    res.json(resolveScoped(st, k, c));
+    res.json(out(req, k, resolveScoped(st, k, c)));
   });
 
   // body: { scope, key, value } sets (replaces) the fields of that scope; { scope, key, inherit: true } removes the assignment.
@@ -141,6 +144,6 @@ export function mountScopedRoutes(app: any, store: Store) {
       if (clean) m[key(scope, kk)] = clean; else delete m[key(scope, kk)];
       audit(d, { clusterId: scope === 'cluster' ? kk : undefined, actor: actor(req), action: `scoped.${kind}`, status: 'OK', details: { scope, key: kk, ...(clean || { inherit: true }) } });
     });
-    res.json({ ok: true, ...view(kind) });
+    res.json({ ok: true, ...out(req, kind, view(kind)) });
   });
 }

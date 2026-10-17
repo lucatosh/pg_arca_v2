@@ -134,26 +134,26 @@ export function ActivityDock({ me, clusters }: { me: string; clusters: any[] }) 
               {canAct && !o.cancelRequested ? <Button sm kind="danger" icon="stop" busy={busy === o.id} onClick={() => cancel(o)}>Cancel</Button> : null}</div>
           </div>;
         })}
-        {!running.length && !recent.length ? <div className="dock-item"><div className="muted small">Backups, restores and other operations show up here while they run and for an hour after they end. Keep working: the panel updates by itself.</div></div> : null}
+        {!running.length && !recent.length ? <div className="dock-item"><div className="muted small">Backups, restores and other operations show up here while they run and, once finished, for the time range chosen below. Keep working: the panel updates by itself.</div></div> : null}
         <div className="dock-sec dock-tools">
           <span>Finished</span>
           <select className="input sm" value={hours} onChange={e => pickHours(Number(e.target.value))} aria-label="Time range">{WINDOWS.map(w => <option key={w.h} value={w.h}>{w.label}</option>)}</select>
           <span className="seg" role="group" aria-label="Outcome">
             {([['all', 'All'], ['failed', `Failed${failedAll.length ? ` (${failedAll.length})` : ''}`], ['ok', 'Succeeded']] as const).map(([k, t]) => <button key={k} aria-pressed={filt === k} onClick={() => pickFilt(k)}>{t}</button>)}</span>
         </div>
-        {!recent.length && (running.length || all.length) ? <div className="dock-item"><div className="muted small">{filt === 'failed' ? 'No failed operation in this range.' : filt === 'ok' ? 'No successful operation in this range.' : 'Nothing finished in this range.'} <a href="#/history" onClick={() => toggle(false)}>Open the history</a> to search further back.</div></div> : null}
+        {!recent.length && (running.length || all.length) ? <div className="dock-item"><div className="muted small">{filt === 'failed' ? 'No failed operation in this range.' : filt === 'ok' ? 'No successful operation in this range.' : 'Nothing finished in this range.'} <a href="#/history" onClick={() => toggle(false)}>Open the Activity log</a> to search further back.</div></div> : null}
         {recent.map(o => {
           const to = target(o);
           return <div className="dock-item done" key={o.id}>
             <div className="t"><Icon n={o.status === 'succeeded' ? 'check' : o.status === 'failed' ? 'alert' : 'cancel'} /><strong>{label(o)}</strong><span className="end small faint nowrap">{ago(o.updatedAt)}</span>
-              <button className="x" onClick={() => dismiss([o.id])} aria-label={`Remove from the list: ${label(o)}`} title="Remove from the list (it stays in the history)"><Icon n="x" s={14} /></button></div>
+              <button className="x" onClick={() => dismiss([o.id])} aria-label={`Remove from the list: ${label(o)}`} title="Remove from the list (it stays in the Activity log)"><Icon n="x" s={14} /></button></div>
             <div className="m"><span>{STATUS_LABEL[o.status] || o.status}</span><span>{names[o.clusterId] || o.clusterId}</span>{o.createdBy ? <span>by {o.createdBy}</span> : null}</div>
             {o.status === 'failed' && o.error ? <div className="err">{o.error}</div> : null}
             <div className="acts">{to ? <Button sm icon="external" onClick={() => go(to)}>Details</Button> : null}<Button sm icon="logs" onClick={() => openOpLog(o.id, label(o))}>Log</Button></div>
           </div>;
         })}
       </div>
-      <div className="dock-ft"><span className="small faint">Ctrl J opens and closes</span><div className="grow" /><a className="small" href="#/history" onClick={() => toggle(false)}>History</a>{recent.length ? <Button sm kind="ghost" onClick={clear}>Clear list</Button> : null}</div>
+      <div className="dock-ft"><span className="small faint">Ctrl J opens and closes</span><div className="grow" /><a className="small" href="#/history" onClick={() => toggle(false)}>Activity log</a>{recent.length ? <Button sm kind="ghost" onClick={clear}>Clear list</Button> : null}</div>
     </div> : null}
     {floating ? <button className={`dock-chip ${chipClass}`} onClick={() => toggle()} aria-expanded={open} aria-controls="dock-panel" title="Activity (Ctrl J)">
       <span className="pip" /><span aria-live="polite">{chipText}</span><Icon n="down" className={open ? '' : 'flip'} />

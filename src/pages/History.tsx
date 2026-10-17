@@ -23,8 +23,8 @@ export function RetentionSetting() {
     catch (e: any) { toast(e.body?.message || e.message, 'bad'); } setBusy(false);
   };
   return <div className="row wrap">
-    <span className="small muted">History retention: {q.data.retentionDays} {q.data.retentionDays === 1 ? 'day' : 'days'} (default {q.data.defaultDays}).</span>
-    {role === 'admin' ? <><input className="input" style={{ width: 80 }} type="number" min={1} max={q.data.maxDays} value={cur} onChange={e => setV(e.target.value)} aria-label="Days of history retention" />
+    <span className="small muted">Activity log retention: {q.data.retentionDays} {q.data.retentionDays === 1 ? 'day' : 'days'} (default {q.data.defaultDays}).</span>
+    {role === 'admin' ? <><input className="input" style={{ width: 80 }} type="number" min={1} max={q.data.maxDays} value={cur} onChange={e => setV(e.target.value)} aria-label="Activity log retention in days" />
       <Button sm onClick={save} busy={busy} disabled={cur === String(q.data.retentionDays)}>Save</Button></> : null}
   </div>;
 }

@@ -125,6 +125,65 @@ def _wal_files(wal_dir):
     return sorted(out, key=lambda n: (0 if n.endswith(".meta") else 1, n))
 
 
+CODECS = (".zst", ".lz4", ".gz", ".enc")
+MIGRATED_CONFLICTS = os.path.join("conflicts", "migrated")
+
+
+def _wal_base(n):
+    """The archived object a file belongs to: '000000010000000000000003' for its .zst / .lz4 / .gz object and its .meta."""
+    if n.endswith(".meta"):
+        n = n[:-5]
+    while n.endswith(CODECS):
+        n = n[:n.rfind(".")]
+    return n
+
+
+def _logical_sha(d, base, files):
+    """sha256 of the RAW content (from the archive's .meta), else of the stored bytes when the name has a single uncompressed object; None if unknown."""
+    try:
+        with open(os.path.join(d, base + ".meta"), "r", encoding="utf-8") as f:
+            v = json.load(f).get("sha256")
+            if v:
+                return "raw:" + v
+    except (IOError, OSError, ValueError):
+        pass
+    objs = [f for f in files if not f.endswith(".meta")]
+    if len(objs) == 1:
+        with open(os.path.join(d, objs[0]), "rb") as f:
+            return "file:" + objs[0] + ":" + _sha(f.read())
+    return None
+
+
+def _wal_plan(src_wal, dst_wal):
+    """Per archived object of the previous location: copy (not in the current archive under ANY codec), skip (already there with the same content),
+    or CONFLICT (the current archive holds a different version under the same name - two servers wrote that segment; never overwritten, never
+    silently dropped: its copy goes to conflicts/migrated/ of the current archive, and the previous location may be deleted only after that).
+    Returns (files to copy, {base: [files]} conflicts not yet kept, {base: [files]} conflicts already kept)."""
+    src = {}
+    for n in _wal_files(src_wal):
+        src.setdefault(_wal_base(n), []).append(n)
+    dst = {}
+    for n in _wal_files(dst_wal) if dst_wal and os.path.isdir(dst_wal) else []:
+        dst.setdefault(_wal_base(n), []).append(n)
+    copy, conflicts, kept = [], {}, {}
+    for base, files in sorted(src.items()):
+        if base not in dst or not [f for f in dst[base] if not f.endswith(".meta")]:
+            copy.extend(files)
+            continue
+        a, b = _logical_sha(src_wal, base, files), _logical_sha(dst_wal, base, dst[base])
+        same = a is not None and a == b
+        if not same and a and b and a.startswith("file:") and b.startswith("file:") and a.rsplit(":", 1)[1] == b.rsplit(":", 1)[1]:
+            same = True
+        if same:
+            continue
+        kd = os.path.join(dst_wal, MIGRATED_CONFLICTS, base)
+        if all(os.path.exists(os.path.join(kd, f)) for f in files):
+            kept[base] = files
+        else:
+            conflicts[base] = files
+    return sorted(copy, key=lambda n: (0 if n.endswith(".meta") else 1, n)), conflicts, kept
+
+
 def _inventory(ctx, src_repo, src_wal):
     """What belongs to THIS stanza in the previous location: sets (+ their chunks) not already in the current one, WAL files not already there."""
     from pg_arca.engine.repo import Repo
@@ -151,12 +210,14 @@ def _inventory(ctx, src_repo, src_wal):
             sd = os.path.join(_sets_root(src_repo, ctx.stanza), m["id"])
             out["set_bytes"] += sum(os.path.getsize(os.path.join(sd, f)) for f in os.listdir(sd) if os.path.isfile(os.path.join(sd, f)))
         out["sets"].sort(key=lambda s: s.get("start_time") or "")
+    out["wal_conflicts"] = []
     if src_wal:
-        for n in _wal_files(src_wal):
-            if os.path.exists(os.path.join(ctx.wal_dir, n)):
-                continue
+        copy, conflicts, kept = _wal_plan(src_wal, ctx.wal_dir)
+        for n in copy + [f for fs in conflicts.values() for f in fs]:
             out["wal"].append(n)
             out["wal_bytes"] += os.path.getsize(os.path.join(src_wal, n))
+        out["wal_conflicts"] = sorted(conflicts)
+        out["wal_conflicts_kept"] = sorted(kept)
     out["chunk_bytes"] = sum(out["chunks"].values())
     return out
 
@@ -185,6 +246,10 @@ def plan(ctx, src_repo=None, src_wal=None, bench=True):
 
     def add(cid, level, text, fix=None):
         checks.append(dict({"id": cid, "level": level, "text": text}, **({"fix": fix} if fix else {})))
+    if inv.get("wal_conflicts"):
+        add("wal_conflict", "warn", "%d WAL segment(s) exist in both archives with DIFFERENT content (two servers wrote the same name, e.g. %s): the current archive's version "
+            "stays in use, the previous one is kept in its quarantine (%s) and never deleted" % (len(inv["wal_conflicts"]), inv["wal_conflicts"][0], MIGRATED_CONFLICTS),
+            "look at the WAL conflicts on the Backup page after the migration; a segment PostgreSQL archived twice with different content means two primaries")
     vols = [(sp_repo, need_repo + (inv["wal_bytes"] if same_fs else 0), "repository" + (" + WAL archive" if same_fs else ""))]
     if not same_fs:
         vols.append((sp_wal, inv["wal_bytes"], "WAL archive"))
@@ -208,7 +273,7 @@ def plan(ctx, src_repo=None, src_wal=None, bench=True):
     total = need_repo + inv["wal_bytes"]
     res = {"source": {"repo": src_repo, "wal": src_wal}, "destination": {"repo": ctx.repo.path, "wal": ctx.wal_dir}, "stanza": ctx.stanza,
            "sets": inv["sets"], "chunks": len(inv["chunks"]), "chunk_bytes": inv["chunk_bytes"], "set_bytes": inv["set_bytes"],
-           "wal_files": len(inv["wal"]), "wal_bytes": inv["wal_bytes"], "total_bytes": total, "files": files,
+           "wal_files": len(inv["wal"]), "wal_bytes": inv["wal_bytes"], "wal_conflicts": inv.get("wal_conflicts", []), "total_bytes": total, "files": files,
            "space": [sp_repo] + ([] if same_fs else [sp_wal]), "write_mb_s": speed,
            "estimated_seconds": int(total / (speed * 1024 * 1024)) + 1 if speed else None, "checks": checks,
            "ok": not any(c["level"] == "bad" for c in checks), "nothing_to_do": total == 0}
@@ -310,15 +375,24 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
             gcl.release()
     # ---- WAL: metas first, then segments / histories / labels
     if src_wal:
-        for n in _wal_files(src_wal):
+        copy, conflicts, _kept = _wal_plan(src_wal, ctx.wal_dir)
+        for n in copy:
             _check_cancel(cancel)
-            if os.path.exists(os.path.join(ctx.wal_dir, n)):
-                continue
             b = _copy_verified(os.path.join(src_wal, n), os.path.join(ctx.wal_dir, n), th, fresh_mtime=False)
             done_b += b
             copied["wal"] += 1
             if copied["wal"] % 100 == 0:
                 tick("wal", {"wal_done": copied["wal"], "wal_total": p["wal_files"]})
+        # the same segment name with different content in both archives: the current one stays authoritative, the other version is KEPT
+        # (quarantine of the current archive, with its meta) for the operator to examine - deleting the previous location must never erase it
+        for base, files in sorted(conflicts.items()):
+            _check_cancel(cancel)
+            kd = os.path.join(ctx.wal_dir, MIGRATED_CONFLICTS, base)
+            os.makedirs(kd, exist_ok=True)
+            for f in sorted(files, key=lambda n: (0 if n.endswith(".meta") else 1, n)):
+                done_b += _copy_verified(os.path.join(src_wal, f), os.path.join(kd, f), th, fresh_mtime=False)
+            copied.setdefault("wal_conflicts", []).append(base)
+            ctx.log("warning", "WAL %s differs between the previous archive and the current one: the current version is kept, the previous one is stored in %s" % (base, kd))
         _fsync_dir(ctx.wal_dir)
         if hasattr(ctx.wal, "adopt_database_names"):                # the oid->name registry (hidden file) moves with the archive
             copied["database_names"] = ctx.wal.adopt_database_names(src_wal)
@@ -330,7 +404,7 @@ def run(ctx, src_repo=None, src_wal=None, throttle_mb_s=0, progress=None, cancel
     write_json(st_path, state)
     tick("done")
     return {"source": p["source"], "destination": p["destination"], "copied": copied, "complete": complete, "seconds": round(time.time() - t0, 1),
-            "left": {"sets": [s["id"] for s in rest["sets"]], "wal_files": len(rest["wal"])},
+            "left": {"sets": [s["id"] for s in rest["sets"]], "wal_files": len(rest["wal"])}, "wal_conflicts": copied.get("wal_conflicts", []),
             "note": "the previous location was not deleted: it is no longer needed for restores" if complete else "some content is still only in the previous location"}
 
 

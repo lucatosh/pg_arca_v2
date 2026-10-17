@@ -85,6 +85,23 @@ import { requiredRole } from '../../server/auth';
     assert.deepStrictEqual(f({ enabled: true, pending: 2, alive: true, last_error: { segment: '0000000100000000000000AA', error: 'PGA-WAL-031 divergent' } }).map(i => i.code), ['wal_spool_failing']);
     assert.deepStrictEqual(f({ enabled: true, pending: 2, alive: false, oldest_age_sec: 10 }).map(i => [i.code, i.severity]), [['wal_spool_behind', 'warning']]);
   }
+  { // a timeline that went on past its promotion point (agent: wal.branch_tails) -> critical, one per old timeline, and the cluster is not protected
+    const { protectionOf } = await import('../../server/health');
+    const base = store.peek(); const g1: any = base.nodes.n3;
+    const mk = (tails: any, extra: any = {}): any => ({ ...base, clusters: [...base.clusters, { id: 'bt', name: 'bt-db', environment: 'dev', source: 'agent' }],
+      nodes: { ...base.nodes, b1: { ...g1, id: 'b1', name: 'b1', clusterId: 'bt', snapshot: { ...g1.snapshot, ...extra, wal: { gap_count: 0, conflicts: 0, branch_tails: tails } } } } });
+    const f = (tails: any, extra: any = {}) => evaluate(mk(tails, extra), now).filter(i => i.clusterId === 'bt' && i.code === 'wal_branch_tail');
+    assert.strictEqual(f([]).length, 0); assert.strictEqual(f(undefined).length, 0, 'an older agent that does not report it: nothing');
+    const one = f([{ timeline: 1, successor: 2, fork_lsn: '0/350000', count: 2, first: '000000010000000000000004', last: '000000010000000000000005' }]);
+    assert.deepStrictEqual(one.map(i => [i.code, i.severity, i.key]), [['wal_branch_tail', 'critical', 'bt:wal_branch_tail:1']]);
+    assert(/Timeline 1 continued after its promotion point: two primaries wrote WAL/.test(one[0].title), one[0].title);
+    assert(/promoted from timeline 1 at 0\/350000/.test(one[0].cause) && /2 segments/.test(one[0].cause) && /000000010000000000000004 … 000000010000000000000005/.test(one[0].cause), one[0].cause);
+    assert(/not on the current timeline history/.test(one[0].cause)); assert.deepStrictEqual(one[0].action, { label: 'Open Backup', page: 'backup' });
+    assert.strictEqual(f([{ timeline: 1, successor: 2, fork_lsn: '0/350000', count: 1, first: 'A', last: 'A' }, { timeline: 2, successor: 3, fork_lsn: '0/900000', count: 3, first: 'B', last: 'C' }]).length, 2);
+    const st = mk([{ timeline: 1, successor: 2, fork_lsn: '0/350000', count: 1, first: 'A', last: 'A' }]);
+    assert.strictEqual(protectionOf(st, 'bt', evaluate(st, now), now).state, 'bad', 'a divergence: not protected');
+    assert(protectionOf(st, 'bt', evaluate(st, now), now).problems.some((p: any) => p.code === 'wal_branch_tail'));
+  }
   { // a node whose clock is ahead dates its backups in the future: said, and no meaningless "last backup -48 hours ago"
     const base = store.peek(); const g1: any = base.nodes.n3;
     const mk: any = { ...base, clusters: [...base.clusters, { id: 'ck', name: 'ck-db', environment: 'prod', source: 'agent' }],

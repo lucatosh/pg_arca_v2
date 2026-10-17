@@ -238,7 +238,7 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
   };
 
   const whatTxt = scope === 'instance' ? 'the whole server' : scope === 'database' ? <>database <strong>{db}</strong></> : objs.length === 1 ? <>{splitId(obj).length === 2 ? 'schema' : 'table'} <strong>{shortName(obj)}</strong> in {splitId(obj)[0]}</> : <><strong>{objs.length}</strong> objects in {db}</>;
-  const whenTxt = !tgt ? '—' : tgt.mode === 'latest' ? (selDropped ? 'just before it was dropped' : 'at the latest saved point') : tgt.mode === 'time' ? <>as it was on <strong>{dt(tgt.ms)}</strong></> : tgt.label?.startsWith('restore point') ? <>at the <strong>{tgt.label}</strong></> : <>just before: <strong>{tgt.label}</strong></>;
+  const whenTxt = !tgt ? '—' : tgt.mode === 'latest' ? (selDropped ? 'just before it was dropped' : 'at the latest archived point') : tgt.mode === 'time' ? <>as it was on <strong>{dt(tgt.ms)}</strong></> : tgt.label?.startsWith('restore point') ? <>at the <strong>{tgt.label}</strong></> : <>just before: <strong>{tgt.label}</strong></>;
   // what happened, in a form to paste into the incident / change ticket: who, what, to which point, how it ended, what was kept to go back
   const incident = (): string => {
     const o = exec.op!; const r = o.result || {}; const t0 = Date.parse(o.createdAt), t1 = Math.max(Date.parse(o.updatedAt || o.createdAt), prom.op?.status === 'succeeded' ? Date.parse(prom.op.updatedAt) || 0 : 0, swapped ? Date.now() : 0);
@@ -306,8 +306,8 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
             <div className="small muted">{fmtWhen(Date.parse(p.at))} · {ago2(Date.parse(p.at))}, marked by {p.by}. You go back to the state at that moment.</div>
             {(() => { const before = suggestions.find(x => Number.isFinite(x.at) && x.at < Date.parse(p.at)); return before ? <div className="hba-warn small" style={{ marginTop: 4 }}><span>This point is after “{before.title}” ({fmtWhen(before.at)}): that damage is already in it.</span></div> : null; })()}</div></label>; })}
         <label className={`opt ${tgt?.mode === 'latest' ? 'on' : ''}`}><input type="radio" checked={tgt?.mode === 'latest'} onChange={() => setTgt({ mode: 'latest' })} /><div className="grow">
-          <div><strong>{selDropped ? 'Just before it was dropped' : 'The latest saved point'}</strong> {!suggestions.length && ((intent === 'database' && selDropped) || intent === 'cluster') ? <Badge kind="ok">Recommended</Badge> : null}</div>
-          <div className="small muted">{selDropped ? <>pg_arca finds the DROP of <strong>{db}</strong> in the WAL by itself and stops just before it.</> : <>Up to the last archived transaction ({d.archiver?.last_archived_time ? ago2(Date.parse(d.archiver.last_archived_time)) : 'just now'}).</>}</div>
+          <div><strong>{selDropped ? 'Just before it was dropped' : 'The latest archived point'}</strong> {!suggestions.length && ((intent === 'database' && selDropped) || intent === 'cluster') ? <Badge kind="ok">Recommended</Badge> : null}</div>
+          <div className="small muted">{selDropped ? <>pg_arca finds the DROP of <strong>{db}</strong> in the WAL by itself and stops just before it.</> : <>Up to the end of the last archived WAL segment ({d.archiver?.last_archived_time ? `archived ${ago2(Date.parse(d.archiver.last_archived_time))}` : 'archive time not reported'}).</>}</div>
           {tgt?.mode === 'latest' && (intent === 'rows' || (intent === 'table' && goneNow === false)) ? <div className="hba-warn small" style={{ marginTop: 4 }}>Careful: the latest point already contains the mistake. Pick an earlier point in time.</div>
             : tgt?.mode === 'latest' && intent === 'database' && !selDropped ? <div className="hba-warn small" style={{ marginTop: 4 }}><span>Careful: <strong>{db}</strong> still exists, and the latest point holds whatever damaged it. Pick the moment just before the damage, unless you only want a copy of it as it is now.</span></div> : null}</div></label>
         <label className={`opt ${tgt?.mode === 'time' ? 'on' : ''}`}><input type="radio" checked={tgt?.mode === 'time'} onChange={() => setTgt({ mode: 'time', ms: Math.max(from, Date.now() - 3600e3) })} /><div className="grow">
@@ -316,13 +316,13 @@ function Wizard({ c, d, sets }: { c: any; d: any; sets: SetRow[] }) {
             <div className="row wrap gap-s">{[[15, '15 minutes ago'], [60, '1 hour ago'], [240, '4 hours ago'], [1440, 'this time yesterday']].map(([m, t]) => <Button key={m} sm onClick={() => setTgt({ mode: 'time', ms: Math.max(from, Date.now() - (m as number) * 60000) })}>{t}</Button>)}</div>
             <Field label={`Date and time (${tzName()})`} error={!okWhen && !whenBad ? 'Outside the recoverable window: from ' + fmtWhen(from) + ' to now.' : null}>
               <WhenInput ms={tgt.ms} onChange={ms => setTgt({ mode: 'time', ms })} onBad={setWhenBad} /></Field>
-          </div> : <div className="small muted">Pick a date and time: you can go back to any point from {fmtWhen(from)} to now.</div>}</div></label>
+          </div> : <div className="small muted">Pick a date and time between {fmtWhen(from)} and now; a point after the last archived WAL segment is restored up to that segment.</div>}</div></label>
       </div>
       {selDb && !selDb.late && selDb.first_stop && tgt?.mode === 'time' && tgt.ms < Date.parse(selDb.first_stop) ? <Banner kind="warn" title={`${db} appears in the backups only since ${fmtWhen(Date.parse(selDb.first_stop))}`}>It may not exist yet at this point in time: in that case the restore stops and says so.</Banner> : null}
-      <Details k={`${K}:when-adv`} summary="Find the exact moment (backup timeline and transaction-log search)">
+      <Details k={`${K}:when-adv`} summary="Find the exact moment (backup timeline and WAL search)">
         <div className="stack" style={{ marginTop: 10 }}>
           <RecoveryTimeline sets={sets} from={from} to={to} value={tgt?.mode === 'time' ? tgt.ms : null} onChange={ms => setTgt(ms == null ? { mode: 'latest' } : { mode: 'time', ms })} events={events} broken={d.wal?.continuous === false} />
-          <div className="small muted">The ticks are backups, the colored area is the recoverable window. Starts from: {baseSet ? <span title={baseSet.id}>{setName(baseSet.id)}</span> : <span style={{ color: 'var(--bad)' }}>none before this point in time</span>}</div>
+          <div className="small muted">Ticks mark backup end times; the colored area is the recoverable window. Base backup used: {baseSet ? <span title={baseSet.id}>{setName(baseSet.id)}</span> : <span style={{ color: 'var(--bad)' }}>none before this point in time</span>}</div>
           <ForensicsTools fx={fx} dml={dml} fxHours={fxHours} setFxHours={setFxHours} dmlMin={dmlMin} setDmlMin={setDmlMin} onPick={t => setTgt(t)} />
         </div></Details>
       <div className="row"><Button onClick={() => setStep(intent === 'cluster' ? 0 : 1)}>Back</Button><div className="grow" /><Button kind="primary" disabled={!okWhen || (!baseSet && tgt?.mode === 'time')} onClick={goCheck}>Next</Button></div></div></Card>}
@@ -429,7 +429,7 @@ function RecentDrops({ op, busy, onPick }: { op: Op | null; busy: boolean; onPic
   const evs = (op?.status === 'succeeded' ? op.result.events || [] : []).filter((e: any) => (e.names || []).some((n: string) => splitId(n).length === 3)).slice(-6).reverse();
   if (busy || (op && !isTerminalOp(op))) return <div className="small muted row gap-s"><Icon n="refresh" spin s={14} />Searching the WAL for recently dropped or truncated tables…</div>;
   if (!evs.length) return op?.status === 'succeeded' ? <p className="small muted">The WAL of the last few days shows no dropped or truncated tables: pick the database and table below.</p> : null;
-  return <div className="recent"><div className="small"><strong>Recently dropped or emptied (from the transaction log)</strong> — click one to put it back as it was just before</div>
+  return <div className="recent"><div className="small"><strong>Recently dropped or truncated (found in the WAL)</strong> — click one to put it back as it was just before</div>
     {evs.map((e: any, i: number) => { const t = parseWalTime(e.time); const names: string[] = (e.names || []).filter((n: string) => splitId(n).length === 3);
       return <button key={i} className="recentrow" onClick={() => onPick(e)}><Badge kind="bad">{e.rewrite_possible ? 'truncated or rewritten' : e.kind === 'TRUNCATE' ? 'truncated' : 'dropped'}</Badge>
         <span className="grow"><strong>{names.slice(0, 3).map(shortName).join(', ')}</strong>{names.length > 3 ? ` and ${names.length - 3} more` : ''} <span className="faint">in {splitId(names[0])[0]}</span></span>
@@ -500,7 +500,7 @@ type Vol = { paths: string[]; roles: string[]; need: number; free: number; total
 export function SpaceBars({ vols }: { vols?: Vol[] }) {
   if (!vols || !vols.length) return null;
   return <div className="spacebars" role="group" aria-label="Disk space">
-    <div className="ph"><strong>Disk space</strong><span className="small faint">measured on the server, per volume</span></div>
+    <div className="ph"><strong>Disk space</strong><span className="small faint">measured by the agent on the host that runs the restore, per filesystem</span></div>
     {vols.map((v, i) => {
       const used = Math.max(0, v.total - v.free); const after = v.free - v.need; const live = v.roles.includes('data');
       const pct = (x: number) => `${Math.max(0, Math.min(100, (100 * x) / Math.max(v.total, 1)))}%`;
@@ -529,11 +529,11 @@ function PlanView({ p, scope }: { p: any; scope: Scope }) {
   return <div className="stack">
     {p.preflight?.checks?.length ? <Preflight pf={p.preflight} /> : null}
     <SpaceBars vols={p.space} />
-    <dl className="kv"><dt>Target</dt><dd>{p.target === 'end of archive' ? 'latest available' : Number.isFinite(Date.parse(p.target)) ? dt(p.target) : p.target}</dd>
-      <dt>Backup</dt><dd>{setName(p.set)} <span className="mono faint small xp">{p.set}</span></dd>
-      <dt>Chain</dt><dd className="mono small">{(p.chain || []).join(' → ')}</dd>
+    <dl className="kv"><dt>Recovery target</dt><dd>{p.target === 'end of archive' ? 'end of the WAL archive (latest archived point)' : Number.isFinite(Date.parse(p.target)) ? dt(p.target) : p.target}</dd>
+      <dt>Base backup</dt><dd>{setName(p.set)} <span className="mono faint small xp">{p.set}</span></dd>
+      <dt>Backup chain</dt><dd className="mono small">{(p.chain || []).join(' → ')}</dd>
       {scope === 'instance' ? <><dt>Data to extract</dt><dd>{bytes(p.bytes)} in {num(p.files)} files</dd></> : <><dt>Data to extract</dt><dd>{bytes(p.extract_bytes)} of the cluster’s {bytes(p.cluster_bytes)}{saved != null ? <> — <strong>{saved}% less</strong></> : null}</dd></>}
-      {p.tablespaces && Object.keys(p.tablespaces).length ? <><dt>Tablespace</dt><dd className="small">{Object.entries(p.tablespaces).map(([oid, path]: any) => <div key={oid}><span className="mono">{oid}</span> → <span className="mono">{String(path)}</span>{(p.tablespaces_relocated || []).includes(oid) ? <> <Badge kind="warn" title="The original directory belongs to the source server: it is never overwritten">relocated</Badge></> : null}</div>)}</dd></> : null}
+      {p.tablespaces && Object.keys(p.tablespaces).length ? <><dt>Tablespaces</dt><dd className="small">{Object.entries(p.tablespaces).map(([oid, path]: any) => <div key={oid}><span className="mono">{oid}</span> → <span className="mono">{String(path)}</span>{(p.tablespaces_relocated || []).includes(oid) ? <> <Badge kind="warn" title="The original directory belongs to the source server: it is never overwritten">relocated</Badge></> : null}</div>)}</dd></> : null}
       {p.destination_free_bytes != null ? <><dt>Free space</dt><dd>{bytes(p.destination_free_bytes)} at the destination{p.space_warning ? <span className="small" style={{ display: 'block', color: 'var(--warn, #d9a441)' }}>{p.space_warning}</span> : null}</dd></> : null}
       {p.destination_database ? <><dt>New database</dt><dd>{p.destination_database}</dd></> : null}{p.quarantine_database ? <><dt>Staging database</dt><dd>{p.quarantine_database}</dd></> : null}</dl></div>;
 }
@@ -602,7 +602,7 @@ function Notices({ r }: { r: any }) {
 const ACTION: Record<string, string> = { swap: 'replaces', create: 'is created', copy: 'copy alongside', skip: 'already present: unchanged' };
 
 function PromotePlan({ p }: { p: any }) {
-  return <div className="stack">{p.preflight?.checks?.length && p.preflight.level !== 'ok' ? <Preflight pf={p.preflight} /> : null}<SpaceBars vols={p.space} /><table className="t"><thead><tr><th>Table</th><th>What happens</th><th className="num">Rows at the target</th></tr></thead><tbody>
+  return <div className="stack">{p.preflight?.checks?.length && p.preflight.level !== 'ok' ? <Preflight pf={p.preflight} /> : null}<SpaceBars vols={p.space} /><table className="t"><thead><tr><th>Table</th><th>What happens</th><th className="num">Rows at the recovery point</th></tr></thead><tbody>
     {(p.tables || []).map((t: any) => <tr key={`${t.schema}.${t.name}`}><td><code>{t.schema}.{t.name}</code></td><td className="small">{ACTION[t.action] || t.action}{t.action === 'swap' && t.old_kept_as ? <> — the current one is kept as <code>{t.old_kept_as}</code></> : null}{t.action === 'copy' && t.new_name ? <> as <code>{t.new_name}</code></> : null}{t.schema_drift ? <div className="hba-warn small" style={{ marginTop: 4 }}>Structure changed since then{t.schema_drift.columns_only_now?.length ? `: columns added later (${t.schema_drift.columns_only_now.join(', ')}) that the replacement removes` : ''}{t.schema_drift.type_changed?.length ? `; type changed: ${t.schema_drift.type_changed.join(', ')}` : ''}. Consider “next to the originals” or row recovery.</div> : null}</td><td className="num">{t.rows_at_target != null ? num(t.rows_at_target) : '—'}</td></tr>)}</tbody></table>
     <dl className="kv"><dt>Foreign keys to re-attach</dt><dd>{num((p.inbound_fks || []).length + (p.outbound_fks || []).length)}{(p.inbound_fks || []).length ? <span className="small muted"> — {(p.inbound_fks as any[]).slice(0, 4).map(f => `${f.table}→${f.ref_table}`).join(', ')}{p.inbound_fks.length > 4 ? '…' : ''}</span> : null}</dd>
       <dt>Views to recreate</dt><dd>{num((p.views || []).length)}{(p.views || []).length ? <span className="small muted"> — {(p.views as any[]).slice(0, 4).map(v => v.name).join(', ')}{p.views.length > 4 ? '…' : ''}</span> : null}</dd>

@@ -122,7 +122,7 @@ class WalRescue(object):
             try:
                 if os.path.getsize(src) != seg:
                     continue
-                self.wal.archive_segment(src, n)
+                self.wal.archive_segment(src, n, via="rescue")
                 out["published"] += 1
                 logger.warning("WAL rescue: archived %s, which the failed primary never archived", n)
                 if src.startswith(self.stage):

@@ -22,7 +22,7 @@ const ONLINE_MS = 45_000;
 const GB = 1024 ** 3;
 // never '0 hours' or '1 hours': minutes under two hours, then hours, then days
 const hrs = (h: number) => (h >= 48 ? `${Math.round(h / 24)} days` : h >= 2 ? `${Math.round(h)} hours` : `${Math.max(1, Math.round(h * 60))} ${Math.max(1, Math.round(h * 60)) === 1 ? 'minute' : 'minutes'}`);
-const bytesH = (b: number) => (b >= GB ? `${(b / GB).toFixed(1)} GB` : `${Math.round(b / 1048576)} MB`);
+const bytesH = (b: number) => (b >= GB ? `${(b / GB).toFixed(1)} GiB` : `${Math.round(b / 1048576)} MiB`);
 const ts = (s?: string) => (s ? Date.parse(s) : NaN);
 /** Where PostgreSQL writes compared with the last archived segment: completed segments still waiting for the archiver (backlog) and the
  *  offset inside the segment being written. null when it cannot be told (no LSN, unknown name). */
@@ -81,7 +81,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       : { severity: 'critical', code: 'no_primary', title: 'No reachable primary', cause: online.length ? 'The agents respond but no node reports the primary role.' : lastNews ? `No agent of the cluster has responded since ${new Date(lastNews).toISOString().slice(0, 16).replace('T', ' ')} UTC (${hrs(silentFor / 3600_000)}).` : 'The agent was installed but has never reported: check on the server that the pg-arca-agent service runs and can reach the console address (journalctl -u pg-arca-agent).', action: { label: 'Open the cluster', page: 'cluster' } });
     for (const n of nodes.filter(x => !on(x))) {
       if (!primary && online.length === 0 && !standbySite) break;                 // every node silent: one finding (no_primary) says it, not one per node
-      add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Node ${n.name} is not responding`, cause: n.lastSeen ? `Last seen ${new Date(n.lastSeen).toISOString()}. Agent stopped, server down or network interrupted.` : 'This node has never sent data.' });
+      add({ severity: 'warning', code: 'node_offline', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Node ${n.name} is not responding`, cause: n.lastSeen ? `Last report ${new Date(n.lastSeen).toISOString().slice(0, 16).replace('T', ' ')} UTC. Agent stopped, server down or network interrupted.` : 'This node has never sent data.' });
     }
     // two agent processes with the same identity (a manual run next to the service, a cloned VM): each would run the node's operations
     for (const n of nodes) if (n.duplicateAgentAt && now - Date.parse(n.duplicateAgentAt) < 15 * 60_000)
@@ -180,7 +180,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
     if (vFail) add({ severity: isProd ? 'critical' : 'warning', code: 'verify_failed', title: 'A backup verification failed', cause: `${String(vFail.error?.message || vFail.error || 'No reason reported.').slice(0, 300)} (${hrs((now - ts(vFail.updatedAt)) / 3600_000)} ago). Until the same verification succeeds, that backup may not restore.`, action: { label: 'See the backups', page: 'backup' } });
     if (pol?.enabled && pol.verifyEveryHours && sets.length) {
       const base = Number.isFinite(lastVerify as number) ? (lastVerify as number) : lastMs;
-      if (now - base > pol.verifyEveryHours * 3600_000 * 2) add({ severity: 'info', code: 'verify_stale', title: 'Backup verification overdue', cause: lastVerify ? `Last successful verification ${hrs((now - lastVerify) / 3600_000)} ago.` : 'No successful verification so far: an unverified backup is only a hope.', action: { label: 'See the backups', page: 'backup' } });
+      if (now - base > pol.verifyEveryHours * 3600_000 * 2) add({ severity: 'info', code: 'verify_stale', title: 'Backup verification overdue', cause: lastVerify ? `Last successful verification ${hrs((now - lastVerify) / 3600_000)} ago.` : 'No successful verification so far: these backups have never been checked.', action: { label: 'See the backups', page: 'backup' } });
     }
 
     const drills = (st.operations as any[]).filter(o => o.clusterId === c.id && o.type === 'restore_drill' && o.status === 'succeeded');
@@ -212,7 +212,16 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
 
     // ---- WAL / archiving
     const wal = (primary || nodes[0])?.snapshot?.wal;
-    if (wal && wal.gap_count > 0 && !standbySite) add({ severity: 'critical', code: 'wal_gap', title: `WAL archive with ${wal.gap_count === 1 ? 'a gap' : `${wal.gap_count} gaps`}`, cause: 'WAL segments are missing: point-in-time recovery past the gap is not possible. Take a new full backup right away.', action: { label: 'See restore', page: 'restore' } });
+    if (wal && wal.gap_count > 0 && !standbySite) add({ severity: 'critical', code: 'wal_gap', title: `WAL archive has ${wal.gap_count === 1 ? 'a gap' : `${wal.gap_count} gaps`}`, cause: 'WAL segments are missing: point-in-time recovery past the gap is not possible. Take a new full backup right away.', action: { label: 'See restore', page: 'restore' } });
+    // a timeline that went on past the point where a later timeline's history says it ended (the agent lists those archived segments as
+    // branch_tails): the old primary kept writing after another server was promoted, or had written WAL the promoted one never received.
+    // Nothing refuses them (their names were free), so this is where the divergence shows; one finding per old timeline
+    for (const t of (wal && !standbySite && Array.isArray(wal.branch_tails) ? wal.branch_tails : []) as any[]) {
+      const k = Number(t?.count) || 0; if (!k) continue;
+      add({ severity: 'critical', code: 'wal_branch_tail', detail: String(t.timeline), title: `Timeline ${t.timeline} continued after its promotion point: two primaries wrote WAL`,
+        cause: `Timeline ${t.successor} was promoted from timeline ${t.timeline} at ${t.fork_lsn}, but a server kept writing on timeline ${t.timeline} after that point (or had written WAL the promoted server never received): the archive holds ${k} ${k === 1 ? 'segment' : 'segments'} of it (${t.first}${k > 1 ? ` … ${t.last}` : ''}). They are another server's work and are not on the current timeline history: the transactions in them are not in the current database and recovery along the current history never reads them. Check which server wrote them (an old primary still running is a split-brain: stop it) and whether those transactions must be recovered by hand; then file them away from the Backup tab (they move to the archive’s quarantine, nothing is deleted).`,
+        action: { label: 'Open Backup', page: 'backup' } });
+    }
     // the standby site of a geo pair shares the primary site's archive: its findings are the primary's, said once there
     if (wal && wal.conflicts > 0 && !standbySite) add({ severity: wal.conflicts_newest && now - wal.conflicts_newest * 1000 > 7 * 86400_000 ? 'warning' : 'critical', code: 'wal_conflict', title: `${wal.conflicts} ${wal.conflicts === 1 ? 'divergent WAL copy' : 'divergent WAL copies'} in quarantine`,
       cause: 'Two servers archived different content under the same name (possible split-brain: two primaries at once, or two promotions to the same timeline number). The archive kept the first copy and set the others aside. Check which server was the right primary, then mark the copies as reviewed (they are kept).',
@@ -274,24 +283,24 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       if (ob.targets.rpoSeconds && ob.rpo.seconds != null && ob.rpo.state !== 'ok') {
         const t = Number(pg.settings?.archive_timeout) || 0, tgt = ob.targets.rpoSeconds, mins = Math.round(tgt / 60);
         const setting = `Set archive_timeout = ${tgt} s on the cluster (through the DCS on Patroni); the cost is one ${bytesH(Number(pg.settings?.wal_segment_size) || 16 * 1048576)} segment every ${mins} min when idle.`;
-        if (ob.rpo.state === 'bad') add({ severity: 'critical', code: 'rpo_target', title: `Recovery point above the ${mins} min objective`,
-          cause: `${ob.rpo.text} Data written in the last ${Math.round(ob.rpo.seconds / 60)} minutes would be lost with the primary. ${t > tgt ? setting : 'The archiver is late: see the WAL archiving findings of this cluster.'}`,
+        if (ob.rpo.state === 'bad') add({ severity: 'critical', code: 'rpo_target', title: `Recovery point (RPO) above the ${mins} min objective`,
+          cause: `${ob.rpo.text} Up to ${Math.round(ob.rpo.seconds / 60)} minutes of committed transactions would be lost if the primary were lost now. ${t > tgt ? setting : 'The archiver is late: see the WAL archiving findings of this cluster.'}`,
           action: t > tgt ? { label: 'Open the parameters', page: 'params' } : { label: 'See the backups', page: 'backup' } });
         else add({ severity: 'warning', code: 'rpo_target', title: `The ${mins} min recovery point objective is not guaranteed`,
           cause: `archive_timeout is not set: a segment with little traffic can stay on the primary longer than the ${mins} min objective. ${setting}`, action: { label: 'Open the parameters', page: 'params' } });
       }
       if (ob.targets.rtoSeconds && ob.rto.state === 'bad' && ob.rto.estimateSeconds != null)
-        add({ severity: 'warning', code: 'rto_target', title: `Recovery time above the ${durH(ob.targets.rtoSeconds)} objective`,
-          cause: `${ob.rto.text} A faster restore host (CPU, disks, network to the repository), python3-zstandard on the nodes, or a smaller database would bring it down; otherwise the objective should be renegotiated before it is needed.`, action: { label: 'See the backups', page: 'backup' } });
+        add({ severity: 'warning', code: 'rto_target', title: `Estimated full restore time (RTO) above the ${durH(ob.targets.rtoSeconds)} objective`,
+          cause: `${ob.rto.text} A faster recovery host (CPU, disks, network to the repository), python3-zstandard on the nodes, or a smaller database would bring it down; otherwise the objective should be renegotiated before it is needed.`, action: { label: 'See the backups', page: 'backup' } });
     }
-    if (pol?.enabled && pg.settings && pg.settings.archive_mode === 'off') add({ severity: 'warning', code: 'archive_off', title: 'archive_mode is off', cause: 'The backup policy is active but PostgreSQL does not archive WAL: no point-in-time recovery.', action: { label: 'See the backups', page: 'backup' } });
+    if (pol?.enabled && pg.settings && pg.settings.archive_mode === 'off') add({ severity: 'warning', code: 'archive_off', title: 'WAL archiving is off (archive_mode = off)', cause: 'The backup policy is active but PostgreSQL does not archive WAL: no point-in-time recovery.', action: { label: 'See the backups', page: 'backup' } });
 
     // ---- shared storage: a switchover/failover moves archiving to another node. If every node writes to ITS OWN local repo / WAL archive, the archive splits and PITR breaks silently.
     if (online.length >= 2) {
       for (const [field, what] of [['wal_id', 'The WAL archive'], ['repo_id', 'The backup repository']] as const) {
         const ids = new Map<string, string[]>();
         for (const n of online) { const v = n.snapshot?.storage?.[field]; if (v) ids.set(v, [...(ids.get(v) || []), n.name]); }
-        if (ids.size >= 2) add({ severity: 'warning', code: field === 'wal_id' ? 'wal_not_shared' : 'repo_not_shared', title: `${what} is not shared between the nodes`, cause: `Each node writes into its own directory (${[...ids.values()].map(v => v.join(', ')).join(' | ')}). After a switchover or a failover, WAL and backups end up on another node and point-in-time recovery breaks silently. Mount the same shared storage (NFS, CephFS, shared volume…) at the same path on every node and set it in the agent settings.`, action: { label: 'Agent paths', page: 'nodes' } });
+        if (ids.size >= 2) add({ severity: 'warning', code: field === 'wal_id' ? 'wal_not_shared' : 'repo_not_shared', title: `${what} is not shared between the nodes`, cause: `Each node writes into its own directory (${[...ids.values()].map(v => v.join(', ')).join(' | ')}). After a switchover or a failover, WAL and backups end up on another node and point-in-time recovery breaks silently. Mount the same shared storage (NFS, CephFS, shared volume…) at the same path on every node and set it in the agent settings.`, action: { label: 'Paths and discovery', page: 'nodes' } });
       }
     }
 
@@ -300,7 +309,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       const dn = (n.snapshot?.postgres?.replication || []) as any[];
       for (const r of dn) {
         const lag = Number(r.replay_lag_bytes) || 0;
-        if (lag > 64 * 1048576) add({ severity: lag > GB ? 'critical' : 'warning', code: 'repl_lag', detail: String(r.application_name), nodeId: n.id, nodeName: n.name, title: `Replica ${r.application_name} lagging by ${bytesH(lag)}`, cause: 'The replica is not catching up: slow network, saturated disk or long queries on the replica.', action: { label: 'Open the cluster', page: 'cluster' } });
+        if (lag > 64 * 1048576) add({ severity: lag > GB ? 'critical' : 'warning', code: 'repl_lag', detail: String(r.application_name), nodeId: n.id, nodeName: n.name, title: `Replica ${r.application_name} is ${bytesH(lag)} behind in replay (seen from ${n.name})`, cause: 'The replica is not catching up: slow network, saturated disk or long queries on the replica.', action: { label: 'Open the cluster', page: 'cluster' } });
       }
       for (const s of (n.snapshot?.postgres?.slots || []) as any[]) {
         const kept = Number(s.retained_bytes) || 0;
@@ -313,11 +322,11 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
         if (!s.active && kept > GB) add({ severity: kept > 10 * GB ? 'critical' : 'warning', code: 'slot_stale', detail: String(s.name), nodeId: n.id, nodeName: n.name, title: `Inactive slot “${s.name}” retains ${bytesH(kept)} of WAL`, cause: 'Nothing is consuming this slot: PostgreSQL keeps all WAL and the disk fills up. If the replica is no longer needed, drop the slot.', action: { label: 'Open the cluster', page: 'cluster' } });
       }
       const conn = n.snapshot?.postgres?.connections;
-      if (conn?.max && conn.used / conn.max > 0.85) add({ severity: conn.used / conn.max > 0.95 ? 'critical' : 'warning', code: 'connections', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Connections at ${Math.round(conn.used / conn.max * 100)}% on ${n.name}`, cause: `${conn.used} of ${conn.max}: new connections will be refused. Consider a pooler or reviewing idle sessions.`, action: { label: 'Open the cluster', page: 'cluster' } });
+      if (conn?.max && conn.used / conn.max > 0.85) add({ severity: conn.used / conn.max > 0.95 ? 'critical' : 'warning', code: 'connections', detail: n.id, nodeId: n.id, nodeName: n.name, title: `Connections at ${Math.round(conn.used / conn.max * 100)}% on ${n.name}`, cause: `${conn.used} of ${conn.max} (max_connections) in use: at the limit, new connections are refused. Consider a pooler or reviewing idle sessions.`, action: { label: 'Open the cluster', page: 'cluster' } });
       for (const [label, d] of Object.entries((n.snapshot?.system?.disks || {}) as Record<string, any>)) {
         if (!d?.total_bytes) continue;
         const free = d.free_bytes / d.total_bytes;
-        if (free < 0.15) add({ severity: free < 0.07 ? 'critical' : 'warning', code: 'disk', detail: `${n.id}:${label}`, nodeId: n.id, nodeName: n.name, title: `Disk ${label} almost full on ${n.name} (${Math.round(free * 100)}% free)`, cause: label === 'repo' ? 'The backup repository is running out of space: reduce retention or grow the volume.' : label === 'wal_archive' ? 'The WAL archive is running out of space: check the backup retention.' : 'If the data disk fills up, PostgreSQL stops.', action: { label: 'Open the cluster', page: 'cluster' } });
+        if (free < 0.15) add({ severity: free < 0.07 ? 'critical' : 'warning', code: 'disk', detail: `${n.id}:${label}`, nodeId: n.id, nodeName: n.name, title: `${({ pgdata: 'Data directory disk', repo: 'Backup repository disk', wal_archive: 'WAL archive disk', scratch: 'Restore scratch disk' } as Record<string, string>)[label] || `Disk ${label}`} almost full on ${n.name} (${Math.round(free * 100)}% free)`, cause: label === 'repo' ? 'The backup repository is running out of space: reduce retention or grow the volume.' : label === 'wal_archive' ? 'The WAL archive is running out of space: check the backup retention.' : label === 'scratch' ? 'Restores extract files here: they fail when it is full.' : 'If the data disk fills up, PostgreSQL stops.', action: { label: 'Open the cluster', page: 'cluster' } });
       }
       const pv = n.snapshot?.patroni; const ps = n.snapshot?.postgres?.settings || {};
       if (pv?.accessible && (pv.members?.length || 0) + (pv.standby_cluster ? 1 : 0) >= 2 && !out.some(x => x.key === `${c.id}:patroni_rewind:dcs`)) {
@@ -365,7 +374,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       out.push({ ...rest, key: `worker:${n.id}:${i.code}${detail ? ':' + detail : ''}`, clusterId: `worker:${n.id}`, clusterName: n.name, environment: '', nodeId: n.id, nodeName: n.name });
     };
     const isOn = !!n.lastSeen && now - Date.parse(n.lastSeen) < ONLINE_MS;
-    if (!isOn) add({ severity: users.length ? 'critical' : 'warning', code: 'worker_offline', title: `Worker host ${n.name} unreachable`, cause: users.length ? `It is the restore node for ${users.length} configuration levels: until it is back, those restores cannot start.` : 'The agent has not responded for more than 45 seconds.', action: { label: 'Open the host' } });
+    if (!isOn) add({ severity: users.length ? 'critical' : 'warning', code: 'worker_offline', title: `Worker host ${n.name} unreachable`, cause: users.length ? `It is the central recovery host for ${users.length === 1 ? 'one restore setting' : `${users.length} restore settings`} (Storage & recovery → Where restores run): those restores cannot start until it is back.` : 'The agent has not responded for more than 45 seconds.', action: { label: 'Open the host' } });
     const w = n.snapshot?.worker || {};
     for (const m of (w.mounts || []) as any[]) {
       if (!m.total_bytes) continue;
@@ -385,7 +394,7 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       }
       const missing = [...need.keys()].filter(m => !have.has(m)).sort((a, b) => a - b);
       if (missing.length) add({ severity: 'warning', code: 'worker_pg_missing', title: `${n.name}: PostgreSQL ${missing.join(', ')} binaries are missing`,
-        cause: `It is the restore node of ${missing.map(m => `${(need.get(m) || []).slice(0, 3).join(', ')} (PostgreSQL ${m})`).join('; ')}: it cannot restore their backups until you install the binaries (one click from the host page).`, action: { label: 'Open the host' } });
+        cause: `It is the central recovery host of ${missing.map(m => `${(need.get(m) || []).slice(0, 3).join(', ')} (PostgreSQL ${m})`).join('; ')}: it cannot restore their backups until you install the binaries (one click from the host page).`, action: { label: 'Open the host' } });
     }
   }
   return out.sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || a.clusterName.localeCompare(b.clusterName));
@@ -414,7 +423,7 @@ export function protectionOf(st: any, clusterId: string, issues: Issue[], now = 
   const offLast = Math.max(0, ...offs.map((o: any) => Number(o.last_ok) || 0));
   const mine = issues.filter(i => i.clusterId === clusterId);
   // no_primary: nobody can say the archive is current (critical: none reachable; warning: silent for days); clock_ahead: the backup ages cannot be trusted
-  const KEY = new Set(['no_primary', 'clock_ahead', 'gc_postponed', 'no_backup', 'no_schedule', 'verify_failed', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_both_set', 'archive_off', 'rpo_target', 'wal_gap', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
+  const KEY = new Set(['no_primary', 'clock_ahead', 'gc_postponed', 'no_backup', 'no_schedule', 'verify_failed', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_both_set', 'archive_off', 'rpo_target', 'wal_gap', 'wal_branch_tail', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
   const relevant = mine.filter(i => KEY.has(i.code));
   const standbySite = !sets.length && nodes.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader');
   const state = standbySite ? 'none' as const
@@ -522,7 +531,7 @@ export function objectives(st: any, clusterId: string, now = Date.now()) {
     const est = bytes > 0 && sizeBytes > 0 ? Math.round(secs * Math.max(1, sizeBytes / bytes)) : Math.round(secs);
     const ageDays = (now - Date.parse(d.updatedAt)) / 86400_000;
     rto = { estimateSeconds: est, state: ageDays > 90 ? 'stale' : 'ok', drill: { at: d.updatedAt, seconds: secs, bytes, mbs: Number(r.throughput_mb_s) || 0 },
-      text: `About ${dur(est)} for today's ${bytesH(sizeBytes)} (drill of ${d.updatedAt.slice(0, 10)}: ${dur(secs)} for ${bytesH(bytes)}${ageDays > 90 ? '; older than 90 days, run a new one' : ''}). Plus the WAL to replay up to the chosen point.` };
+      text: `Estimated ${dur(est)} for today's ${bytesH(sizeBytes)} (drill of ${d.updatedAt.slice(0, 10)}: ${dur(secs)} for ${bytesH(bytes)}${ageDays > 90 ? '; older than 90 days, run a new one' : ''}). Plus the WAL to replay up to the chosen point.` };
     if (rtoTarget) { if (est > rtoTarget) { rto.state = 'bad'; rto.text += ` Above the ${dur(rtoTarget)} objective.`; } else rto.text += ` Within the ${dur(rtoTarget)} objective.`; }
   }
   return { rpo, rto, sizeBytes, archiveTimeoutSec: timeout || null, targets: { rpoSeconds: rpoTarget || null, rtoSeconds: rtoTarget || null } };

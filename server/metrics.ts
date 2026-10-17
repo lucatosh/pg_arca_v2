@@ -100,7 +100,7 @@ export function renderMetrics(st: any, now = Date.now()): string {
 export function mountMetricsRoutes(app: any, store: Store, tokenEnv = () => process.env.PG_ARCA_METRICS_TOKEN) {
   const handler = (req: Request, res: Response) => {
     const want = String(tokenEnv() || '');
-    if (!want) return res.status(404).json({ error: 'metrics_disabled', message: 'Set PG_ARCA_METRICS_TOKEN in the console settings to enable /metrics.' });
+    if (!want) return res.status(404).json({ error: 'metrics_disabled', message: 'Set the PG_ARCA_METRICS_TOKEN environment variable of the console service to enable /metrics.' });
     const got = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || String((req.query as any)?.token || '');
     const a = Buffer.from(got), b = Buffer.from(want);
     if (!got || a.length !== b.length || !crypto.timingSafeEqual(a, b)) { res.setHeader('WWW-Authenticate', 'Bearer'); return res.status(401).json({ error: 'unauthorized' }); }

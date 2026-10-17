@@ -8,7 +8,7 @@ import { itCheck } from '../i18n';
 import { untilLabel } from '../hbaLogic';
 
 const SEV: Record<string, { label: string; kind: 'bad' | 'warn' | 'info' }> = { critical: { label: 'Urgent', kind: 'bad' }, warning: { label: 'Needs attention', kind: 'warn' }, info: { label: 'Information', kind: 'info' } };
-const TYPE: Record<string, string> = { backup_run: 'Backup', backup_verify: 'Verification', backup_expire: 'Cleanup', restore_instance: 'Restore', restore_database: 'Restore', restore_object: 'Restore', restore_promote: 'Put back the table', hba_apply: 'Access rules', pg_set_param: 'Parameter' };
+const TYPE: Record<string, string> = {};
 
 export function useHealth(interval = 20000) { return useQuery<any>('/api/briefing', { interval }); }
 
@@ -35,7 +35,7 @@ export function TodayPage({ me, role }: { me: string; role: string }) {
     <PendingApprovals me={me} role={role} />
     {!d ? <Card><Skeleton h={80} /></Card> : <>
       <Banner kind={d.status === 'ok' ? 'ok' : d.status === 'critical' ? 'bad' : 'warn'} title={d.status === 'ok' ? 'All good' : d.status === 'critical' ? `${d.counts.critical} ${d.counts.critical === 1 ? 'urgent problem' : 'urgent problems'}` : 'Something needs attention'}>
-        {d.status === 'ok' ? 'Recent backups, continuous WAL archive, replicas in sync, disks with free space.' : `${d.counts.critical} urgent, ${d.counts.warning} needing attention, ${d.counts.info} informational.`}
+        {d.status === 'ok' ? 'No open findings: backups on schedule, WAL archiving working, replication lag and disk space within thresholds.' : `${d.counts.critical} urgent, ${d.counts.warning} needing attention, ${d.counts.info} informational.`}
         {' '}Last 24 hours: {d.last24h.backups} {d.last24h.backups === 1 ? 'successful backup' : 'successful backups'}{d.last24h.failed ? (d.last24h.unresolved != null && d.last24h.unresolved < d.last24h.failed ? <>, {d.last24h.failed} failed operations{d.last24h.unresolved ? <> (<strong>{d.last24h.unresolved} not resolved since</strong>)</> : ' (all resolved since)'}</> : <>, <strong>{nof(d.last24h.failed, 'failed operation')}</strong></>) : ', no failed operations'}{d.last24h.refused ? <>, {d.last24h.refused} refused by the checks before changing anything</> : ''}.</Banner>
       {d.issues.length ? <Card title="To do" actions={nInfo && nInfo < d.issues.length ? <label className="check small"><input type="checkbox" checked={showInfo} onChange={e => setShowInfo(e.target.checked)} />Show {nof(nInfo, 'informational item')}</label> : undefined}>
         <div className="stack">{d.issues.filter((i: any) => showInfo || i.severity !== 'info' || nInfo === d.issues.length).map((i: any) => <div key={i.key} className="issue">
@@ -47,7 +47,7 @@ export function TodayPage({ me, role }: { me: string; role: string }) {
           <td className="muted small">{f.error ? itCheck(f.error) : '—'}{f.resolved ? <div><Badge kind="ok">Resolved: it succeeded afterwards</Badge></div> : null}</td><td className="num small muted nowrap">{f.count > 1 ? `last ${ago(f.at)}` : ago(f.at)}</td><td className="num"><Button sm onClick={() => go(`c/${encodeURIComponent(f.clusterId)}/operations`)}>Open</Button></td></tr>)}</tbody></table></div></Card> : null}
       {(d.last24h.refusals || []).length ? <details className="card" style={{ padding: '10px 16px' }}><summary className="small" style={{ cursor: 'pointer' }}>{d.last24h.refused} {d.last24h.refused === 1 ? 'operation refused' : 'operations refused'} by the checks (nothing was changed)</summary>
         <div className="tablewrap"><table className="t"><tbody>{d.last24h.refusals.map((f: any) => <tr key={f.id}><td>{TYPE[f.type] || OP_LABEL[f.type] || f.type}</td><td className="muted small">{f.error ? itCheck(f.error) : '—'}</td><td className="num small muted">{ago(f.at)}</td></tr>)}</tbody></table></div></details> : null}
-      <Card title="Cluster"><div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>Environment</th><th title="Measured by the last disaster recovery drill">Whole-cluster restore time</th><th>Status</th></tr></thead><tbody>
+      <Card title="Clusters"><div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>Environment</th><th title="Measured by the last successful disaster recovery drill, at that drill’s data size (not scaled to today’s)">Full restore time (last drill)</th><th>Status</th></tr></thead><tbody>
         {d.clusters.map((c: any) => <tr key={c.id} className="click" onClick={() => go(`c/${encodeURIComponent(c.id)}`)}><td><strong>{c.name}</strong>{c.folder ? <span className="faint small"> · {c.folder}</span> : null}</td><td>{c.environment}</td><td className="small">{c.rto ? <span title={`Drill of ${dday(c.rto.at)}`}>{c.rto.seconds >= 120 ? `${Math.round(c.rto.seconds / 60)} min` : `${Math.round(c.rto.seconds)} s`}</span> : <span className="muted">never tested</span>}</td>
           <td>{c.worst === 'ok' ? <Badge kind="ok">OK</Badge> : <Badge kind={SEV[c.worst].kind}>{c.issues} {c.issues === 1 ? 'issue' : 'issues'}</Badge>}</td></tr>)}
         {!d.clusters.length ? <tr><td colSpan={4} className="muted">No cluster with a connected agent.</td></tr> : null}</tbody></table></div></Card></>}

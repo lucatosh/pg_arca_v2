@@ -21,9 +21,22 @@ const online = (n: NodeRecord) => !!n.lastSeen && Date.now() - Date.parse(n.last
 
 /** Which configuration levels use this machine as their central recovery node. */
 function usedBy(st: any, id: string) {
-  const out: { scope: string; key: string }[] = [];
-  for (const [k, v] of Object.entries(((st.settings.scoped || {}).ephemeral || {}) as Record<string, any>)) if (v?.centralNode === id) out.push({ scope: k.split(':')[0], key: k });
+  const out: { scope: string; key: string; as: 'recovery' | 'backup' }[] = [];
+  for (const [k, v] of Object.entries(((st.settings.scoped || {}).ephemeral || {}) as Record<string, any>)) if (v?.centralNode === id) out.push({ scope: k.split(':')[0], key: k, as: 'recovery' });
+  for (const [k, v] of Object.entries(((st.settings.scoped || {}).destination || {}) as Record<string, any>)) if (v?.server === id) out.push({ scope: k.split(':')[0], key: k, as: 'backup' });
   return out;
+}
+
+/** The name the database nodes should use to mount this host's share: its FQDN when it has a real one, else the address it reaches the console from,
+ *  else its first reported address. (A guess for the instructions only: the node check proves what was really mounted.) */
+function shareAddress(n: NodeRecord): string {
+  const id = (n.snapshot?.worker?.identity || {}) as any;
+  const loop = (x: string) => !x || x === 'localhost' || x.startsWith('localhost.') || x.startsWith('127.') || x === '::1';
+  const fqdn = String(id.fqdn || '');
+  if (fqdn.includes('.') && !loop(fqdn)) return fqdn;
+  const ip = String(n.remoteIp || '').replace(/^::ffff:/, '');
+  if (ip && !loop(ip)) return ip;
+  return ((id.addresses || []) as string[]).find(a => !loop(a)) || n.name;
 }
 
 export function workerView(st: any, n: NodeRecord, full = false) {
@@ -35,6 +48,7 @@ export function workerView(st: any, n: NodeRecord, full = false) {
     pgMajors: [...new Set(inst.map(i => Number(i.major)))].sort((a, b) => b - a),
     remoteMounts: ((w.mounts || []) as any[]).filter(m => m.remote).length,
     usedBy: usedBy(st, n.id),
+    address: shareAddress(n),
     reported: !!n.snapshot?.worker,
   };
   if (!full) return base;

@@ -138,8 +138,8 @@ export function geoGroups(st: any, now = Date.now()): GeoGroup[] {
       else if (s.receiver?.silentSec != null && s.receiver.silentSec > 120) bad(`no message from the primary site for ${Math.round(s.receiver.silentSec)} s`);
       else if (s.receiver?.silentSec != null && s.receiver.silentSec > 30) warn(`last message from the primary site ${Math.round(s.receiver.silentSec)} s ago`);
       if (invalid.has(s.clusterId)) s.lagBytes = null;
-      if (s.lagBytes != null && s.lagBytes > 1024 * MB) bad(`${Math.round(s.lagBytes / MB)} MB behind`);
-      else if (s.lagBytes != null && s.lagBytes > 64 * MB) warn(`${Math.round(s.lagBytes / MB)} MB behind`);
+      if (s.lagBytes != null && s.lagBytes > 1024 * MB) bad(`${Math.round(s.lagBytes / MB)} MiB of WAL behind`);
+      else if (s.lagBytes != null && s.lagBytes > 64 * MB) warn(`${Math.round(s.lagBytes / MB)} MiB of WAL behind`);
       if (s.slot && !s.slot.active) warn(`slot ${s.slot.name} on the primary site is not active: the primary retains WAL (${s.slot.retainedBytes != null ? Math.round(s.slot.retainedBytes / MB) + ' MB' : '?'})`);
       if (s.slot?.retainedBytes != null && s.slot.retainedBytes > 8 * 1024 * MB) bad(`slot ${s.slot.name} retains ${Math.round(s.slot.retainedBytes / MB)} MB of WAL on the primary site: risk of a full disk`);
       if (!prim && !invalid.has(s.clusterId)) warn('no primary site visible among the connected clusters');
@@ -281,7 +281,7 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
       ? 'not receiving from the primary site (link down or WAL receiver stopped): it catches up from the shared archive, but the loss in a disaster cannot be measured'
       : 'not receiving from the primary site (link down or WAL receiver stopped), and no archive fallback: the loss in a disaster cannot be bounded') });
     else add({ id: 'rpo', level: r > rpoTarget ? (r > rpoTarget * 10 ? 'bad' : 'warn') : 'ok', site: s.name, text: at(`estimated loss in a disaster: ${r < 1 ? 'none' : `about ${r} s of transactions`} (target ${rpoTarget} s)${s.lagBytes ? ` · ${Math.round(s.lagBytes / MB)} MB to receive` : ''}`) });
-    if (!s.endpoint) add({ id: 'endpoint', level: 'warn', site: s.name, text: at('the address other sites would reach it with is not set: needed for the planned switchover'), fix: 'set it in Geo-redundancy → “Address of …”' });
+    if (!s.endpoint) add({ id: 'endpoint', level: 'warn', site: s.name, text: at('the address other sites would reach it with is not set: needed for the planned switchover'), fix: 'set it in Geo-redundancy → “Set the address of …”' });
     // after a promotion this site must be able to rewind / re-follow
     if (sv.accessible && sv.use_pg_rewind !== true) add({ id: 'rewind', level: 'warn', site: s.name, clusterId: s.clusterId, action: 'enable_rewind', text: at('pg_rewind is off: when the old primary comes back its members must be fully reinitialized'), fix: 'postgresql.use_pg_rewind: true in the DCS' });
     if (spg.hba_patroni_local?.ok === false) add({ id: 'hba_local', level: 'bad', site: s.name, text: at('pg_hba does not allow Patroni local replication: after a failover the site stays stuck'), fix: spg.hba_patroni_local.suggest?.[0] });
@@ -290,7 +290,7 @@ export function geoReadiness(st: any, g: GeoGroup, now = Date.now()) {
   const pol = policyOf(st, g.sysid);
   if (pol.autoFailover) for (const s of g.sites.filter(x => x.role === 'standby')) {
     // after an automatic failover the old primary must follow THIS site by itself: its address is what makes that possible
-    if (!s.endpoint) add({ id: 'dr_endpoint', level: 'bad', site: s.name, text: `${s.name}: automatic failover is on but the address the other sites reach it with is not set: after the failover ${prim.name} could not become its standby by itself`, fix: `set it in Geo-redundancy → “Address of ${s.name}”` });
+    if (!s.endpoint) add({ id: 'dr_endpoint', level: 'bad', site: s.name, text: `${s.name}: automatic failover is on but the address the other sites reach it with is not set: after the failover ${prim.name} could not become its standby by itself`, fix: `set it in Geo-redundancy → “Set the address of ${s.name}…”` });
     else add({ id: 'dr_endpoint', level: 'ok', site: s.name, text: `${s.name}: automatic failover on (confirmation ${pol.confirmSec} s, maximum loss ${pol.maxLossMB} MB)${pol.autoRejoin ? ', old primary rejoined automatically' : ''}` });
   }
   // the primary site must see the shared archive too (restore_command in postgresql.recovery_conf): when it comes back after a failover and promotes
@@ -458,7 +458,7 @@ export function mountGeoRoutes(app: any, store: Store) {
   /** RPO objective of the geo pairs (seconds of transactions it is acceptable to lose if the primary site is lost). */
   app.put('/api/geo/settings', async (req: Request, res: Response) => {
     const v = Number(req.body?.rpoSec);
-    if (!Number.isInteger(v) || v < 1 || v > 86400) return res.status(400).json({ error: 'invalid_rpo', message: 'The RPO target must be between 1 second and 24 hours.' });
+    if (!Number.isInteger(v) || v < 1 || v > 86400) return res.status(400).json({ error: 'invalid_rpo', message: 'The RPO objective must be between 1 second and 24 hours.' });
     await store.mutate(d => { d.settings.geoRpoSec = v; ops.audit(d, { actor: actor(req), action: 'geo.settings', status: 'OK', details: { rpoSec: v } } as any); });
     res.json({ ok: true, rpoSec: v });
   });

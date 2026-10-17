@@ -24,7 +24,7 @@ const ACTION_TEXT: Record<string, string> = {
 const actionText = (a: string) => { if (ACTION_TEXT[a]) return ACTION_TEXT[a]; const m = /^op\.(submit:)?(.+)$/.exec(a || ''); if (m) return `${m[1] ? 'Requested: ' : ''}${OP_LABEL[m[2]] || m[2].replace(/_/g, ' ')}`;
   const t = String(a || '').replace(/[._:]+/g, ' ').trim(); return t ? t.charAt(0).toUpperCase() + t.slice(1) : '—'; };
 const outcome = (st: string): [string, string] => { const u = String(st || '').toUpperCase();
-  return u === 'SUCCESS' || u === 'SUCCEEDED' ? ['OK', 'ok'] : u === 'FAILED' || u === 'FAILURE' ? ['Failed', 'bad'] : u === 'QUEUED' ? ['Requested', ''] : u === 'RUNNING' ? ['Running', 'info']
+  return u === 'SUCCESS' || u === 'SUCCEEDED' ? ['Succeeded', 'ok'] : u === 'FAILED' || u === 'FAILURE' ? ['Failed', 'bad'] : u === 'QUEUED' ? ['Requested', ''] : u === 'RUNNING' ? ['Running', 'info']
     : u === 'CANCELLED' ? ['Cancelled', ''] : u === 'EXPIRED' ? ['Expired', 'warn'] : ['Warning', 'warn']; };
 const detailsText = (d: any) => { if (d == null || d === '') return ''; let v = d; if (typeof d === 'string') { try { v = JSON.parse(d); } catch { return d; } }
   if (!v || typeof v !== 'object') return String(v); return Object.entries(v).filter(([k, x]) => x != null && x !== '' && k !== 'opId').map(([k, x]) => `${k.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}: ${typeof x === 'object' ? JSON.stringify(x) : String(x)}`).join(' · '); };
@@ -66,7 +66,7 @@ export function Discovery() {
         {!grouped.length ? <div className="bd"><Banner kind="ok" title="No configuration findings">The agents found nothing to report in the servers' configuration{sev !== 'all' ? ' with this filter' : ''}. Cluster problems, if any, are on Today.</Banner></div> :
           <div className="tablewrap"><table className="t"><tbody>{grouped.map((f, i) => <tr key={i}><td style={{ width: 120 }}><Badge kind={f.severity === 'critical' ? 'bad' : f.severity === 'warning' ? 'warn' : 'info'}>{SEV_LABEL[f.severity] || f.severity}</Badge></td>
             <td><strong>{f.title}</strong><div className="small muted">{f.detail}</div>{f.fix ? <div className="small" style={{ marginTop: 4 }}><Icon n="zap" s={13} /> {f.fix}</div> : null}</td>
-            <td className="small muted">{f.clusterName ? <a href={`#/c/${encodeURIComponent(f.clusterId)}`}>{f.clusterName}</a> : 'Server'}<div>{f.nodes.join(', ')}</div></td>
+            <td className="small muted">{f.clusterName ? <a href={`#/c/${encodeURIComponent(f.clusterId)}`}>{f.clusterName}</a> : 'Not in a cluster'}<div>{f.nodes.join(', ')}</div></td>
             <td className="num">{f.clusterId && FIX_TAB[f.code] ? <Button sm onClick={() => go(`c/${encodeURIComponent(f.clusterId)}/${FIX_TAB[f.code][0]}`)}>{FIX_TAB[f.code][1]}</Button> : null}</td></tr>)}</tbody></table></div>}</Card>
 
       <Card title="Configuration differences between nodes" pad={false}>{!d.drift.length ? <div className="bd muted">The nodes of every cluster have the same values for the compared parameters.</div> :

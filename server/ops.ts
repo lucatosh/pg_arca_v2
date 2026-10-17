@@ -230,7 +230,7 @@ export function graceLeasesOnBoot(store: Store, leaseSeconds = 120, now = Date.n
     // every later direct operation of that cluster for good (independent review). Its outcome is unknown - said, the cluster must be checked
     for (const op of draft.operations) if (op.status === 'running' && !op.nodeId && !op.leaseUntil) {
       push(op, 'failed', 'the console stopped while it was running this operation');
-      op.error = 'outcome unknown: the console restarted while running it - check the cluster before running it again';
+      op.error = 'Operation outcome unknown: the console restarted while it was running. Check the cluster before running it again.';
     }
     return n;
   });
@@ -353,7 +353,7 @@ export async function runLocal<T>(store: Store, input: SubmitInput, exec: () => 
   const claimed = await store.mutate(d => {
     const o = d.operations.find(x => x.id === op.id)!;
     const busy = d.operations.some(x => x.clusterId === o.clusterId && x.id !== o.id && (x.status === 'running' || x.status === 'leased'));
-    if (busy) { push(o, 'failed', 'another operation is in flight on this cluster'); o.error = 'cluster busy'; return false; }
+    if (busy) { push(o, 'failed', 'another operation is in flight on this cluster'); o.error = 'Another operation is already running on this cluster.'; return false; }
     o.attempts = 1; push(o, 'running'); return true;
   });
   if (!claimed) return { op: store.peek().operations.find(o => o.id === op.id)!, created };

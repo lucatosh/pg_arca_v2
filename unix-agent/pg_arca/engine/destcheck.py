@@ -246,7 +246,41 @@ def _inventory(kind, path, stanza):
     return out
 
 
-def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None, stanza=None, current=None, protected=(), bench=False, table=None, owner=None):
+def remote_host(src):
+    """The server part of a mount source: "bk1:/export/x" -> "bk1", "[fd00::5]:/x" -> "fd00::5", "//bk1/share" -> "bk1"; None for a local device."""
+    if not src:
+        return None
+    if src.startswith("//"):
+        return src[2:].split("/")[0] or None
+    if ":" in src and not src.startswith("/"):
+        return src.rsplit(":", 1)[0].strip("[]") or None
+    return None
+
+
+def _same_server(host, expected):
+    """Is `host` (from the mount source) one of the backup server's names/addresses? Names are compared case-insensitively (also the short form of an FQDN);
+    a name that resolves to one of the server's addresses matches too."""
+    import socket
+    want = set()
+    for h in expected or ():
+        h = str(h or "").strip().lower().strip("[]")
+        if h.startswith("::ffff:"):
+            h = h[7:]
+        if h:
+            want.add(h)
+            want.add(h.split(".")[0])
+    h = host.lower()
+    if h in want or h.split(".")[0] in want:
+        return True
+    try:
+        addrs = {sa[0] for _f, _t, _p, _c, sa in socket.getaddrinfo(host, None)}
+    except Exception:
+        addrs = set()
+    return bool(addrs & want)
+
+
+def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None, stanza=None, current=None, protected=(), bench=False, table=None, owner=None,
+               expect_server=None):
     """One path (kind 'repo' or 'wal'). Returns {path, checks:[{id, level, text, fix}], ok, mount:{...}, free_bytes, inventory}."""
     from pg_arca import overrides
     checks = []
@@ -291,6 +325,17 @@ def check_path(kind, path, dtype="local", require_mount=False, min_free_gb=None,
                 "mount the share first (for example with an /etc/fstab entry), then check again")
     else:
         add("fs", "ok", "%s is on %s%s" % (path, fs, " (a network filesystem)" if network else ""))
+    # ---- the share comes from the backup server the destination names (not from another machine with the same export path)
+    if expect_server and dtype in ("nfs", "smb") and network:
+        host = remote_host(src)
+        name = expect_server.get("name") or "the backup server"
+        if not host:
+            add("server", "warn", "cannot tell which server %s is mounted from (%s)" % (mp, src))
+        elif _same_server(host, expect_server.get("hosts") or []):
+            add("server", "ok", "mounted from the backup server %s (%s)" % (name, src))
+        else:
+            add("server", "bad", "%s is mounted from %s, not from the backup server %s" % (mp, host, name),
+                "mount the share exported by %s (see the commands in the storage wizard), or pick the server this share really comes from" % name)
     if require_mount:
         if mp == "/":
             add("mount", "bad", "%s is on the root filesystem, but a separate mount is required for this destination" % path, "mount the backup volume or share before enabling backups")
@@ -391,7 +436,8 @@ def check_destination(p, protected=(), current_repo=None, current_wal=None, tabl
         raise EngineError("PGA-DST-003", "the repository and the WAL archive must be different directories")
     for kind, path, cur in (("repo", repo, current_repo), ("wal", wal, current_wal)):
         if path:
-            out["paths"].append(check_path(kind, path, dtype, bool(p.get("require_mount")), p.get("min_free_gb"), p.get("stanza"), cur, protected, bool(p.get("bench")), table, owner))
+            out["paths"].append(check_path(kind, path, dtype, bool(p.get("require_mount")), p.get("min_free_gb"), p.get("stanza"), cur, protected, bool(p.get("bench")), table, owner,
+                                           p.get("expect_server") if isinstance(p.get("expect_server"), dict) else None))
     out["ok"] = all(x["ok"] for x in out["paths"])
     return out
 

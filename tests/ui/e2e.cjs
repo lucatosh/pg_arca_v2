@@ -30,18 +30,35 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('.task:has-text("Put back a dropped or emptied table")'); await p.waitForSelector('.rsum:has-text("I dropped or truncated a table")'); await shot('03a-task-restore');
   await p.click('button:has-text("Situation")'); await p.waitForSelector('text=What happened?');
   // backup tab
-  await tab('Protection', 'Backup'); await p.waitForSelector('text=Run a backup'); await p.waitForSelector('.placement code:has-text("/mnt/backup/repo/prodpg")'); await shot('04-backup');
+  await tab('Protection', 'Backup'); await p.waitForSelector('text=Run a backup');
+  // backup storage: in plain terms per node (the NFS mount is recognised as the backup server bk01), directories only on request
+  await p.waitForSelector('.placement td:has-text("Backup server bk01")');
+  assert.equal(await p.locator('.placement :text("/mnt/backup/repo/prodpg")').count(), 0, 'directories are not shown by default');
+  await p.click('.placement button:has-text("Show locations")'); await p.waitForSelector('.placement .mono:has-text("/mnt/backup/repo/prodpg")'); await shot('04-backup');
+  await p.click('.placement button:has-text("Hide locations")');
   // previous backup location after a destination change: plan the migration (sizes, free space, time), run it, follow it
-  await p.waitForSelector('text=Previous location still used by restores'); await p.click('.placement button:has-text("Migrate or delete")');
+  await p.waitForSelector('text=The previous location is still read by restores'); await p.click('.placement button:has-text("Migrate or delete")');
   await p.click('.modal button:has-text("Work out what to move")'); await p.waitForSelector('.modal td:has-text("Total to copy")', { timeout: 10000 });
   await p.waitForSelector('.modal >> text=repository + WAL archive: 4.0 GiB to copy'); await shot('04c-migration-plan');
   await p.click('.modal button:has-text("Start the migration in the background")'); await p.click('.modal >> nth=-1 >> button:has-text("Start")');
   await p.waitForSelector('text=Migration completed', { timeout: 15000 }); await shot('04d-migration-done');
-  await p.click('.modal >> nth=0 >> button:has-text("Close")'); await p.waitForSelector('text=Previous location still used by restores', { state: 'detached', timeout: 20000 });
+  await p.click('.modal >> nth=0 >> button:has-text("Close")'); await p.waitForSelector('text=The previous location is still read by restores', { state: 'detached', timeout: 20000 });
+  // configure the storage with the guided sequence: backup server -> folder check + export/mount commands -> level -> review -> save -> check (the share must come from it) -> apply
+  await p.click('.placement button:has-text("Configure…")'); await p.click('.modal .choice:has-text("A backup server")'); await p.click('.modal button:has-text("Continue")');
+  await p.click('.modal .choice:has-text("bk01")'); await p.waitForSelector('.modal pre:has-text("exportfs -ra")'); await p.waitForSelector('.modal pre:has-text("bk01.dc1.lan:/srv/pgarca  /mnt/pgarca")');
+  await p.click('.modal button:has-text("Check the folder on bk01")'); await p.waitForSelector('text=The folder on bk01 is usable', { timeout: 15000 }); await p.waitForSelector('.modal pre:has-text("anonuid=2001")'); await shot('04g-storage-wizard');
+  await p.click('.modal button:has-text("Continue")'); await p.waitForSelector('.modal select:has(option:has-text("This cluster only"))');
+  await p.click('.modal button:has-text("Continue")'); await p.waitForSelector('.modal dd:has-text("/mnt/pgarca/wal/{env}/{cluster}")');
+  await p.click('.modal button:has-text("Save")'); await p.waitForSelector('.modal >> text=Nothing has changed on the nodes yet');
+  await p.click('.modal button:has-text("Check and apply on the nodes")'); await p.waitForSelector('text=/Backup storage . prodpg/');
+  await p.click('button:has-text("Check on all nodes")'); await p.waitForSelector('text=mounted from the backup server bk01', { timeout: 15000 }); await p.waitForSelector('text=check passed', { timeout: 15000 });
+  await p.click('button:has-text("Apply to the nodes")'); await p.waitForSelector('text=Apply started', { timeout: 10000 }); await shot('04h-storage-applied');
+  await p.click('.modal button:has-text("Close")');
   // a named restore point before a risky change: marked from the Backup tab, offered in the restore wizard below
   await p.click('button:has-text("Mark a restore point")'); await p.fill('.modal input[placeholder="Before release 4.2"]', 'Before release 4.2'); await p.click('.modal button:has-text("Mark it now")');
   await p.waitForSelector('.card:has-text("Restore points") td:has-text("Before release 4.2")', { timeout: 10000 }); await shot('04e-restore-point');
-  { const b = p.locator('button:has-text("Disaster recovery drill")'); if (await b.isEnabled()) { await b.click(); await p.waitForSelector('text=Cluster restored in 13 minutes', { timeout: 10000 }); await shot('04b-drill'); } }
+  let drilled = false;
+  { const b = p.locator('button:has-text("Disaster recovery drill")'); if (await b.isEnabled()) { drilled = true; await b.click(); await p.waitForSelector('text=Cluster restored in 13 minutes', { timeout: 10000 }); await shot('04b-drill'); } }
   await p.click('button:has-text("Start backup")'); await p.waitForSelector('text=Copying data'); { const strip = await p.waitForSelector('.activitystrip:has-text("Backup (")', { timeout: 8000 }).catch(() => null);   // the strip polls: a 3 s fake backup may end first
     if (strip) assert(!/backup_run|\bcopy\b,/.test(await strip.innerText()), 'the strip shows labels, not raw operation types or phase keys'); } await shot('05-backup-running');
   // the dock's Log opens a floating window with THIS operation's log (not the database log): movable, minimisable, closable
@@ -53,7 +70,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('.oplog button[aria-label="Close the log"]'); await p.waitForSelector('.oplog', { state: 'detached' }); await p.keyboard.press('Control+j');
   await p.waitForSelector('text=/Backup .* completed/', { timeout: 15000 }); await shot('06-backup-done');
   // recovery objectives: RPO and RTO lines are there (the mock has no drill: RTO "not measured")
-  await p.waitForSelector('[data-testid=objectives]:has-text("Data at risk (RPO)")'); assert(/not measured/.test(await p.locator('[data-testid=objectives]').innerText()), 'RTO never measured in the mock');
+  await p.waitForSelector('[data-testid=objectives]:has-text("Recovery point (RPO)")'); assert((drilled ? /Full restore time \(RTO\)\s*≈/ : /not measured/).test(await p.locator('[data-testid=objectives]').innerText()), drilled ? 'RTO measured by the drill' : 'RTO never measured in the mock');
   // guided restore, situation first: a database as it was
   await tab('Protection', 'Restore'); await p.waitForSelector('text=What happened?'); await shot('07-restore-situation');
   await p.click('button.choice:has-text("I need a database")');
@@ -66,8 +83,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.click('button[role=radio]:has-text("appdb")'); await shot('07-restore-what'); await p.click('button:has-text("Next")');
   // when: appdb still exists, so the latest point holds the damage: the WAL is searched by itself and the moment just before is recommended
   await p.waitForSelector('text=To which point in time?'); assert(await p.waitForSelector('label.opt.on:has-text("Just before:") .badge:has-text("Recommended")', { timeout: 10000 }).catch(() => null), 'just-before recommended for a live database');
-  assert(await p.locator('label.opt:has-text("The latest saved point") .badge:has-text("Recommended")').count() === 0, 'latest is not recommended for a live database');
-  await p.click('label.opt:has-text("The latest saved point") input'); await p.waitForSelector('text=/appdb.*still exists, and the latest point holds/'); await shot('08a-latest-warning');
+  assert(await p.locator('label.opt:has-text("The latest archived point") .badge:has-text("Recommended")').count() === 0, 'latest is not recommended for a live database');
+  await p.click('label.opt:has-text("The latest archived point") input'); await p.waitForSelector('text=/appdb.*still exists, and the latest point holds/'); await shot('08a-latest-warning');
   await p.waitForSelector('label.opt:has-text("Restore point: Before release 4.2")');
   await p.click('label.opt:has-text("A specific point in time") input'); await p.click('button:has-text("1 hour ago")'); await p.waitForSelector('input[aria-label^="Date and time"]');
   await p.click('summary:has-text("Find the exact moment")'); await p.waitForSelector('[role=slider]'); await shot('08-timeline');
@@ -99,7 +116,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   // and the default end: restore + replace in ONE operation
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need a database")'); await p.waitForSelector('button[role=radio]:has-text("billing")', { timeout: 10000 });
   await p.click('button[role=radio]:has-text("billing")'); await p.click('button:has-text("Next")'); await p.waitForSelector('text=To which point in time?');
-  await p.click('label.opt:has-text("The latest saved point") input'); await p.click('button:has-text("Next")'); await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 });
+  await p.click('label.opt:has-text("The latest archived point") input'); await p.click('button:has-text("Next")'); await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 });
   await p.click('label.opt:has-text("Replace billing") input'); await p.waitForSelector('label.opt.on:has-text("Replace billing")'); await p.click('button.start-restore'); await p.waitForSelector('.modal >> text=Replace billing on');
   if (!(await p.locator('.modal button:has-text("Start")').isDisabled())) throw new Error('replacing a database needs the typed confirmation');
   assert.equal(await typeName(), 'billing'); await p.click('.modal button:has-text("Start")');
@@ -140,7 +157,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('button[role=radio]:has-text("appdb")', { timeout: 10000 }); await p.click('button[role=radio]:has-text("appdb")');
   await p.click('.tree button:has-text("orders") >> nth=0'); await p.click('button:has-text("Next")');
   await p.waitForSelector('label.opt.on:has-text("Just before: 48")', { timeout: 10000 }); await shot('09c-rows-when');
-  await p.click('label.opt:has-text("The latest saved point") input'); await p.waitForSelector('text=the latest point already contains the mistake'); await p.click('label.opt:has-text("Just before: 48") input');
+  await p.click('label.opt:has-text("The latest archived point") input'); await p.waitForSelector('text=the latest point already contains the mistake'); await p.click('label.opt:has-text("Just before: 48") input');
   await p.click('button:has-text("Next")'); await p.waitForSelector('text=/Ready to restore/', { timeout: 10000 });
   // rows: nothing preselected (putting every row back reverts legitimate changes too); comparing is the recommended way
   assert(await p.locator('label.opt.on').filter({ hasText: 'Put back all rows as they were' }).count() === 0, 'rows_all never preselected'); assert(await p.locator('button.start-restore').isDisabled(), 'start waits for the end choice');
@@ -163,7 +180,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=/Rows of .* brought back/', { timeout: 15000 }); await p.waitForSelector('code:has-text("pgarca_rowsafe_")'); await shot('12i-rows-fixed');
   // whole server, default end: PRODUCTION itself goes back (stop, swap, start, primary again); the previous data directory is kept and can be given back
   await p.click('button:has-text("New restore")'); await p.click('button.choice:has-text("I need to rebuild the whole server")');
-  await p.waitForSelector('label.opt.on:has-text("The latest saved point")', { timeout: 10000 }); await p.click('button:has-text("Next")');
+  await p.waitForSelector('label.opt.on:has-text("The latest archived point")', { timeout: 10000 }); await p.click('button:has-text("Next")');
   await p.waitForSelector('text=Choose how the restore ends'); assert(await p.locator('label.opt.on:has-text("Restore the production server in place")').count() === 0, 'in-place server restore never preselected');
   await p.click('label.opt:has-text("Restore the production server in place") input'); await p.waitForSelector('code:has-text("postgresql@16-main.service")', { timeout: 10000 });
   await p.waitForSelector('text=WAL not yet archived'); await p.waitForSelector('text=/standby servers? streams? from this server.*must be rebuilt/');
@@ -188,10 +205,13 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.locator('tr:has-text("All clusters") button:has-text("Edit")').click(); await p.waitForSelector('text=Where the recovery instance runs');
   await p.fill('input[placeholder="/var/tmp/pg_arca_scratch"]', '/data/scratch'); await p.fill('input[placeholder="e.g. 55000"]', '55000'); await p.fill('input[placeholder="e.g. 55100"]', '55100');
   await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Settings saved'); await p.waitForSelector('text=ports 55000-55100'); await shot('15-infra-eph');
-  await p.locator('tr:has-text("prodpg") button:has-text("Verify")').click(); await p.waitForSelector('text=Recovery cannot start from this node', { timeout: 10000 }); await p.waitForSelector('text=Install PostgreSQL 15'); await shot('16-infra-preflight');
+  await p.locator('tr:has-text("prodpg") button:has-text("Verify")').click(); await p.waitForSelector('text=Restores cannot run on this host', { timeout: 10000 }); await p.waitForSelector('text=Install PostgreSQL 15'); await shot('16-infra-preflight');
   await p.click('button:has-text("Install PostgreSQL 15")'); await p.fill('.modal input >> nth=-1', 'INSTALL'); await p.click('.modal button:has-text("Install") >> nth=-1'); await p.waitForSelector('text=Installing the binaries', { timeout: 10000 });
   await p.click('.modal button:has-text("Close")');
   await p.click('role=tab[name="Backup storage"]'); await p.waitForSelector('text=Where the repository and WAL archive go');
+  // the wizard above stored prodpg's own storage (backup server bk01): it shows in the table, then goes back to inheriting
+  await p.waitForSelector('tr:has-text("prodpg") >> text=Backup server bk01');
+  await p.locator('tr:has-text("prodpg") button:has-text("Edit")').click(); await p.click('.modal button:has-text("Remove: inherit")'); await p.waitForSelector('text=Inheriting again');
   await p.locator('tr:has-text("All clusters") button:has-text("Edit")').click(); await p.waitForSelector('text=Where backups are written');
   await p.selectOption('.modal select >> nth=0', 'nfs'); await p.fill('input[placeholder="/mnt/backup/pgarca"]', '/mnt/backup/pgarca'); await p.fill('input[placeholder="/mnt/backup/wal/{env}/{cluster}"]', '/mnt/backup/wal/{env}/{cluster}');
   assert(await p.locator('.modal option[disabled]:has-text("Preview")').count() >= 4, 'object stores are listed as preview and disabled');
@@ -220,8 +240,8 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.waitForSelector('text=Last successful sync', { timeout: 10000 }); await p.waitForSelector('.badge:has-text("Active")'); await shot('32-offsite');
   await p.click('button:has-text("What would be uploaded?")'); await p.waitForSelector('.banner:has-text("would be uploaded")', { timeout: 10000 });
   await p.click('button:has-text("Sync now")'); await p.waitForSelector('.banner:has-text("3 objects uploaded")', { timeout: 10000 });
-  await p.click('button:has-text("Download what is missing here")'); await p.waitForSelector('.banner:has-text("removed here on purpose by retention (620 MB) were not brought back")', { timeout: 10000 });
-  await tab('Maintenance', 'Tuning'); await p.waitForSelector('text=16.0 GB RAM'); await p.waitForSelector('tr:has-text("shared_buffers") >> text=4GB'); await shot('14e-tuning');
+  await p.click('button:has-text("Download what is missing here")'); await p.waitForSelector('.banner:has-text("removed here on purpose by retention (620 MiB) were not brought back")', { timeout: 10000 });
+  await tab('Maintenance', 'Tuning'); await p.waitForSelector('text=16.0 GiB RAM'); await p.waitForSelector('tr:has-text("shared_buffers") >> text=4GB'); await shot('14e-tuning');
   await p.click('tr:has-text("work_mem") button:has-text("Apply")'); await p.click('.modal button:has-text("Apply")'); await p.waitForSelector('text=Succeeded', { timeout: 10000 });
   await tab('Access', 'HBA'); await p.waitForSelector('text=Rules managed by the console');
   // HBA assistant: suggestion, duplicate refusal, shadow warning, plan, apply
@@ -269,7 +289,7 @@ const base = process.env.BASE || 'http://localhost:5188';
     await p.fill('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=0', '22'); await p.fill('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=1', '6');
     await shot('15d1-template-fields'); await p.click('.modal button:has-text("Save")'); await p.waitForSelector('text=Template saved');
     const card = p.locator('.tpl:has-text("Night window")'); await card.waitFor();
-    for (const s of ['30 days of history', 'read limit 50 MB/s', 'fulls and verifications 22:00–06:00', 'RPO 15 min', 'RTO 4 h']) assert.ok((await card.innerText()).includes(s), `template summary shows "${s}"`);
+    for (const s of ['30 days of point-in-time recovery', 'read limit 50 MB/s', 'fulls and verifications 22:00–06:00', 'RPO objective 15 min', 'RTO objective 4 h']) assert.ok((await card.innerText()).includes(s), `template summary shows "${s}"`);
     await card.locator('button:has-text("Edit")').click(); await p.waitForSelector('.modal:has-text("Edit template")'); await p.click('.modal button:has-text("Advanced:")');
     assert.equal(await p.inputValue(fld('Keep point-in-time recovery for at least (days)')), '30'); assert.equal(await p.inputValue(fld('Read rate limit (MB/s, 0 = none)')), '50'); assert.equal(await p.inputValue(fld('Recovery point objective (minutes, 0 = none)')), '15');
     assert.equal(await p.inputValue('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=0'), '22'); assert.equal(await p.inputValue('.modal .field:has(label:has-text("Hours for full backups")) input >> nth=1'), '6');
@@ -307,7 +327,7 @@ const base = process.env.BASE || 'http://localhost:5188';
   await p.goto(base + '/#/workers'); await p.waitForSelector('td:has-text("bk01")'); await shot('18a-workers');
   await p.click('.side .citem:has-text("bk01")'); await p.waitForSelector('text=Disks and shares'); await p.waitForSelector('text=/backup');
   await p.click('button:has-text("Verify as recovery host")'); await p.waitForSelector('text=It can run restores', { timeout: 15000 }); await shot('18b-worker');
-  await p.click('button:has-text("Use it for restores")'); await p.click('.modal button:has-text("Use this host")'); await p.waitForSelector('text=recovery node for all clusters', { timeout: 10000 });
+  await p.click('button:has-text("Use it for restores")'); await p.click('.modal button:has-text("Use this host")'); await p.waitForSelector('text=recovery host for all clusters', { timeout: 10000 });
   // geo-redundancy: the pair, the DR strip on the standby site, endpoint + planned switchover through both DCS
   await p.goto(base + '/#/geo'); await p.waitForSelector('.geosite:has-text("geo-dc2")'); await p.waitForSelector('text=Standby site (DR)'); await shot('19a-geo');
   // DR readiness: one-click fixes through the site's DCS

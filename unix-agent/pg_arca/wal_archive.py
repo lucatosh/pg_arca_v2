@@ -203,8 +203,20 @@ def _main(argv):
                 for n in wal_spool.pending(sp):
                     p_ = os.path.join(sp, n)
                     try:
-                        wm.archive_segment(p_, n)
+                        wm.archive_segment(p_, n, via="spool")
                     except Exception as e:
+                        # a leftover this server's own history never reads (an older timeline, at or past where this server left it - the
+                        # old primary's tail, spooled before it was rebuilt): set aside with its reason instead of failing every
+                        # archive_command for ever (architecture review B2). Anything else may be needed: archived first, in order
+                        why = wal_spool.dead_leftover(wm, n, wm.pg_wal_dir)
+                        if why:
+                            try:
+                                wal_spool.set_aside(sp, n, why, e)
+                                sys.stderr.write("pg_arca archive: the asynchronous spool held %s, refused by the archive (%s) and not needed by this "
+                                                 "server's history (%s): set aside in %s\n" % (n, e, why, os.path.join(sp, wal_spool.ASIDE)))
+                                continue
+                            except OSError as e2:
+                                e = "%s; could not be set aside: %s" % (e, e2)
                         sys.stderr.write("pg_arca archive FAILED: PGA-WAL-094 the asynchronous spool holds %s, not archivable now (%s): archived first, "
                                          "in order\n" % (n, e))
                         return 1
@@ -213,7 +225,7 @@ def _main(argv):
                     except OSError:
                         pass
         try:
-            ok, dest, sha, msg = wm.archive_segment(argv[2], argv[3])
+            ok, dest, sha, msg = wm.archive_segment(argv[2], argv[3], via="archive_command")
         except WalArchiveError as e:
             sys.stderr.write("pg_arca archive FAILED: %s\n" % e)
             _last_error(d, argv[3], str(e))

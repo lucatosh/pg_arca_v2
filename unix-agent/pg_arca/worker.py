@@ -110,4 +110,23 @@ class Inventory(object):
         out["mounts"] = mounts()
         out["dirs"] = {k: _dir_info(self.config.get(v)) for k, v in (("scratch", "scratch_dir"), ("repo", "repo_path"), ("wal_archive", "wal_archive_dir"))}
         out["role"] = "worker"
+        out["identity"] = _identity()
         return out
+
+
+def _identity():
+    """The names and addresses this machine is known by: the console matches them against the server part of the database nodes' network mounts
+    ("bk1:/export/pgarca") to say "backups on backup server bk1". Loopback and link-local addresses are left out."""
+    import socket
+    ids = {"hostname": None, "fqdn": None, "addresses": []}
+    try:
+        ids["hostname"] = socket.gethostname()
+        ids["fqdn"] = socket.getfqdn()
+    except Exception:
+        pass
+    try:
+        from pg_arca.runtime import _local_addresses
+        ids["addresses"] = sorted(a for a in _local_addresses() if a and not a.startswith(("127.", "::1", "fe80")) and a != "::")[:32]
+    except Exception:
+        pass
+    return ids

@@ -18,7 +18,7 @@ interface Failover { from: string; to: string; fromName: string; toName: string;
 interface Group { sysid: string; sites: Site[]; primary: string | null; readiness?: Ready; policy?: Policy; watch?: Watch | null; failover?: Failover | null }
 interface Job { id: string; type?: string; fromName: string; toName: string; status: string; createdBy: string; createdAt: string; steps: { at: string; text: string }[]; error?: string }
 const JOB_LABEL: Record<string, string> = { switchover: 'Planned switchover', failover: 'Disaster recovery (manual promotion)', failover_auto: 'Automatic disaster recovery', rejoin: 'Rejoin of the old primary' };
-const JOB_ST: Record<string, [string, 'ok' | 'bad' | 'warn' | 'accent']> = { running: ['running', 'accent'], succeeded: ['completed', 'ok'], failed: ['stopped', 'bad'], held: ['waiting for a decision', 'warn'], interrupted: ['interrupted (console restarted)', 'warn'] };
+const JOB_ST: Record<string, [string, 'ok' | 'bad' | 'warn' | 'accent']> = { running: ['running', 'accent'], succeeded: ['completed', 'ok'], failed: ['failed', 'bad'], held: ['waiting for a decision', 'warn'], interrupted: ['interrupted (console restarted)', 'warn'] };
 
 const ROLE_LABEL = { primary: 'Primary site', standby: 'Standby site (DR)', unknown: 'Role not determined' };
 
@@ -66,8 +66,8 @@ function GroupCard({ g, role, running }: { g: Group; role: string; running: bool
       {prim ? <SiteCard s={prim} onOpen={() => go(`c/${encodeURIComponent(prim.clusterId)}`)} /> : <div className="geosite bad"><strong>Primary site not visible</strong><p className="small muted">No connected cluster accepts writes for this database.</p></div>}
       <div className="geolinks">{stand.map(s => <div key={s.clusterId} className={`geolink ${s.health}`}>
         <div className="arrow"><span /></div>
-        <div className="small"><strong>{s.lagBytes == null ? '—' : s.lagBytes === 0 ? 'in sync' : `${bytes(s.lagBytes)} behind`}</strong></div>
-        <div className="small faint">{s.receiver?.status === 'streaming' ? 'WAN link up' : 'WAN link down'}{s.slot ? <span className={s.slot.active ? 'xp' : undefined}>{` · slot ${s.slot.active ? 'active' : 'INACTIVE'}${s.slot.retainedBytes != null ? `, retaining ${bytes(s.slot.retainedBytes)}` : ''}`}</span> : ''}</div>
+        <div className="small"><strong>{s.lagBytes == null ? 'lag not measurable' : s.lagBytes === 0 ? 'in sync' : `${bytes(s.lagBytes)} of WAL behind`}</strong></div>
+        <div className="small faint">{s.receiver?.status === 'streaming' ? 'WAL streaming' : 'WAL streaming interrupted'}{s.slot ? <span className={s.slot.active ? 'xp' : undefined}>{` · slot ${s.slot.active ? 'active' : 'inactive'}${s.slot.retainedBytes != null ? `, retaining ${bytes(s.slot.retainedBytes)}` : ''}`}</span> : ''}</div>
       </div>)}</div>
       <div className="stack">{[...extra, ...stand].map(s => <SiteCard key={s.clusterId} s={s} onOpen={() => go(`c/${encodeURIComponent(s.clusterId)}`)} />)}</div>
     </div>
@@ -109,7 +109,7 @@ function PromoteDialog({ s, primary, onClose }: { s: Site; primary?: Site; onClo
   return <Modal title={`Promote ${s.name} (disaster recovery)`} onClose={onClose} footer={<><div className="grow" /><Button onClick={onClose}>Cancel</Button><Button kind="danger" busy={busy} disabled={typed !== 'PROMOTE' || (alive && !lost)} onClick={go2}>Promote</Button></>}>
     <div className="stack">
       {alive ? <Banner kind="bad" title={`${primary!.name} is still running`}>It accepts writes: if you promote {s.name} now you will have two primary sites with diverging data (split-brain). If both sites are healthy, use the <strong>planned switchover</strong>.</Banner>
-        : <Banner kind="warn" title="The primary site is not responding">{s.lagBytes ? `At the last contact ${s.name} was ${bytes(s.lagBytes)} behind: that data will be lost.` : `Last known state: ${s.name} was in sync.`}</Banner>}
+        : <Banner kind="warn" title="The primary site is not responding">{s.lagBytes ? `At the last contact ${s.name} was ${bytes(s.lagBytes)} of WAL behind: up to that much committed data may be lost.` : `Last known state: ${s.name} was in sync.`}</Banner>}
       {alive ? <label className="check"><input type="checkbox" checked={lost} onChange={e => setLost(e.target.checked)} /> I know {primary!.name} is lost or isolated and will not receive writes again (I will shut it down / isolate it myself).</label> : null}
       <p className="small">{s.name} stops replicating and becomes writable (Patroni promotes it: <code>standby_cluster</code> removed from its DCS). The old primary site, when it comes back, must NOT resume writing: it has to be rebuilt as a standby site.</p>
       <Field label="Type PROMOTE to confirm"><input className="input" value={typed} onChange={e => setTyped(e.target.value)} /></Field>
@@ -153,13 +153,13 @@ function Readiness({ r, role }: { r: Ready; role: string }) {
       setTimeout(() => revalidate('/api/geo'), 8000);
     } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setFixing(null); }
   };
-  const save = async () => { setBusy(true); try { await api('PUT', '/api/geo/settings', { rpoSec: Number(rpo) }); revalidate('/api/geo'); toast('RPO target saved', 'ok'); setEdit(false); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
+  const save = async () => { setBusy(true); try { await api('PUT', '/api/geo/settings', { rpoSec: Number(rpo) }); revalidate('/api/geo'); toast('RPO objective saved', 'ok'); setEdit(false); } catch (e: any) { toast(e.body?.message || e.message, 'bad'); } finally { setBusy(false); } };
   return <div className={`geoready ${tone}`}>
     <div className="row wrap gap-s">
       <button className="linkbtn row gap-s" onClick={() => setOpen(!open)} aria-expanded={open}><Icon n={open ? 'down' : 'chev'} s={13} /><Dot kind={tone} /><strong>{readyLabel(r)}</strong></button>
-      <span className="small muted">estimated loss <strong>{r.rpoSec == null ? 'not measurable' : r.rpoSec < 1 ? 'none' : `${r.rpoSec} s`}</strong> · target {r.rpoTargetSec} s
+      <span className="small muted">estimated data loss (RPO) <strong>{r.rpoSec == null ? 'not measurable' : r.rpoSec < 1 ? 'none' : `${r.rpoSec} s`}</strong> · objective {r.rpoTargetSec} s
         {r.lastTest ? <> · last switchover {ago(r.lastTest.at)}{r.lastTest.seconds != null ? `, ${r.lastTest.seconds} s` : ''}</> : <> · switchover never tested</>}</span>
-      <div className="grow" />{role === 'admin' ? <Button sm kind="ghost" onClick={() => setEdit(true)}>RPO target…</Button> : null}
+      <div className="grow" />{role === 'admin' ? <Button sm kind="ghost" onClick={() => setEdit(true)}>RPO objective…</Button> : null}
     </div>
     {/* problems first (worst first), at most three until asked; the configuration syntax of a fix sits behind "How to fix by hand" */}
     {open ? <ul className="geochecks">{(all ? [...issues.sort(byLevel), ...r.checks.filter(c => c.level === 'ok')] : [...issues].sort(byLevel).slice(0, 3)).map((c, i) => <li key={i} className={c.level}>
@@ -167,7 +167,7 @@ function Readiness({ r, role }: { r: Ready; role: string }) {
       {role === 'admin' && c.action && c.clusterId ? <Button sm busy={fixing === c.id + c.clusterId} onClick={() => fix(c)}>{c.action === 'archive_fallback' ? 'Enable the archive fallback' : 'Enable pg_rewind'}</Button> : null}</li>)}
       <li className="more"><button className="linkbtn small" onClick={() => setAll(!all)}>{all ? 'Show only what needs attention' : (() => { const shown = [...issues].sort(byLevel).slice(0, 3); const more = issues.filter(c => (c.level === 'warn' || c.level === 'bad') && !shown.includes(c)).length;
         return more ? `Show all ${r.checks.length} checks (${more} more to fix)` : issues.length > 3 ? `Show all ${r.checks.length} checks (${nof(issues.length - 3, 'more note')})` : `Show all ${r.checks.length} checks`; })()}</button></li></ul> : null}
-    {edit ? <Modal title="Data loss target (RPO)" onClose={() => setEdit(false)} footer={<><div className="grow" /><Button onClick={() => setEdit(false)}>Cancel</Button><Button kind="primary" busy={busy} onClick={save}>Save</Button></>}>
+    {edit ? <Modal title="Recovery point objective (RPO) between sites" onClose={() => setEdit(false)} footer={<><div className="grow" /><Button onClick={() => setEdit(false)}>Cancel</Button><Button kind="primary" busy={busy} onClick={save}>Save</Button></>}>
       <Field label="Seconds of transactions it is acceptable to lose if the primary site disappears" hint="Above the target the pair has something to fix; above ten times the target it is not ready. Applies to all site pairs.">
         <input className="input" type="number" min={1} max={86400} value={rpo} onChange={e => setRpo(e.target.value)} /></Field></Modal> : null}
   </div>;

@@ -29,7 +29,7 @@ export function PendingJoin({ name, children }: { name: string; children: React.
   if (!mine) return <>{children}</>;
   return <>
     <Badge kind="info" title="This node’s agent has already asked to join: it needs approval">asks to join</Badge>
-    <Button sm kind="primary" onClick={() => setSel(mine)}>Esamina</Button>
+    <Button sm kind="primary" onClick={() => setSel(mine)}>Review</Button>
     {sel ? <Review r={sel} all={list} pick={setSel} onClose={() => setSel(null)} /> : null}
   </>;
 }

@@ -13,9 +13,9 @@ export function protectionHeadline(p?: Protection | null): string {
   if (p.state === 'none') return p.reason === 'standby_site' ? 'Backed up on its primary site' : 'Not backed up by this console';
   if (!p.backups) return 'No backup yet: not protected';
   if (p.archiving === 'off') return 'Restorable only to a backup (WAL archiving is off)';
-  if (p.archiving === 'failing') return 'Restorable only up to the archiving failure (WAL archiving is failing)';
-  if (p.rpoSeconds == null) return 'Restorable to the last backup';
-  return p.rpoSeconds <= 120 ? 'Restorable to the last minute' : `Restorable to ${span(p.rpoSeconds)} ago`;
+  if (p.archiving === 'failing') return 'Restorable only up to the last archived WAL segment (WAL archiving is failing)';
+  if (p.rpoSeconds == null) return 'Restorable at least to the last backup (recovery point not measurable now)';
+  return p.rpoSeconds <= 120 ? 'Restorable to within 2 min of now (estimated RPO)' : `Restorable to within ${span(p.rpoSeconds)} of now (estimated RPO)`;
 }
 
 /** The details that follow: last backup, last full, offsite copy, estimated full restore time. */
@@ -25,7 +25,7 @@ export function protectionDetails(p?: Protection | null, long = false): string[]
   if (p.lastBackupAt) out.push(`last backup ${ago(p.lastBackupAt)}`);
   if (long && p.lastFullAt && p.lastFullAt !== p.lastBackupAt) out.push(`last full ${ago(p.lastFullAt)}`);
   if (p.offsiteAt !== undefined) out.push(p.offsiteAt ? `offsite copy ${ago(p.offsiteAt)}` : 'offsite copy never synced');
-  if (long && p.rtoSeconds) out.push(`server restore ≈ ${span(p.rtoSeconds)}`);
+  if (long && p.rtoSeconds) out.push(`full restore ≈ ${span(p.rtoSeconds)} (estimated from the last drill)`);
   return out;
 }
 

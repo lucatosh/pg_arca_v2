@@ -38,18 +38,22 @@ SEG_RE = re.compile(r"^([0-9A-F]{8})([0-9A-F]{8})([0-9A-F]{8})$")
 HIST_LINE_RE = re.compile(r"^\s*(\d+)\s+([0-9A-Fa-f]+)/([0-9A-Fa-f]+)")
 
 
-def _branch_not_on_our_history(src_path, name, pg_wal_dir=None):
+def _branch_not_on_our_history(src_path, name, pg_wal_dir=None, seg_size=None):
     """For a segment of an OLDER timeline than the one this server writes: '' when the server's own history may need it, else the reason
     it never will. PostgreSQL recovering along a timeline history reads timeline T only up to the point where the history left T, and the
     segment holding that switch point is read from the newer timeline. A copy of timeline T's segment that holds or follows that point is
     therefore never read on this server's history (it is the old primary's view of a branch this server left). Decided from this server's
-    pg_wal only: the timeline of the newest segment there and its history file; any doubt answers '' (the divergence stays an error)."""
+    pg_wal only: the timeline of the newest segment there and its history file; any doubt answers '' (the divergence stays an error).
+    The answer depends on the NAME and this server's history alone, not on a collision in the archive: with seg_size given (and src_path
+    None) it also judges a copy the archive refused for another reason (a dead pusher's leftover in the spool, wal_archive drain)."""
     m = SEG_RE.match(name)
     if not m:
         return ""
     try:
         wal_dir = pg_wal_dir or os.path.dirname(os.path.abspath(src_path))     # the server's pg_wal (not the async spool the copy may come from)
-        seg_size = os.path.getsize(src_path)
+        seg_size = int(seg_size) if seg_size else os.path.getsize(src_path)
+        if seg_size < (1 << 20) or seg_size & (seg_size - 1):
+            return ""
         names = os.listdir(wal_dir)
         cur = max((int(x[:8], 16) for x in names if SEG_RE.match(x)), default=0)      # the timeline this server writes now
         tli = int(m.group(1), 16)
@@ -68,9 +72,30 @@ def _branch_not_on_our_history(src_path, name, pg_wal_dir=None):
         if seg_start + seg_size > switch:
             return "timeline %d ended at %X/%X in this server's history; recovery reads timeline %d's copy of this segment" % (
                 tli, switch >> 32, switch & 0xFFFFFFFF, _next_tli(wal_dir, cur, tli))
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):
         return ""
     return ""
+
+
+def branch_not_on_history(name, pg_wal_dir, seg_size):
+    """Public form of _branch_not_on_our_history for a copy judged by its name alone (see there)."""
+    if not pg_wal_dir:
+        return ""
+    return _branch_not_on_our_history(None, name, pg_wal_dir, seg_size)
+
+
+def pgdata_sysid(pgdata):
+    """System identifier of the cluster in `pgdata` (first 8 bytes of global/pg_control, host byte order), None when not readable.
+    Same reading as discovery.read_system_identifier, kept here so archive_command does not import the agent."""
+    import struct
+    try:
+        with open(os.path.join(pgdata, "global", "pg_control"), "rb") as f:
+            raw = f.read(8)
+        if len(raw) == 8:
+            return str(struct.unpack("=Q", raw)[0])
+    except (IOError, OSError):
+        pass
+    return None
 
 
 def _next_tli(wal_dir, cur, tli):
@@ -265,7 +290,8 @@ class WalManager:
                                   "archive from the console (Backup storage)" % self.wal_dir)
         if cur is None:
             p = os.path.join(self.wal_dir, OWNER_FILE)
-            tmp = "%s.%d.tmp" % (p, os.getpid())
+            # unique per thread too: the spool pusher's workers archive in parallel into a fresh archive (one tmp name made them unlink each other's)
+            tmp = "%s.%d.%d.%s.tmp" % (p, os.getpid(), threading.get_ident(), os.urandom(4).hex())
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"system_identifier": sysid, "since": time.time()}, f)
                 f.flush()
@@ -352,7 +378,7 @@ class WalManager:
             except (IOError, OSError, ValueError):
                 d = {}
             d[os.path.realpath(self.wal_dir)] = sysid
-            tmp = "%s.%d.tmp" % (self.known_file, os.getpid())
+            tmp = "%s.%d.%d.tmp" % (self.known_file, os.getpid(), threading.get_ident())
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(d, f)
             os.rename(tmp, self.known_file)
@@ -360,21 +386,81 @@ class WalManager:
             pass
 
     # ------------------------------------------------------------------ quarantine
+    # A quarantined copy is conflicts/<name>.<sha12> (+ .dead-branch once a retirement consumed or rejected it) with a sidecar
+    # <copy file>.json: {sha256, size (both of the RAW copy), enc/key_id/aad when the copy is sealed, writer, stored}. Copies quarantined
+    # by older agents have no sidecar: they are plaintext and their own size and hash are the raw ones.
+    SIDECAR = ".json"
+
+    @staticmethod
+    def _is_qcopy(f):
+        """A quarantined copy (not a sidecar, not a temp file, not a consumed .dead-branch trace)."""
+        return not f.startswith(".") and not f.endswith(WalManager.SIDECAR) and not f.endswith(".dead-branch")
+
+    @staticmethod
+    def _qname(f):
+        parts = f.split(".")
+        return ".".join(parts[:2]) if len(parts) > 1 and parts[1] in ("history", "partial") else parts[0]
+
+    def _qinfo(self, path):
+        """The sidecar of a quarantined copy, or what can be told without one (legacy: plaintext, its own size). sha256 is computed lazily
+        by _qsha for legacy copies (hashing every copy at every heartbeat would be expensive)."""
+        try:
+            with open(path + self.SIDECAR, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                return d
+        except (IOError, OSError, ValueError):
+            pass
+        return {}
+
+    def _qsha(self, path, info=None):
+        info = self._qinfo(path) if info is None else info
+        return info.get("sha256") or _sha256_file(path)
+
+    def _qplain(self, path, name, info, tmp):
+        """Path of the RAW content of a quarantined copy: the copy itself when plaintext, else decrypted into `tmp` (raises when the key is not this one)."""
+        if not info.get("enc"):
+            return path
+        if not self.crypto:
+            raise WalArchiveError("PGA-ENC-005", "the quarantined copy %s is encrypted and no key is configured (encryption_key_file / PG_ARCA_KEY_FILE)" % os.path.basename(path))
+        if info.get("key_id") and info.get("key_id") != self.crypto.key_id:
+            raise WalArchiveError("PGA-ENC-007", "the quarantined copy %s was encrypted with another key (%s)" % (os.path.basename(path), info.get("key_id")))
+        with open(path, "rb") as f:
+            plain = self.crypto.open(f.read(), info.get("aad") or "walq:" + name)
+        with open(tmp, "wb") as f:
+            f.write(plain)
+        return tmp
+
+    def _qrename(self, src, dst):
+        """Move a quarantined copy and its sidecar together (the sidecar first: a copy found without its sidecar would be taken for plaintext)."""
+        if os.path.exists(src + self.SIDECAR):
+            os.rename(src + self.SIDECAR, dst + self.SIDECAR)
+        os.rename(src, dst)
+
     def conflicts(self):
-        """Divergent copies waiting for a person: [{file, name, sha, at, size}] (conflicts/, not conflicts/reviewed/)."""
+        """Divergent copies waiting for a person: [{file, name, sha, at, size, writer, stored_writer}] (conflicts/, not conflicts/reviewed/).
+        size is the RAW copy's (a sealed copy is larger on disk); writer: who sent the refused copy, stored_writer: who wrote the archive's."""
         qdir = os.path.join(self.wal_dir, "conflicts")
         out = []
         for f in (sorted(os.listdir(qdir)) if os.path.isdir(qdir) else []):
             p = os.path.join(qdir, f)
-            if f.startswith(".") or not os.path.isfile(p) or f.endswith(".dead-branch"):
-                continue                                         # .<key>.tmp.*: a quarantine being published
+            if not self._is_qcopy(f) or not os.path.isfile(p):
+                continue                                         # .<key>.tmp.*: a quarantine being published; *.json: sidecars
             parts = f.split(".")
             two = len(parts) > 1 and parts[1] in ("history", "partial")
-            name = ".".join(parts[:2]) if two else parts[0]
+            name = self._qname(f)
             try:
                 st = os.stat(p)
-                out.append({"file": f, "name": name, "sha": (parts[2] if len(parts) > 2 else "") if two else (parts[1] if len(parts) > 1 else ""),
-                            "at": st.st_mtime, "size": st.st_size, "timeline": int(name[:8], 16) if re.match(r"^[0-9A-F]{8}", name) else None})
+                info = self._qinfo(p)
+                c = {"file": f, "name": name, "sha": (parts[2] if len(parts) > 2 else "") if two else (parts[1] if len(parts) > 1 else ""),
+                     "at": st.st_mtime, "size": int(info.get("size") or st.st_size), "timeline": int(name[:8], 16) if re.match(r"^[0-9A-F]{8}", name) else None}
+                if info.get("writer"):
+                    c["writer"] = info["writer"]
+                if (info.get("stored") or {}).get("writer"):
+                    c["stored_writer"] = info["stored"]["writer"]
+                if info.get("enc"):
+                    c["enc"] = info["enc"]
+                out.append(c)
             except OSError:
                 pass
         return out
@@ -450,12 +536,87 @@ class WalManager:
         if dry_run or not names:
             return report
         os.makedirs(ddir, mode=0o750, exist_ok=True)
+        self._mark_retired(ddir, tli, "retire_abandoned")
         for f in names:
-            os.rename(os.path.join(self.wal_dir, f), os.path.join(ddir, f))
+            os.rename(os.path.join(self.wal_dir, f), self._free_name(os.path.join(ddir, f)))
         _fsync_dir(ddir)
         _fsync_dir(self.wal_dir)
         self._cont_cache = (0, None, None)
         return report
+
+    def retire_tail(self, timeline, dry_run=False):
+        """Set aside the segments of timeline `timeline` archived AFTER the point where a later timeline's history says it ended (the
+        branch_tails of the continuity view: an old primary that went on writing after a promotion). They move, with their meta, to
+        conflicts/branch-tail-<tli>/ and RETIRED.json records when; nothing is deleted. They were never on the current history: a restore along
+        it does not change, and the archive stops reporting the two-primaries finding for them. A timeline with no tail: nothing to do."""
+        tli = int(timeline)
+        cont = self._compute_continuity()
+        tail = next((t for t in (cont or {}).get("branch_tails") or [] if int(t.get("timeline") or 0) == tli), None)
+        prefix = "%08X" % tli
+        ddir = os.path.join(self.wal_dir, "conflicts", "branch-tail-%s" % prefix)
+        report = {"timeline": tli, "tail": True, "retired": [], "dead_branch_dir": ddir, "dry_run": bool(dry_run)}
+        if not tail:
+            return report
+        first, last = tail["first"], tail["last"]
+        names = sorted(f for f in os.listdir(self.wal_dir)
+                       if SEG_RE.match(f[:24]) and f.startswith(prefix) and first <= f[:24] <= last and os.path.isfile(os.path.join(self.wal_dir, f)))
+        report.update(retired=names, successor=tail.get("successor"), fork_lsn=tail.get("fork_lsn"))
+        if dry_run or not names:
+            return report
+        os.makedirs(ddir, mode=0o750, exist_ok=True)
+        self._mark_retired(ddir, tli, "retire_tail")
+        for f in names:
+            os.rename(os.path.join(self.wal_dir, f), self._free_name(os.path.join(ddir, f)))
+        _fsync_dir(ddir)
+        _fsync_dir(self.wal_dir)
+        self._cont_cache = (0, None, None)
+        return report
+
+    RETIRED = "RETIRED.json"
+
+    @staticmethod
+    def _free_name(path):
+        """`path`, or `path.prev-N` when a file already has that name: the same timeline number retired twice (reused after a first retirement)
+        must never overwrite what the first retirement kept - nothing set aside is ever deleted."""
+        if not os.path.lexists(path):
+            return path
+        n = 1
+        while os.path.lexists("%s.prev-%d" % (path, n)):
+            n += 1
+        return "%s.prev-%d" % (path, n)
+
+    def _mark_retired(self, ddir, tli, by):
+        """RETIRED.json {at, timeline, by} in a dead-branch directory: WHEN the branch was set aside. A backup that started after that
+        moment cannot hold the dead branch's WAL (its WAL was archived after it, on the surviving branch), so the doubt check ignores
+        the directory for it; a timeline number reused later otherwise made every backup of the new incarnation UNRECOVERABLE. Written
+        BEFORE anything moves (a crash in between never leaves set-aside objects without a mark, which a retry with nothing left to move
+        would not write any more) and refreshed by every later retirement into the same directory (the newest one counts: backups that
+        started before it may hold what it moved)."""
+        p = os.path.join(ddir, self.RETIRED)
+        first = None
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                first = json.load(f).get("first_at")
+        except (IOError, OSError, ValueError, AttributeError):
+            first = None
+        now = time.time()
+        import socket
+        rec = {"at": now, "first_at": first or now, "timeline": int(tli), "by": "%s@%s" % (by, socket.gethostname())}
+        tmp = "%s.%d.tmp" % (p, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, p)
+        _fsync_dir(ddir)
+
+    def retired_at(self, tli):
+        """When the dead branch of timeline `tli` was last set aside (RETIRED.json "at"), None when it never was or the mark is unreadable."""
+        try:
+            with open(os.path.join(self.wal_dir, "conflicts", "dead-branch-%08X" % int(tli), self.RETIRED), "r", encoding="utf-8") as f:
+                return float(json.load(f)["at"])
+        except (IOError, OSError, ValueError, KeyError, TypeError):
+            return None
 
     def retire_branch(self, timeline, survivor_pgdata=None, dry_run=False):
         """Two servers used the SAME timeline number (split-brain, or a promotion without access to the archive): the archive holds the
@@ -464,7 +625,12 @@ class WalManager:
         the DEAD branch: it moves to conflicts/dead-branch-<tli>/ (nothing is deleted) and the quarantined copy takes its place, so the
         primary's archiver resumes at once. Objects of that timeline WITHOUT a quarantined copy are shared by both branches (before the
         fork) and stay. survivor_pgdata: when the primary's pg_wal still holds the file, the quarantined copy is promoted only if its
-        content is byte-identical to it (proof it is the survivor's copy). Returns a report; dry_run only reports."""
+        content is byte-identical to it (proof it is the survivor's copy). Returns a report; dry_run only reports.
+        The report says per name how the promoted copy was chosen: `verified` (byte-identical to the survivor's own file in pg_wal) or
+        `unverified` (the only quarantined content, nothing to compare it with). Several DISTINCT quarantined contents of one name and none
+        proven by the survivor's pg_wal: that name is left as it is and reported in `skipped` (taking the newest by date put a third
+        server's copy into the archive; architecture review S8)."""
+        import socket
         tli = int(timeline)
         prefix = "%08X" % tli
         qdir = os.path.join(self.wal_dir, "conflicts")
@@ -473,65 +639,91 @@ class WalManager:
         for sub in ("", "reviewed"):
             d = os.path.join(qdir, sub)
             for f in (sorted(os.listdir(d)) if os.path.isdir(d) else []):
-                if not f.startswith(prefix) or f.endswith(".dead-branch"):
+                if not f.startswith(prefix) or not self._is_qcopy(f):
                     continue
-                parts = f.split(".")
-                name = ".".join(parts[:2]) if len(parts) > 1 and parts[1] in ("history", "partial") else parts[0]
                 p = os.path.join(d, f)
                 if os.path.isfile(p):
-                    cands.setdefault(name, []).append(p)           # newest quarantined copy last (sorted by name = by sha then time)
-        report = {"timeline": tli, "retired": [], "promoted": [], "kept": [], "skipped": [], "dead_branch_dir": ddir, "dry_run": bool(dry_run)}
+                    cands.setdefault(self._qname(f), []).append(p)
+        report = {"timeline": tli, "retired": [], "promoted": [], "verified": [], "unverified": [], "kept": [], "skipped": [], "dead_branch_dir": ddir,
+                  "dry_run": bool(dry_run)}
+        marked = False
         for name in sorted(cands):
             stored, codec = self._find(name)
             if not stored:
                 report["skipped"].append({"name": name, "why": "nothing stored under this name any more"})
                 continue
             copies = sorted(cands[name], key=lambda x: os.stat(x).st_mtime)
-            chosen = copies[-1]
-            if survivor_pgdata:
-                live = os.path.join(survivor_pgdata, "pg_wal", name)
-                if os.path.isfile(live):
-                    live_sha = _sha256_file(live)
-                    same = [c for c in copies if _sha256_file(c) == live_sha]
-                    if not same:
-                        report["skipped"].append({"name": name, "why": "no quarantined copy matches the primary's own file in pg_wal: the archiver will archive the primary's file itself once the stored one is retired"})
-                        chosen = None
-                    else:
-                        chosen = same[-1]
+            infos = dict((c, self._qinfo(c)) for c in copies)
+            shas = dict((c, self._qsha(c, infos[c])) for c in copies)
+            distinct = set(shas.values())
+            chosen, verified = None, False
+            live = os.path.join(survivor_pgdata, "pg_wal", name) if survivor_pgdata else None
+            if live and os.path.isfile(live):
+                live_sha = _sha256_file(live)
+                same = [c for c in copies if shas[c] == live_sha]
+                if not same:
+                    report["skipped"].append({"name": name, "why": "no quarantined copy matches the primary's own file in pg_wal: the archiver will archive the primary's file itself once the stored one is retired"})
+                else:
+                    chosen, verified = same[-1], True
+            elif len(distinct) > 1:
+                # nothing tells which content is the survivor's: retiring the stored copy would leave the name absent (a hole nobody fills,
+                # the survivor's pg_wal no longer has it) and promoting one of them is a guess
+                report["skipped"].append({"name": name, "copies": len(distinct),
+                                          "why": "%d distinct quarantined copies and none is proven by the primary's own pg_wal (the file is no longer there, or the "
+                                                 "primary was not reachable): which one is the survivor's cannot be told, the stored copy is kept" % len(distinct)})
+                continue
+            else:
+                chosen = copies[-1]
             if dry_run:
                 report["retired"].append(name)
                 if chosen:
                     report["promoted"].append(name)
+                    report["verified" if verified else "unverified"].append(name)
                 continue
             os.makedirs(ddir, mode=0o750, exist_ok=True)
+            if not marked:
+                self._mark_retired(ddir, tli, "retire_branch")
+                marked = True
             # 1) the dead copy (+ its meta) goes aside, atomically renamed inside the same filesystem
-            aside = os.path.join(ddir, os.path.basename(stored))
+            aside = self._free_name(os.path.join(ddir, os.path.basename(stored)))
             os.rename(stored, aside)
             mp = os.path.join(self.wal_dir, name + ".meta")
             had_meta = os.path.exists(mp)
+            meta_aside = self._free_name(os.path.join(ddir, name + ".meta"))
             if had_meta:
-                os.rename(mp, os.path.join(ddir, name + ".meta"))
+                os.rename(mp, meta_aside)
             report["retired"].append(name)
-            # 2) the survivor's copy takes its place through the normal write-once path (compression, meta, fsync)
+            # 2) the survivor's copy takes its place through the normal write-once path (compression, encryption, meta, fsync); a sealed
+            #    quarantined copy is opened first (this needs the archive's key: the executor builds the manager with it)
             if chosen:
+                tmp = os.path.join(self.wal_dir, ".%s.promote.%d.%d" % (name, os.getpid(), threading.get_ident()))
                 try:
-                    self.archive_segment(chosen, name)
-                    os.rename(chosen, chosen + ".dead-branch")       # consumed: it is in the archive now (kept as a trace, excluded from the alarm)
+                    info = infos[chosen]
+                    w = dict(info.get("writer") or {})
+                    w.update(via="retire", retired_by=socket.gethostname())
+                    if verified and survivor_pgdata:
+                        w["pgdata"] = survivor_pgdata
+                    self.archive_segment(self._qplain(chosen, name, info, tmp), name, via="retire", writer=w)
+                    self._qrename(chosen, chosen + ".dead-branch")       # consumed: it is in the archive now (kept as a trace, excluded from the alarm)
                     report["promoted"].append(name)
-                except (WalArchiveError, OSError) as e:
+                    report["verified" if verified else "unverified"].append(name)
+                except Exception as e:
                     # the name must not stay ABSENT (a recovery would read "end of archive" there): the set-aside copy goes back, the rest goes on
                     try:
                         if not self._find(name)[0]:
                             os.rename(aside, stored)
                             if had_meta:
-                                os.rename(os.path.join(ddir, name + ".meta"), mp)
+                                os.rename(meta_aside, mp)
                             report["retired"].remove(name)
                     except OSError:
                         pass
                     report["skipped"].append({"name": name, "why": "quarantined copy not promoted (the stored copy is kept in place): %s" % e})
+                finally:
+                    if os.path.exists(tmp):
+                        os.unlink(tmp)
             for c in copies:
-                if c != chosen and os.path.exists(c) and not c.endswith(".dead-branch"):
-                    os.rename(c, c + ".dead-branch")
+                if c != chosen and os.path.exists(c):
+                    self._qrename(c, c + ".dead-branch")
         dfd = None
         try:
             dfd = os.open(self.wal_dir, os.O_RDONLY)
@@ -541,54 +733,130 @@ class WalManager:
         finally:
             if dfd is not None:
                 os.close(dfd)
+        self._cont_cache = (0, None, None)
         return report
 
-    def _quarantine(self, src_path, name, raw_sha):
+    def _quarantine(self, src_path, name, raw_sha, size=None, is_history=False, writer=None, stored=None):
         """Keep the refused copy ONCE per (name, content), whoever archives it and however often PostgreSQL retries: the name is
         deterministic and published with link(2), which fails if it exists. A listdir() check was not enough on NFS (cached directory
         listings: the lab's shared archive held one history file quarantined dozens of times, seconds apart, each one an alarm).
-        A copy already filed away as reviewed is not quarantined again."""
+        A copy already filed away as reviewed is not quarantined again.
+        In an encrypted archive the copy is sealed with the archive's key (AAD "walq:<name>"): plaintext WAL never lands on a share whose
+        segments are all encrypted (architecture review B5). Its sidecar <copy>.json keeps the raw sha256 and size (what readers compare
+        and classify) and who wrote the refused copy and the stored one (G12)."""
         qdir = os.path.join(self.wal_dir, "conflicts")
         os.makedirs(qdir, mode=0o750, exist_ok=True)
         key = "%s.%s" % (name, raw_sha[:12])
         rdir = os.path.join(qdir, "reviewed")
         for d in (qdir, rdir):
             try:
-                same = [x for x in os.listdir(d) if (x == key or x.startswith(key + ".")) and not x.endswith(".dead-branch")]
+                same = [x for x in os.listdir(d) if (x == key or x.startswith(key + ".")) and self._is_qcopy(x)]
             except OSError:
                 same = []
             if same:
                 return same[0]
-        tmp = os.path.join(qdir, ".%s.tmp.%d.%d" % (key, os.getpid(), threading.get_ident()))
+        seal = bool(self.crypto) and not is_history                     # history files and labels are stored readable in the archive too
+        side = {"name": name, "sha256": raw_sha, "size": int(size if size is not None else os.path.getsize(src_path)), "at": time.time()}
+        if seal:
+            side.update(enc="aes-256-gcm", key_id=self.crypto.key_id, aad="walq:" + name)
+        if writer:
+            side["writer"] = writer
+        if stored:
+            side["stored"] = stored
+        final = os.path.join(qdir, key)
+        tag = "%d.%d" % (os.getpid(), threading.get_ident())
+        tmp = os.path.join(qdir, ".%s.tmp.%s" % (key, tag))
+        stmp = os.path.join(qdir, ".%s.json.tmp.%s" % (key, tag))
         try:
-            shutil.copyfile(src_path, tmp)
+            # the sidecar first: a sealed copy published without it would be taken for a plaintext one by every reader
+            with open(stmp, "w", encoding="utf-8") as f:
+                json.dump(side, f)
+                f.flush()
+                os.fsync(f.fileno())
             try:
-                os.link(tmp, os.path.join(qdir, key))
+                os.link(stmp, final + self.SIDECAR)
+            except OSError as e:
+                if e.errno != errno.EEXIST:
+                    raise
+            if seal:
+                with open(src_path, "rb") as f:
+                    data = f.read()
+                with open(tmp, "wb") as f:
+                    f.write(self.crypto.seal(data, "walq:" + name))
+                    f.flush()
+                    os.fsync(f.fileno())
+            else:
+                shutil.copyfile(src_path, tmp)
+            try:
+                os.link(tmp, final)
             except OSError as e:
                 if e.errno != errno.EEXIST:
                     raise
         finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+            for p in (tmp, stmp):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
         return key
 
     def conflicts_reviewed(self, files=None):
-        """A person looked at them: moved to conflicts/reviewed/ (kept), so they stop raising an alarm. files=None: all of them."""
+        """A person looked at them: moved to conflicts/reviewed/ (kept, with their sidecars), so they stop raising an alarm. files=None: all of them."""
         qdir = os.path.join(self.wal_dir, "conflicts")
         rdir = os.path.join(qdir, "reviewed")
         os.makedirs(rdir, mode=0o750, exist_ok=True)
         moved = []
         for c in self.conflicts():
             if files is None or c["file"] in files:
-                os.rename(os.path.join(qdir, c["file"]), os.path.join(rdir, c["file"]))
+                self._qrename(os.path.join(qdir, c["file"]), os.path.join(rdir, c["file"]))
                 moved.append(c["file"])
         return moved
 
     # ------------------------------------------------------------------ archive
-    def archive_segment(self, src_path, name):
-        """archive_command %p %f. Returns (ok, dest, sha256, message); raises WalArchiveError on refusal."""
+    def _writer(self, via):
+        """Who writes a copy (G12): this host, the data directory of the server it comes from and the path it took (archive_command,
+        spool, rescue, retire). archive_command runs in the data directory (PostgreSQL's working directory); the agent's own paths know
+        the server's pg_wal."""
+        import socket
+        pgdata = None
+        if via == "archive_command":
+            try:
+                pgdata = os.getcwd()
+            except OSError:
+                pgdata = None
+        elif getattr(self, "pg_wal_dir", None):
+            pgdata = os.path.dirname(os.path.abspath(self.pg_wal_dir))
+        return {"host": socket.gethostname(), "pgdata": pgdata, "via": via}
+
+    def _text_writer_sysid(self, src_path, via):
+        """The database that wrote a history file or a backup label (they carry no system identifier): PostgreSQL runs archive_command
+        in its data directory, whose global/pg_control says it; otherwise a segment next to the file (pg_wal) does. None when neither
+        tells (the file is accepted as before). Only for archive_command: the agent's own paths read from directories that are not the
+        writer's pg_wal (the quarantine, a temporary file)."""
+        if via != "archive_command":
+            return None
+        try:
+            sysid = pgdata_sysid(os.getcwd())
+        except OSError:
+            sysid = None
+        if sysid:
+            return sysid
+        d = os.path.dirname(os.path.abspath(src_path))
+        try:
+            names = sorted((n for n in os.listdir(d) if SEG_RE.match(n)), reverse=True)
+        except OSError:
+            return None
+        for n in names[:8]:
+            sysid = segment_sysid(os.path.join(d, n))
+            if sysid:
+                return sysid
+        return None
+
+    def archive_segment(self, src_path, name, via="archive_command", before_publish=None, writer=None):
+        """archive_command %p %f. Returns (ok, dest, sha256, message); raises WalArchiveError on refusal.
+        via: the path the copy took (archive_command, spool, rescue, retire), recorded in the meta with the host and data directory
+        (writer overrides the whole record). before_publish: called right before a NEW object is published (never for an identical or
+        refused copy); an exception from it abandons the publish (the spool pusher keeps a timeline's segments in order with it)."""
         is_history = name.endswith(".history") or BACKUP_LABEL_RE.match(name) is not None      # tiny text files: stored readable
         if not (SEG_RE.match(name) or is_history or re.match(r"^[0-9A-F]{24}\.partial$", name)):
             raise WalArchiveError("PGA-WAL-010", "refusing unexpected file name %r" % name)
@@ -598,9 +866,14 @@ class WalManager:
         if SEG_RE.match(name) and (size & (size - 1) != 0 or size < (1 << 20) or size > (1 << 30)):
             raise WalArchiveError("PGA-WAL-012", "segment size %d is not a valid WAL segment size (partial copy?)" % size)
 
-        sysid = segment_sysid(src_path) if not is_history else None
+        sysid = segment_sysid(src_path) if not is_history else self._text_writer_sysid(src_path, via)
         if sysid:
+            # history files and backup labels too (architecture review B7): another database's history accepted here made every
+            # recovery with recovery_target_timeline=latest of THIS database try to follow it
             self._check_owner(sysid)
+        elif is_history:
+            logger.debug("%s: the database that wrote it cannot be told (not run from a data directory, no segment next to it): accepted", name)
+        writer = writer or self._writer(via)
         if not is_history:
             self._check_key()
         raw_sha = _sha256_file(src_path)
@@ -641,7 +914,7 @@ class WalManager:
                         os.unlink(tmp)
                 if stored == raw_sha:
                     # the same content: the missing meta is written now, so a restore reads the object as what it is
-                    rep = {"sha256": raw_sha, "size": size, "codec": codec or "none", "archived_at": time.time(), "repaired": True}
+                    rep = {"sha256": raw_sha, "size": size, "codec": codec or "none", "archived_at": time.time(), "repaired": True, "writer": writer}
                     if sysid:
                         rep["sysid"] = sysid
                     if sealed:
@@ -662,7 +935,8 @@ class WalManager:
                 _fsync_dir(self.wal_dir)
                 return True, existing, raw_sha, "already archived (identical content)"
             qdir = os.path.join(self.wal_dir, "conflicts")
-            qname = self._quarantine(src_path, name, raw_sha)
+            qname = self._quarantine(src_path, name, raw_sha, size, is_history, writer,
+                                     {"sha256": stored, "writer": (meta or {}).get("writer"), "archived_at": (meta or {}).get("archived_at")})
             if is_history:
                 raise WalArchiveError("PGA-WAL-033", "timeline history %s already in the archive with DIFFERENT content (stored %s.. vs incoming %s..): two servers promoted "
                                       "themselves to the same timeline number (a split-brain between sites, or a server promoted without access to this archive). "
@@ -697,7 +971,7 @@ class WalManager:
             with open(tmp, "rb") as f:
                 os.fsync(f.fileno())
             final = os.path.join(self.wal_dir, name + ("." + codec_used if codec_used else ""))
-            meta = {"sha256": raw_sha, "size": size, "codec": codec_used or "none", "archived_at": time.time()}
+            meta = {"sha256": raw_sha, "size": size, "codec": codec_used or "none", "archived_at": time.time(), "writer": writer}
             if sysid:
                 meta["sysid"] = sysid
             if self.crypto and not is_history:
@@ -706,11 +980,13 @@ class WalManager:
             # the object is published first, write-once (link): of two writers only one wins, and only the winner writes the meta.
             # (Meta first would let the LOSER overwrite the winner's meta with its own sha: both would report success and the stored
             # segment would fail every later verification.) An object without meta is never trusted blindly: its content is hashed.
+            if before_publish is not None:
+                before_publish()                                             # may raise: nothing published, tmp removed below
             try:
                 os.link(tmp, final)                                          # write-once publish
             except FileExistsError:                                          # lost a race with another writer: re-evaluate (idempotent / conflict)
                 os.unlink(tmp)
-                return self.archive_segment(src_path, name)
+                return self.archive_segment(src_path, name, via, before_publish, writer)
             os.unlink(tmp)
             mtmp = os.path.join(self.wal_dir, ".%s.meta.tmp.%d.%d" % (name, os.getpid(), threading.get_ident()))
             with open(mtmp, "w", encoding="utf-8") as f:
@@ -990,11 +1266,17 @@ class WalManager:
         return rep
 
     def _history_forks(self, tli, directory=None):
-        """{ancestor timeline: LSN where it ended} from <tli>.history (in the archive, or in `directory`), or None when the file is missing/unreadable."""
-        try:
-            with open(os.path.join(directory or self.wal_dir, "%08X.history" % tli), "r", encoding="utf-8", errors="replace") as f:
-                lines = f.read().splitlines()
-        except (IOError, OSError):
+        """{ancestor timeline: LSN where it ended} from <tli>.history (in the archive - the current location first, then the previous ones a
+        destination change left, which restore_command reads too - or in `directory`), or None when the file is missing/unreadable."""
+        lines = None
+        for d in ([directory] if directory else [self.wal_dir] + list(self.previous or [])):
+            try:
+                with open(os.path.join(d, "%08X.history" % tli), "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.read().splitlines()
+                break
+            except (IOError, OSError):
+                continue
+        if lines is None:
             return None
         forks = {}
         for ln in lines:
@@ -1049,6 +1331,33 @@ class WalManager:
             r.pop("_end", None)
         return out
 
+    def _branch_tails(self, timelines, histories, per_id):
+        """Segments of a timeline T archived PAST the point where a later timeline's history says T ended (architecture review G1): after
+        a promotion to N at F, the old primary went on writing timeline T (it never learned of the promotion), or had written WAL the
+        promoted server never received. Those segments are another server's work, on no surviving history; nothing refuses them (their
+        names are free), so this is how they are seen. The end of T is the LATEST fork point any archived history gives for it: a
+        point-in-time branch from an earlier point of T (a restore) does not make T's later, pre-promotion segments a tail. The segment
+        that holds the fork point is not counted (it legitimately holds WAL of both sides)."""
+        ends = {}
+        for h in sorted(histories):
+            m = re.match(r"^([0-9A-F]{8})\.history$", h)
+            if not m:
+                continue
+            n = int(m.group(1), 16)
+            for t, f in (self._history_forks(n) or {}).items():
+                if t < n and (t not in ends or f > ends[t][0]):
+                    ends[t] = (f, n)
+        seg = self.segment_size
+        nm = lambda t, x: "%08X%08X%08X" % (t, x // per_id, x % per_id)
+        out = []
+        for t in sorted(ends):
+            f, n = ends[t]
+            tail = sorted(x for x in timelines.get(t, []) if x * seg > f)
+            if tail:
+                out.append({"timeline": t, "successor": n, "fork_lsn": "%X/%X" % (f >> 32, f & 0xFFFFFFFF), "count": len(tail),
+                            "first": nm(t, tail[0]), "last": nm(t, tail[-1])})
+        return out
+
     def _conflict_counts(self, current_timeline=None, local_wal_dir=None):
         cl = self.classify_conflicts(current_timeline, local_wal_dir=local_wal_dir)
         div = [c for c in cl if c.get("kind") == "divergent"]
@@ -1081,7 +1390,8 @@ class WalManager:
                 timelines.setdefault(tli, []).append(log * per_id + seg)
                 names.append(base)
         if not names:
-            return dict({"continuous": True, "total_segments": 0, "gaps": [], "timelines": [], "status": "archive is empty", "histories": sorted(histories)},
+            return dict({"continuous": True, "total_segments": 0, "gaps": [], "timelines": [], "status": "archive is empty", "histories": sorted(histories),
+                         "branch_tails": []},
                         **self._conflict_counts(current_timeline, local_wal_dir))
         gaps = []
         for tli, nums in timelines.items():
@@ -1095,6 +1405,7 @@ class WalManager:
         return {"continuous": not gaps, "total_segments": len(names), "gaps": gaps[:50], "gap_count": len(gaps),
                 "timelines": sorted(timelines), "histories": sorted(histories), "first_segment": names[0], "last_segment": names[-1],
                 **self._conflict_counts(current_timeline, local_wal_dir), "below_retention_floor": below,
+                "branch_tails": self._branch_tails(timelines, histories, per_id),
                 "status": "continuous" if not gaps else "%d gap(s) detected" % len(gaps)}
 
 

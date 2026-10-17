@@ -2,7 +2,8 @@ import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { itCheck, itFix } from '../i18n';
 import { api } from '../api';
 import { Badge, Banner, Button, Card, Confirm, Field, Icon, Modal, Skeleton, Tabs, bytes, ago, num, nof } from '../ui';
-import { Op, clearDrafts, isTerminal, revalidate, toast, useDraft, useOpRunner, useQuery } from '../hooks';
+import { Op, clearDrafts, isTerminal, revalidate, toast, useDraft, useOpRunner, useQuery, useRole } from '../hooks';
+import { StorageWizard } from './StorageWizard';
 import { OpPanel } from './shared';
 import { go } from '../router';
 
@@ -20,13 +21,13 @@ const scopeKey = (s: Scope, k: string) => (s === 'global' ? 'global' : `${s}:${k
 const srcText = (s?: { scope: string; key: string }) => !s || s.scope === 'default' ? 'default' : s.scope === 'cluster' ? 'this cluster' : s.scope === 'folder' ? `folder ${s.key.replace(/^folder:/, '')}` : s.scope === 'env' ? `environment ${s.key.replace(/^env:/, '')}` : 'global';
 
 interface FormProps { value: Record<string, any>; set: (k: string, v: any) => void; view: SView }
-interface KindUI { title: string; intro: string; Form: React.FC<FormProps>; summary: (v: Record<string, any>) => React.ReactNode; fields: string[]; labels: Record<string, string> }
+interface KindUI { title: string; intro: string; Form: React.FC<FormProps>; summary: (v: Record<string, any>, view?: SView) => React.ReactNode; fields: string[]; labels: Record<string, string> }
 
 /* ---------------------------------------------------------------------------------------------------------------------- ephemeral instance */
-const EPH_LABELS: Record<string, string> = { placement: 'Where it runs', centralNode: 'Central node', scratchDir: 'Scratch directory', binDir: 'PostgreSQL binaries', portMin: 'Ports', sharedBuffersMb: 'Memory (shared_buffers)', keepOnFailure: 'Keep on failure', installDir: 'Installation directory', installMode: 'Installation', centralInto: 'Result delivery' };
+const EPH_LABELS: Record<string, string> = { placement: 'Where it runs', centralNode: 'Central recovery host', scratchDir: 'Scratch directory', binDir: 'PostgreSQL binaries', portMin: 'Ports', sharedBuffersMb: 'Memory (shared_buffers)', keepOnFailure: 'Keep on failure', installDir: 'Installation directory', installMode: 'Installation', centralInto: 'Result delivery' };
 const ephSummary = (v: Record<string, any>) => <>
-  {v.placement === 'central' ? <Badge kind="accent">Central node</Badge> : <Badge>On the cluster node</Badge>}{' '}
-  <span className="small muted">{[v.scratchDir ? `scratch ${v.scratchDir}` : null, v.binDir ? `binaries ${v.binDir}` : 'binaries picked automatically per version', v.portMin ? `ports ${v.portMin}-${v.portMax}` : null, `${v.sharedBuffersMb} MB`].filter(Boolean).join(' · ')}</span></>;
+  {v.placement === 'central' ? <Badge kind="accent">Central recovery host</Badge> : <Badge>On the cluster node</Badge>}{' '}
+  <span className="small muted">{[v.scratchDir ? `scratch ${v.scratchDir}` : null, v.binDir ? `binaries ${v.binDir}` : 'binaries picked automatically per version', v.portMin ? `ports ${v.portMin}-${v.portMax}` : null, `shared_buffers ${v.sharedBuffersMb} MB`].filter(Boolean).join(' · ')}</span></>;
 
 const EphForm: React.FC<FormProps> = ({ value: v, set, view }) => {
   const inp = (k: string, ph: string, mono = true) => <input className={`input ${mono ? 'mono' : ''}`} placeholder={ph} value={v[k] ?? ''} onChange={e => set(k, e.target.value)} />;
@@ -34,17 +35,17 @@ const EphForm: React.FC<FormProps> = ({ value: v, set, view }) => {
   const central = v.placement === 'central';
   return <div className="stack">
     <Field label="Where the recovery instance runs" hint="Extracting a table or a database needs a temporary PostgreSQL instance. Leaving “Same as the level above” inherits the setting.">
-      <div className="seg"><button aria-pressed={!v.placement} onClick={() => set('placement', '')}>Same as the level above</button><button aria-pressed={v.placement === 'node'} onClick={() => set('placement', 'node')}>On the cluster node</button><button aria-pressed={central} onClick={() => set('placement', 'central')}>On a central node</button></div></Field>
+      <div className="seg"><button aria-pressed={!v.placement} onClick={() => set('placement', '')}>Same as the level above</button><button aria-pressed={v.placement === 'node'} onClick={() => set('placement', 'node')}>On the cluster node</button><button aria-pressed={central} onClick={() => set('placement', 'central')}>On a central recovery host</button></div></Field>
     {v.placement === 'node' ? <p className="small muted">Same machine as the database: it uses its disks and CPU during the restore. No network in between.</p> : null}
     {central ? <div className="opt-body stack">
-      <Field label="Central node" hint="A node with an agent, dedicated to restores. It must read the cluster’s repository and WAL archive (network share mounted at the same paths) and reach the cluster’s primary.">
+      <Field label="Central recovery host" hint="A host with an agent (ideally a worker host), dedicated to restores. It must read the cluster’s repository and WAL archive (network share mounted at the same paths) and reach the cluster’s primary.">
         <select className="input" value={v.centralNode ?? ''} onChange={e => set('centralNode', e.target.value)}><option value="">Choose…</option>
           {view.nodes.some(n => n.worker) ? <optgroup label="Worker hosts (recommended: no load on production)">{view.nodes.filter(n => n.worker).map(n => <option key={n.id} value={n.id}>{n.name}{n.label ? ` — ${n.label}` : ''}{n.pgMajors?.length ? ` · PG ${n.pgMajors.join('/')}` : ' · without PostgreSQL'}{n.online ? '' : ' (offline)'}</option>)}</optgroup> : null}
           <optgroup label="Cluster nodes">{view.nodes.filter(n => !n.worker).map(n => <option key={n.id} value={n.id}>{n.name}{n.online ? '' : ' (offline)'}</option>)}</optgroup></select></Field>
       <div className="grid g3"><Field label="Delivery: primary host" hint="Empty = the detected one"><input className="input" value={v.centralInto?.host ?? ''} onChange={e => set('centralInto', { ...(v.centralInto || {}), host: e.target.value })} /></Field>
         <Field label="Port"><input className="input" type="number" value={v.centralInto?.port ?? ''} onChange={e => set('centralInto', { ...(v.centralInto || {}), port: e.target.value ? Number(e.target.value) : '' })} /></Field>
         <Field label="User"><input className="input" value={v.centralInto?.user ?? ''} onChange={e => set('centralInto', { ...(v.centralInto || {}), user: e.target.value })} /></Field></div>
-      <p className="small muted">The recovered tables are delivered to the cluster’s primary: this needs a pg_hba rule for the central node and a password in the agent user’s <code>.pgpass</code>. The check below (“Verify”) actually tests the connection.</p></div> : null}
+      <p className="small muted">The recovered tables are delivered to the cluster’s primary: this needs a pg_hba rule for the central recovery host and a password in the agent user’s <code>.pgpass</code>. The check below (“Verify”) actually tests the connection.</p></div> : null}
     <div className="grid g2">
       <Field label="Scratch directory" hint="Where files are extracted during recovery. Preferably a fast local disk, separate from the data disk."><>{inp('scratchDir', '/var/tmp/pg_arca_scratch')}</></Field>
       <Field label="PostgreSQL binaries directory" hint="Empty = picked automatically for the backup’s version (node, system packages, pg_arca installations).">{inp('binDir', 'automatic')}</Field>
@@ -59,18 +60,27 @@ const EphForm: React.FC<FormProps> = ({ value: v, set, view }) => {
 };
 
 /* ---------------------------------------------------------------------------------------------------------------------- destination */
-const DEST_LABELS: Record<string, string> = { type: 'Type', repoPath: 'Repository', walPath: 'WAL archive', requireMount: 'Mount required', minFreeGb: 'Minimum space' };
+const DEST_LABELS: Record<string, string> = { type: 'Type', server: 'Backup server', serverPath: 'Folder on the backup server', repoPath: 'Repository', walPath: 'WAL archive', requireMount: 'Mount required', minFreeGb: 'Minimum free space (GiB)' };
 const TYPE_LABEL: Record<string, string> = { local: 'Local directory', nfs: 'NFS share', smb: 'SMB/CIFS share' };
-const destSummary = (v: Record<string, any>) => <>
+const HIDDEN = '(hidden)';
+const destSummary = (v: Record<string, any>, view?: SView) => <>
   <Badge kind={v.type === 'local' ? undefined : 'accent'}>{TYPE_LABEL[v.type] || v.type}</Badge>{' '}
-  <span className="small muted mono">{[v.repoPath ? `repo ${v.repoPath}` : null, v.walPath ? `wal ${v.walPath}` : null].filter(Boolean).join('  ') || 'paths not set'}{v.requireMount ? ' · mount required' : ''}</span></>;
+  {v.server && v.type !== 'local' ? <><Badge kind="accent">Backup server {view?.nodes.find(n => n.id === v.server)?.name || '(removed)'}</Badge>{' '}</> : null}
+  {v.repoPath === HIDDEN || v.walPath === HIDDEN ? <span className="small faint">directories visible to administrators</span>
+    : <span className="small muted mono">{[v.repoPath ? `repo ${v.repoPath}` : null, v.walPath ? `wal ${v.walPath}` : null].filter(Boolean).join('  ') || 'paths not set'}</span>}
+  <span className="small muted">{v.requireMount ? ' · mount required' : ''}</span></>;
 const PREVIEW = [{ id: 's3', label: 'Amazon S3 / MinIO / Ceph RGW' }, { id: 'azure', label: 'Azure Blob Storage' }, { id: 'gcs', label: 'Google Cloud Storage' }, { id: 'sftp', label: 'SFTP' }];
 
-const DestForm: React.FC<FormProps> = ({ value: v, set }) => <div className="stack">
+const DestForm: React.FC<FormProps> = ({ value: v, set, view }) => <div className="stack">
   <Field label="Where backups are written" hint="The engine writes to file paths: a local directory or a network share (NFS, SMB) already mounted on the nodes. pg_arca mounts nothing: it checks that the mount is really there. Using a backup server? Check its folder from its page (Worker hosts): when the check passes, it prints the exact export and mount commands for the nodes, then come back here with the mounted path.">
     <select className="input" value={v.type ?? ''} onChange={e => set('type', e.target.value)}>
       <option value="">Same as the level above</option><option value="local">Local directory on the node</option><option value="nfs">NFS network share (mounted)</option><option value="smb">SMB/CIFS network share (mounted)</option>
       <optgroup label="Preview — not available yet">{PREVIEW.map(p => <option key={p.id} value={p.id} disabled>{p.label} (Preview)</option>)}</optgroup></select></Field>
+  {v.type === 'nfs' || v.type === 'smb' ? <div className="grid g2">
+    <Field label="Backup server (optional)" hint="The worker host that exports this share. When set, the check on every node proves the share is really mounted from it.">
+      <select className="input" value={v.server ?? ''} onChange={e => set('server', e.target.value)}><option value="">Not a pg_arca worker host / not specified</option>
+        {view.nodes.filter(n => n.worker).map(n => <option key={n.id} value={n.id}>{n.name}{n.label ? ` — ${n.label}` : ''}</option>)}</select></Field>
+    <Field label="Folder on the backup server" hint="Shown in the export and mount instructions."><input className="input mono" placeholder="/srv/pgarca" value={v.serverPath ?? ''} onChange={e => set('serverPath', e.target.value)} /></Field></div> : null}
   <div className="grid g2">
     <Field label="Repository directory" hint="Placeholders: {cluster} {env} {id}. Several clusters can share the same repository (each has its own space)."><input className="input mono" placeholder="/mnt/backup/pgarca" value={v.repoPath ?? ''} onChange={e => set('repoPath', e.target.value)} /></Field>
     <Field label="WAL archive directory" hint="Must be different for each cluster: use {cluster} or {id}."><input className="input mono" placeholder="/mnt/backup/wal/{env}/{cluster}" value={v.walPath ?? ''} onChange={e => set('walPath', e.target.value)} /></Field>
@@ -119,8 +129,8 @@ function PreflightModal({ cluster, onClose }: { cluster: SCluster; onClose: () =
   return <Modal wide title={`Where restores run: check — ${cluster.name}`} onClose={onClose} footer={<><Button icon="refresh" onClick={() => pre.run('ephemeral_preflight', {})} busy={pre.busy}>Run the check again</Button><div className="grow" /><Button onClick={onClose}>Close</Button></>}>
     <div className="stack">
       {!r ? <OpPanel op={pre.op} error={pre.error} label="Recovery instance check" /> : <>
-        <Banner kind={r.ok ? (r.level === 'warn' ? 'warn' : 'ok') : 'bad'} title={r.ok ? 'This node can run recoveries' : 'Recovery cannot start from this node'}>
-          PostgreSQL {r.major ?? '?'} backup · {r.host?.os} · {r.host?.cpus} CPU · {bytes(r.host?.mem_available)} memory available{r.settings?.placement === 'central' ? ' · central node' : ''}</Banner>
+        <Banner kind={r.ok ? (r.level === 'warn' ? 'warn' : 'ok') : 'bad'} title={r.ok ? 'This host can run restores' : 'Restores cannot run on this host'}>
+          PostgreSQL {r.major ?? '?'} backup · {r.host?.os} · {r.host?.cpus} CPU · {bytes(r.host?.mem_available)} memory available{r.settings?.placement === 'central' ? ' · central recovery host' : ''}</Banner>
         <CheckList checks={r.checks} />
         {r.installations?.length ? <details><summary className="small muted" style={{ cursor: 'pointer' }}>PostgreSQL installations found ({r.installations.length})</summary>
           <table className="t"><thead><tr><th>Version</th><th>Directory</th><th>Source</th><th>Complete</th></tr></thead><tbody>{r.installations.map((i: any) => <tr key={i.bindir}><td>{i.version}</td><td className="mono small">{i.bindir}</td><td>{({ system: 'system package', private: 'installed by pg_arca', configured: 'configured' } as any)[i.source] || i.source}</td><td>{i.complete ? <Badge kind="ok">yes</Badge> : <Badge kind="warn" title={`missing: ${i.missing_tools.join(', ')}`}>no</Badge>}</td></tr>)}</tbody></table></details> : null}
@@ -242,7 +252,7 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
         : <Banner kind="warn" title="No destination configured">Set a path at the global, environment, folder or cluster level.</Banner>}
       <PreviousLocation cluster={cluster} d={d} /></div> : <div className="stack">
       <dl className="kv"><dt>Type</dt><dd>{TYPE_LABEL[d.destination.type]}</dd>{d.destination.repo_path ? <><dt>Repository</dt><dd className="mono">{d.destination.repo_path}</dd></> : null}{d.destination.wal_path ? <><dt>WAL archive</dt><dd className="mono">{d.destination.wal_path}</dd></> : null}
-        <dt>Mount required</dt><dd>{d.destination.require_mount ? 'yes' : 'no'}</dd>{d.destination.min_free_gb ? <><dt>Minimum space</dt><dd>{d.destination.min_free_gb} GiB</dd></> : null}</dl>
+        <dt>Mount required</dt><dd>{d.destination.require_mount ? 'yes' : 'no'}</dd>{d.destination.min_free_gb ? <><dt>Minimum free space</dt><dd>{d.destination.min_free_gb} GiB</dd></> : null}</dl>
       {d.destination.wal_shared_warning ? <Banner kind="warn" title="Shared WAL archive">{d.destination.wal_shared_warning}</Banner> : null}
       {d.destination.wal_collision ? <Banner kind="bad" title="WAL archive conflicts with another cluster">{d.destination.wal_collision}</Banner> : null}
       <div className="stack"><strong>Nodes</strong>{nodes.map(n => { const c = d.checks?.[n.id]; const op = ops.find(o => o.nodeId === n.id)?.operation?.id || c?.opId;
@@ -255,7 +265,7 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
       <Banner kind="info" title="Applying the destination">Sets the repository and WAL archive on every node’s agent. On the primary, pg_arca immediately checks that the next WAL segment lands in the new directory; if it does not, it switches back to the previous one by itself and says so. Existing backups stay readable in the previous location (including for a PITR spanning the change) and you can migrate them in the background. The new destination starts with a full backup. In a protected environment a second administrator must approve.</Banner>
       <div><Button kind="primary" icon="zap" busy={busy === 'apply'} disabled={!allOk || !!busy} onClick={() => act('apply')}>Apply to the nodes</Button>{!allOk ? <span className="small muted"> Every node needs a recent passed check.</span> : null}</div>
       {done ? (done.approval ? <Banner kind="info" title="Awaiting approval">A destination change in this environment requires approval from another administrator (Today page). It is applied as soon as it is approved.</Banner>
-        : <Banner kind="ok" title="Apply started">{nof(done.operations.length, 'operation')} sent to the nodes (follow them in Activity, bottom right). {done.note}</Banner>) : null}
+        : <Banner kind="ok" title="Apply started">{nof(done.operations.length, 'operation')} sent to the nodes (follow them in Activity, top right). {done.note}</Banner>) : null}
       {err ? <Banner kind="bad">{err}</Banner> : null}
       <PreviousLocation cluster={cluster} d={d} /></div>}
   </Modal>;
@@ -265,23 +275,27 @@ function DestinationModal({ cluster, onClose }: { cluster: SCluster; onClose: ()
 function ScopedTab({ kind }: { kind: 'ephemeral' | 'destination' }) {
   const ui = KINDS[kind]; const q = useQuery<SView>(`/api/scoped/${kind}`, { interval: 8000 });
   const [dlg, setDlg] = useDraft<{ scope: Scope; k: string; label: string } | null>(`infra:${kind}:dlg`, null); const [pre, setPre] = useDraft<SCluster | null>(`infra:${kind}:pre`, null);
-  const v = q.data;
+  const v = q.data; const role = useRole();
+  const [wiz, setWiz] = useDraft(`infra:${kind}:wizard`, false);
   const eff = (c: SCluster) => c.effective.value;
   const used = useMemo(() => new Set(Object.values(v?.assignments || {}).flatMap(a => Object.keys(a))), [v]);
   if (!v) return <div className="stack"><Skeleton h={40} /><Skeleton h={220} /></div>;
   const line = (scope: Scope, k: string, title: string, sub?: string) => { const a = v.assignments[scopeKey(scope, k)]; return <tr key={scopeKey(scope, k)}>
     <td><strong>{title}</strong>{sub ? <div className="small muted">{sub}</div> : null}</td>
-    <td>{a ? <div className="row wrap gap-s">{Object.keys(a).filter(f => f !== 'portMax').map(f => <Badge key={f} kind="accent" title={f === 'portMin' ? `${a.portMin}–${a.portMax}` : f === 'centralNode' ? (v.nodes.find(n => n.id === a[f])?.name || a[f]) : JSON.stringify(a[f])}>{f === 'centralNode' ? `Node: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : f === 'placement' ? (a[f] === 'central' ? 'On a central node' : 'On the cluster node') : ui.labels[f] || f}</Badge>)}</div> : <span className="muted">{scope === 'global' ? 'Not set (built-in defaults)' : 'Inherits'}</span>}</td>
+    <td>{a ? <div className="row wrap gap-s">{Object.keys(a).filter(f => f !== 'portMax').map(f => <Badge key={f} kind="accent" title={f === 'portMin' ? `${a.portMin}–${a.portMax}` : f === 'centralNode' ? (v.nodes.find(n => n.id === a[f])?.name || a[f]) : JSON.stringify(a[f])}>{f === 'centralNode' ? `Recovery host: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : f === 'placement' ? (a[f] === 'central' ? 'On a central recovery host' : 'On the cluster node') : kind === 'destination' && f === 'server' ? `Backup server: ${v.nodes.find(n => n.id === a[f])?.name || '?'}` : kind === 'destination' && f === 'type' ? (TYPE_LABEL[a[f]] || a[f]) : ui.labels[f] || f}</Badge>)}</div> : <span className="muted">{scope === 'global' ? 'Not set (built-in defaults)' : 'Inherits'}</span>}</td>
     <td className="num"><Button sm onClick={() => setDlg({ scope, k, label: title })}>Edit</Button></td></tr>; };
   return <div className="stack-l">
-    <p className="sub" style={{ margin: 0, maxWidth: 820 }}>{ui.intro}</p>
+    <div className="row wrap" style={{ alignItems: 'flex-start' }}><p className="sub grow" style={{ margin: 0, maxWidth: 820 }}>{ui.intro}</p>
+      {kind === 'destination' && role === 'admin' ? <Button kind="primary" icon="server" onClick={() => setWiz(true)}>Configure backup storage…</Button> : null}</div>
+    {kind === 'destination' && (v as any).hidden ? <Banner kind="info" title="Locations visible to administrators">Directories, shares and server addresses are shown to administrators only. The kind of storage and the backup server in use are shown below.</Banner> : null}
+    {wiz ? <StorageWizard onClose={() => setWiz(false)} /> : null}
     <Card title="Levels" pad={false}><div className="tablewrap"><table className="t"><thead><tr><th>Level</th><th>What it sets</th><th /></tr></thead><tbody>
       {line('global', '', 'All clusters', 'Applies wherever no environment, folder or cluster sets its own')}
       {ENVS.map(e => line('env', e, `Environment: ${ENV_LABEL[e]}`, nof(v.clusters.filter(c => c.environment === e).length, 'cluster')))}
       {v.folders.map(f => line('folder', f, `Folder: ${f}`, nof(v.clusters.filter(c => c.folder === f || c.folder.startsWith(f + '/')).length, 'cluster')))}</tbody></table></div></Card>
-    <Card title="Cluster" pad={false}>{!v.clusters.length ? <div style={{ padding: 16 }} className="muted">No connected clusters.</div> : <div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>In effect</th><th /></tr></thead><tbody>
+    <Card title="Clusters" pad={false}>{!v.clusters.length ? <div style={{ padding: 16 }} className="muted">No connected clusters.</div> : <div className="tablewrap"><table className="t"><thead><tr><th>Cluster</th><th>In effect</th><th /></tr></thead><tbody>
       {v.clusters.map(c => <tr key={c.id}><td><strong>{c.name}</strong><div className="small muted">{c.environment}{c.folder ? ` · ${c.folder}` : ''}</div></td>
-        <td><div>{ui.summary(eff(c))}</div><div className="small muted">{ui.fields.filter(f => c.effective.sources[f] && c.effective.sources[f].scope !== 'default' && eff(c)[f] !== undefined).map(f => `${ui.labels[f]}: ${srcText(c.effective.sources[f])}`).join(' · ') || 'defaults'}</div></td>
+        <td><div>{ui.summary(eff(c), v)}</div><div className="small muted">{ui.fields.filter(f => c.effective.sources[f] && c.effective.sources[f].scope !== 'default' && eff(c)[f] !== undefined).map(f => `${ui.labels[f]}: ${srcText(c.effective.sources[f])}`).join(' · ') || 'defaults'}</div></td>
         <td className="num"><div className="row gap-s" style={{ justifyContent: 'flex-end' }}><Button sm onClick={() => setDlg({ scope: 'cluster', k: c.id, label: c.name })}>Edit</Button>
           <Button sm icon={kind === 'ephemeral' ? 'search' : 'check'} disabled={c.source === 'direct'} title={c.source === 'direct' ? 'Needs the agent on the cluster' : undefined} onClick={() => setPre(c)}>{kind === 'ephemeral' ? 'Verify' : 'Check and apply'}</Button></div></td></tr>)}</tbody></table></div>}</Card>
     {dlg ? <ScopeDialog kind={kind} scope={dlg.scope} k={dlg.k} label={dlg.label} view={v} onClose={() => setDlg(null)} /> : null}

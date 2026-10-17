@@ -11,12 +11,12 @@ import { CheckList, DestPaths } from './Infra';
  * instances, machines for restore drills. Here: what each one can do (PostgreSQL versions installed, disks and network shares, CPU/memory), what it is
  * used for (roles, central recovery node of which levels), and the actions that make sense on it.
  * ==================================================================================================================================================== */
-interface WRow { id: string; name: string; label: string; roles: string[]; online: boolean; lastSeen?: string; agentVersion?: string; remoteIp?: string; os?: string; cpus?: number;
-  memTotal?: number; memAvailable?: number; root: boolean; sudo: boolean; pgMajors: number[]; remoteMounts: number; usedBy: { scope: string; key: string }[]; reported: boolean }
+interface WRow { id: string; name: string; label: string; roles: string[]; online: boolean; lastSeen?: string; agentVersion?: string; remoteIp?: string; address?: string; os?: string; cpus?: number;
+  memTotal?: number; memAvailable?: number; root: boolean; sudo: boolean; pgMajors: number[]; remoteMounts: number; usedBy: { scope: string; key: string; as?: 'recovery' | 'backup' }[]; reported: boolean }
 interface WFull extends WRow { installations: any[]; mounts: any[]; dirs: Record<string, any>; host: any; system: any; recent: any[] }
 
 const ROLE_LABEL: Record<string, { label: string; hint: string }> = {
-  recovery: { label: 'Recovery host', hint: 'runs the ephemeral restore instances (PITR of databases, tables, schemas) instead of the production nodes' },
+  recovery: { label: 'Recovery host', hint: 'runs the temporary recovery instances (point-in-time restores of databases, schemas and tables) instead of the production nodes' },
   repository: { label: 'Backup server', hint: 'hosts repositories and WAL archives, usually exported to the nodes over NFS/SMB' },
   drill: { label: 'Restore drills', hint: 'runs the periodic tests that the backups really restore' },
 };
@@ -42,7 +42,7 @@ export function WorkersPage({ role }: { role: string }) {
           <td>{w.roles.length ? <div className="row wrap gap-s">{w.roles.map(r => <Badge key={r} kind="accent">{ROLE_LABEL[r]?.label || r}</Badge>)}</div> : <span className="faint">—</span>}</td>
           <td>{w.pgMajors.length ? w.pgMajors.map(m => <Badge key={m}>{m}</Badge>) : <span className="faint">{w.reported ? 'none' : '…'}</span>}</td>
           <td className="small">{w.cpus ? `${w.cpus} CPU · ` : ''}{w.memTotal ? `${bytes(w.memTotal)} RAM` : ''}{w.remoteMounts ? ` · ${nof(w.remoteMounts, 'network share')}` : ''}</td>
-          <td className="small">{w.usedBy.length ? `recovery for ${w.usedBy.map(usedText).join(', ')}` : <span className="faint">—</span>}</td>
+          <td className="small">{w.usedBy.length ? (['recovery', 'backup'] as const).map(as => { const u = w.usedBy.filter(x => (x.as || 'recovery') === as); return u.length ? <div key={as}>{as === 'recovery' ? 'recovery host' : 'backup server'} for {u.map(usedText).join(', ')}</div> : null; }) : <span className="faint">—</span>}</td>
           <td>{w.online ? <Badge kind="ok">online</Badge> : <Badge kind="bad" title={w.lastSeen ? `last seen ${ago(w.lastSeen)}` : undefined}>offline</Badge>}</td></tr>)}</tbody></table></div></Card>}
     {add ? <AddWorker onClose={() => setAdd(false)} /> : null}
     {conv ? <Confirm title={`Make ${conv.name} a worker host?`} confirmLabel="Make it a worker host" onClose={() => setConv(null)} onConfirm={async () => {
@@ -94,7 +94,7 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
           <dt>PostgreSQL</dt><dd>{w.installations.length ? w.installations.map((i: any) => <div key={i.bindir}><Badge>{i.major}</Badge> <span className="mono">{i.bindir}</span> <span className="faint">{i.source === 'private' ? 'pg_arca private installation' : i.source === 'system' ? 'system packages' : 'configured'}</span></div>) : <span className="faint">no installation found</span>}</dd>
           <dt>Resources</dt><dd>{w.cpus ?? '?'} CPU · {bytes(w.memTotal)} memory ({bytes(w.memAvailable)} available)</dd>
           <dt>Privileges</dt><dd>{w.root ? 'root' : w.sudo ? 'user with passwordless sudo' : 'unprivileged user (private installations only)'}</dd>
-          <dt>Used by</dt><dd>{w.usedBy.length ? `recovery node for ${w.usedBy.map(usedText).join(', ')}` : <span className="faint">no configuration uses it yet</span>}</dd>
+          <dt>Used by</dt><dd>{w.usedBy.length ? (['recovery', 'backup'] as const).map(as => { const u = w.usedBy.filter(x => (x.as || 'recovery') === as); return u.length ? <div key={as}>{as === 'recovery' ? 'recovery host' : 'backup server'} for {u.map(usedText).join(', ')}</div> : null; }) : <span className="faint">no configuration uses it yet</span>}</dd>
         </dl>
         <div className="row wrap">{role !== 'viewer' ? <Button sm icon="search" busy={pre.busy} onClick={() => pre.run('ephemeral_preflight', { major: mj })}>Verify as recovery host (PG {mj})</Button> : null}
           {role === 'admin' ? <Button sm onClick={() => setDlg('use')}>Use it for restores…</Button> : null}
@@ -127,7 +127,7 @@ export function WorkerView({ id, role }: { id: string; role: string }) {
 
 /** The folder on the backup server is fine: what to do next, concretely. The nodes reach it through a share THEY mount; pg_arca never mounts anything. */
 function ExportHints({ w, res, repo, wal }: { w: WFull; res: any; repo: string; wal: string }) {
-  const host = (w.remoteIp || w.name).replace(/^::ffff:/, '');
+  const host = (w.address || w.remoteIp || w.name).replace(/^::ffff:/, '');
   const uid = res?.agent?.uid ?? w.host?.euid ?? 26;   // the folder's owner on this host: with all_squash+anonuid every node's writes become it, whatever uid postgres has on the nodes
   const paths = [repo, wal].filter(Boolean);
   const parent = paths.length > 1 ? (repo.split('/').slice(0, -1).join('/') || repo) : (repo || wal);
@@ -139,7 +139,7 @@ ${parent}  <nodes-network>/24(rw,sync,no_subtree_check,all_squash,anonuid=${uid}
 exportfs -ra`}</pre>
       <p className="muted">On every database node (as root):</p>
       <pre className="out">{`mkdir -p /mnt/pgarca && echo '${host}:${parent} /mnt/pgarca nfs hard,noatime,_netdev 0 0' >> /etc/fstab && mount /mnt/pgarca`}</pre>
-      <p className="muted">Then set the destination in Storage &amp; recovery → Backup storage (type NFS, “mount required” on): {paths.map(x => <span key={x} className="mono">/mnt/pgarca{parent !== '/' ? x.replace(parent, '') || '' : x} </span>)}— the console checks every node before applying.</p>
+      <p className="muted">Then, on a cluster’s Backup page (Backup storage → Configure…) or in Storage &amp; recovery → Backup storage, choose <strong>A backup server</strong> → {w.name}: the wizard prints these commands with your paths, and the check on every node proves the share is mounted from this host before anything is applied.</p>
     </div></details>;
 }
 
@@ -169,7 +169,7 @@ function UseForRecovery({ w, clusters, onClose }: { w: WFull; clusters: any[]; o
   };
   return <Modal title={`Use ${w.name} for restores`} onClose={onClose} footer={<><Button kind="ghost" onClick={() => go('infra/ephemeral')}>All settings</Button><div className="grow" /><Button onClick={onClose}>Cancel</Button><Button kind="primary" busy={busy} onClick={save}>Use this host</Button></>}>
     <div className="stack">
-      <p>The ephemeral restore instance (databases, tables, schemas, drills) will run on <strong>{w.name}</strong> instead of the cluster nodes; the result is delivered to the cluster’s primary. The machine must see the backup repository (same path, for example over NFS) and reach the primary on the PostgreSQL port.</p>
+      <p>The temporary recovery instance (database, schema and table restores, drills) will run on <strong>{w.name}</strong> instead of the cluster nodes; the result is delivered to the cluster’s primary. The machine must see the backup repository (same path, for example over NFS) and reach the primary on the PostgreSQL port.</p>
       <Field label="For which clusters"><select className="input" value={scope} onChange={e => setScope(e.target.value)}>
         <option value="global">All clusters</option>{envs.map(e => <option key={e} value={`env:${e}`}>Environment {e}</option>)}
         {clusters.filter(c => !c.isSandbox && c.source !== 'direct').map(c => <option key={c.id} value={`cluster:${c.id}`}>Cluster {c.name}</option>)}</select></Field>

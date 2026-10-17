@@ -493,7 +493,7 @@ table.t tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%,
 .banner .preflight { border: 0; background: none; padding: 6px 0 0; } .banner ul.verdict { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 6px; } .banner ul.verdict .fix { display: block; }
 /* The ribbon says what its colours mean (a review found 30 unexplained squares). */
 .ribbon .legend { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; } .ribbon .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 6px; }
-.ribbon .legend i.full { background: var(--accent); } .ribbon .legend i.incr { background: color-mix(in srgb, var(--accent) 32%, var(--surface)); } .ribbon .legend i.none { background: var(--ribbon-none); box-shadow: inset 0 0 0 1px var(--line); }
+.ribbon .legend i.full { background: var(--accent); } .ribbon .legend i.diff { background: color-mix(in srgb, var(--accent) 62%, var(--surface)); } .ribbon .legend i.incr { background: color-mix(in srgb, var(--accent) 32%, var(--surface)); } .ribbon .legend i.none { background: var(--ribbon-none); box-shadow: inset 0 0 0 1px var(--line); }
 /* Phones: toasts at the top, one at a time, never over the form being filled in or the activity chip. */
 @media (max-width: 720px) { .toasts { top: 10px; bottom: auto; left: 12px; right: 12px; max-width: none; } .toasts .toast:not(:last-child) { display: none; } }
 .geochecks .howfix { margin-top: 2px; } .geochecks .howfix summary { cursor: pointer; list-style: revert; } .geochecks li.more { list-style: none; }

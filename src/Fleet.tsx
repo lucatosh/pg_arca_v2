@@ -42,10 +42,10 @@ export function nestReplicas(clusters: any[]): any[] {
 /** One line on how a standby site is doing, for tooltips and the list. */
 export function replicaText(c: any): string {
   const g = c.geo || {};
-  const lag = g.lagBytes == null ? 'lag not measurable' : g.lagBytes === 0 ? 'in sync' : `${fmtBytes(g.lagBytes)} behind`;
+  const lag = g.lagBytes == null ? 'lag not measurable' : g.lagBytes === 0 ? 'in sync' : `${fmtBytes(g.lagBytes)} of WAL behind`;
   return g.problems?.length ? `${lag} · ${g.problems[0]}` : lag;
 }
-const fmtBytes = (b: number) => { const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0; let v = b; while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; } return `${v < 10 && i ? v.toFixed(1) : Math.round(v)} ${u[i]}`; };
+const fmtBytes = (b: number) => { const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; let i = 0; let v = b; while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; } return `${v < 10 && i ? v.toFixed(1) : Math.round(v)} ${u[i]}`; };
 
 export function buildFleet(clusters: any[], health?: Record<string, string>): EnvGroup[] {
   const envs = new Map<string, EnvGroup>();
@@ -93,7 +93,7 @@ export function useFold(prefix: string) {
 
 /** "3 · 1 critico" style counter, short enough for the sidebar. */
 export function Counter({ g }: { g: { count: number; bad: number; warn: number } }) {
-  return <span className="fcount">{g.bad ? <span className="b" title={`${g.bad} with critical issues`}>{g.bad}</span> : null}{g.warn ? <span className="w" title={`${g.warn} to check`}>{g.warn}</span> : null}<span className="n">{g.count}</span></span>;
+  return <span className="fcount">{g.bad ? <span className="b" title={`${g.bad} urgent`}>{g.bad}</span> : null}{g.warn ? <span className="w" title={`${g.warn} need attention`}>{g.warn}</span> : null}<span className="n">{g.count}</span></span>;
 }
 
 /** Sidebar tree. `current` = id of the cluster on screen (its groups open automatically). */

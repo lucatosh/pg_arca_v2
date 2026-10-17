@@ -253,9 +253,10 @@ class Ephemeral(object):
             if keep_oids is None or int(d.get("oid") or 0) in set(keep_oids):
                 nrel += sum(1 for r in d.get("relations", []) if r.get("kind") in ("r", "p", "S", "m", "v", "f"))
         removed, forced = quarantine_config(self.dir, ctl, self.port, self.sock, self.ctx.restore_command, sparse, self.shared_buffers, profile=prof, lock_slots=nrel * 2)
-        from pg_arca.engine.restore import effective_targets
+        from pg_arca.engine.restore import effective_targets, concrete_timeline
         t_lsn, t_imm = effective_targets(chain, target_lsn, immediate, self.ctx)
-        prof.install_recovery(self.dir, recovery_lines(self.ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm, "pause", inclusive))
+        prof.install_recovery(self.dir, recovery_lines(self.ctx.restore_command, target_time, t_lsn, target_xid, target_name, t_imm, "pause", inclusive,
+                                                       concrete_timeline(self.ctx, chain)))
         self._replay_window(chain, t_lsn)
         # recovery_lines wrote restore_command again into auto.conf: harmless and identical, but keep the quarantine invariant
         bad = [b for b in audit_symlinks(self.dir)]

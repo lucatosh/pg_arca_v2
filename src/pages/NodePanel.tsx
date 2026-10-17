@@ -26,11 +26,11 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
         : { id: 'restart', label: 'Restart PostgreSQL', hint: 'Restart the way the server is managed (its systemd service, or pg_ctl where there is no systemd). All connections are closed; if the configuration has errors that would prevent startup, the restart is refused beforehand.', danger: true, typed: true, run: () => r.run('pg_restart', { confirm: 'RESTART' }, { nodeId: nid }) },
 
       { id: 'reload', label: 'Reload the configuration', hint: 'Re-reads postgresql.conf and pg_hba.conf without restarting. Safe to run at any time.', disabled: hasAgent ? undefined : noAgent, run: () => r.run('pg_reload', {}, { nodeId: nid }) },
-      { id: 'checkpoint', label: 'Run a checkpoint', hint: 'Forces in-memory data to be written to disk. Useful before a backup or a restart.', disabled: !isPrimary ? 'Primary only' : hasAgent ? undefined : noAgent, run: () => r.run('checkpoint', {}, { nodeId: nid }) },
-      { id: 'walsw', label: 'Switch the current WAL file', hint: 'Gets the current WAL archived right away: reduces the maximum loss in case of disaster.', disabled: !isPrimary ? 'Primary only' : hasAgent ? undefined : noAgent, run: () => r.run('wal_switch', {}, { nodeId: nid }) },
+      { id: 'checkpoint', label: 'Run a checkpoint', hint: 'CHECKPOINT: writes all dirty shared buffers to disk, which shortens a following shutdown or restart. Backups request their own checkpoint.', disabled: !isPrimary ? 'Primary only' : hasAgent ? undefined : noAgent, run: () => r.run('checkpoint', {}, { nodeId: nid }) },
+      { id: 'walsw', label: 'Switch the current WAL file', hint: 'pg_switch_wal(): closes the current WAL segment so it is archived now instead of when it fills up or archive_timeout expires.', disabled: !isPrimary ? 'Primary only' : hasAgent ? undefined : noAgent, run: () => r.run('wal_switch', {}, { nodeId: nid }) },
     ] },
     { group: 'High availability', items: [
-      { id: 'promote', label: 'Promote to primary', hint: `Orderly switchover: ${leader || 'the primary'} hands its role to ${node.name} without data loss.`, danger: true, disabled: !patroni ? noPatroni : isPrimary ? 'It is already the primary' : !healthy ? 'The replica is not healthy (it is not replicating)' : undefined, run: () => r.run('patroni_switchover', { leader, candidate: member }) },
+      { id: 'promote', label: 'Make primary (switchover)', hint: `Orderly switchover: ${leader || 'the primary'} hands its role to ${node.name} without data loss.`, danger: true, disabled: !patroni ? noPatroni : isPrimary ? 'It is already the primary' : !healthy ? 'The replica is not healthy (it is not replicating)' : undefined, run: () => r.run('patroni_switchover', { leader, candidate: member }) },
       { id: 'reinit', label: 'Reinitialize the replica', hint: 'Deletes this node’s data and re-clones it from the primary. Used when a replica does not start or is corrupted. It can take a long time on large databases.', danger: true, typed: true, disabled: !patroni ? noPatroni : isPrimary ? 'Never on the primary: it would destroy the data' : undefined, run: () => r.run('patroni_reinit', { member }) },
     ] },
     { group: 'Agent', items: [
@@ -44,7 +44,7 @@ export function NodePanel({ c, node, agent, leader, isAdmin, onClose, onInstall,
     <div className="stack-l">
       <dl className="kv">
         <dt>State</dt><dd>{node.online ? node.state : 'offline'}</dd>
-        {!isPrimary ? <><dt>Replication lag</dt><dd>{node.replicationLagBytes == null ? 'unknown' : bytes(node.replicationLagBytes)}</dd></> : null}
+        {!isPrimary ? <><dt>Replay lag</dt><dd>{node.replicationLagBytes == null ? 'unknown' : bytes(node.replicationLagBytes)}</dd></> : null}
         <dt>Address</dt><dd className="mono">{node.host}:{node.port}</dd>
         <dt>Timeline</dt><dd>{node.timeline ?? '—'}</dd>
         {node.pgVersion ? <><dt>PostgreSQL</dt><dd>{String(node.pgVersion).split(' ')[0]} {node.compat && node.compat.problems.length ? <Badge kind={node.compat.problems.some((p: any) => p.severity === 'critical') ? 'bad' : 'warn'}>{node.compat.tier === 'unsupported' ? 'unsupported' : node.compat.tier === 'legacy' ? 'legacy' : node.compat.eol ? 'end of life' : 'to verify'}</Badge> : node.compat ? <Badge kind="ok">supported</Badge> : null}</dd></> : null}
