@@ -114,6 +114,7 @@ class Mirror(unittest.TestCase):
         self.assertIn("another database", st.get("last_error") or "")
 
 
+@unittest.skipUnless(crypt.available(), "python 'cryptography' not installed (encryption is optional)")
 class ArchiveKey(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -152,6 +153,7 @@ class ArchiveKey(unittest.TestCase):
         self.assertEqual(WalManager(self.wal, "none", crypto=self.k1).database_names(), {"16384": "sales"})
 
 
+@unittest.skipUnless(crypt.available(), "python 'cryptography' not installed (encryption is optional)")
 class PreviousLocation(unittest.TestCase):
     def test_a_previous_location_with_another_setting_is_not_read(self):
         d = tempfile.mkdtemp()

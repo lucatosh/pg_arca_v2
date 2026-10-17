@@ -33,6 +33,7 @@ class Encoding(unittest.TestCase):
 
 
 class NoProc(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("ps"), "no ps on this system (slim container): the fallback has nothing to read")
     def test_processes_through_ps(self):
         from pg_arca import procs
         real = procs.HAVE_PROC
@@ -89,6 +90,9 @@ class Installer(unittest.TestCase):
         self.assertIn("/usr/local/etc/rc.d/", src)
 
     def test_release_build_normalises_modes(self):
+        f = os.path.join(os.path.dirname(HERE), "tools", "release", "build.sh")
+        if not os.path.exists(f):
+            self.skipTest("agent tested outside the repository (no tools/release/build.sh)")
         b = open(os.path.join(os.path.dirname(HERE), "tools", "release", "build.sh")).read()
         self.assertIn("norm_modes \"$A\"", b)
         self.assertIn("norm_modes \"$S/unix-agent\"", b)

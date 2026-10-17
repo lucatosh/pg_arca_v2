@@ -20,7 +20,8 @@ if [[ " $PARTS " == *" py "* ]]; then
     img=python:$py-slim; [ $py = 3.6 ] && img=python:3.6-slim-buster
     pull $img || { echo "python $py: NOT-RUN (image)" | tee -a $OUT; continue; }
     timeout 1800 docker run --rm --label arca-matrix -v "$ROOT":/work:ro,z $img bash -c \
-      'cp -r /work/unix-agent /tmp/a && cd /tmp/a && python -W ignore -m unittest discover -s tests -p "test_*.py" 2>&1 | tail -40' > /tmp/os-py$py.log 2>&1
+      'pip install -q cryptography >/dev/null 2>&1 || echo "NOTE: cryptography not installable here: encryption tests skipped";
+       cp -r /work/unix-agent /tmp/a && cp -r /work/tools /tmp/tools && cd /tmp/a && python -W ignore -m unittest discover -s tests -p "test_*.py" 2>&1 | tail -60' > /tmp/os-py$py.log 2>&1
     echo "python $py: $(grep -E '^(OK|FAILED)' /tmp/os-py$py.log | tail -1) $(grep -E '^Ran ' /tmp/os-py$py.log | tail -1)" | tee -a $OUT
   done
 fi
