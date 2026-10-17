@@ -9,6 +9,7 @@ import { lsnToBig } from './view';
 import { classify } from './pgcompat';
 import { geoIssues } from './geo';
 import { resolveScoped } from './scoped';
+import { destinationFor, workerForHost } from './destinations';
 
 export type Severity = 'critical' | 'warning' | 'info';
 export interface Issue {
@@ -304,6 +305,26 @@ export function evaluate(st: any, now = Date.now()): Issue[] {
       }
     }
 
+    // ---- the backup server chosen for this cluster vs where the nodes REALLY write: a share remounted from another machine (same export path on
+    // another server, a NAS swapped in) writes the history into another archive without anyone noticing
+    {
+      const want = (() => { try { return destinationFor(st, c).dest; } catch { return null; } })();
+      if (want?.server && !want.server.missing) {
+        const off: string[] = [];
+        for (const n of online) {
+          const sto = n.snapshot?.storage || {};
+          for (const [m, path, wantPath] of [[sto.repo_mount, sto.repo_path, want.repo_path], [sto.wal_mount, sto.wal_path, want.wal_path]] as const) {
+            if (!m || !wantPath || path !== wantPath) continue;              // not applied there yet: the check-and-apply flow speaks for it
+            const w = m.remote_host ? workerForHost(st, m.remote_host) : null;
+            if (!w || w.id !== want.server.id) { off.push(n.name); break; }
+          }
+        }
+        if (off.length) add({ severity: 'warning', code: 'backup_server_mismatch', title: `Backups are not written to the backup server ${want.server.name}`,
+          cause: `On ${[...new Set(off)].join(', ')} the backup storage is mounted from ${off.length === 1 ? 'another machine or the local disk' : 'other machines or local disks'}, not from ${want.server.name} as configured: the backup history goes somewhere else. Remount the share from ${want.server.name} (Backup page → Where the backups are stored → Show locations), then run Check and apply.`,
+          action: { label: 'Where the backups are stored', page: 'backup' } });
+      }
+    }
+
     // ---- replication / slots / connections / disk
     for (const n of online) {
       const dn = (n.snapshot?.postgres?.replication || []) as any[];
@@ -423,7 +444,7 @@ export function protectionOf(st: any, clusterId: string, issues: Issue[], now = 
   const offLast = Math.max(0, ...offs.map((o: any) => Number(o.last_ok) || 0));
   const mine = issues.filter(i => i.clusterId === clusterId);
   // no_primary: nobody can say the archive is current (critical: none reachable; warning: silent for days); clock_ahead: the backup ages cannot be trusted
-  const KEY = new Set(['no_primary', 'clock_ahead', 'gc_postponed', 'no_backup', 'no_schedule', 'verify_failed', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_both_set', 'archive_off', 'rpo_target', 'wal_gap', 'wal_branch_tail', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
+  const KEY = new Set(['no_primary', 'clock_ahead', 'gc_postponed', 'no_backup', 'no_schedule', 'verify_failed', 'backup_stale', 'backup_failed', 'archiver_failing', 'archive_both_set', 'archive_off', 'rpo_target', 'wal_gap', 'wal_branch_tail', 'backup_server_mismatch', 'wal_spool_failing', 'offsite_behind', 'archiver_lag', 'tablespace_after_full', 'restore_incomplete']);
   const relevant = mine.filter(i => KEY.has(i.code));
   const standbySite = !sets.length && nodes.some(n => n.snapshot?.patroni?.local_node?.role === 'standby_leader');
   const state = standbySite ? 'none' as const

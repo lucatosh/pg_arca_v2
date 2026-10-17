@@ -8,6 +8,7 @@ import { mountScopedRoutes, SPECS } from '../../server/scoped';
 import { mountDestinationRoutes, destinationFor, workerForHost, hostsOf, HIDDEN } from '../../server/destinations';
 import { validateOp } from '../../server/optypes';
 import { mountOperatorRoutes } from '../../server/agents';
+import { evaluate } from '../../server/health';
 import { workerView, mountWorkerRoutes } from '../../server/workers';
 
 (async () => {
@@ -106,6 +107,14 @@ import { workerView, mountWorkerRoutes } from '../../server/workers';
   assert.deepEqual(op.params.expect_server, { name: 'backup-dc1', hosts: d1.server!.hosts });
   assert.equal(validateOp('destination_check', op.params), null);
   assert.ok(validateOp('destination_check', { type: 'nfs', repo_path: '/x', expect_server: { name: 'a', hosts: 'bk1' } }));
+  // drift: applied on the nodes, but one of them writes through a mount from another machine -> a warning naming it
+  const mismatch = () => evaluate(store.peek()).filter((i: any) => i.code === 'backup_server_mismatch' && i.clusterId === 'c1');
+  assert.equal(mismatch().length, 0, 'not applied yet: no drift');
+  await store.mutate(d => { for (const id of ['a', 'b']) { const sto = (d.nodes as any)[id].snapshot.storage; sto.repo_path = '/mnt/pgarca/prod1/repo'; sto.wal_path = '/mnt/pgarca/prod1/wal'; } });
+  const mm = mismatch();
+  assert.equal(mm.length, 1); assert.match(mm[0].cause, /On pg-b /); assert.equal(/pg-a/.test(mm[0].cause), false, 'pg-a mounts from bk1 = the backup server');
+  await store.mutate(d => { const sto = (d.nodes as any).b.snapshot.storage; sto.repo_mount = sto.wal_mount = { mountpoint: '/mnt/pgarca', fstype: 'nfs4', source: '10.0.0.9:/srv/pgarca', remote_host: '10.0.0.9' }; });
+  assert.equal(mismatch().length, 0, 'remounted from the backup server');
   // a level below that picks another share (or local disks) does not inherit the server check from above
   await call('PUT', '/api/scoped/destination/assignments', 'admin', { scope: 'cluster', key: 'c1', value: { type: 'nfs', repoPath: '/mnt/nas/repo', walPath: '/mnt/nas/wal/{cluster}', requireMount: true } });
   assert.equal(destinationFor(store.peek(), store.peek().clusters[0]).dest!.server, undefined);
